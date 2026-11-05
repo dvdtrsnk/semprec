@@ -341,6 +341,17 @@ describe("mail thread list", () => {
           [legacy.itemId],
         );
         expect(cleared.rowCount).toBe(1);
+        // Synthetic exact times make a one-microsecond cursor boundary deterministic.
+        const fixedIngest = await client.query(
+          "UPDATE mail_message_meta SET ingested_at = $2::timestamptz WHERE tenant_id = app_tenant_default() AND item_id = $1",
+          [ingested.itemId, "2025-01-01T00:00:00.123455Z"],
+        );
+        expect(fixedIngest.rowCount).toBe(1);
+        const fixedLegacy = await client.query(
+          "UPDATE items SET updated_at = $2::timestamptz WHERE tenant_id = app_tenant_default() AND id = $1",
+          [legacy.itemId, "2025-01-01T00:00:00.123456Z"],
+        );
+        expect(fixedLegacy.rowCount).toBe(1);
         const result = await client.query<{
           item_id: string;
           thread_id: string;
@@ -373,6 +384,13 @@ describe("mail thread list", () => {
       const legacyRow = expected.find((entry) => entry.item_id === legacy.itemId);
       if (!dateRow || !ingestRow || !legacyRow || !ingestRow.ingested) throw new Error("Missing timestamp fixture");
       expect(legacyRow.ingested).toBeNull();
+      expect(ingestRow.ingested).toBe("2025-01-01T00:00:00.123455Z");
+      expect(legacyRow.updated).toBe("2025-01-01T00:00:00.123456Z");
+      expect(seen.map((entry) => entry.threadId)).toEqual([
+        legacyRow.thread_id,
+        ingestRow.thread_id,
+        dateRow.thread_id,
+      ]);
       expect(seen).toContainEqual(
         expect.objectContaining({ threadId: dateRow.thread_id, lastMessageAt: "2024-01-01T00:00:00.000000Z" }),
       );

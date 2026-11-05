@@ -142,12 +142,11 @@ export function createItemRoutes(
           const path = await chokePoint.getItemPath(id, relations === undefined ? undefined : { relations, resolver });
           const last = path.at(-1);
           if (!last) throw new NotFoundError(`Item ${id} not found`);
+          const projection = includeDerived ? await chokePoint.getDerivedValuesForItems([id]) : undefined;
           const links = includeLinks
-            ? ((await chokePoint.getValueLinksForItems([id], includeDerived)).get(id) ?? {})
+            ? ((await chokePoint.getValueLinksForItems([id], includeDerived, projection)).get(id) ?? {})
             : undefined;
-          const derived = includeDerived
-            ? ((await chokePoint.getDerivedValuesForItems([id])).get(id) ?? {})
-            : undefined;
+          const derived = projection !== undefined ? (projection.get(id) ?? {}) : undefined;
           return {
             status: 200,
             body: {

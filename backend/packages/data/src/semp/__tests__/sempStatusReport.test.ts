@@ -81,7 +81,7 @@ describe("Semp status report", () => {
             sourceTable: "mail_account_sync_state",
             sourceId: item.id,
             dedupeKey: `mail:${item.id}`,
-            since,
+            since: new Date(since.getTime() + i * 60_000),
             occurrenceKey: `run-${i}`,
           }),
         );

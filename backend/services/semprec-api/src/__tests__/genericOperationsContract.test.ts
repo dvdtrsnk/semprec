@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -573,10 +573,12 @@ describe("generic operation REST contract (issue #219)", () => {
 
   it("expands a tenant's real person, project and area through authenticated REST under RLS", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeWriter: Pool | undefined;
     let runtimeServer: Server | undefined;
     let failure: { error: unknown } | undefined;
     const cleanupErrors: unknown[] = [];
     try {
+      runtimeWriter = await createRuntimeRolePool(pool, "semprec_data");
       const role = await runAsSystem("test:verify-runtime-role", () =>
         runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
           "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -635,7 +637,17 @@ describe("generic operation REST contract (issue #219)", () => {
               sources: [{ kind: "item", sourceItemId: project.id, sourcePropertyKey: "area" }],
             }),
           );
-          return { person, project, secondProject, area, otherArea, company, file, projectsDatabaseId: projects.id };
+          return {
+            person,
+            project,
+            secondProject,
+            area,
+            otherArea,
+            company,
+            file,
+            filesDatabaseId: files.id,
+            projectsDatabaseId: projects.id,
+          };
         });
       }
       const own = await fixture(ownTenant);
@@ -718,6 +730,108 @@ describe("generic operation REST contract (issue #219)", () => {
           });
         else expect(body).not.toHaveProperty("links");
       }
+      const fileProjects = await runInTenant(ownTenant, async () => {
+        const property = (await cp.listProperties(own.filesDatabaseId)).find((entry) => entry.key === "projects");
+        if (!property) throw new Error("Missing file project property");
+        const result = await withTransaction(runtime, (client) =>
+          client.query<{ id: string }>(
+            "SELECT id FROM relation_definitions WHERE tenant_id = app_tenant_default() AND $1 IN (property_id_a, property_id_b)",
+            [property.id],
+          ),
+        );
+        if (result.rows.length !== 1 || !result.rows[0]) throw new Error("Missing project definition");
+        return result.rows[0].id;
+      });
+      const projectArea = await runInTenant(ownTenant, async () => {
+        const property = (await cp.listProperties(own.projectsDatabaseId)).find((entry) => entry.key === "area");
+        if (!property) throw new Error("Missing project area property");
+        return property.id;
+      });
+      const writer = runtimeWriter;
+      if (!writer) throw new Error("Missing runtime writer");
+      const writerCp = createChokePoint(writer);
+      const originals = new Map<PoolClient, PoolClient["query"]>();
+      const projectionClients = new Set<PoolClient>();
+      let projectionReads = 0;
+      let changedDuringRead = false;
+      const observe = (client: PoolClient) => {
+        if (originals.has(client)) return;
+        const original = client.query;
+        originals.set(client, original);
+        Object.defineProperty(client, "query", {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]) => {
+            const sql = args[0];
+            const params = args[1];
+            if (
+              typeof sql === "string" &&
+              sql.includes("FROM item_relations") &&
+              sql.includes("relation_definition_id = $1") &&
+              Array.isArray(params) &&
+              params[0] === fileProjects
+            ) {
+              projectionReads++;
+              projectionClients.add(client);
+            }
+            const result: unknown = Reflect.apply(original, client, args);
+            if (sql === "COMMIT" && projectionClients.delete(client) && !changedDuringRead) {
+              if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
+              changedDuringRead = true;
+              return result.then(async (value: unknown) => {
+                await runInTenant(ownTenant, () =>
+                  writerCp.setRelation({
+                    relationPropertyId: projectArea,
+                    callerItemId: own.secondProject.id,
+                    targetItemId: null,
+                  }),
+                );
+                return value;
+              });
+            }
+            return result;
+          },
+        });
+      };
+      runtime.on("acquire", observe);
+      let pathBody: unknown;
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/items/${own.file.id}?include=path,links,derived`, {
+          headers: { Authorization: `Bearer ${firstToken}` },
+        });
+        expect(response.status).toBe(200);
+        pathBody = await response.json();
+      } finally {
+        runtime.off("acquire", observe);
+        for (const [client, original] of originals)
+          Object.defineProperty(client, "query", { configurable: true, writable: true, value: original });
+      }
+      expect(changedDuringRead).toBe(true);
+      expect(projectionReads).toBe(1);
+      expect(pathBody).toMatchObject({
+        derived: { area: { projectIds: [own.project.id, own.secondProject.id].sort() } },
+        links: {
+          area: {
+            valueKind: "derived",
+            sources: expect.arrayContaining([
+              expect.objectContaining({ itemId: own.project.id }),
+              expect.objectContaining({ itemId: own.secondProject.id }),
+            ]),
+          },
+        },
+      });
+      const afterDrift = await fetch(`http://127.0.0.1:${port}/api/items/${own.file.id}?include=derived`, {
+        headers: { Authorization: `Bearer ${firstToken}` },
+      });
+      expect(afterDrift.status).toBe(200);
+      expect(await afterDrift.json()).toMatchObject({ derived: { area: { projectIds: [own.project.id] } } });
+      await runInTenant(ownTenant, () =>
+        writerCp.setRelation({
+          relationPropertyId: projectArea,
+          callerItemId: own.secondProject.id,
+          targetItemId: own.area.id,
+        }),
+      );
       await runInTenant(ownTenant, async () => {
         const property = (await cp.listProperties(own.projectsDatabaseId)).find((entry) => entry.key === "area");
         if (!property) throw new Error("Missing project area relation");
@@ -875,9 +989,17 @@ describe("generic operation REST contract (issue #219)", () => {
       } catch (error) {
         cleanupErrors.push(error);
       }
+      if (runtimeWriter) {
+        try {
+          await runtimeWriter.end();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
     }
     if (failure) {
-      if (cleanupErrors.length > 0) console.error("Expansion REST fixture cleanup also failed");
+      if (cleanupErrors.length > 0)
+        throw new AggregateError([failure.error, ...cleanupErrors], "Expansion REST fixture and cleanup failed");
       throw failure.error;
     }
     if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Expansion REST fixture cleanup failed");

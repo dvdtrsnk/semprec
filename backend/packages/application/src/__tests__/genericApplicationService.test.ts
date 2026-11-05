@@ -1,32 +1,160 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import type { Pool, PoolClient } from "pg";
+import { runInTenant, type ItemReadInclude } from "@semprec/shared";
 import {
   createChokePoint,
   createCollectionMetadataResolver,
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
+  withTransaction,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
 let admin: Pool;
 let runtime: Pool;
+let writer: Pool;
 let tenant: string;
 
 describe("derived item reads in the generic application service", () => {
   beforeAll(async () => {
     admin = getTestPool();
     runtime = await createRuntimeRolePool(admin, "semprec_data");
+    writer = await createRuntimeRolePool(admin, "semprec_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
   });
   afterAll(async () => {
+    await writer.end();
     await runtime.end();
     await admin.end();
+  });
+  it("uses one derived projection for item and query responses despite a real edge change", async () => {
+    await runInTenant(tenant, async () => {
+      await seedSystem(runtime, createViewTypeRegistry());
+      const cp = createChokePoint(runtime);
+      const writerCp = createChokePoint(writer);
+      const dbs = await cp.listDatabases();
+      const db = (key: string) => {
+        const found = dbs.find((entry) => entry.ownerModuleId === key);
+        if (!found) throw new Error(`Missing ${key}`);
+        return found.id;
+      };
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Work" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const areaProperty = (await cp.listProperties(db("projects"))).find((p) => p.key === "area");
+      const projectProperty = (await cp.listProperties(db("files"))).find((p) => p.key === "projects");
+      if (!areaProperty || !projectProperty) throw new Error("Missing relation properties");
+      await cp.createRelation({
+        relationPropertyId: projectProperty.id,
+        callerItemId: file.id,
+        targetItemId: project.id,
+      });
+      const definition = await withTransaction(runtime, (client) =>
+        client.query<{ id: string }>(
+          "SELECT id FROM relation_definitions WHERE tenant_id = app_tenant_default() AND $1 IN (property_id_a, property_id_b)",
+          [projectProperty.id],
+        ),
+      );
+      if (definition.rows.length !== 1 || !definition.rows[0]) throw new Error("Missing project definition");
+      const definitionId = definition.rows[0].id;
+      const view = await cp.createView({ databaseId: db("files"), type: "table", name: "Files" });
+      const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
+      const service = createGenericApplicationService(runtime, resolver);
+      const actor = { userId: "00000000-0000-4000-8000-000000000001" };
+      const setArea = (targetItemId: string | null) =>
+        writerCp.setRelation({ relationPropertyId: areaProperty.id, callerItemId: project.id, targetItemId });
+      const read = async (mode: "item" | "database" | "view", include: ItemReadInclude) => {
+        if (mode === "item") return service.getItem(actor, { itemId: file.id, include });
+        const page =
+          mode === "database"
+            ? await service.queryDatabase(actor, { databaseId: db("files"), include })
+            : await service.queryView(actor, { viewId: view.id, include });
+        const row = page.items.find((entry) => entry.id === file.id);
+        if (!row) throw new Error("Missing file from query");
+        return row;
+      };
+      async function observe<T>(action: () => Promise<T>, change?: () => Promise<unknown>) {
+        const originals = new Map<PoolClient, PoolClient["query"]>();
+        const projectionClients = new Set<PoolClient>();
+        let reads = 0;
+        let changed = false;
+        const onAcquire = (client: PoolClient) => {
+          if (originals.has(client)) return;
+          const original = client.query;
+          originals.set(client, original);
+          Object.defineProperty(client, "query", {
+            configurable: true,
+            writable: true,
+            value: (...args: unknown[]) => {
+              const sql = args[0];
+              const params = args[1];
+              if (
+                typeof sql === "string" &&
+                sql.includes("FROM item_relations") &&
+                sql.includes("relation_definition_id = $1") &&
+                Array.isArray(params) &&
+                params[0] === definitionId
+              ) {
+                reads++;
+                projectionClients.add(client);
+              }
+              const result: unknown = Reflect.apply(original, client, args);
+              if (sql === "COMMIT" && projectionClients.delete(client) && change && !changed) {
+                if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
+                changed = true;
+                return result.then(async (value: unknown) => {
+                  await change();
+                  return value;
+                });
+              }
+              return result;
+            },
+          });
+        };
+        runtime.on("acquire", onAcquire);
+        try {
+          const result = await action();
+          return { result, reads, changed };
+        } finally {
+          runtime.off("acquire", onAcquire);
+          for (const [client, original] of originals)
+            Object.defineProperty(client, "query", { configurable: true, writable: true, value: original });
+        }
+      }
+      for (const mode of ["item", "database", "view"] as const) {
+        await setArea(area.id);
+        const observed = await observe(
+          () => read(mode, ["links", "derived"]),
+          () => setArea(null),
+        );
+        expect(observed.changed).toBe(true);
+        expect(observed.reads).toBe(1);
+        expect(observed.result.derived?.area?.values[0]?.id).toBe(area.id);
+        expect(observed.result.links?.area).toMatchObject({
+          valueKind: "derived",
+          sources: [{ itemId: project.id, propertyKey: "area" }],
+        });
+        expect((await read(mode, ["links", "derived"])).derived?.area).toBeUndefined();
+      }
+      await setArea(null);
+      const empty = await observe(
+        () => read("item", ["links", "derived"]),
+        () => setArea(area.id),
+      );
+      expect(empty.changed).toBe(true);
+      expect(empty.reads).toBe(1);
+      expect(empty.result.derived?.area).toBeUndefined();
+      expect(empty.result.links?.area).toBeUndefined();
+      expect((await read("item", ["derived"])).derived?.area?.values[0]?.id).toBe(area.id);
+      const linksOnly = await observe(() => read("item", ["links"]));
+      expect(linksOnly.reads).toBe(0);
+      expect(linksOnly.result).not.toHaveProperty("derived");
+    });
   });
   it("requires both flags for derived links and independently opts into derived values", async () => {
     await runInTenant(tenant, async () => {
@@ -70,6 +198,26 @@ describe("derived item reads in the generic application service", () => {
         valueKind: "derived",
         sources: [{ itemId: project.id, propertyKey: "area" }],
       });
+      const view = await cp.createView({ databaseId: files.id, type: "table", name: "Files" });
+      for (const [include, hasLinks, hasDerived] of [
+        [undefined, false, false],
+        [["links"], true, false],
+        [["derived"], false, true],
+        [["links", "derived"], true, true],
+      ] satisfies Array<[ItemReadInclude, boolean, boolean]>) {
+        for (const page of [
+          await service.queryDatabase(actor, { databaseId: files.id, include }),
+          await service.queryView(actor, { viewId: view.id, include }),
+        ]) {
+          const row = page.items.find((entry) => entry.id === file.id);
+          if (!row) throw new Error("Missing file from query");
+          if (hasDerived) expect(row.derived?.area?.values[0]?.id).toBe(area.id);
+          else expect(row).not.toHaveProperty("derived");
+          if (hasLinks && hasDerived) expect(row.links?.area?.valueKind).toBe("derived");
+          else if (hasLinks) expect(row.links).toEqual({});
+          else expect(row).not.toHaveProperty("links");
+        }
+      }
     });
   });
 });

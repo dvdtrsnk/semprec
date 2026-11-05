@@ -27,6 +27,7 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { hasWaitingHeartbeatFireJob } from "../scheduler/schedulerStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -208,6 +209,41 @@ describe("newEmail heartbeat (issue #99)", () => {
     await drainQueue(registry);
     expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
     expect(runCalls).toHaveLength(0);
+  });
+
+  it("does not start a queued run when an Inbox item has no mail metadata", async () => {
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const runCalls: string[] = [];
+    const registry = agentRunRegistry(runCalls);
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder");
+    if (!folderProperty) throw new Error("Missing email folder property");
+    const item = await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        const folder = await createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "Inbox", behavior: "folder", specialPurpose: "inbox" } },
+          { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+        );
+        const email = await createItemWithClient(client, { databaseId: emailsId, properties: {} });
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: folderProperty.id, callerItemId: email.id, targetItemId: folder.id },
+          EMAILS_RELATION_CONTEXT,
+        );
+        return email;
+      }),
+    );
+    const metadata = await inTenantZero(() =>
+      pool.query<{ item_id: string }>("SELECT item_id FROM mail_message_meta WHERE item_id = $1", [item.id]),
+    );
+    expect(metadata.rows).toEqual([]);
+    expect(await inTenantZero(() => hasWaitingHeartbeatFireJob(pool, heartbeatId))).toBe(true);
+    await drainQueue(registry);
+    expect(await inTenantZero(() => hasWaitingHeartbeatFireJob(pool, heartbeatId))).toBe(false);
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toEqual([]);
+    expect(runCalls).toEqual([]);
   });
 
   it("emits none for junk/trash-only mail", async () => {

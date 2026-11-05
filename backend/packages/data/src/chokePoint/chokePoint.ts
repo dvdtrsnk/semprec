@@ -40,8 +40,14 @@ export function createChokePoint(
     createViewQueryOps(deps),
     {
       /** The value links of a set of items for `include=links` (issue #1403), in one transaction. */
-      async getValueLinksForItems(itemIds: string[], includeDerived = false) {
-        return withTransaction(pool, (client) => getValueLinksForItems(client, itemIds, includeDerived));
+      async getValueLinksForItems(
+        itemIds: string[],
+        includeDerived = false,
+        preloadedDerived?: Parameters<typeof getValueLinksForItems>[3],
+      ) {
+        return withTransaction(pool, (client) =>
+          getValueLinksForItems(client, itemIds, includeDerived, preloadedDerived),
+        );
       },
       async getDerivedValuesForItems(itemIds: string[]) {
         return withTransaction(pool, async (client) =>

@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { DatabaseError, type Pool, type PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -528,6 +528,50 @@ describe("derived value creation guard", () => {
           await expect(
             cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
           ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+          let priorId = "";
+          let refusal: unknown;
+          let finalError: unknown;
+          try {
+            await withTransaction(data, async (client) => {
+              priorId = (
+                await createItemWithClient(client, {
+                  databaseId: db("files"),
+                  properties: { name: "Rollback after savepoint" },
+                })
+              ).id;
+              await client.query("SAVEPOINT lock_probe");
+              try {
+                await client.query(
+                  "SELECT id FROM items WHERE tenant_id = app_tenant_default() AND id = $1 FOR UPDATE NOWAIT",
+                  [project.id],
+                );
+                throw new Error("Expected project row lock conflict");
+              } catch (error) {
+                expect(error).toBeInstanceOf(DatabaseError);
+                if (!(error instanceof DatabaseError)) throw error;
+                expect(error.code).toBe("55P03");
+              }
+              await client.query("ROLLBACK TO SAVEPOINT lock_probe");
+              await client.query("SAVEPOINT admission");
+              try {
+                await createRelationWithClient(client, {
+                  relationPropertyId: areaProperty,
+                  callerItemId: file.id,
+                  targetItemId: area.id,
+                });
+              } catch (error) {
+                refusal = error;
+              }
+              expect(refusal).toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+              await client.query("ROLLBACK TO SAVEPOINT admission");
+            });
+          } catch (error) {
+            finalError = error;
+          }
+          expect(refusal).toBeDefined();
+          expect(finalError).toBe(refusal);
+          expect(priorId).not.toBe("");
+          expect(await cp.findItem(priorId)).toBeNull();
         },
         releaseTrash,
         () => [trash],

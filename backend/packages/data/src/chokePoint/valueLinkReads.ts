@@ -5,7 +5,7 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as valueLinksStore from "./valueLinksStore.js";
-import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
+import { getDerivedValuesForItems, type DerivedValues } from "../derived/derivedValueReads.js";
 
 export type ValueLinkSource =
   | { kind: "item"; itemId: string; databaseKey: string | null; title: string; propertyKey: string }
@@ -32,6 +32,7 @@ export async function getValueLinksForItems(
   client: PoolClient,
   itemIds: string[],
   includeDerived = false,
+  preloadedDerived?: ReadonlyMap<string, DerivedValues>,
 ): Promise<Map<string, ItemValueLinks>> {
   const links = await valueLinksStore.listValueLinksByItemIds(client, itemIds);
   const result = new Map<string, ItemValueLinks>();
@@ -96,7 +97,8 @@ export async function getValueLinksForItems(
   // `Object.fromEntries` defines own properties, so a property key such as `__proto__` stays data.
   for (const [itemId, entries] of entriesByItem) result.set(itemId, Object.fromEntries(entries));
   if (includeDerived) {
-    const derived = await getDerivedValuesForItems(client, await itemsStore.getItemsByIds(client, itemIds));
+    const derived =
+      preloadedDerived ?? (await getDerivedValuesForItems(client, await itemsStore.getItemsByIds(client, itemIds)));
     const projectIds = [
       ...new Set(
         [...derived.values()].flatMap((value) => [

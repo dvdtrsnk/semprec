@@ -85,12 +85,12 @@ export function createGenericApplicationService(
     const derived = Array.isArray(include) ? include.includes("derived") : include?.derived === true;
     if (!links && !derived) return items;
     const ids = items.map((item) => item.id);
-    const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived) : undefined;
     const valuesByItem = derived ? await chokePoint.getDerivedValuesForItems(ids) : undefined;
+    const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived, valuesByItem) : undefined;
     return items.map((item) => ({
       ...item,
-      ...(linksByItem ? { links: linksByItem.get(item.id) ?? {} } : {}),
-      ...(valuesByItem ? { derived: valuesByItem.get(item.id) ?? {} } : {}),
+      ...(linksByItem !== undefined ? { links: linksByItem.get(item.id) ?? {} } : {}),
+      ...(valuesByItem !== undefined ? { derived: valuesByItem.get(item.id) ?? {} } : {}),
     }));
   }
 

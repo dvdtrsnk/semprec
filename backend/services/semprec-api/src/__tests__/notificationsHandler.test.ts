@@ -140,6 +140,12 @@ describe("createNotificationsRequestListener", () => {
                 }),
               );
             await resolveNotificationsBySource(client, { sourceTable: "agent_runs", sourceId: run.id });
+            // Synthetic timestamp fixture: the production resolver always uses the database clock.
+            const fixed = await client.query(
+              "UPDATE notifications SET resolved_at = $3::timestamptz WHERE tenant_id = app_tenant_default() AND user_id = $1 AND id = ANY($2::uuid[]) AND resolved_at IS NOT NULL",
+              [userId, ids, "2025-01-01T00:00:00.123456Z"],
+            );
+            expect(fixed.rowCount).toBe(count);
             return ids.sort();
           }),
         );
@@ -165,7 +171,7 @@ describe("createNotificationsRequestListener", () => {
       const offsetResponse = await request("2000-01-01T01:00:00+01:00");
       expect(offsetResponse.status).toBe(200);
       expect(schema.parse(await offsetResponse.json())).toEqual(first);
-      expect(first.nextCursor?.since).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
+      expect(first.nextCursor?.since).toBe("2025-01-01T00:00:00.123456Z");
       if (!first.nextCursor) throw new Error("Missing cursor");
       const exactTime = first.nextCursor.since;
       const justBefore = await runInTenant(tenant, () =>
@@ -180,6 +186,7 @@ describe("createNotificationsRequestListener", () => {
         schema.parse(await (await request(justBefore.rows[0]!.value)).json()).resolved.map((row) => row.id),
       ).toEqual(expected.slice(0, 500));
       expect(schema.parse(await (await request(exactTime)).json())).toEqual({ resolved: [], nextCursor: null });
+      expect(schema.parse(await (await request("2025-01-01T00:00:00.123000Z")).json()).resolved).toHaveLength(500);
       const second = schema.parse(await (await request(first.nextCursor.since, first.nextCursor.afterId)).json());
       expect(second.resolved).toHaveLength(3);
       expect([...first.resolved, ...second.resolved].map((row) => row.id)).toEqual(expected);

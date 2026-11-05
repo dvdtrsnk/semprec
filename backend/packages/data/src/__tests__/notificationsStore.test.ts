@@ -104,6 +104,12 @@ describe("notificationsStore (issue #152)", () => {
               }),
             );
           await resolveNotificationsBySource(client, { sourceTable: "agent_runs", sourceId: run.id });
+          // Synthetic timestamp fixture: the production resolver always uses the database clock.
+          const fixed = await client.query(
+            "UPDATE notifications SET resolved_at = $3::timestamptz WHERE tenant_id = app_tenant_default() AND user_id = $1 AND id = ANY($2::uuid[]) AND resolved_at IS NOT NULL",
+            [userId, ids, "2025-01-01T00:00:00.123456Z"],
+          );
+          expect(fixed.rowCount).toBe(count);
           return ids.sort();
         });
       const expected = await seed(tenant, user, 503);
@@ -123,12 +129,13 @@ describe("notificationsStore (issue #152)", () => {
         const first = await listResolvedNotificationIds(client, user, "2000-01-01T00:00:00Z", 900);
         expect(first).toHaveLength(500);
         const boundary = first.at(-1)!;
-        expect(boundary.resolvedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
+        expect(boundary.resolvedAt).toBe("2025-01-01T00:00:00.123456Z");
         const second = await listResolvedNotificationIds(client, user, boundary.resolvedAt, 500, boundary.id);
         expect(second).toHaveLength(3);
         expect([...first, ...second].map((row) => row.id)).toEqual(expected);
         expect([...first, ...second].every((row) => row.resolvedAt === boundary.resolvedAt)).toBe(true);
         expect(await listResolvedNotificationIds(client, user, boundary.resolvedAt, 500)).toEqual([]);
+        expect(await listResolvedNotificationIds(client, user, "2025-01-01T00:00:00.123000Z", 1)).toEqual([first[0]]);
         expect(
           await listResolvedNotificationIds(client, user, second.at(-1)!.resolvedAt, 500, second.at(-1)!.id),
         ).toEqual([]);
