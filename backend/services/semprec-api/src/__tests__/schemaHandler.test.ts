@@ -324,7 +324,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        properties: expect.arrayContaining([expect.objectContaining({ key: "completedAt", name: "Dokončeno" })]),
+        properties: expect.arrayContaining([expect.objectContaining({ key: "completedAt", label: "Dokončeno" })]),
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
