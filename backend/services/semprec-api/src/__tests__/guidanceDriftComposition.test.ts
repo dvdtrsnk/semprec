@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   createUser,
   projectAgentGuidanceStore,
+  projectToolCallUsageStore,
   seedSystem,
   createChokePoint,
   createAgentRun,
@@ -118,6 +119,21 @@ describe("guidance drift production composition", () => {
         }),
       );
     const runs = [await addRun(), await addRun()];
+    const firstRun = runs[0];
+    if (!firstRun) throw new Error("Missing first run");
+    await runInTenant(ownTenant, () =>
+      withTransaction(pool, async (tx) => {
+        for (let index = 0; index < 999; index++) {
+          await insertAgentRunEvent(tx, firstRun, "tool_use", {
+            toolCallId: `bulk-${index}`,
+            name: "item_create",
+            operation: "item.create",
+            targetDatabaseId: fixture.tasks,
+            arguments: index === 0 ? { text: "x".repeat(70_000) } : {},
+          });
+        }
+      }),
+    );
     const fingerprint = fingerprintGuidanceDriftSubject(fixture.project, "behavior", {
       operation: "item.create",
       databaseId: fixture.tasks,
@@ -140,7 +156,7 @@ describe("guidance drift production composition", () => {
           .parse(JSON.parse(message));
         expect(payload.locale).toBe("en");
         expect(payload.groups).toHaveLength(1);
-        expect(payload.groups[0]?.count).toBe(3);
+        expect(payload.groups[0]?.count).toBeGreaterThanOrEqual(3);
         if (forbidden) {
           expect(payload.notAllowed).toBe("Create tasks");
         }
@@ -272,7 +288,7 @@ describe("guidance drift production composition", () => {
         [runs],
       ),
     );
-    expect(aged.rowCount).toBe(3);
+    expect(aged.rowCount).toBe(1002);
     const callsBeforeExpiry = behaviorCalls;
     await runInTenant(ownTenant, () => action({ projectItemId: fixture.project }));
     expect(behaviorCalls).toBe(callsBeforeExpiry);
@@ -283,6 +299,191 @@ describe("guidance drift production composition", () => {
       name: "GuidanceChangedError",
     });
     expect((await rows()).rows[0]?.status).toBe("resolved");
+    changeDuringCall = false;
+    await runInTenant(ownTenant, () =>
+      withTransaction(pool, (tx) =>
+        projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: fixture.project,
+          ownerUserId: owner.id,
+          markdown: "## Allowed\nRead projects\n",
+        }),
+      ),
+    );
+    const overflowRuns = [await addRun(), await addRun(), await addRun()];
+    await runInTenant(ownTenant, () => action({ projectItemId: fixture.project }));
+    expect((await rows()).rows[0]?.status).toBe("active");
+    const notificationsBeforeOverflow = (await notifications()).rows;
+    const callsBeforeOverflow = behaviorCalls;
+    await runInTenant(ownTenant, () =>
+      withTransaction(pool, async (tx) => {
+        for (let index = 0; index < 18; index++) {
+          const registration = `${index}-${"x".repeat(60_000)}`;
+          for (const run of overflowRuns) {
+            await insertAgentRunEvent(tx, run, "tool_use", {
+              toolCallId: `overflow-${index}`,
+              name: "search",
+              arguments: {},
+              mcp: {
+                toolRegistrationId: registration,
+                serverItemId: "server",
+                serverName: "server",
+                toolName: "search",
+              },
+            });
+          }
+        }
+      }),
+    );
+    await expect(runInTenant(ownTenant, () => action({ projectItemId: fixture.project }))).rejects.toThrow(
+      "Behavior drift comparison input exceeds its limit",
+    );
+    expect(behaviorCalls).toBe(callsBeforeOverflow);
+    expect((await rows()).rows[0]?.status).toBe("active");
+    expect((await notifications()).rows).toEqual(notificationsBeforeOverflow);
+    const isolated = await createRuntimeRolePool(admin, "semprec_data");
+    try {
+      let backendPid: number | undefined;
+      await expect(
+        runInTenant(ownTenant, () =>
+          withTransaction(
+            isolated,
+            async (tx) => {
+              backendPid = (await tx.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await projectToolCallUsageStore.listProjectToolCallGroups(
+                tx,
+                fixture.project,
+                new Date(Date.now() - 14 * 86400_000),
+              );
+            },
+            { isolation: "repeatable_read" },
+          ),
+        ),
+      ).rejects.toThrow("Behavior drift comparison input exceeds its limit");
+      await runInTenant(ownTenant, () =>
+        withTransaction(isolated, async (tx) => {
+          expect((await tx.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid).toBe(backendPid);
+          expect((await tx.query("SELECT name FROM pg_cursors WHERE name LIKE 'behavior_usage_%' ")).rowCount).toBe(0);
+        }),
+      );
+    } finally {
+      await isolated.end();
+    }
+  });
+  it("rejects in-flight guidance changes even when the old observable millisecond collides", async () => {
+    const ownTenant = await createTestTenant(admin);
+    const owner = await createUser(admin, {
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      tenantId: ownTenant,
+    });
+    await runInTenant(ownTenant, () => seedSystem(pool));
+    const fixture = await runInTenant(ownTenant, async () => {
+      const ids = await withTransaction(pool, async (tx) => ({
+        projects: await getDatabaseByModuleId(tx, "projects"),
+        tasks: await getDatabaseByModuleId(tx, "tasks"),
+      }));
+      if (!ids.projects || !ids.tasks) throw new Error("Missing databases");
+      const tasksId = ids.tasks.id;
+      const item = await createChokePoint(pool).createItem({
+        databaseId: ids.projects.id,
+        properties: { name: "Race" },
+      });
+      await withTransaction(pool, async (tx) => {
+        await projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: item.id,
+          ownerUserId: owner.id,
+          markdown: "## Allowed\nRead\n",
+        });
+        for (let index = 0; index < 3; index++) {
+          const run = await createAgentRun(tx, {
+            projectItemId: item.id,
+            userId: owner.id,
+            triggeredBy: "user",
+            task: "race",
+          });
+          await insertAgentRunEvent(tx, run.id, "tool_use", {
+            toolCallId: `race-${index}`,
+            name: "create",
+            arguments: {},
+            operation: "item.create",
+            targetDatabaseId: tasksId,
+          });
+        }
+      });
+      return { project: item.id, tasks: tasksId };
+    });
+    let releaseWrite: () => void = () => {};
+    let reportStart: (date: Date) => void = () => {};
+    const proceed = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const started = new Promise<Date>((resolve) => {
+      reportStart = resolve;
+    });
+    const writing = runInTenant(ownTenant, () =>
+      withTransaction(pool, async (tx) => {
+        const clock = await tx.query<{ at: Date }>("SELECT now() AS at");
+        if (!clock.rows[0]) throw new Error("Missing transaction clock");
+        reportStart(clock.rows[0].at);
+        await proceed;
+        return projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: fixture.project,
+          ownerUserId: owner.id,
+          markdown: "## Allowed\nChanged\n",
+        });
+      }),
+    );
+    const writerTime = await Promise.race([
+      started,
+      writing.then(() => {
+        throw new Error("Writer ended before release");
+      }),
+    ]);
+    try {
+      await runInTenant(ownTenant, async () => {
+        // Synthetic historical timestamp: the public guidance owner cannot set an observed revision directly.
+        expect(
+          (
+            await pool.query("UPDATE project_agent_guidance SET updated_at = $2 WHERE project_item_id = $1", [
+              fixture.project,
+              writerTime,
+            ])
+          ).rowCount,
+        ).toBe(1);
+      });
+      const fingerprint = fingerprintGuidanceDriftSubject(fixture.project, "behavior", {
+        operation: "item.create",
+        databaseId: fixture.tasks,
+      });
+      const gateway: AiGatewayClientPort = {
+        async complete(input) {
+          if (input.operation === "agent_guidance_drift")
+            return { content: { contradictions: [] }, usage: { inputTokens: 1, outputTokens: 1 } };
+          releaseWrite();
+          await writing;
+          return {
+            content: {
+              findings: [
+                { fingerprint, claim: "Creates", suggestedAllowedLine: "Allow", suggestedNotAllowedLine: "Forbid" },
+              ],
+            },
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      };
+      await expect(
+        runInTenant(ownTenant, () =>
+          createAgentGuidanceDriftActionForApi(pool, gateway)({ projectItemId: fixture.project }),
+        ),
+      ).rejects.toMatchObject({ name: "GuidanceChangedError" });
+      const findings = await runInTenant(ownTenant, () =>
+        pool.query("SELECT id FROM agent_guidance_drift_findings WHERE project_item_id = $1", [fixture.project]),
+      );
+      expect(findings.rowCount).toBe(0);
+    } finally {
+      releaseWrite();
+      await writing;
+    }
   });
   beforeEach(async () => {
     await resetDatabase(admin);

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { canonicalizeJson } from "./canonicalJson.js";
 
+export const BEHAVIOR_DRIFT_MIN_RUNS = 3;
+export const BEHAVIOR_DRIFT_WINDOW_DAYS = 14;
+export const BEHAVIOR_DRIFT_INPUT_BYTES = 1024 * 1024;
+
 export type GuidanceDriftSeverity = "blocking" | "warning";
 
 export type GuidanceDriftKind = "permission" | "behavior";

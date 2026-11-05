@@ -1,10 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasksSourceEventsCutoverMigration.js";
 import { seedSystem } from "../../seed/seedSystem.js";
+import { createDriftCheckAction } from "../../manifest/driftCheck.js";
+import { createModuleRegistryDriftCheckAction } from "../../manifest/moduleRegistryDriftCheck.js";
+import { KNOWN_HEARTBEAT_ACTION_IDS, KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 
 let admin: Pool;
@@ -28,6 +32,12 @@ describe("Tasks source events cutover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => resetDatabase(admin));
   afterAll(async () => {
@@ -133,6 +143,47 @@ describe("Tasks source events cutover", () => {
     });
     await runAsSystem("test:source-events", () => runTenantCutoverMigrations(pool));
     expect(await shape(tenant)).toEqual(freshShape);
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(pool);
+      const projects = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+      if (!projects.rows[0]) throw new Error("Projects missing");
+      const project = await cp.createItem({ databaseId: projects.rows[0].id, properties: { name: "Drift check" } });
+      const context = { heartbeatId: "test", projectItemId: project.id };
+      const relationOwners = await pool.query<{ key: string; owner: string; owner_process: string | null }>(
+        "SELECT key, owner, owner_process FROM properties WHERE (database_id = $1 AND key = 'actionItems') OR (database_id = $2 AND key = 'sourceEvents') ORDER BY key",
+        [fixture.events, fixture.tasks],
+      );
+      expect(relationOwners.rows).toEqual([
+        { key: "actionItems", owner: "user", owner_process: null },
+        { key: "sourceEvents", owner: "user", owner_process: null },
+      ]);
+      await createDriftCheckAction(pool, { activeProcessIds: KNOWN_OWNER_PROCESS_IDS })({}, context);
+      await createModuleRegistryDriftCheckAction(pool, {
+        activeProcessIds: KNOWN_OWNER_PROCESS_IDS,
+        activeHeartbeatActionIds: KNOWN_HEARTBEAT_ACTION_IDS,
+      })({}, context);
+      const findings = await pool.query<{ kind: string; payload: unknown }>(
+        "SELECT kind, payload FROM manifest_drift_findings",
+      );
+      const core = findings.rows.filter((row) => row.kind === "agent_manifest_drift");
+      expect(core).toHaveLength(1);
+      const payload = z
+        .object({ orphanedOwnerProcess: z.array(z.object({ databaseId: z.string(), key: z.string() })) })
+        .parse(core[0]?.payload);
+      expect(payload.orphanedOwnerProcess).toContainEqual(
+        expect.objectContaining({ databaseId: fixture.events, key: "time" }),
+      );
+      expect(payload.orphanedOwnerProcess).not.toContainEqual(
+        expect.objectContaining({ databaseId: fixture.events, key: "actionItems" }),
+      );
+      expect(payload.orphanedOwnerProcess).not.toContainEqual(
+        expect.objectContaining({ databaseId: fixture.tasks, key: "sourceEvents" }),
+      );
+      const registry = findings.rows.filter((row) => row.kind === "module_registry_orphaned_owner_process");
+      expect(
+        registry.map((row) => z.object({ ownerProcess: z.string() }).parse(row.payload).ownerProcess),
+      ).not.toContain("tasks");
+    });
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(pool);
       const inverse = (await cp.listProperties(fixture.tasks)).find((p) => p.key === "sourceEvents");

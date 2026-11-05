@@ -1,4 +1,7 @@
 import {
+  BEHAVIOR_DRIFT_INPUT_BYTES,
+  BEHAVIOR_DRIFT_MIN_RUNS,
+  BEHAVIOR_DRIFT_WINDOW_DAYS,
   compareByCodePoint,
   createLogger,
   fingerprintGuidanceDriftSubject,
@@ -306,8 +309,7 @@ function outranks(
   return compareByCodePoint(candidate.claim, kept.claim) < 0;
 }
 
-export const BEHAVIOR_DRIFT_MIN_RUNS = 3;
-export const BEHAVIOR_DRIFT_WINDOW_DAYS = 14;
+export { BEHAVIOR_DRIFT_MIN_RUNS, BEHAVIOR_DRIFT_WINDOW_DAYS } from "@semprec/shared";
 const BEHAVIOR_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -348,7 +350,7 @@ async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, proje
   const byFingerprint = new Map(snapshot.groups.map((group) => [group.fingerprint, group]));
   const reported = new Map<string, { claim: string; suggestedAllowedLine: string; suggestedNotAllowedLine: string }>();
   if (snapshot.groups.length) {
-    const result = await deps.gateway.complete({
+    const request = {
       projectItemId,
       operation: "agent_behavior_drift",
       temperature: 0,
@@ -356,7 +358,7 @@ async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, proje
         "Report only groups not mentioned in either guidance section. Write claim and both suggested lines in the owner's language. Copy each fingerprint exactly.",
       messages: [
         {
-          role: "user",
+          role: "user" as const,
           content: JSON.stringify({
             locale: snapshot.locale,
             allowed: snapshot.sections.allowed,
@@ -372,7 +374,10 @@ async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, proje
         },
       ],
       responseSchema: BEHAVIOR_SCHEMA,
-    });
+    };
+    if (Buffer.byteLength(JSON.stringify(request), "utf8") > BEHAVIOR_DRIFT_INPUT_BYTES)
+      throw new Error("Behavior drift gateway request exceeds its limit");
+    const result = await deps.gateway.complete(request);
     const content = result.content;
     if (typeof content !== "object" || content === null || !("findings" in content) || !Array.isArray(content.findings))
       throw new Error("Invalid behavior drift response");

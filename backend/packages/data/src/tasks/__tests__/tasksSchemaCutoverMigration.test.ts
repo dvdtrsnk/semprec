@@ -198,9 +198,26 @@ describe("Tasks schema cutover", () => {
           ).rows,
       );
     const beforeReplay = await versions();
+    const relationVersions = () =>
+      runInTenant(
+        tenant,
+        async () =>
+          (
+            await pool.query<{ id: string; xmin: string }>(
+              `SELECT DISTINCT r.id, r.xmin::text AS xmin FROM relation_definitions r
+               JOIN properties p ON p.id = r.property_id_a OR p.id = r.property_id_b
+               JOIN databases d ON d.id = p.database_id
+               WHERE d.owner_module_id = ANY($1::text[]) ORDER BY r.id`,
+              [["tasks", "events", "people", "files"]],
+            )
+          ).rows,
+      );
+    const relationsBeforeReplay = await relationVersions();
     await runAsSystem("test:tasks-cutover-replay", () => runTenantCutoverMigrations(pool));
     expect(await shape(tenant)).toEqual(once);
     expect(await versions()).toEqual(beforeReplay);
+    expect(await relationVersions()).toEqual(relationsBeforeReplay);
+    expect(await runInTenant(tenant, () => createChokePoint(pool).getItem(item.databaseId, item.id))).toEqual(after);
   });
   it("resolves every new property in both catalogs on a fresh seed", async () => {
     const tenant = await createTestTenant(admin);

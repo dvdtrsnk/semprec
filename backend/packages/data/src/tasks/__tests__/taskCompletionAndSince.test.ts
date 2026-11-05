@@ -80,6 +80,7 @@ describe("Tasks completion and first planned day", () => {
         ifVersion: repeated.updatedAt,
         propertiesPatch: { completedOn: "2026-10-12" },
       });
+      expect(corrected.properties).toEqual({ ...repeated.properties, completedOn: "2026-10-12" });
       expect(taskDisplayDay(corrected)).toBe("2026-10-12");
       expect(corrected.properties.completedAt).toBe(done.properties.completedAt);
       const reopened = await cp.updateItem({
@@ -134,6 +135,7 @@ describe("Tasks completion and first planned day", () => {
         propertiesPatch: { status: "done", completedOn: "2026-10-12" },
       });
       expect(done.properties).toMatchObject({ date: "2026-10-16", completedOn: "2026-10-12" });
+      expect(done.properties.completedAt).toBe("2026-10-14T23:30:00.000Z");
       expect(taskDisplayDay(done)).toBe("2026-10-12");
       const stopped = await cp.updateItem({
         databaseId: tasks,

@@ -94,6 +94,15 @@ describe("guidanceDrift stores (issue #85)", () => {
                   operation: "item.create",
                   targetDatabaseId: databaseId,
                 });
+              if (index === 0) {
+                await insertAgentRunEvent(tx, run.id, "tool_use", { toolCallId: "legacy", name: "old", arguments: {} });
+                await insertAgentRunEvent(tx, run.id, "tool_use", {
+                  toolCallId: "malformed",
+                  name: "bad",
+                  arguments: {},
+                  operation: "not.a.real.operation",
+                });
+              }
               await insertAgentRunEvent(tx, run.id, "tool_use", {
                 toolCallId: `m${index}`,
                 name: "search",
@@ -101,7 +110,7 @@ describe("guidanceDrift stores (issue #85)", () => {
                 mcp: {
                   toolRegistrationId: "registration",
                   serverItemId: "server",
-                  serverName: "Server",
+                  serverName: index === 2 ? "Newest" : "Server",
                   toolName: "search",
                 },
               });
@@ -128,9 +137,25 @@ describe("guidanceDrift stores (issue #85)", () => {
           }
         }),
       );
+      await runInTenant(a, async () => {
+        // Synthetic historical event timestamps: the event writer cannot select sub-millisecond times.
+        const aged = await runtime.query(
+          `UPDATE agent_run_events e SET at = date_trunc('second', now()) - interval '1 second'
+             + (1000 - (e.id % 1000)) * interval '1 microsecond'
+           FROM agent_runs r WHERE r.id = e.agent_run_id AND r.project_item_id = $1
+             AND e.kind = 'tool_use' AND e.payload->>'operation' = 'item.patch'`,
+          [projectA],
+        );
+        expect(aged.rowCount).toBe(21);
+      });
       const since = new Date(Date.now() - 14 * 86400_000);
       const groups = await runInTenant(a, () =>
-        withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectA, since)),
+        withTransaction(runtime, async (tx) => {
+          const result = await projectToolCallUsageStore.listProjectToolCallGroups(tx, projectA, since);
+          const cursors = await tx.query("SELECT name FROM pg_cursors WHERE name LIKE 'behavior_usage_%'");
+          expect(cursors.rowCount).toBe(0);
+          return result;
+        }),
       );
       expect(groups).toEqual(
         expect.arrayContaining([
@@ -139,7 +164,7 @@ describe("guidanceDrift stores (issue #85)", () => {
           expect.objectContaining({
             subject: { mcpTool: "registration", databaseId: null },
             count: 3,
-            toolName: "Server/search",
+            toolName: "Newest/search",
           }),
         ]),
       );
@@ -169,6 +194,56 @@ describe("guidanceDrift stores (issue #85)", () => {
           ),
         ),
       ).toEqual([]);
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it.each(["many events", "large event"])("retains valid groups with %s in the window", async (scenario) => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = await createTestTenant(pool);
+      const user = await createUser(pool, {
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "hash",
+        tenantId: tenant,
+      });
+      const project = randomUUID();
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, async (tx) => {
+          const runs = [];
+          for (let index = 0; index < 3; index++) {
+            runs.push(
+              await createAgentRun(tx, { projectItemId: project, userId: user.id, triggeredBy: "user", task: "test" }),
+            );
+          }
+          const count = scenario === "many events" ? 1_001 : 3;
+          for (let index = 0; index < count; index++) {
+            const run = runs[index % runs.length];
+            if (!run) throw new Error("Missing run");
+            await insertAgentRunEvent(tx, run.id, "tool_use", {
+              toolCallId: `call${index}`,
+              name: "create",
+              arguments: scenario === "large event" && index === 0 ? { text: "x".repeat(70_000) } : {},
+              operation: "item.create",
+            });
+          }
+        }),
+      );
+      const groups = await runInTenant(tenant, () =>
+        withTransaction(runtime, (tx) =>
+          projectToolCallUsageStore.listProjectToolCallGroups(tx, project, new Date(Date.now() - 14 * 86400_000)),
+        ),
+      );
+      expect(groups).toContainEqual(
+        expect.objectContaining({ subject: { operation: "item.create", databaseId: null }, count: 3 }),
+      );
     } finally {
       await runtime.end();
     }

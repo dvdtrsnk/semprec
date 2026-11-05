@@ -7,6 +7,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { agentGuidanceDriftFindingsStore } from "../../guidanceDrift/agentGuidanceDriftFindingsStore.js";
 import { projectAgentGuidanceStore } from "../../projectAgentGuidanceStore.js";
+import { seedProjectAgentGuidanceFromLegacyText } from "../legacyAgentsConversion.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import {
   createProjectAgentGuidanceReadRouteHandler,
@@ -180,6 +181,163 @@ describe("project agent guidance sections", () => {
       const after = (await read(context(project, user, null))).body;
       expect(["First", "Second"]).toContain(after.sections.purpose);
     }));
+  it("rejects a stale version after two writes in the same database transaction", async () =>
+    runInTenant(tenant, async () => {
+      const [first, second] = await withTransaction(pool, async (tx) => {
+        const first = await projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: project,
+          ownerUserId: user,
+          markdown: "## Purpose\nFirst\n",
+        });
+        const second = await projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: project,
+          ownerUserId: user,
+          markdown: "## Purpose\nSecond\n",
+        });
+        return [first, second];
+      });
+      const read = createProjectAgentGuidanceReadRouteHandler(pool);
+      const save = createProjectAgentGuidanceSaveRouteHandler(pool);
+      const before = (await read(context(project, user, null))).body;
+      const stale = await save(context(project, user, { sections, expectedUpdatedAt: first.updatedAt }));
+      expect(stale.status).toBe(409);
+      expect((await read(context(project, user, null))).body).toEqual(before);
+      expect(second.updatedAt).not.toBe(first.updatedAt);
+    }));
+  it("rejects a stale version after two same-owner store transfers in one transaction", async () =>
+    runInTenant(tenant, async () => {
+      const [first, middle, returned] = await withTransaction(pool, async (tx) => {
+        const first = await projectAgentGuidanceStore.upsert(tx, {
+          projectItemId: project,
+          ownerUserId: user,
+          markdown: "## Purpose\nOriginal\n",
+        });
+        const middle = await projectAgentGuidanceStore.transfer(tx, project, user);
+        const returned = await projectAgentGuidanceStore.transfer(tx, project, user);
+        return [first, middle, returned];
+      });
+      const read = createProjectAgentGuidanceReadRouteHandler(pool);
+      const save = createProjectAgentGuidanceSaveRouteHandler(pool);
+      const before = (await read(context(project, user, null))).body;
+      expect(before).toMatchObject({ ownerUserId: user, sections: { purpose: "Original" } });
+      const stale = await save(context(project, user, { sections, expectedUpdatedAt: first.updatedAt }));
+      expect(stale.status).toBe(409);
+      expect((await read(context(project, user, null))).body).toEqual(before);
+      expect(middle.updatedAt > first.updatedAt).toBe(true);
+      expect(returned.updatedAt > middle.updatedAt).toBe(true);
+    }));
+  it("does not reuse a deleted revision after recreation", async () =>
+    runInTenant(tenant, async () => {
+      const read = createProjectAgentGuidanceReadRouteHandler(pool);
+      const save = createProjectAgentGuidanceSaveRouteHandler(pool);
+      await save(context(project, user, { sections, expectedUpdatedAt: null }));
+      const first = (await read(context(project, user, null))).body;
+      const empty = { purpose: "", allowed: "", notAllowed: "", generalInstructions: "" };
+      expect((await save(context(project, user, { sections: empty, expectedUpdatedAt: first.updatedAt }))).status).toBe(
+        200,
+      );
+      expect((await read(context(project, user, null))).body.updatedAt).toBeNull();
+      await save(context(project, user, { sections: { ...sections, purpose: "Recreated" }, expectedUpdatedAt: null }));
+      const recreated = (await read(context(project, user, null))).body;
+      expect(recreated.updatedAt).not.toBe(first.updatedAt);
+      expect((await save(context(project, user, { sections, expectedUpdatedAt: first.updatedAt }))).status).toBe(409);
+      expect((await read(context(project, user, null))).body).toEqual(recreated);
+    }));
+  it("rolls back both the revision receipt and the guidance write", async () =>
+    runInTenant(tenant, async () => {
+      const save = createProjectAgentGuidanceSaveRouteHandler(pool);
+      const read = createProjectAgentGuidanceReadRouteHandler(pool);
+      await save(context(project, user, { sections, expectedUpdatedAt: null }));
+      const before = (await read(context(project, user, null))).body;
+      const receipt = () =>
+        pool.query<{ last_version: Date }>(
+          "SELECT last_version FROM project_agent_guidance_versions WHERE project_item_id = $1",
+          [project],
+        );
+      const initial = (await receipt()).rows;
+      await expect(
+        withTransaction(pool, async (tx) => {
+          await projectAgentGuidanceStore.upsert(tx, {
+            projectItemId: project,
+            ownerUserId: user,
+            markdown: "Rolled back",
+          });
+          throw new Error("rollback fixture");
+        }),
+      ).rejects.toThrow("rollback fixture");
+      expect((await receipt()).rows).toEqual(initial);
+      expect((await read(context(project, user, null))).body).toEqual(before);
+    }));
+  it("adopts a synthetic old sub-millisecond row and preserves its visible revision", async () =>
+    runInTenant(tenant, async () => {
+      const read = createProjectAgentGuidanceReadRouteHandler(pool);
+      const save = createProjectAgentGuidanceSaveRouteHandler(pool);
+      await save(context(project, user, { sections, expectedUpdatedAt: null }));
+      // Synthetic pre-receipt state: the current owner always creates a receipt and aligned revisions.
+      expect(
+        (await pool.query("DELETE FROM project_agent_guidance_versions WHERE project_item_id = $1", [project]))
+          .rowCount,
+      ).toBe(1);
+      expect(
+        (
+          await pool.query(
+            "UPDATE project_agent_guidance SET updated_at = '2099-01-01T00:00:00.123456Z' WHERE project_item_id = $1",
+            [project],
+          )
+        ).rowCount,
+      ).toBe(1);
+      const old = (await read(context(project, user, null))).body;
+      expect(old.updatedAt).toBe("2099-01-01T00:00:00.123Z");
+      expect(
+        (
+          await pool.query("SELECT project_item_id FROM project_agent_guidance_versions WHERE project_item_id = $1", [
+            project,
+          ])
+        ).rowCount,
+      ).toBe(0);
+      await save(
+        context(project, user, { sections: { ...sections, purpose: "Updated" }, expectedUpdatedAt: old.updatedAt }),
+      );
+      expect((await read(context(project, user, null))).body.updatedAt).toBe("2099-01-01T00:00:00.124Z");
+    }));
+  it("retains legacy insert-if-absent and replay without advancing an existing revision", async () =>
+    runInTenant(tenant, async () => {
+      const insert = () =>
+        withTransaction(pool, (tx) =>
+          seedProjectAgentGuidanceFromLegacyText(tx, {
+            projectItemId: project,
+            ownerUserId: user,
+            text: "Purpose: Legacy",
+          }),
+        );
+      expect(await insert()).toBe(true);
+      const before = (await createProjectAgentGuidanceReadRouteHandler(pool)(context(project, user, null))).body;
+      const receipt = () =>
+        pool.query<{ last_version: Date }>(
+          "SELECT last_version FROM project_agent_guidance_versions WHERE project_item_id = $1",
+          [project],
+        );
+      const beforeReceipt = (await receipt()).rows;
+      expect(await insert()).toBe(false);
+      expect((await receipt()).rows).toEqual(beforeReceipt);
+      expect((await createProjectAgentGuidanceReadRouteHandler(pool)(context(project, user, null))).body).toEqual(
+        before,
+      );
+    }));
+  it("keeps the receipt invisible to another runtime tenant", async () => {
+    await runInTenant(tenant, () =>
+      createProjectAgentGuidanceSaveRouteHandler(pool)(context(project, user, { sections, expectedUpdatedAt: null })),
+    );
+    const foreign = await createTestTenant(admin);
+    const own = await runInTenant(tenant, () =>
+      pool.query("SELECT project_item_id FROM project_agent_guidance_versions WHERE project_item_id = $1", [project]),
+    );
+    const hidden = await runInTenant(foreign, () =>
+      pool.query("SELECT project_item_id FROM project_agent_guidance_versions WHERE project_item_id = $1", [project]),
+    );
+    expect(own.rowCount).toBe(1);
+    expect(hidden.rowCount).toBe(0);
+  });
   it("maps a serialization failure after a write to conflict and rolls the write back", async () =>
     runInTenant(tenant, async () => {
       const read = createProjectAgentGuidanceReadRouteHandler(pool);

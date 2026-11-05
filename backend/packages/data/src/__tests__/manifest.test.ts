@@ -329,7 +329,7 @@ describe("permission manifest and drift check", () => {
     const csStatus = csDb.properties.find((p) => p.key === "status")!;
     expect(csStatus.name).toBe("Stav");
     expect(csStatus.options).toEqual([
-      { key: "notDone", label: "Nesplněno" },
+      { key: "notDone", label: "Otevřeno" },
       { key: "done", label: "Splněno" },
       { key: "wontDo", label: "Nebude splněno" },
     ]);
@@ -342,7 +342,7 @@ describe("permission manifest and drift check", () => {
     const enStatus = enDb.properties.find((p) => p.key === "status")!;
     expect(enStatus.name).toBe("Status");
     expect(enStatus.options).toEqual([
-      { key: "notDone", label: "Not done" },
+      { key: "notDone", label: "Open" },
       { key: "done", label: "Done" },
       { key: "wontDo", label: "Won't do" },
     ]);
@@ -375,7 +375,7 @@ describe("permission manifest and drift check", () => {
       .find((db) => db.databaseId === tasksDb.id)!
       .properties.find((p) => p.key === "status")!;
     expect(csStatus.options).toEqual([
-      { key: "notDone", label: "Nesplněno" },
+      { key: "notDone", label: "Otevřeno" },
       { key: "done", label: "Splněno" },
       { key: "wontDo", label: "Nebude splněno" },
     ]);

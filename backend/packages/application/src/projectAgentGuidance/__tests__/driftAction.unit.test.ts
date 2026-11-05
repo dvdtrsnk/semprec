@@ -812,4 +812,60 @@ describe("behavior guidance drift", () => {
     await expect(action({ projectItemId: "project-1" })).rejects.toThrow("permission failed");
     expect([...findings.rows.values()].some((row) => row.payload.kind === "behavior")).toBe(true);
   });
+  it("rejects an oversized complete behavior request without calling the behavior gateway or resolving findings", async () => {
+    const subject = { operation: "item.create", databaseId: "tasks" };
+    const fingerprint = fingerprintGuidanceDriftSubject("project-1", "behavior", subject);
+    const findings = fakeFindings();
+    await findings.upsertActive(
+      { phase: "write" },
+      {
+        projectItemId: "project-1",
+        fingerprint,
+        seenAt: new Date("2026-02-01T00:00:00Z"),
+        payload: {
+          kind: "behavior",
+          subject,
+          claim: "Existing",
+          evidence: { count: 3, runIds: ["a", "b", "c"] },
+          suggestedAllowedLine: "Allow",
+          suggestedNotAllowedLine: "Forbid",
+          severity: "warning",
+        },
+      },
+    );
+    let behaviorCalls = 0;
+    const action = createAgentGuidanceDriftAction({
+      transactions: fakeTransactions(),
+      guidance: fakeGuidance(baseGuidanceRow({ markdown: `## Allowed\n${"x".repeat(10_000)}\n` })),
+      references: fakeReferences(),
+      findings,
+      notifications: fakeNotifications(),
+      problems: fakeProblems(),
+      manifest: fakeManifest(),
+      clock: () => new Date("2026-02-02T00:00:00Z"),
+      toolCallUsage: {
+        async listProjectToolCallGroups() {
+          return [
+            {
+              subject: { operation: "x".repeat(1_040_000), databaseId: null },
+              databaseName: null,
+              count: 3,
+              runIds: ["a", "b", "c"],
+            },
+          ];
+        },
+      },
+      gateway: {
+        async complete(input) {
+          if (input.operation === "agent_behavior_drift") behaviorCalls++;
+          return { content: { contradictions: [] }, usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      },
+    });
+    await expect(action({ projectItemId: "project-1" })).rejects.toThrow(
+      "Behavior drift gateway request exceeds its limit",
+    );
+    expect(behaviorCalls).toBe(0);
+    expect([...findings.rows.values()].find((row) => row.fingerprint === fingerprint)?.status).toBe("active");
+  });
 });
