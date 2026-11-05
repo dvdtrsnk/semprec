@@ -58,7 +58,12 @@ async function event(tenantId: string, name: string): Promise<string> {
   });
 }
 
-function upload(auth: string, content: BodyInit, headers: Record<string, string> = {}, signal?: AbortSignal) {
+function upload(
+  auth: string,
+  content: NonNullable<Parameters<typeof fetch>[1]>["body"],
+  headers: Record<string, string> = {},
+  signal?: AbortSignal,
+) {
   return fetch(`${baseUrl}/api/recordings`, {
     method: "POST",
     headers: { Authorization: auth, "Content-Type": "video/mp4", "X-Filename": "recording.mp4", ...headers },
@@ -203,11 +208,12 @@ describe("POST /api/recordings through the dispatcher", () => {
     const response = await upload(authA, "trashed event recording", { "X-Event-Id": eventId });
     expect(response.status).toBe(201);
     expect(responseSchema.parse(await response.json()).eventId).toBeNull();
-    for (const headers of [
+    const invalidHeaders: readonly Record<string, string>[] = [
       { "Content-Type": "text/plain" },
       { "X-Event-Id": "not-a-uuid" },
       { "X-Recorded-At": "2026-01-01T10:00:00" },
-    ]) {
+    ];
+    for (const headers of invalidHeaders) {
       const invalid = await upload(authA, "invalid input", headers);
       expect(invalid.status).toBe(400);
       expect(await invalid.json()).toMatchObject({ error: { code: "validation_failed" } });
