@@ -410,7 +410,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       const eventsBefore = await eventIds();
       await revise(cardId, { ...createEvent(), relations: { project: [staleProjectId] } });
       await createChokePoint(pool).softDeleteItem(projectsId, staleProjectId);
-      await expect(confirm(cardId)).rejects.toThrow();
+      await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
       expect(await eventIds()).toEqual(eventsBefore);
       expect(await transcriptEventEdges()).toEqual([]);
       expect((await cardProperties(cardId)).status).toBe("proposed");
