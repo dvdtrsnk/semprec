@@ -5,6 +5,10 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import { BOOKS_LIBRARY_CONTRACT, MOVIES_LIBRARY_CONTRACT } from "./libraryModuleContract.js";
+import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
@@ -32,6 +36,10 @@ export const libraryMetadataJobConfigSchema = z.object({
   coverKey: z.string(),
   secondaryRatingKey: z.string().optional(),
   sourceUrlKey: z.string().optional(),
+  authorKey: z.string().optional(),
+  yearKey: z.string().optional(),
+  typeKey: z.string().optional(),
+  isbnKey: z.string().optional(),
 });
 
 export type LibraryMetadataJobConfig = z.infer<typeof libraryMetadataJobConfigSchema>;
@@ -40,6 +48,10 @@ export interface LibraryMetadataFetchResult {
   cover?: CreateBlobInput;
   secondaryRating?: number;
   sourceUrl?: string;
+  author?: string;
+  year?: number;
+  type?: string;
+  isbn?: string;
 }
 
 /**
@@ -148,7 +160,45 @@ export async function handleProcessLibraryMetadataTask(
       const current = await lockItemAutomation(client, payload.itemId);
       if (current?.status === "locked") return;
 
+      const stored = await itemsStore.lockItemById(client, payload.databaseId, payload.itemId);
+      if (!stored || stored.deletedAt) {
+        await markItemAutomationDone(client, payload.itemId);
+        return;
+      }
+      const database = await databasesStore.getDatabase(client, payload.databaseId);
+      const contract =
+        database?.ownerModuleId === BOOKS_MODULE_ID
+          ? BOOKS_LIBRARY_CONTRACT
+          : database?.ownerModuleId === MOVIES_MODULE_ID
+            ? MOVIES_LIBRARY_CONTRACT
+            : undefined;
+      const properties = await propertiesStore.listPropertiesByDatabase(client, payload.databaseId);
       const patch: Record<string, unknown> = {};
+      for (const [key, value] of [
+        [payload.config.authorKey, result.author],
+        [payload.config.yearKey, result.year],
+        [payload.config.typeKey, result.type],
+        [payload.config.isbnKey, result.isbn],
+      ] as const) {
+        if (!key || !contract?.automationFillableKeys?.includes(key) || value === undefined || value === "") continue;
+        const property = properties.find((candidate) => candidate.key === key && candidate.owner === "user");
+        if (
+          !property ||
+          (stored.properties[key] !== undefined && stored.properties[key] !== null && stored.properties[key] !== "")
+        )
+          continue;
+        if (
+          key === payload.config.typeKey &&
+          (property.type !== "select" ||
+            !Array.isArray(property.config.options) ||
+            !property.config.options.some(
+              (option: unknown) =>
+                typeof option === "object" && option !== null && "key" in option && option.key === value,
+            ))
+        )
+          continue;
+        patch[key] = value;
+      }
       const allowedSystemKeys: string[] = [];
 
       if (result.cover) {

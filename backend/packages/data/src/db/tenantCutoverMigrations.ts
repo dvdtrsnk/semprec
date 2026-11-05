@@ -1,6 +1,7 @@
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
+import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runSelfPersonCutoverMigration } from "../tenancy/selfPersonCutoverMigration.js";
 import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/transcriptionLanguageCodeCutoverMigration.js";
@@ -56,6 +57,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runMailDraftsAndSentReadBackfill(pool);
     await runSelfPersonCutoverMigration(pool);
     await runLibraryBooksYearIsbnCutoverMigration(pool);
+    await runLibraryHeartbeatConfigCutoverMigration(pool);
     await runAreasPropertiesCutoverMigration(pool);
     await runProjectsPinnedOrderCutoverMigration(pool);
     await runPeoplePhonesCutoverMigration(pool);

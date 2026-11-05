@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
@@ -222,6 +223,91 @@ describe("library module (issue #25)", () => {
       statusKey: "status",
       coverGlyph: "🎬",
     });
+  });
+
+  it("fills empty declared fields without overwriting user input or locked items", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const config = { source: "openLibrary", coverKey: "cover", authorKey: "author", yearKey: "year", isbnKey: "isbn" };
+    const empty = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Empty" } }));
+    const entered = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId, properties: { name: "Entered", author: "User" } }),
+    );
+    const locked = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Locked" } }));
+    for (const item of [empty, entered, locked])
+      await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, locked.id, true));
+    for (const item of [empty, entered, locked]) {
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(pool, { itemId: item.id, databaseId, config }, async () => ({
+          author: "Fetched",
+          year: 2020,
+        })),
+      );
+    }
+    expect((await chokePoint.getItem(databaseId, empty.id))?.properties).toMatchObject({
+      author: "Fetched",
+      year: 2020,
+    });
+    expect((await chokePoint.getItem(databaseId, entered.id))?.properties).toMatchObject({
+      author: "User",
+      year: 2020,
+    });
+    expect((await chokePoint.getItem(databaseId, locked.id))?.properties).not.toHaveProperty("author");
+  });
+
+  it("skips an invalid movie type while applying other metadata", async () => {
+    const databaseId = await getDatabaseIdByModule("movies");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Film" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await inTenantZero(() =>
+      handleProcessLibraryMetadataTask(
+        pool,
+        {
+          itemId: item.id,
+          databaseId,
+          config: { source: "tmdb", coverKey: "cover", typeKey: "type", yearKey: "year" },
+        },
+        async () => ({ type: "invalid", year: 2021 }),
+      ),
+    );
+    const result = await chokePoint.getItem(databaseId, item.id);
+    expect(result?.properties.year).toBe(2021);
+    expect(result?.properties.type).toBeUndefined();
+  });
+
+  it("upgrades both heartbeat configs and leaves the second run unchanged", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const moviesId = await getDatabaseIdByModule("movies");
+    await pool.query(
+      `UPDATE project_heartbeats SET action_config = (action_config - 'authorKey' - 'yearKey' - 'isbnKey' - 'typeKey') || '{"source":"none"}'::jsonb WHERE action_id = ANY($1::text[]) AND action_config->>'databaseId' = ANY($2::text[])`,
+      [
+        [LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID],
+        [booksId, moviesId],
+      ],
+    );
+    const read = async () =>
+      (
+        await pool.query<{ id: string; action_config: Record<string, unknown>; xmin: string }>(
+          `SELECT id, action_config, xmin::text FROM project_heartbeats WHERE action_id = ANY($1::text[]) AND action_config->>'databaseId' = ANY($2::text[]) ORDER BY id`,
+          [
+            [LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID],
+            [booksId, moviesId],
+          ],
+        )
+      ).rows;
+    await inTenantZero(() => runLibraryHeartbeatConfigCutoverMigration(pool));
+    const first = await read();
+    expect(first).toHaveLength(4);
+    expect(first.filter((row) => row.action_config.databaseId === booksId).map((row) => row.action_config)).toEqual(
+      Array(2).fill(
+        expect.objectContaining({ source: "openLibrary", authorKey: "author", yearKey: "year", isbnKey: "isbn" }),
+      ),
+    );
+    expect(first.filter((row) => row.action_config.databaseId === moviesId).map((row) => row.action_config)).toEqual(
+      Array(2).fill(expect.objectContaining({ source: "tmdb", yearKey: "year", typeKey: "type" })),
+    );
+    await inTenantZero(() => runLibraryHeartbeatConfigCutoverMigration(pool));
+    expect(await read()).toEqual(first);
   });
 
   it("runtime-validates every library-grid contract field", () => {
