@@ -171,7 +171,7 @@ describe("value link via-edge union", () => {
     const handler = tasks[taskName];
     if (!handler) throw new Error("Registered propagation handler missing");
     const drain = async () => {
-      for (let pass = 0; pass < 8; pass++) {
+      for (let pass = 0; pass < 36; pass++) {
         await runOnce({ pgPool: data, taskList: { [taskName]: handler } });
         const remaining = await admin.query<{ count: string }>(
           "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",

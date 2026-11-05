@@ -121,11 +121,8 @@ describe("createTranscribeQueueRuntime", () => {
           const databases = await cp.listDatabases();
           const transcripts = databases.find((database) => database.ownerModuleId === "transcripts");
           if (!transcripts) throw new Error("Transcripts database missing");
-          const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
-            "SELECT properties FROM items WHERE database_id = $1 AND properties->>'link' = $2",
-            [transcripts.id, `semprec://items/${second.result.item.id}`],
-          );
-          return rows[0];
+          const page = await cp.queryDatabaseItems(transcripts.id, {});
+          return page.items.find((item) => item.properties.link === `semprec://items/${second.result.item.id}`);
         });
         if (result?.properties.status === "processing") {
           found = true;

@@ -616,6 +616,109 @@ describe("generic operation REST contract (issue #219)", () => {
     }
   });
 
+  it("keeps automation includes tenant-scoped on the real REST runtime pool", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let ownedServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:automation-runtime-role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenants = [await createTestTenant(pool), await createTestTenant(pool)];
+      const passwordHash = await hashPassword(PASSWORD);
+      const users = await runAsSystem("test:automation-users", () =>
+        Promise.all(
+          tenants.map((tenantId) =>
+            createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash }),
+          ),
+        ),
+      );
+      const cp = createChokePoint(runtime);
+      const fixture = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const books = (await cp.listDatabases()).find((db) => db.ownerModuleId === "books");
+          if (!books) throw new Error("Books missing");
+          const book = await cp.createItem({ databaseId: books.id, properties: { name: "Book" } });
+          await withTransaction(runtime, (client) => ensureItemAutomation(client, book.id));
+          const view = await cp.createView({ databaseId: books.id, type: "table", name: "Books" });
+          return { book, books, view };
+        });
+      const own = await fixture(tenants[0]!);
+      const foreign = await fixture(tenants[1]!);
+      const session = await login(pool, {
+        email: users[0]!.email,
+        password: PASSWORD,
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      ownedServer = createServer(dispatch);
+      const server = ownedServer;
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing REST address");
+      const headers = { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" };
+      const base = `http://127.0.0.1:${address.port}`;
+      const before = await runInTenant(tenants[1]!, () => cp.readAutomationForItems([foreign.book.id]));
+      const ownItem = await fetch(`${base}/api/items/${own.book.id}?include=automation`, { headers });
+      expect(ownItem.status).toBe(200);
+      expect(await ownItem.json()).toMatchObject({ automation: { status: "pending" } });
+      for (const itemId of [foreign.book.id, randomUUID()])
+        expect((await fetch(`${base}/api/items/${itemId}?include=automation`, { headers })).status).toBe(404);
+      for (const [ownPath, foreignPath] of [
+        [`/api/databases/${own.books.id}/query`, `/api/databases/${foreign.books.id}/query`],
+        [`/api/views/${own.view.id}/query`, `/api/views/${foreign.view.id}/query`],
+      ]) {
+        const query = (path: string) =>
+          fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify({ include: ["automation"] }) });
+        const positive = await query(ownPath!);
+        expect(positive.status).toBe(200);
+        expect(await positive.json()).toMatchObject({
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: own.book.id, automation: expect.objectContaining({ status: "pending" }) }),
+          ]),
+        });
+        expect((await query(foreignPath!)).status).toBe(404);
+      }
+      expect(await runInTenant(tenants[1]!, () => cp.readAutomationForItems([foreign.book.id]))).toEqual(before);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (ownedServer) {
+      try {
+        await new Promise<void>((resolve, reject) =>
+          ownedServer!.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Automation REST test and cleanup failed");
+  });
+
   it("enforces Threads.project cardinality through authenticated generic relation.put", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let runtimeServer: Server | undefined;
