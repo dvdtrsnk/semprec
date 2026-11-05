@@ -229,3 +229,12 @@ creation and own positive plus foreign/random/no-effect controls. Keep the
 existing data-owner hook tests. This permission adds no endpoint, MCP evidence,
 helper export, production dependency or unrelated fixture repair. Neither the
 data-owner proof nor this REST proof establishes an unexecuted MCP path.
+
+## Threads smoke catalog expectation
+
+For gh1573 only, authorize backend/packages/data/src/**tests**/smoke.test.ts
+to add the required Threads name to its exact seeded system database list.
+Preserve exact equality, existing entries, keyed-database and system/schema-lock
+assertions. No production catalog change, wildcard, reduced assertion or other
+smoke fixture repair. This closes the obsolete test expectation found by the
+actual full integration; original integration054 remains FAIL on its SHA.
