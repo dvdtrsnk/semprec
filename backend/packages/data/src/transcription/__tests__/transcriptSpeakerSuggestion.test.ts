@@ -316,14 +316,16 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       { speaker: "SPEAKER_01", text: "Short two", startsAt: 2, endsAt: 3 },
       { speaker: "SPEAKER_02", text: "No quote one", startsAt: 3, endsAt: 4 },
       { speaker: "SPEAKER_02", text: "No quote two", startsAt: 4, endsAt: 5 },
-      { speaker: "SPEAKER_02", text: "No quote three", startsAt: 5, endsAt: 6 },
+      { speaker: "SPEAKER_02", text: "One two three four five", startsAt: 5, endsAt: 6 },
       { speaker: "SPEAKER_00", text: "One two three four five six", startsAt: 6, endsAt: 7 },
       { speaker: "SPEAKER_00", text: "One two three four five six seven", startsAt: 7, endsAt: 8 },
       { speaker: "SPEAKER_00", text: "One two three four five six seven eight", startsAt: 8, endsAt: 9 },
       { speaker: "SPEAKER_00", text: "One two three four five six seven eight nine", startsAt: 9, endsAt: 10 },
       { speaker: "SPEAKER_00", text: "We discussed this proposal with the team ".repeat(6), startsAt: 10, endsAt: 11 },
-      { speaker: "SPEAKER_01", text: "One eligible quote has exactly six words", startsAt: 11, endsAt: 12 },
+      { speaker: "SPEAKER_01", text: "One two three four five six", startsAt: 11, endsAt: 12 },
     ];
+    expect(segments[5]!.text.split(/\s+/)).toHaveLength(5);
+    expect(segments[11]!.text.split(/\s+/)).toHaveLength(6);
     await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
     const result = await context();
     expect(result?.details).toEqual([

@@ -54,46 +54,60 @@ describe("Threads single-value edges", () => {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Thread fixture cleanup failed");
   });
-  it("allows replay, rejects a second value and admits preparation without a caller", async () => {
-    await runInTenant(tenant, async () => {
-      const cp = createChokePoint(runtime);
-      const databases = await cp.listDatabases();
-      const db = (key: string) => {
-        const result = databases.find((d) => d.ownerModuleId === key);
-        if (!result) throw new Error(`Missing ${key}`);
-        return result.id;
-      };
-      const property = (await cp.listProperties(db("threads"))).find((p) => p.key === "project");
-      if (!property) throw new Error("Missing thread project property");
-      const first = await cp.createItem({ databaseId: db("projects"), properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: db("projects"), properties: { name: "Second" } });
-      await withTransaction(runtime, (client) =>
-        assertRelationTargetLinkableWithClient(client, { relationPropertyId: property.id, targetItemId: first.id }),
-      );
-      const thread = await withTransaction(runtime, (client) => createMailThread(client, "Subject"));
-      const found = await withTransaction(runtime, (client) =>
-        client.query<{ item_id: string }>(
-          "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = $1",
-          [thread.id],
-        ),
-      );
-      const callerItemId = found.rows[0]?.item_id;
-      if (!callerItemId) throw new Error("Missing thread item");
-      const put = (targetItemId: string) =>
-        withTransaction(runtime, (client) =>
-          createRelationWithClient(client, { relationPropertyId: property.id, callerItemId, targetItemId }),
+  it.each(["project", "company"])(
+    "allows %s replay, rejects a second value and admits preparation without a caller",
+    async (key) => {
+      await runInTenant(tenant, async () => {
+        const cp = createChokePoint(runtime);
+        const databases = await cp.listDatabases();
+        const db = (key: string) => {
+          const result = databases.find((d) => d.ownerModuleId === key);
+          if (!result) throw new Error(`Missing ${key}`);
+          return result.id;
+        };
+        const property = (await cp.listProperties(db("threads"))).find((p) => p.key === key);
+        if (!property) throw new Error(`Missing thread ${key} property`);
+        const targetDatabase = db(key === "project" ? "projects" : "companies");
+        const first = await cp.createItem({ databaseId: targetDatabase, properties: { name: "First" } });
+        const second = await cp.createItem({ databaseId: targetDatabase, properties: { name: "Second" } });
+        await withTransaction(runtime, (client) =>
+          assertRelationTargetLinkableWithClient(client, { relationPropertyId: property.id, targetItemId: first.id }),
         );
-      await put(first.id);
-      await put(first.id);
-      await expect(put(second.id)).rejects.toMatchObject({ status: 400, details: { field: "project" } });
-      const edges = await withTransaction(runtime, async (client) => {
-        const definition = await getRelationDefinitionByPropertyId(client, property.id);
-        if (!definition) throw new Error("Missing relation definition");
-        return listRelationsForItem(client, definition.id, callerItemId);
+        const thread = await withTransaction(runtime, (client) => createMailThread(client, "Subject"));
+        const found = await withTransaction(runtime, (client) =>
+          client.query<{ item_id: string }>(
+            "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = $1",
+            [thread.id],
+          ),
+        );
+        const callerItemId = found.rows[0]?.item_id;
+        if (!callerItemId) throw new Error("Missing thread item");
+        const put = (targetItemId: string, metadata: Record<string, unknown>) =>
+          withTransaction(runtime, (client) =>
+            createRelationWithClient(client, { relationPropertyId: property.id, callerItemId, targetItemId, metadata }),
+          );
+        const edges = () =>
+          withTransaction(runtime, async (client) => {
+            const definition = await getRelationDefinitionByPropertyId(client, property.id);
+            if (!definition) throw new Error("Missing relation definition");
+            return listRelationsForItem(client, definition.id, callerItemId);
+          });
+        await put(first.id, { marker: "original" });
+        const original = await edges();
+        expect(original).toHaveLength(1);
+        expect([original[0]?.itemA, original[0]?.itemB]).toContain(first.id);
+        expect(original[0]?.metadata).toEqual({ marker: "original" });
+        await put(first.id, { marker: "original" });
+        expect(await edges()).toEqual(original);
+        await expect(put(second.id, { marker: "different" })).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: key },
+        });
+        expect(await edges()).toEqual(original);
       });
-      expect(edges).toHaveLength(1);
-    });
-  });
+    },
+  );
 
   it("retains the winner's project and transfers incoming values with their metadata", async () => {
     await runInTenant(tenant, async () => {

@@ -145,10 +145,18 @@ describe("mail thread list", () => {
       const f = await setup();
       const email = await f.ingest({ id: "<related@example.test>" });
       const reply = await f.ingest({ id: "<related-reply@example.test>", refs: ["<related@example.test>"] });
+      const read = await f.ingest({ id: "<read-in-area@example.test>", flags: ["\\Seen"] });
+      const recipientOnly = await f.ingest({ id: "<recipient-only@example.test>" });
+      const recipientReply = await f.ingest({
+        id: "<recipient-reply@example.test>",
+        refs: ["<recipient-only@example.test>"],
+      });
       const unrelated = await f.ingest({ id: "<unrelated@example.test>" });
       const area = await f.cp.createItem({ databaseId: f.db("areas"), properties: { name: "Area" } });
       const project = await f.cp.createItem({ databaseId: f.db("projects"), properties: { name: "Project" } });
       const person = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Person" } });
+      const recipientPerson = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Recipient" } });
+      const senderPerson = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Sender" } });
       const property = async (db: string, key: string) => {
         const value = (await f.cp.listProperties(f.db(db))).find((p) => p.key === key);
         if (!value) throw new Error(`Missing ${db}.${key}`);
@@ -160,15 +168,24 @@ describe("mail thread list", () => {
       const recipients = await property("emails", "recipientsPeople");
       const raw = await runtime.query<{ item_id: string; thread_id: string; email_id: string }>(
         `SELECT t.item_id, t.id AS thread_id, m.item_id AS email_id FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id WHERE m.tenant_id = app_tenant_default() AND m.item_id = ANY($1::uuid[])`,
-        [[email.itemId, unrelated.itemId]],
+        [[email.itemId, read.itemId, recipientOnly.itemId, unrelated.itemId]],
       );
       const matching = raw.rows.find((row) => row.email_id === email.itemId);
+      const readThread = raw.rows.find((row) => row.email_id === read.itemId);
+      const recipientThread = raw.rows.find((row) => row.email_id === recipientOnly.itemId);
       const nonmatching = raw.rows.find((row) => row.email_id === unrelated.itemId);
       const threadItem = matching?.item_id;
-      if (!threadItem || !matching || !nonmatching || matching.thread_id === nonmatching.thread_id)
+      if (
+        !threadItem ||
+        !matching ||
+        !readThread ||
+        !recipientThread ||
+        !nonmatching ||
+        new Set(raw.rows.map((row) => row.thread_id)).size !== 4
+      )
         throw new Error("Missing distinct Threads items");
       expect(new Set((await list()).body.threads.map((thread) => thread.threadId))).toEqual(
-        new Set([matching.thread_id, nonmatching.thread_id]),
+        new Set([matching.thread_id, readThread.thread_id, recipientThread.thread_id, nonmatching.thread_id]),
       );
       await withTransaction(runtime, async (client) => {
         await createRelationWithClient(client, {
@@ -181,6 +198,11 @@ describe("mail thread list", () => {
           callerItemId: threadItem,
           targetItemId: project.id,
         });
+        await createRelationWithClient(client, {
+          relationPropertyId: threadProject,
+          callerItemId: readThread.item_id,
+          targetItemId: project.id,
+        });
         await createRelationWithClient(
           client,
           { relationPropertyId: sender, callerItemId: email.itemId, targetItemId: person.id },
@@ -191,10 +213,34 @@ describe("mail thread list", () => {
           { relationPropertyId: recipients, callerItemId: reply.itemId, targetItemId: person.id },
           { ownerProcess: "emails" },
         );
+        for (const itemId of [recipientOnly.itemId, recipientReply.itemId])
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: recipients, callerItemId: itemId, targetItemId: recipientPerson.id },
+            { ownerProcess: "emails" },
+          );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: sender, callerItemId: unrelated.itemId, targetItemId: senderPerson.id },
+          { ownerProcess: "emails" },
+        );
       });
+      const recipientEdges = await withTransaction(runtime, (client) =>
+        client.query<{ property_id: string; count: number }>(
+          `SELECT d.property_id_a AS property_id, count(*)::int AS count
+           FROM relation_definitions d JOIN item_relations r ON r.relation_definition_id = d.id AND r.tenant_id = d.tenant_id
+           WHERE d.tenant_id = app_tenant_default() AND d.property_id_a = ANY($1::uuid[])
+             AND r.item_a = ANY($2::uuid[]) AND r.item_b = $3
+           GROUP BY d.property_id_a`,
+          [[sender, recipients], [recipientOnly.itemId, recipientReply.itemId], recipientPerson.id],
+        ),
+      );
+      expect(recipientEdges.rows).toEqual([{ property_id: recipients, count: 2 }]);
+      for (const query of [`projectId=${project.id}`, `areaId=${area.id}`])
+        expect(
+          new Set((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId)),
+        ).toEqual(new Set([matching.thread_id, readThread.thread_id]));
       for (const query of [
-        `projectId=${project.id}`,
-        `areaId=${area.id}`,
         `personId=${person.id}`,
         `areaId=${area.id}&unread=true`,
         `areaId=${area.id}&personId=${person.id}`,
@@ -202,6 +248,12 @@ describe("mail thread list", () => {
         expect((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId)).toEqual([
           matching.thread_id,
         ]);
+      expect(
+        (await list(`/api/mail/threads?personId=${recipientPerson.id}`)).body.threads.map((thread) => thread.threadId),
+      ).toEqual([recipientThread.thread_id]);
+      expect(
+        (await list(`/api/mail/threads?personId=${senderPerson.id}`)).body.threads.map((thread) => thread.threadId),
+      ).toEqual([nonmatching.thread_id]);
       await expect(list("/api/mail/threads?personId=bad")).rejects.toMatchObject({
         status: 400,
         details: { field: "personId" },
