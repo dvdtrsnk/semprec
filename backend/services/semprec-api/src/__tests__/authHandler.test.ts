@@ -414,6 +414,11 @@ describe("createAuthRequestListener", () => {
       );
       expect(rows.rows).toHaveLength(5);
       const ids = rows.rows.map((row) => row.id);
+      // Older sessions predate device identity and cannot be created by the current login route.
+      await pool.query(
+        "UPDATE sessions SET device_id = NULL, device_kind = NULL, device_name = NULL, os_version = NULL, app_version = NULL WHERE id = $1",
+        [ids[0]],
+      );
       await pool.query("UPDATE sessions SET last_seen_at = now() - interval '1 hour' WHERE id = $1", [ids[1]]);
       await pool.query("UPDATE sessions SET last_seen_at = now() - interval '2 hours' WHERE id = $1", [ids[2]]);
       await pool.query("UPDATE sessions SET revoked_at = now() WHERE id = $1", [ids[3]]);
