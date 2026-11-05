@@ -83,3 +83,14 @@ actual FAIL/NOT RUN. Use one complete R1 and one same-context focused R2, then
 parent disposition. A final verify plan must pin the actual coherent candidate;
 do not pre-run a second full pipeline. No production rollout, live provider,
 push, environment retirement or change to gh1086 is authorized.
+
+## Gh1578 existing People fixture compatibility
+
+The existing peopleRelationshipOptionsCutoverMigration.test.ts calls the full
+registered runner and compares its output with a fresh seed. Gh1578 necessarily
+changes that resulting order. Authorize only its required target-order assertion
+and corresponding fresh-seed comparison alignment. Keep the old-order synthetic
+input, full equality check, preserved option metadata, added-key write controls
+and repeated-run idempotence. The test that invokes only the original People
+option-extension owner keeps its existing order-preservation expectation. No
+production behavior or source Task/acceptance criterion changes in this delta.
