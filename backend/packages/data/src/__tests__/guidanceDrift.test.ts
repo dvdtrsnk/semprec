@@ -86,6 +86,14 @@ describe("guidanceDrift stores (issue #85)", () => {
                 operation: "item.create",
                 targetDatabaseId: databaseId,
               });
+              if (index === 0)
+                await insertAgentRunEvent(tx, run.id, "tool_use", {
+                  toolCallId: "duplicate",
+                  name: "create",
+                  arguments: {},
+                  operation: "item.create",
+                  targetDatabaseId: databaseId,
+                });
               await insertAgentRunEvent(tx, run.id, "tool_use", {
                 toolCallId: `m${index}`,
                 name: "search",
@@ -101,6 +109,25 @@ describe("guidanceDrift stores (issue #85)", () => {
           }),
         );
       }
+      await runInTenant(a, () =>
+        withTransaction(runtime, async (tx) => {
+          for (let index = 0; index < 21; index++) {
+            const run = await createAgentRun(tx, {
+              projectItemId: projectA,
+              userId: userA.id,
+              triggeredBy: "user",
+              task: "recent runs",
+            });
+            await insertAgentRunEvent(tx, run.id, "tool_use", {
+              toolCallId: `patch${index}`,
+              name: "patch",
+              arguments: {},
+              operation: "item.patch",
+              targetDatabaseId: databaseId,
+            });
+          }
+        }),
+      );
       const since = new Date(Date.now() - 14 * 86400_000);
       const groups = await runInTenant(a, () =>
         withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectA, since)),
@@ -108,6 +135,7 @@ describe("guidanceDrift stores (issue #85)", () => {
       expect(groups).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ subject: { operation: "item.create", databaseId }, count: 3 }),
+          expect.objectContaining({ subject: { operation: "item.patch", databaseId }, count: 21 }),
           expect.objectContaining({
             subject: { mcpTool: "registration", databaseId: null },
             count: 3,
@@ -115,7 +143,20 @@ describe("guidanceDrift stores (issue #85)", () => {
           }),
         ]),
       );
-      expect(groups).toHaveLength(2);
+      expect(groups).toHaveLength(3);
+      const recent = await runInTenant(a, () =>
+        runtime.query<{ run_id: string }>(
+          `SELECT e.agent_run_id AS run_id FROM agent_run_events e JOIN agent_runs r ON r.id = e.agent_run_id
+           WHERE r.project_item_id = $1 AND e.kind = 'tool_use' AND e.payload->>'operation' = 'item.patch'
+           ORDER BY e.at DESC, e.id DESC LIMIT 20`,
+          [projectA],
+        ),
+      );
+      const patchGroup = groups.find(
+        (group) => "operation" in group.subject && group.subject.operation === "item.patch",
+      );
+      expect(patchGroup?.runIds).toEqual(recent.rows.map((row) => row.run_id));
+      expect(new Set(patchGroup?.runIds).size).toBe(20);
       expect(
         await runInTenant(a, () =>
           withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectB, since)),

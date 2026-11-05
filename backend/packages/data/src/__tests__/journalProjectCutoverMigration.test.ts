@@ -42,17 +42,22 @@ describe("Journal project cutover", () => {
         config: { targetDatabaseId: projects },
       });
       if (!property) throw new Error("Missing seeded relation");
+      const existingDay = await withTransaction(pool, (client) =>
+        getOrCreateJournalItem(client, journal, "day", new Date("2026-08-27T10:00:00Z"), "Europe/Prague"),
+      );
+      const existingBefore = await cp.getItem(journal, existingDay.id);
       // Synthetic old locked schema: public schema mutation cannot remove built-in properties.
       const deleted = await pool.query("DELETE FROM properties WHERE id = $1 AND database_id = $2", [
         property.id,
         journal,
       ]);
       expect(deleted.rowCount).toBe(1);
-      return { journal, projects };
+      return { journal, projects, existingDay: existingDay.id, existingBefore };
     });
     await runAsSystem("test:journal-project", () => runTenantCutoverMigrations(pool));
     const first = await runInTenant(tenant, async () => {
       const cp = createChokePoint(pool);
+      expect(await cp.getItem(fixture.journal, fixture.existingDay)).toEqual(fixture.existingBefore);
       const property = (await cp.listProperties(fixture.journal)).find((p) => p.key === "project");
       expect(property).toMatchObject({
         type: "relation",

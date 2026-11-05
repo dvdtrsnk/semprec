@@ -166,5 +166,16 @@ describe("Tasks source events cutover", () => {
       ]),
     );
     expect(after.rows).toEqual(before.rows);
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(pool);
+      const tasks = await cp.queryDatabaseItems(fixture.tasks, {
+        filter: { type: "relation_contains", property: "sourceEvents", value: fixture.event },
+      });
+      const events = await cp.queryDatabaseItems(fixture.events, {
+        filter: { type: "relation_contains", property: "actionItems", value: fixture.task },
+      });
+      expect(tasks.items.map((item) => item.id)).toContain(fixture.task);
+      expect(events.items.map((item) => item.id)).toContain(fixture.event);
+    });
   });
 });
