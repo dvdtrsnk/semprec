@@ -242,10 +242,11 @@ const includeField = z
       .object({
         links: z.boolean().optional(),
         derived: z.boolean().optional(),
+        automation: z.boolean().optional(),
         relations: RelationIncludeSchema.optional(),
       })
       .strict(),
-    z.array(z.enum(["links", "derived"])).max(2),
+    z.array(z.enum(["links", "derived", "automation"])).max(3),
   ])
   .optional();
 export type ItemReadInclude = z.infer<typeof includeField>;

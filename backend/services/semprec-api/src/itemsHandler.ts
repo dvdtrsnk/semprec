@@ -119,6 +119,7 @@ export function createItemRoutes(
         const includePath = includes.includes("path");
         const includeLinks = includes.includes("links");
         const includeDerived = includes.includes("derived");
+        const includeAutomation = includes.includes("automation");
 
         const params = requestUrl(ctx.req.url).searchParams;
         let relations: Record<string, string[]> | undefined;
@@ -147,6 +148,7 @@ export function createItemRoutes(
             ? ((await chokePoint.getValueLinksForItems([id], includeDerived, projection)).get(id) ?? {})
             : undefined;
           const derived = projection !== undefined ? (projection.get(id) ?? {}) : undefined;
+          const automation = includeAutomation ? (await chokePoint.readAutomationForItems([id])).get(id) : undefined;
           return {
             status: 200,
             body: {
@@ -154,12 +156,18 @@ export function createItemRoutes(
               ...(await toItemEnvelopeWithBlobs(pool, last)),
               ...(links === undefined ? {} : { links }),
               ...(derived === undefined ? {} : { derived }),
+              ...(automation === undefined ? {} : { automation }),
             },
           };
         }
         const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
           itemId: id,
-          include: { links: includeLinks, derived: includeDerived, ...(relations === undefined ? {} : { relations }) },
+          include: {
+            links: includeLinks,
+            derived: includeDerived,
+            automation: includeAutomation,
+            ...(relations === undefined ? {} : { relations }),
+          },
         });
         const envelope = await toItemEnvelopeWithBlobs(pool, item);
         return { status: 200, body: envelope };

@@ -278,7 +278,8 @@ export async function readAutomationForItems(
           lastAttemptAt: value.lastAttemptAt,
           errorCode: value.errorCode,
           source: value.source,
-          nextAttemptAt: row.next_attempt_at?.toISOString() ?? null,
+          nextAttemptAt:
+            value.status === "done" || value.status === "locked" ? null : (row.next_attempt_at?.toISOString() ?? null),
         },
       ];
     }),

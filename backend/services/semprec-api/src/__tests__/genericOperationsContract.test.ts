@@ -23,6 +23,7 @@ import {
   createDocStore,
   createUser,
   createViewTypeRegistry,
+  ensureItemAutomation,
   hashPassword,
   insertValueLink,
   loadFullModuleRegistry,
@@ -573,6 +574,45 @@ describe("generic operation REST contract (issue #219)", () => {
       expect(response.status).toBe(200);
       const legacy: unknown = await response.json();
       expect(JSON.stringify(legacy)).not.toContain('"relations"');
+    }
+  });
+
+  it("exposes automation only when requested on the three generic reads", async () => {
+    const fx = await buildFixtures();
+    await withTransaction(pool, (client) => ensureItemAutomation(client, fx.itemA.id));
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const bare = await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, { headers });
+    const explicitOff = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=`, { headers });
+    expect(bare.status).toBe(200);
+    expect(await bare.text()).toBe(await explicitOff.text());
+    const item = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=automation`, { headers });
+    expect(item.status).toBe(200);
+    expect(await item.json()).toMatchObject({
+      id: fx.itemA.id,
+      automation: {
+        status: "pending",
+        attempts: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        source: null,
+        errorCode: null,
+      },
+    });
+    const missing = await fetch(`${baseUrl}/api/items/${fx.itemB.id}?include=automation`, { headers });
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).not.toHaveProperty("automation");
+    for (const path of [`/api/databases/${fx.database.id}/query`, `/api/views/${fx.curatedView.id}/query`]) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["automation"] }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({ id: fx.itemA.id, automation: { status: "pending" } }),
+        ]),
+      });
     }
   });
 

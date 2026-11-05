@@ -5,7 +5,7 @@ import { toItemEnvelopes, type ItemEnvelope } from "./itemEnvelope.js";
 
 /** A query page whose items carry `links` only when the request asked for `include=links` (issue #1403). */
 interface ItemQueryResult {
-  items: (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"] })[];
+  items: (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"]; automation?: Item["automation"] })[];
   nextCursor: string | null;
   totalCount?: number;
 }

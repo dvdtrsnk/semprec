@@ -109,6 +109,23 @@ export interface ExpandedRelationTarget extends ReducedRelationTarget {
 }
 
 export interface Item {
+  automation?: {
+    status: "pending" | "found" | "notFound" | "error" | "locked";
+    attempts: number;
+    lastAttemptAt: string | null;
+    errorCode:
+      | "budgetExceeded"
+      | "mediaUnreadable"
+      | "providerFailed"
+      | "unknown"
+      | "deleted"
+      | "sourceUnavailable"
+      | "rateLimited"
+      | "invalidResponse"
+      | null;
+    source: "openLibrary" | "googleBooks" | "tmdb" | null;
+    nextAttemptAt: string | null;
+  };
   derived?: {
     area?: {
       values: Array<{ id: string; title: string; color?: string | null; icon?: string | null }>;
