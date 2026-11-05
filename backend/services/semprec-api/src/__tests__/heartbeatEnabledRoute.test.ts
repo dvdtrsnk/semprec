@@ -170,6 +170,17 @@ describe("heartbeat enabled route", () => {
           ),
         );
       });
+      const systemHeartbeat = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          createHeartbeat(client, {
+            projectItemId: heartbeat.projectItemId,
+            name: "System",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: "noop",
+            origin: "system",
+          }),
+        ),
+      );
       const dispatch = await createDispatcher(runtime, {
         passwordResetMailer: { async sendPasswordResetEmail() {} },
         appBaseUrl: "http://localhost",
@@ -186,8 +197,8 @@ describe("heartbeat enabled route", () => {
       });
       const address = owned.address();
       if (!address || typeof address === "string") throw new Error("Missing server address");
-      const patch = (body: unknown) =>
-        fetch(`http://127.0.0.1:${address.port}/api/heartbeats/${heartbeat.id}`, {
+      const patch = (body: unknown, id = heartbeat.id) =>
+        fetch(`http://127.0.0.1:${address.port}/api/heartbeats/${id}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -197,6 +208,10 @@ describe("heartbeat enabled route", () => {
       expect(enabled.headers.get("cache-control")).toBe("no-store");
       expect(await enabled.json()).toEqual({ id: heartbeat.id, enabled: true, nextFireAt: "2031-01-01T00:00:00.000Z" });
       expect((await patch({ enabled: false, name: "unexpected" })).status).toBe(400);
+      const systemResponse = await patch({ enabled: false }, systemHeartbeat.id);
+      expect(systemResponse.status).toBe(403);
+      expect(await systemResponse.json()).toMatchObject({ error: { code: "owner_violation" } });
+      expect(await runInTenant(tenant, () => getHeartbeat(runtime, systemHeartbeat.id))).toEqual(systemHeartbeat);
       active.delete("fixtureRule");
       const disabledWithoutProvider = await runInTenant(tenant, () =>
         createSetHeartbeatEnabledRouteHandler(runtime)({ params: { id: heartbeat.id }, body: { enabled: false } }),
