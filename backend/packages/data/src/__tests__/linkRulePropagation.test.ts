@@ -10,7 +10,7 @@ import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
+import { enqueueLinkPropagation, handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let admin: Pool;
@@ -274,5 +274,37 @@ describe("link rule propagation", () => {
       );
       expect(result.rows).toEqual([{ count: "101" }]);
     });
+  });
+
+  it("keys equal budgets per trusted tenant, keeps distinct hops, and rejects unscoped callers", async () => {
+    const foreign = await createTestTenant(admin);
+    const source = randomUUID();
+    const enqueue = (tenantId: string, hop: number) =>
+      runInTenant(tenantId, () =>
+        withTransaction(data, (client) => enqueueLinkPropagation(client, ruleKey, source, hop)),
+      );
+    await enqueue(tenant, 1);
+    await enqueue(tenant, 1);
+    await enqueue(tenant, 2);
+    await enqueue(foreign, 1);
+    const client = await data.connect();
+    try {
+      await expect(enqueueLinkPropagation(client, ruleKey, source, 1)).rejects.toThrow("requires a tenant scope");
+      await expect(
+        runAsSystem("test:reject-system-propagation", () => enqueueLinkPropagation(client, ruleKey, source, 1)),
+      ).rejects.toThrow("requires a tenant scope");
+    } finally {
+      client.release();
+    }
+    const result = await admin.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE task_identifier = 'valueLinksPropagate' ORDER BY key",
+    );
+    expect(result.rows.map((row) => row.key)).toEqual(
+      [
+        `valueLinksPropagate:${tenant}:${ruleKey}:${source}:1`,
+        `valueLinksPropagate:${tenant}:${ruleKey}:${source}:2`,
+        `valueLinksPropagate:${foreign}:${ruleKey}:${source}:1`,
+      ].sort(),
+    );
   });
 });
