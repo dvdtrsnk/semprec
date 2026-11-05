@@ -36,8 +36,8 @@ export const manifest: ModuleManifest = {
         propertyKey: "name",
       },
       via: {
-        databaseKey: ["projects", "tasks", "events", "people", "companies", "files"][index]!,
-        relationKey: "fixtureParent",
+        databaseKey: ["projects", "tasks", "events", "events", "companies", "files"][index]!,
+        relationKey: ["area", "project", "actionItems", "people", "people", "companies"][index]!,
       },
     })),
   ],
@@ -149,29 +149,24 @@ describe("value link via-edge union", () => {
       const items = [];
       for (const [index, databaseId] of ids.entries())
         items.push(await cp.createItem({ databaseId, properties: index === 0 ? { name: "Chain source" } : {} }));
-      const parents: string[] = [];
+      const viaKeys = ["area", "project", "actionItems", "people", "people", "companies"];
+      const sourceSide = new Set([4]);
+      const edges = [];
       for (let index = 1; index < ids.length; index++) {
-        const relation = await cp.createRelationProperty({
-          sourceDatabaseId: ids[index]!,
-          key: "fixtureParent",
-          name: "Fixture parent",
-          targetDatabaseId: ids[index - 1]!,
+        const callerIndex = sourceSide.has(index) ? index - 1 : index;
+        const targetIndex = sourceSide.has(index) ? index : index - 1;
+        const property = (await cp.listProperties(ids[callerIndex]!)).find((entry) => entry.key === viaKeys[index - 1]);
+        if (!property) throw new Error("Fixture relation missing");
+        edges.push({
+          relationPropertyId: property.id,
+          callerItemId: items[callerIndex]!.id,
+          targetItemId: items[targetIndex]!.id,
         });
-        parents.push(relation.property.id);
       }
-      for (let index = 6; index >= 2; index--)
-        await cp.createRelation({
-          relationPropertyId: parents[index - 1]!,
-          callerItemId: items[index]!.id,
-          targetItemId: items[index - 1]!.id,
-        });
+      for (let index = 6; index >= 2; index--) await cp.createRelation(edges[index - 1]!);
       const tasks = createCoreTaskList(data, createActionRegistry());
       await runOnce({ pgPool: data, taskList: tasks });
-      await cp.createRelation({
-        relationPropertyId: parents[0]!,
-        callerItemId: items[1]!.id,
-        targetItemId: items[0]!.id,
-      });
+      await cp.createRelation(edges[0]!);
       await runOnce({ pgPool: data, taskList: tasks });
       for (let index = 1; index <= 5; index++)
         expect((await cp.getItem(ids[index]!, items[index]!.id))?.properties.name).toBe("Chain source");
