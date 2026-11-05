@@ -1,10 +1,11 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { inspect } from "node:util";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
@@ -406,6 +407,59 @@ describe("library module (issue #25)", () => {
     expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
   });
 
+  it("bounds a queued legacy unsupported source to its existing three attempts", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        await ensureItemAutomation(client, item.id);
+        await enqueueJob(
+          client,
+          CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS,
+          { itemId: item.id, databaseId, config: { source: "legacy-invalid", coverKey: "cover" } },
+          { jobKey: `library-metadata:${item.id}`, maxAttempts: 3 },
+        );
+      }),
+    );
+    const before = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    const name = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+    const handler = createCoreTaskList(pool, libraryRegistry())[name];
+    if (!handler) throw new Error("Metadata task missing");
+    const worker = await runWorker({
+      pgPool: pool,
+      taskList: { [name]: handler },
+      noHandleSignals: true,
+      concurrency: 1,
+    });
+    const failures: unknown[] = [];
+    try {
+      const deadline = Date.now() + 30000;
+      let complete = false;
+      while (Date.now() < deadline) {
+        const jobs = await pool.query<{ attempts: number; max_attempts: number; locked_at: Date | null }>(
+          "SELECT attempts, max_attempts, locked_at FROM graphile_worker.jobs WHERE key = $1",
+          [`library-metadata:${item.id}`],
+        );
+        if (jobs.rows[0]?.attempts === 3 && jobs.rows[0].max_attempts === 3 && jobs.rows[0].locked_at === null) {
+          complete = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(complete).toBe(true);
+      expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await worker.stop();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Legacy metadata test and cleanup failed");
+  }, 35000);
+
   it("runtime-validates every library-grid contract field", () => {
     const registry = createViewTypeRegistry();
     const definition = registry.get(LIBRARY_GRID_VIEW_TYPE);
@@ -632,7 +686,16 @@ describe("library module (issue #25)", () => {
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("private-provider-secret https://secret.invalid");
     };
-    await drainQueue(registry, failingFetcher);
+    const errorLog = vi.spyOn(console, "error");
+    try {
+      await drainQueue(registry, failingFetcher);
+      const captured = inspect(errorLog.mock.calls, { depth: 8 });
+      expect(captured).toContain("Library metadata processing failed");
+      expect(captured).not.toContain("private-provider-secret");
+      expect(captured).not.toContain("https://secret.invalid");
+    } finally {
+      errorLog.mockRestore();
+    }
 
     const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(automation?.status).toBe("error");
