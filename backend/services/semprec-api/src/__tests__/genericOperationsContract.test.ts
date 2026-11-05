@@ -605,6 +605,10 @@ describe("generic operation REST contract (issue #219)", () => {
           const files = find("files");
           const person = await cp.createItem({ databaseId: people.id, properties: { name: "Person" } });
           const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Project" } });
+          const secondProject = await cp.createItem({
+            databaseId: projects.id,
+            properties: { name: "Second project" },
+          });
           const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
           const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
           const file = await cp.createItem({ databaseId: files.id, properties: { name: "File" } });
@@ -616,8 +620,10 @@ describe("generic operation REST contract (issue #219)", () => {
           await link(people.id, person.id, "projects", project.id);
           await link(people.id, person.id, "companies", company.id);
           await link(projects.id, project.id, "area", area.id);
+          await link(projects.id, secondProject.id, "area", area.id);
           await link(files.id, file.id, "projects", project.id);
-          return { person, project, area, company, file };
+          await link(files.id, file.id, "projects", secondProject.id);
+          return { person, project, secondProject, area, company, file };
         });
       }
       const own = await fixture(ownTenant);
@@ -667,9 +673,28 @@ describe("generic operation REST contract (issue #219)", () => {
         });
         expect(response.status).toBe(200);
         const body: unknown = await response.json();
-        if (hasDerived) expect(body).toMatchObject({ derived: { area: { values: [{ id: own.area.id }] } } });
+        if (hasDerived)
+          expect(body).toMatchObject({
+            derived: {
+              area: {
+                values: [{ id: own.area.id }],
+                projectIds: [own.project.id, own.secondProject.id].sort(),
+              },
+            },
+          });
         else expect(body).not.toHaveProperty("derived");
-        if (hasLinks && hasDerived) expect(body).toMatchObject({ links: { area: { valueKind: "derived" } } });
+        if (hasLinks && hasDerived)
+          expect(body).toMatchObject({
+            links: {
+              area: {
+                valueKind: "derived",
+                sources: expect.arrayContaining([
+                  expect.objectContaining({ itemId: own.project.id }),
+                  expect.objectContaining({ itemId: own.secondProject.id }),
+                ]),
+              },
+            },
+          });
         else if (hasLinks) expect(body).toMatchObject({ links: {} });
         else expect(body).not.toHaveProperty("links");
       }

@@ -10,6 +10,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createHeartbeat, setHeartbeatEnabled } from "../../scheduler/schedulerStore.js";
 import { createAgentRun, createChainedAgentRun, finishAgentRun } from "../../agentRuns/agentRunsStore.js";
+import { ensureMailAccountSyncState, recordSyncError } from "../../mail/mailAccountSyncStateStore.js";
 import { getOrCreateTickThread } from "../sempTickThreadStore.js";
 import { raiseProblem } from "../sempProblemsStore.js";
 import { getSempStatusReport } from "../sempStatusReport.js";
@@ -65,6 +66,10 @@ describe("Semp status report", () => {
       if (!db) throw new Error("Missing mailboxes database");
       const item = await cp.createItem({ databaseId: db.id, properties: { name: "Inbox", provider: "generic" } });
       const since = new Date("2026-01-02T03:04:05.000Z");
+      await withTransaction(data, async (client) => {
+        await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
+        expect(await recordSyncError(client, item.id, "private-provider-error", "other")).not.toBeNull();
+      });
       for (let i = 0; i < 4; i++)
         await withTransaction(data, (client) =>
           raiseProblem(client, {
@@ -72,7 +77,7 @@ describe("Semp status report", () => {
             category: "mail",
             kind: "mailSyncError",
             severity: "warning",
-            sourceTable: "items",
+            sourceTable: "mail_account_sync_state",
             sourceId: item.id,
             dedupeKey: `mail:${item.id}`,
             since,
@@ -95,6 +100,7 @@ describe("Semp status report", () => {
       actions: [{ kind: "reauthMailbox", target: first.item.id }],
     });
     expect(JSON.stringify(report)).not.toContain(second.item.id);
+    expect(JSON.stringify(report)).not.toContain("private-provider-error");
     const cs = await runInTenant(foreign, () => getSempStatusReport(data));
     expect(cs.problems[0]?.title).toBe("Schránka se nesynchronizuje");
   });
