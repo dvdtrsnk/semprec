@@ -3,7 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
+import { getRelationDefinitionByPropertyId, tryLockRelationDefinition } from "../chokePoint/relationsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -135,6 +136,72 @@ describe("derived value creation guard", () => {
       await expect(
         cp.createRelation({ relationPropertyId: inverse, callerItemId: company.id, targetItemId: foreignEvent }),
       ).rejects.toBeInstanceOf(ValidationError);
+    });
+  });
+  it("rejects both guarded sides in the shared read-only assertion without reserving definitions", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
+      const projectProperty = await property("events", "project");
+      const companyProperty = await property("events", "company");
+      const inverseProperty = await property("companies", "meetings");
+      await cp.createRelation({
+        relationPropertyId: projectProperty,
+        callerItemId: event.id,
+        targetItemId: project.id,
+      });
+      const before = await cp.listItemRelations(event.id);
+      let release!: () => void;
+      let ready!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const assertion = withTransaction(
+        data,
+        async (client) => {
+          await expect(
+            assertRelationCreatableWithClient(client, {
+              relationPropertyId: companyProperty,
+              callerItemId: event.id,
+              targetItemId: company.id,
+            }),
+          ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
+          await expect(
+            assertRelationCreatableWithClient(client, {
+              relationPropertyId: inverseProperty,
+              callerItemId: company.id,
+              targetItemId: event.id,
+            }),
+          ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
+          ready();
+          await barrier;
+        },
+        { isolation: "repeatable_read" },
+      );
+      try {
+        await Promise.race([
+          entered,
+          assertion.then(() => {
+            throw new Error("Assertion ended before its barrier");
+          }),
+        ]);
+        await withTransaction(data, async (client) => {
+          for (const id of [companyProperty, projectProperty]) {
+            const definition = await getRelationDefinitionByPropertyId(client, id);
+            if (!definition) throw new Error("Missing relation definition");
+            expect(await tryLockRelationDefinition(client, definition.id)).toBe(true);
+          }
+        });
+      } finally {
+        release();
+        await assertion;
+      }
+      expect(await cp.listItemRelations(event.id)).toEqual(before);
     });
   });
   it("refuses a changed set before removing its old edge while preserving no-op and delete", async () => {

@@ -4,6 +4,8 @@ import {
   withTransaction,
   ChokePointError,
   NotFoundError,
+  ValidationError,
+  listResolvedNotificationIds,
   listUnreadNotificationsForUser,
   visitNotification,
   markAllNotificationsRead,
@@ -16,6 +18,36 @@ import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
 
 const VISIT_NOTIFICATION_PATH = /^\/api\/notifications\/([^/]+)\/visit$/;
+
+function requireResolvedSince(value: string | null): string {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/);
+  if (!value || value.length > 32 || !match) throw new ValidationError("Invalid since timestamp", { field: "since" });
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const zone = match[7]!;
+  const zoneHour = zone === "Z" ? 0 : Number(zone.slice(1, 3));
+  const zoneMinute = zone === "Z" ? 0 : Number(zone.slice(4, 6));
+  if (
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > (days[month - 1] ?? 0) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    zoneHour > 15 ||
+    zoneMinute > 59
+  )
+    throw new ValidationError("Invalid since timestamp", { field: "since" });
+  return value;
+}
 
 /**
  * Issue #152's authenticated notification surface: `GET /api/notifications/unread` (a
@@ -37,6 +69,17 @@ export function createNotificationsRequestListener(pool: Pool) {
       const identity = await authenticateRequest(pool, req);
 
       await runInTenant(identity.tenantId, async () => {
+        if (req.method === "GET" && url.pathname === "/api/notifications/resolved") {
+          const since = requireResolvedSince(url.searchParams.get("since"));
+          const rawAfterId = url.searchParams.get("afterId");
+          const afterId = rawAfterId === null ? undefined : assertUuid(rawAfterId, "afterId");
+          const resolved = await withTransaction(pool, (client) =>
+            listResolvedNotificationIds(client, identity.user.id, since, 500, afterId),
+          );
+          const last = resolved.at(-1);
+          sendJson(res, 200, { resolved, nextCursor: last ? { since: last.resolvedAt, afterId: last.id } : null });
+          return;
+        }
         if (req.method === "GET" && url.pathname === "/api/notifications/unread") {
           const notifications = await withTransaction(pool, (client) =>
             listUnreadNotificationsForUser(client, identity.user.id),

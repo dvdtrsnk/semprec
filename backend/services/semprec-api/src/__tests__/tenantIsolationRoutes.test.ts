@@ -49,6 +49,7 @@ import {
   provisionTenant,
   recordTokenGatewayCall,
   reserveGatewayCall,
+  resolveNotificationsBySource,
   settleAudioGatewayCall,
   setSempThreadInvalidationHook,
   revokeInvite,
@@ -999,6 +1000,40 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   // --- tenant: notifications, reports, inbox, transcription --------------------------------
   "unread notifications": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/notifications/unread" }, [b.notificationId]);
+  },
+  "resolved notifications": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const id = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: fixture.projectItemId,
+            name: "Resolved",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: "noop",
+          });
+          const sourceId = heartbeat.id;
+          const notification = await writeNotification(client, {
+            userId: fixture.member.userId,
+            kind: "heartbeat_error",
+            titleParams: { name: "Resolved" },
+            linkHref: null,
+            sourceTable: "project_heartbeats",
+            sourceId,
+            transitionInstance: randomUUID(),
+          });
+          await resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId });
+          return notification;
+        }),
+      );
+      ids.push(id);
+    }
+    const answer = await expectExcludesA(
+      b.member,
+      { method: "GET", path: "/api/notifications/resolved?since=2020-01-01T00%3A00%3A00Z" },
+      [ids[1]!],
+    );
+    expect(answer.text).not.toContain(ids[0]);
   },
   "visit notification": () =>
     leavesAUnchanged(async () => {

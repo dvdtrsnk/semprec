@@ -481,6 +481,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listProjectMcpGrants",
   "listPropertiesByDatabase",
   "listPushSubscriptionsForUser",
+  "listResolvedNotificationIds",
   "listRunningAgentRuns",
   "listSempThreadMessages",
   "listSessionAgentRunEventsFromLastCompaction",

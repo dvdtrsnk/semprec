@@ -8,8 +8,25 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
-import { createViewTypeRegistry, seedSystem, createUser, hashPassword, login } from "@semprec/data";
+import {
+  createRuntimeRolePool,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
+import {
+  createAgentRun,
+  createViewTypeRegistry,
+  resolveNotificationsBySource,
+  seedSystem,
+  createUser,
+  hashPassword,
+  login,
+  withTransaction,
+  writeNotification,
+} from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { createNotificationsRequestListener } from "../notificationsHandler.js";
 import {
   runFixtureGuardControl,
@@ -83,6 +100,127 @@ describe("createNotificationsRequestListener", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("drains timestamp ties over authenticated runtime HTTP without tenant leakage", async () => {
+    const tenant = getTenantZeroId();
+    const makeUser = async (tenantId: string) => {
+      const email = `${randomUUID()}@example.test`;
+      const user = await createUser(pool, { tenantId, email, passwordHash: await hashPassword(PASSWORD) });
+      const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+      return { id: user.id, headers: { Authorization: `Bearer ${token}` } };
+    };
+    const own = await makeUser(tenant);
+    const foreignTenant = await tenantForNextTestUser(pool);
+    const foreign = await makeUser(foreignTenant);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimeServer = createServer(createNotificationsRequestListener(runtime));
+    const failures: unknown[] = [];
+    try {
+      const role = await runInTenant(tenant, () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const seed = (tenantId: string, userId: string, count: number) =>
+        runInTenant(tenantId, () =>
+          withTransaction(runtime, async (client) => {
+            const run = await createAgentRun(client, { triggeredBy: "user", userId, task: "HTTP resolved fixture" });
+            const ids: string[] = [];
+            for (let i = 0; i < count; i++)
+              ids.push(
+                await writeNotification(client, {
+                  userId,
+                  kind: "agent_run_error",
+                  sourceTable: "agent_runs",
+                  sourceId: run.id,
+                  transitionInstance: `transition-${i}`,
+                  linkHref: null,
+                }),
+              );
+            await resolveNotificationsBySource(client, { sourceTable: "agent_runs", sourceId: run.id });
+            return ids.sort();
+          }),
+        );
+      const expected = await seed(tenant, own.id, 503);
+      const otherIds = await seed(foreignTenant, foreign.id, 1);
+      await new Promise<void>((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Missing runtime server address");
+      const base = `http://127.0.0.1:${address.port}/api/notifications/resolved`;
+      const request = (since: string, afterId?: string, headers = own.headers) => {
+        const params = new URLSearchParams({ since, ...(afterId ? { afterId } : {}) });
+        return fetch(`${base}?${params}`, { headers });
+      };
+      const schema = z.object({
+        resolved: z.array(z.object({ id: z.uuid(), resolvedAt: z.string() })),
+        nextCursor: z.object({ since: z.string(), afterId: z.uuid() }).nullable(),
+      });
+      const firstResponse = await request("2000-01-01T00:00:00Z");
+      expect(firstResponse.status).toBe(200);
+      expect(firstResponse.headers.get("cache-control")).toBe("no-store");
+      const first = schema.parse(await firstResponse.json());
+      expect(first.resolved).toHaveLength(500);
+      expect(first.nextCursor?.since).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
+      if (!first.nextCursor) throw new Error("Missing cursor");
+      const exactTime = first.nextCursor.since;
+      const justBefore = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ value: string }>(
+            "SELECT to_char(($1::timestamptz - interval '1 microsecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS value",
+            [exactTime],
+          ),
+        ),
+      );
+      expect(
+        schema.parse(await (await request(justBefore.rows[0]!.value)).json()).resolved.map((row) => row.id),
+      ).toEqual(expected.slice(0, 500));
+      expect(schema.parse(await (await request(exactTime)).json())).toEqual({ resolved: [], nextCursor: null });
+      const second = schema.parse(await (await request(first.nextCursor.since, first.nextCursor.afterId)).json());
+      expect(second.resolved).toHaveLength(3);
+      expect([...first.resolved, ...second.resolved].map((row) => row.id)).toEqual(expected);
+      expect([...first.resolved, ...second.resolved].map((row) => row.id)).not.toContain(otherIds[0]);
+      if (!second.nextCursor) throw new Error("Missing final cursor");
+      expect(schema.parse(await (await request(second.nextCursor.since, second.nextCursor.afterId)).json())).toEqual({
+        resolved: [],
+        nextCursor: null,
+      });
+      const other = schema.parse(await (await request("2000-01-01T00:00:00Z", undefined, foreign.headers)).json());
+      expect(other.resolved.map((row) => row.id)).toEqual(otherIds);
+      const unauthorized = await fetch(base);
+      expect(unauthorized.status).toBe(401);
+      expect(unauthorized.headers.get("cache-control")).toBe("no-store");
+      for (const query of [
+        "",
+        "?since=invalid",
+        "?since=2026-02-29T00%3A00%3A00Z",
+        "?since=2026-01-01T00%3A00%3A00.1234567Z",
+        "?since=2026-01-01T00%3A00%3A00Z&afterId=invalid",
+      ]) {
+        const response = await fetch(`${base}${query}`, { headers: own.headers });
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      try {
+        if (runtimeServer.listening)
+          await new Promise<void>((resolve, reject) =>
+            runtimeServer.close((error) => (error ? reject(error) : resolve())),
+          );
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Resolved notification fixture and cleanup failed");
   });
 
   it("reads a real transcription failure through unread and visit without diagnostic text", async () => {

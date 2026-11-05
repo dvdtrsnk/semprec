@@ -227,6 +227,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "resolved notifications",
+    method: "GET",
+    path: "/api/notifications/resolved",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "visit notification",
     method: "POST",
     path: `/api/notifications/${EXAMPLE_ID}/visit`,

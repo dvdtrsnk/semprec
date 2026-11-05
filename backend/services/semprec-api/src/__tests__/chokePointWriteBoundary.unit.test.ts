@@ -36,6 +36,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "agent run detail": "services/semprec-api/src/agentRunHandler.ts",
   "mint mcp run credential": "services/semprec-api/src/agentRunHandler.ts",
   "unread notifications": "services/semprec-api/src/notificationsHandler.ts",
+  "resolved notifications": "services/semprec-api/src/notificationsHandler.ts",
   "visit notification": "services/semprec-api/src/notificationsHandler.ts",
   "mark all notifications read": "services/semprec-api/src/notificationsHandler.ts",
   "get notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
