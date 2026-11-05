@@ -154,3 +154,7 @@ is authorized on this evidence. Retain the existing available-stored-body
 contract and its disclosed loss of discarded multipart text/plain; do not claim
 exact historical body parity. The focused R2 receives this reasoned disposition
 and the exact logs without replacing the original finding history.
+
+## Final unit system-task catalog
+
+The single actual fc1 verify stopped at the explicit queue SYSTEM_TASKS expectation: production declares mailSearchTextReindex as system, but the unit fixture omits it. Gh-1741 may add exactly this expected name and replace the obsolete numeric test title, preserving exhaustive CORE/AGENT names, full sorted system-set equality and all envelope/registration assertions. Production queue code and classification do not change. The successor continues with the corrected complete unit file, scoped lint/format, and previously unreached phases; passed fc1 lint/build and other actual phase results retain their own SHA provenance. No full verify retry or automatic PASS is implied. The aggregate-only order paragraph is shortened while retaining every member/order and shared/external dependency obligation.

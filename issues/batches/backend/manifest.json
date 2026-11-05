@@ -2440,8 +2440,8 @@
       "sequence": 25,
       "status": "proposed",
       "title": "[backend-delivery 25/74] Implement data/journal, data/mail, data/docs changes",
-      "bodyCharacters": 59947,
-      "specSha256": "e12541fb56da41cf39e2ce079a2a4e0a663ea2b329dabed3f6da3183bbb5d4ee",
+      "bodyCharacters": 59983,
+      "specSha256": "aebda6ecae1fca2833f7f005156cc2d62facd51aa1912a26aafa963ab3bb34ca",
       "members": [
         {
           "id": "gh-1589",
@@ -2463,7 +2463,7 @@
         },
         {
           "id": "gh-1741",
-          "specSha256": "e08086d752e18b112005b68c53c358fc36ad9a65ef35bd2bab3b15c64c6f2f7b",
+          "specSha256": "e65f07719e81bb8488dbc22c8c0acff4df93e4ae60d79ce2b6f4dee648d169db",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1591",
