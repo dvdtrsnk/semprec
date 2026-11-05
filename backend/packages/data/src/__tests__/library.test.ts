@@ -40,6 +40,8 @@ import {
   ensureItemAutomation,
   getItemAutomation,
   markItemAutomationDone,
+  markItemAutomationError,
+  markItemAutomationNotFound,
   recordItemAutomationFailure,
   setItemAutomationLocked,
   startItemAutomationAttempt,
@@ -606,14 +608,16 @@ describe("library module (issue #25)", () => {
         handleProcessLibraryMetadataTask(
           pool,
           { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover" } },
-          async () => ({ status: "error", errorCode: "sourceUnavailable", source: "openLibrary" }),
+          createLibraryMetadataFetcher({
+            fetch: async () => new Response("private-provider-response-secret", { status: 503 }),
+          }),
         ),
       ),
     ).rejects.toThrow("Library metadata processing failed");
     expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
       status: "error",
       errorCode: "sourceUnavailable",
-      source: "openLibrary",
+      source: "googleBooks",
       attempts: 1,
     });
   });
@@ -765,6 +769,42 @@ describe("library module (issue #25)", () => {
     const recovered = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(recovered?.status).toBe("done");
     expect(recovered?.attempts).toBe(1); // unchanged by the successful retry, only failures increment it
+  });
+
+  it("selects error and notFound for retry but leaves done and locked alone", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const items = await inTenantZero(() =>
+      Promise.all(
+        ["Error", "Missing", "Found", "Locked"].map((name) =>
+          chokePoint.createItem({ databaseId: booksId, properties: { name } }),
+        ),
+      ),
+    );
+    await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        for (const item of items) await ensureItemAutomation(client, item.id);
+        await markItemAutomationError(client, items[0]!.id, "sourceUnavailable", "sourceUnavailable", "openLibrary");
+        await markItemAutomationNotFound(client, items[1]!.id, "openLibrary");
+        await markItemAutomationDone(client, items[2]!.id, "openLibrary");
+        await setItemAutomationLocked(client, items[3]!.id, true);
+      }),
+    );
+    const action = createLibraryMetadataRetrySweepAction(pool);
+    await inTenantZero(() =>
+      action(
+        { databaseId: booksId, source: "openLibrary", coverKey: "cover" },
+        { heartbeatId: "heartbeat", projectItemId: "project" },
+      ),
+    );
+    const rows = await pool.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+      [items.map((item) => `library-metadata:${item.id}`)],
+    );
+    expect(rows.rows.map((row) => row.key)).toEqual(
+      [`library-metadata:${items[0]!.id}`, `library-metadata:${items[1]!.id}`].sort(),
+    );
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, items[2]!.id)))?.status).toBe("done");
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, items[3]!.id)))?.status).toBe("locked");
   });
 
   it("does not enqueue repeated unsupported sweeps and resumes after configuration repair", async () => {
