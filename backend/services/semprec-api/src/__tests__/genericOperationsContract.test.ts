@@ -204,6 +204,34 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       body: JSON.stringify({ key: "score", name: "Score", type: "number" }),
     });
     expect(res.status).toBe(201);
+    const color = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        key: "colorChoice",
+        name: "Color choice",
+        type: "select",
+        config: { options: [{ key: "one", color: "#ff3b30" }] },
+      }),
+    });
+    expect(color.status).toBe(201);
+    expect(await color.json()).toMatchObject({ config: { options: [{ key: "one", color: "#FF3B30" }] } });
+    for (const invalid of ["red", "#FFF", "#GGGGGG", 1]) {
+      const rejected = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          key: "badColor",
+          name: "Bad",
+          type: "select",
+          config: { options: [{ key: "one", color: invalid }] },
+        }),
+      });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "config" } },
+      });
+    }
   },
   "property.patch": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/properties/${fx.property.id}`, {
@@ -214,6 +242,38 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { name: string };
     expect(body.name).toBe("New Title");
+    const created = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        key: "patchColor",
+        name: "Patch color",
+        type: "select",
+        config: { options: [{ key: "one" }] },
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody: unknown = await created.json();
+    if (
+      typeof createdBody !== "object" ||
+      createdBody === null ||
+      !("id" in createdBody) ||
+      typeof createdBody.id !== "string"
+    )
+      throw new Error("Missing property id");
+    const propertyId = createdBody.id;
+    const patch = (color: unknown) =>
+      fetch(`${baseUrl}/api/properties/${propertyId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ config: { options: [{ key: "one", color }] } }),
+      });
+    const valid = await patch("#ff3b30");
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toMatchObject({ config: { options: [{ key: "one", color: "#FF3B30" }] } });
+    const invalid = await patch("red");
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "config" } } });
   },
   "property.delete": async (fx, headers, baseUrl) => {
     const scratch = await chokePoint.createProperty({

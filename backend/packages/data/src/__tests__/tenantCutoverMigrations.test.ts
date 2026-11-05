@@ -145,6 +145,56 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     await adminPool.end();
   });
 
+  it("colors old select catalogs without overwriting existing colors and does not rewrite on replay", async () => {
+    for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const read = (tenant: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await dataPool.query<Record<string, unknown>>(
+          `SELECT p.id, p.xmin::text AS version, p.config FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = 'projects' AND p.key = 'status'`,
+        );
+        return z
+          .object({
+            id: z.string(),
+            version: z.string(),
+            config: z
+              .object({ options: z.array(z.object({ key: z.string(), color: z.string().optional() }).passthrough()) })
+              .passthrough(),
+          })
+          .parse(rows[0]);
+      });
+    const old = await read(b);
+    const options = [
+      { key: "inProgress", color: "#123456", extra: true },
+      { key: "longTerm" },
+      { key: "done" },
+      { key: "archived" },
+      { key: "custom" },
+    ];
+    // Locked catalogs cannot be reverted by the production property API.
+    const updated = await adminPool.query(
+      "UPDATE properties SET config = jsonb_set(config, '{options}', $3::jsonb) WHERE tenant_id = $1 AND id = $2",
+      [b, old.id, JSON.stringify(options)],
+    );
+    expect(updated.rowCount).toBe(1);
+    await runCutovers(dataPool);
+    const migrated = await read(b);
+    expect(migrated.config.options).toEqual([
+      { key: "inProgress", color: "#123456", extra: true },
+      { key: "longTerm", color: "#AF52DE" },
+      { key: "done", color: "#34C759" },
+      { key: "archived", color: "#8E8E93" },
+      { key: "custom" },
+    ]);
+    expect((await read(zero)).config.options).toEqual([
+      { key: "inProgress", color: "#007AFF" },
+      { key: "longTerm", color: "#AF52DE" },
+      { key: "done", color: "#34C759" },
+      { key: "archived", color: "#8E8E93" },
+    ]);
+    await runCutovers(dataPool);
+    expect(await read(b)).toEqual(migrated);
+  });
+
   it("upgrades every tenant in its own scope", async () => {
     await seedOldShape(zero);
     await seedOldShape(b);

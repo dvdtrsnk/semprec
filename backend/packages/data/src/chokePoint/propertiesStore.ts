@@ -29,7 +29,8 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
         field: "config",
       });
     }
-    const { key, label } = option as { key?: unknown; label?: unknown };
+    const record: Record<string, unknown> = option;
+    const { key, label } = record;
     if (typeof key !== "string" || key.length === 0) {
       throw new ValidationError("each select/multi_select option requires a non-empty string 'key'", {
         field: "config",
@@ -39,6 +40,12 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
       throw new ValidationError("a select/multi_select option's 'label' must be a string when present", {
         field: "config",
       });
+    }
+    if (Object.hasOwn(record, "color")) {
+      if (typeof record.color !== "string" || !/^#[0-9a-f]{6}$/i.test(record.color)) {
+        throw new ValidationError("a select/multi_select option's 'color' must be a hex color", { field: "config" });
+      }
+      record.color = record.color.toUpperCase();
     }
   }
 }

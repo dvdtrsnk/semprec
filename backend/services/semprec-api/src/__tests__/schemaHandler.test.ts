@@ -248,6 +248,56 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(JSON.stringify(body)).not.toContain("project_kept_dates");
   });
 
+  it("returns custom option colors and omits invalid legacy colors", async () => {
+    const cp = createChokePoint(pool);
+    const database = await cp.createDatabase({ name: "Custom colors" });
+    const valid = await cp.createProperty({
+      databaseId: database.id,
+      key: "validColor",
+      name: "Valid",
+      type: "select",
+      config: { options: [{ key: "one", color: "#ff3b30" }] },
+    });
+    const legacy = await cp.createProperty({
+      databaseId: database.id,
+      key: "legacyColor",
+      name: "Legacy",
+      type: "select",
+      config: { options: [{ key: "one" }] },
+    });
+    // The production property API refuses this synthetic legacy shape.
+    const changed = await pool.query("UPDATE properties SET config = $2::jsonb WHERE id = $1", [
+      legacy.id,
+      JSON.stringify({ options: [{ key: "one", color: "red" }] }),
+    ]);
+    expect(changed.rowCount).toBe(1);
+    const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    const projection = z
+      .object({
+        databases: z.array(
+          z.object({
+            databaseId: z.string(),
+            properties: z.array(
+              z.object({
+                id: z.string(),
+                options: z.array(z.object({ key: z.string(), color: z.string().optional() }).passthrough()).optional(),
+              }),
+            ),
+          }),
+        ),
+      })
+      .parse(body);
+    const properties = projection.databases.find((entry) => entry.databaseId === database.id)?.properties;
+    expect(properties?.find((entry) => entry.id === valid.id)?.options).toEqual([
+      expect.objectContaining({ key: "one", color: "#FF3B30" }),
+    ]);
+    expect(properties?.find((entry) => entry.id === legacy.id)?.options).toEqual([
+      expect.not.objectContaining({ color: expect.anything() }),
+    ]);
+  });
+
   it("projects stored defaults including the unresolved today token", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
     expect(res.status).toBe(200);
@@ -263,7 +313,12 @@ describe("createSchemaRequestListener (issue #147)", () => {
               filterable: true,
               id: expect.stringMatching(/.+/),
               config: { default: "inProgress" },
-              options: expect.arrayContaining([expect.objectContaining({ key: "inProgress" })]),
+              options: expect.arrayContaining([
+                expect.objectContaining({ key: "inProgress", color: "#007AFF" }),
+                expect.objectContaining({ key: "longTerm", color: "#AF52DE" }),
+                expect.objectContaining({ key: "done", color: "#34C759" }),
+                expect.objectContaining({ key: "archived", color: "#8E8E93" }),
+              ]),
             }),
           ]),
         }),

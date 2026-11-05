@@ -26,8 +26,8 @@ import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGu
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
+function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
+  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
 }
 
 interface PropSpec {
@@ -127,7 +127,10 @@ export async function seedLibraryModuleInTransaction(
       name: null,
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["toRead", "reading", "read"]), default: "toRead" },
+      config: {
+        ...selectConfig(["toRead", "reading", "read"], { toRead: "#8E8E93", reading: "#007AFF", read: "#34C759" }),
+        default: "toRead",
+      },
     },
   ]);
 
@@ -156,7 +159,14 @@ export async function seedLibraryModuleInTransaction(
       name: null,
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["planned", "watching", "watched"]), default: "planned" },
+      config: {
+        ...selectConfig(["planned", "watching", "watched"], {
+          planned: "#8E8E93",
+          watching: "#007AFF",
+          watched: "#34C759",
+        }),
+        default: "planned",
+      },
     },
     // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
     { key: "notes", name: null, type: "longText", owner: "user" },
