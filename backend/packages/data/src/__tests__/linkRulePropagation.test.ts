@@ -3,16 +3,20 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { assertRelationCreatableWithClient } from "../chokePoint/relationOps.js";
+import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { createActionQueueAffinity, createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { enqueueLinkPropagation, handleLinkPropagation } from "../valueLinks/linkPropagation.js";
+import { lockItemById } from "../chokePoint/itemsStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let admin: Pool;
@@ -124,6 +128,221 @@ describe("link rule propagation", () => {
       );
       expect(remaining.rowCount).toBe(0);
     });
+  });
+
+  it("rolls back the via edge, inherited value, link and queued propagation together", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const databases = await cp.listDatabases();
+      const areas = databases.find((db) => db.ownerModuleId === "areas");
+      const projects = databases.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      const before = await cp.getItem(projects.id, target.id);
+      const jobsBefore = await admin.query<{ key: string | null }>(
+        "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+        ["valueLinksPropagate"],
+      );
+      const failure = new Error("fixture rollback");
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          withTransaction(data, async (client) => {
+            await createRelationWithClient(client, {
+              relationPropertyId: via.id,
+              callerItemId: target.id,
+              targetItemId: area.id,
+            });
+            expect((await client.query("SELECT id FROM value_links WHERE item_id = $1", [target.id])).rowCount).toBe(1);
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(await cp.getItem(projects.id, target.id)).toEqual(before);
+        expect(await cp.listItemRelations(target.id)).toEqual([]);
+        const links = await withTransaction(data, (client) =>
+          client.query("SELECT id FROM value_links WHERE item_id = $1", [target.id]),
+        );
+        expect(links.rowCount).toBe(0);
+        expect(
+          (
+            await admin.query<{ key: string | null }>(
+              "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+              ["valueLinksPropagate"],
+            )
+          ).rows,
+        ).toEqual(jobsBefore.rows);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === target.id)).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+  });
+
+  it("rechecks a user-broken link after waiting for the item reservation", async () => {
+    const fixture = await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const databases = await cp.listDatabases();
+      const areas = databases.find((db) => db.ownerModuleId === "areas");
+      const projects = databases.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "New source" } });
+      return { cp, areas, projects, source, target };
+    });
+    let release!: () => void;
+    let signal!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<number>((resolve) => {
+      signal = resolve;
+    });
+    const holder = runInTenant(tenant, () =>
+      withTransaction(data, async (client) => {
+        const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        if (!pid.rows[0]) throw new Error("Missing holder PID");
+        await updateItemWithClient(client, {
+          databaseId: fixture.projects.id,
+          itemId: fixture.target.id,
+          propertiesPatch: { name: "User choice" },
+        });
+        signal(pid.rows[0].pid);
+        await gate;
+      }),
+    );
+    let propagation: Promise<void> | undefined;
+    const failures: unknown[] = [];
+    try {
+      const holderPid = await Promise.race([
+        locked,
+        holder.then(() => {
+          throw new Error("User-break holder exited before the barrier");
+        }),
+      ]);
+      propagation = runInTenant(tenant, () =>
+        handleLinkPropagation(data, { ruleKey, sourceItemId: fixture.source.id, hop: 1 }),
+      );
+      await vi.waitFor(async () => {
+        const blocked = await admin.query<{ blocked: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid))) AS blocked",
+          [holderPid],
+        );
+        expect(blocked.rows[0]?.blocked).toBe(true);
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const work of [holder, propagation]) {
+      if (!work) continue;
+      try {
+        await work;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "User-break race or participant failed");
+    await runInTenant(tenant, async () => {
+      expect((await fixture.cp.getItem(fixture.projects.id, fixture.target.id))?.properties.name).toBe("User choice");
+      const links = await withTransaction(data, (client) =>
+        client.query<{ state: string }>("SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'", [
+          fixture.target.id,
+        ]),
+      );
+      expect(links.rows).toEqual([{ state: "broken" }]);
+    });
+  });
+
+  it("keeps a same-budget successor when the registered propagation job is running", async () => {
+    const fixture = await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "Changed" } });
+      return { cp, projects, source, target };
+    });
+    const key = `valueLinksPropagate:${tenant}:${ruleKey}:${fixture.source.id}:1`;
+    const initial = await admin.query<{ id: string }>("SELECT id::text FROM graphile_worker.jobs WHERE key = $1", [
+      key,
+    ]);
+    expect(initial.rows).toHaveLength(1);
+    let release!: () => void;
+    let signal!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      signal = resolve;
+    });
+    const holder = runInTenant(tenant, () =>
+      withTransaction(data, async (client) => {
+        if (!(await lockItemById(client, fixture.projects.id, fixture.target.id))) throw new Error("Target missing");
+        signal();
+        await gate;
+      }),
+    );
+    let worker: Promise<void> | undefined;
+    const failures: unknown[] = [];
+    try {
+      await Promise.race([
+        locked,
+        holder.then(() => {
+          throw new Error("Holder exited before barrier");
+        }),
+      ]);
+      const handler = createCoreTaskList(data, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
+      if (!handler) throw new Error("Propagation handler missing");
+      worker = runOnce({ pgPool: data, taskList: { [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: handler } });
+      await vi.waitFor(async () => {
+        const current = await admin.query<{ locked_at: Date | null }>(
+          "SELECT locked_at FROM graphile_worker.jobs WHERE id = $1",
+          [initial.rows[0]!.id],
+        );
+        expect(current.rows[0]?.locked_at).not.toBeNull();
+      });
+      await runInTenant(tenant, () =>
+        withTransaction(data, (client) => enqueueLinkPropagation(client, ruleKey, fixture.source.id, 1)),
+      );
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id::text, key FROM graphile_worker.jobs WHERE id = $1 OR key = $2 ORDER BY id",
+        [initial.rows[0]!.id, key],
+      );
+      expect(jobs.rows).toHaveLength(2);
+      expect(jobs.rows.find((row) => row.id === initial.rows[0]!.id)?.key).toBeNull();
+      expect(jobs.rows.filter((row) => row.key === key)).toHaveLength(1);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const work of [holder, worker]) {
+      if (!work) continue;
+      try {
+        await work;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Successor test or participant failed");
+    expect(
+      (await runInTenant(tenant, () => fixture.cp.getItem(fixture.projects.id, fixture.target.id)))?.properties.name,
+    ).toBe("Changed");
   });
 
   it("does not create a link during relation admission or mutate a foreign tenant", async () => {

@@ -5,7 +5,7 @@ import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
@@ -16,6 +16,7 @@ import { createCoreTaskList } from "../worker.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
+import { withPropagationHop } from "../valueLinks/propagationContext.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -231,6 +232,46 @@ describe("value link via-edge union", () => {
         );
       expect((await fixture.cp.getItem(fixture.ids[6]!, fixture.items[6]!.id))?.properties.name).toBeUndefined();
     });
+    await runInTenant(tenant, () =>
+      fixture.cp.updateItem({
+        databaseId: fixture.ids[0]!,
+        itemId: fixture.items[0]!.id,
+        propertiesPatch: { name: "Changed" },
+      }),
+    );
+    const deepEvents: InvalidationEvent[] = [];
+    setInvalidationHook((event) => deepEvents.push(event));
+    try {
+      await runInTenant(tenant, () =>
+        handleLinkPropagation(data, { ruleKey: "fixtureChain.hop1", sourceItemId: fixture.items[0]!.id, hop: 3 }),
+      );
+      expect(
+        deepEvents.filter((event) => event.scope === "item" && event.itemId === fixture.items[1]!.id),
+      ).toHaveLength(1);
+      deepEvents.length = 0;
+      await runInTenant(tenant, () =>
+        handleLinkPropagation(data, { ruleKey: "fixtureChain.hop1", sourceItemId: fixture.items[0]!.id, hop: 1 }),
+      );
+      expect(deepEvents.filter((event) => event.scope === "item" && event.itemId === fixture.items[1]!.id)).toEqual([]);
+      const queued = await admin.query<{ key: string }>(
+        "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 AND key = ANY($2::text[]) ORDER BY key",
+        [
+          taskName,
+          [2, 4].map((hop) => `valueLinksPropagate:${tenant}:fixtureChain.hop2:${fixture.items[1]!.id}:${hop}`),
+        ],
+      );
+      expect(queued.rows).toHaveLength(2);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    await drain();
+    await runInTenant(tenant, async () => {
+      for (let index = 1; index <= 5; index++)
+        expect((await fixture.cp.getItem(fixture.ids[index]!, fixture.items[index]!.id))?.properties.name).toBe(
+          "Changed",
+        );
+      expect((await fixture.cp.getItem(fixture.ids[6]!, fixture.items[6]!.id))?.properties.name).toBeUndefined();
+    });
     const invalidations: InvalidationEvent[] = [];
     setInvalidationHook((event) => invalidations.push(event));
     try {
@@ -253,6 +294,92 @@ describe("value link via-edge union", () => {
     } finally {
       setInvalidationHook(() => {});
     }
+  });
+
+  it("keeps simultaneous tenant/client hop contexts separate from root writes", async () => {
+    const foreign = await createTestTenant(admin);
+    await runInTenant(foreign, () => seedSystem(data));
+    const make = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const cp = createChokePoint(data);
+        const dbs = await cp.listDatabases();
+        const areas = dbs.find((db) => db.ownerModuleId === "areas");
+        const projects = dbs.find((db) => db.ownerModuleId === "projects");
+        if (!areas || !projects) throw new Error("Fixture databases missing");
+        const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+        const project = await cp.createItem({ databaseId: projects.id, properties: {} });
+        const via = (await cp.listProperties(projects.id)).find((entry) => entry.key === "area");
+        if (!via) throw new Error("Fixture relation missing");
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: area.id });
+        return { areas, projects, area, project };
+      });
+    const a = await make(tenant);
+    const b = await make(foreign);
+    let release!: () => void;
+    let bothStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    const pids: number[] = [];
+    const run = (tenantId: string, fixture: typeof a, hop: number, root: boolean) =>
+      runInTenant(tenantId, () =>
+        withTransaction(data, async (client) =>
+          withPropagationHop(client, hop, async () => {
+            const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!pid.rows[0]) throw new Error("Missing backend PID");
+            pids.push(pid.rows[0].pid);
+            if (pids.length === 2) bothStarted();
+            await gate;
+            await updateItemWithClient(
+              client,
+              {
+                databaseId: fixture.projects.id,
+                itemId: fixture.project.id,
+                propertiesPatch: { name: `Inherited ${hop}` },
+              },
+              { systemOwnerProcess: "valueLinks" },
+            );
+            if (root)
+              await updateItemWithClient(
+                client,
+                { databaseId: fixture.areas.id, itemId: fixture.area.id, propertiesPatch: { name: "Root" } },
+                { writer: { writerKind: "user" } },
+              );
+          }),
+        ),
+      );
+    const work = [run(tenant, a, 3, true), run(foreign, b, 4, false)];
+    const failures: unknown[] = [];
+    try {
+      await Promise.race([
+        ready,
+        ...work.map((task) =>
+          task.then(() => {
+            throw new Error("Context participant exited before barrier");
+          }),
+        ),
+      ]);
+      expect(new Set(pids).size).toBe(2);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const result of await Promise.allSettled(work)) if (result.status === "rejected") failures.push(result.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Interleaved propagation contexts failed");
+    const expected = [
+      `valueLinksPropagate:${tenant}:fixtureChain.hop2:${a.project.id}:4`,
+      `valueLinksPropagate:${foreign}:fixtureChain.hop2:${b.project.id}:5`,
+      `valueLinksPropagate:${tenant}:fixtureChain.hop1:${a.area.id}:1`,
+    ];
+    const jobs = await admin.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
+      [expected],
+    );
+    expect(jobs.rows.map((row) => row.key).sort()).toEqual(expected.sort());
   });
 
   it("keeps the last single value when two source values conflict", async () => {
