@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptionsWithBufferEncoding } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -275,6 +275,12 @@ describe("POST /api/recordings through the dispatcher", () => {
   it("runs the queued production transcription of uploaded video with its recording date", async () => {
     const video = await new Promise<Buffer>((resolve, reject) => {
       const spawnRequestedAt = new Date().toISOString();
+      const options = {
+        encoding: "buffer",
+        maxBuffer: 2_000_000,
+        timeout: 25_000,
+        detached: true,
+      } satisfies ExecFileOptionsWithBufferEncoding & { detached: boolean };
       const child = execFile(
         "ffmpeg",
         [
@@ -301,8 +307,8 @@ describe("POST /api/recordings through the dispatcher", () => {
           "frag_keyframe+empty_moov+default_base_moof",
           "pipe:1",
         ],
-        { encoding: "buffer", maxBuffer: 2_000_000, timeout: 25_000, detached: true },
-        (error, stdout, stderr) => {
+        options,
+        (error: Error | null, stdout: Buffer, stderr: Buffer) => {
           process.stdout.write(
             `${JSON.stringify({ fixture: "recording-video", pid: child.pid, derivedPgid: child.pid, spawnRequestedAt, executable: "ffmpeg", argv: child.spawnargs, exitCode: child.exitCode, signal: child.signalCode, stderr: stderr.toString("utf8") })}\n`,
           );

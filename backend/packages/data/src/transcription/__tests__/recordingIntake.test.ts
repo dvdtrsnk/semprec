@@ -285,13 +285,17 @@ describe("recording intake", () => {
         failed = true;
       }
       unlock();
+      let holderError: unknown;
+      let holderFailed = false;
       try {
         await holder;
       } catch (error) {
-        if (failed)
-          throw new AggregateError([primary, error], "Recording test and holder both failed", { cause: primary });
-        throw error;
+        holderError = error;
+        holderFailed = true;
       }
+      if (failed && holderFailed)
+        throw new AggregateError([primary, holderError], "Recording test and holder both failed", { cause: primary });
+      if (holderFailed) throw holderError;
       if (failed) throw primary;
     });
   });
