@@ -1,4 +1,7 @@
 import "../../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +14,8 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createMailThread } from "../mailMessageMetaStore.js";
 import { runThreadsDatabaseCutoverMigration } from "../threadsDatabaseCutoverMigration.js";
+import { ingestEmailMessage } from "../ingest.js";
+import { LocalFsBlobStorageWriter } from "../blobStorage.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -72,6 +77,72 @@ describe("Threads database cutover", () => {
       );
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0]).toMatchObject({ name: "A subject" });
+    });
+  });
+  it("preserves an ingested message subject on its canonical Threads item", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(runtime);
+      const databases = await cp.listDatabases();
+      const db = (key: string) => {
+        const value = databases.find((entry) => entry.ownerModuleId === key);
+        if (!value) throw new Error(`Missing ${key} database`);
+        return value.id;
+      };
+      const props = await cp.listProperties(db("emails"));
+      const prop = (key: string) => {
+        const value = props.find((entry) => entry.key === key);
+        if (!value) throw new Error(`Missing ${key} property`);
+        return value.id;
+      };
+      const mailbox = await cp.createItem({
+        databaseId: db("mailboxes"),
+        properties: { name: "Mailbox", provider: "gmail" },
+      });
+      const folder = await withTransaction(runtime, (client) =>
+        createItemWithClient(
+          client,
+          {
+            databaseId: db("folders"),
+            properties: { name: "Inbox", behavior: "folder", specialPurpose: "inbox" },
+          },
+          { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+        ),
+      );
+      const result = await withTransaction(runtime, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: db("emails"),
+          filesDatabaseId: db("files"),
+          folderRelationPropertyId: prop("folder"),
+          attachmentsRelationPropertyId: prop("attachments"),
+          mailboxItemId: mailbox.id,
+          folderItemId: folder.id,
+          messageId: "<subject@example.test>",
+          references: [],
+          subject: "Canonical ingested subject",
+          envelope: { from: { address: "sender@example.test" } },
+          bodyText: "Body",
+          attachments: [],
+          storage: new LocalFsBlobStorageWriter(join(tmpdir(), `threads-ingest-${randomUUID()}`)),
+          storageKeyPrefix: "fixture",
+        }),
+      );
+      const linked = await withTransaction(runtime, (client) =>
+        client.query<{ email_id: string; thread_id: string; item_id: string; name: string }>(
+          `SELECT m.item_id AS email_id, t.id AS thread_id, t.item_id, i.properties->>'name' AS name
+         FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id
+         JOIN items i ON i.tenant_id = t.tenant_id AND i.database_id = $2 AND i.id = t.item_id
+         WHERE m.tenant_id = app_tenant_default() AND m.item_id = $1`,
+          [result.itemId, db("threads")],
+        ),
+      );
+      expect(linked.rows).toEqual([
+        {
+          email_id: result.itemId,
+          thread_id: expect.any(String),
+          item_id: expect.any(String),
+          name: "Canonical ingested subject",
+        },
+      ]);
     });
   });
   it("rolls back the new thread and item together", async () => {
@@ -167,6 +238,72 @@ describe("Threads database cutover", () => {
       );
       expect(rows.rows).toEqual([{ item_id: null }]);
     });
+  });
+  it("creates a missing historical Threads catalog through the registered cutover and replays", async () => {
+    const threadId = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const threads = await getDatabaseByModuleId(client, "threads");
+        const emails = await getDatabaseByModuleId(client, "emails");
+        if (!threads || !emails) throw new Error("Missing seeded catalog");
+        const existing = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE tenant_id = $1 AND database_id = $2",
+          [tenant, threads.id],
+        );
+        expect(existing.rows).toEqual([{ count: 0 }]);
+        // Synthetic pre-cutover catalog: supported current seeding always creates Threads.
+        const removed = await client.query(
+          "DELETE FROM databases WHERE tenant_id = $1 AND id = $2 AND owner_module_id = 'threads'",
+          [tenant, threads.id],
+        );
+        expect(removed.rowCount).toBe(1);
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO mail_threads (tenant_id, subject_hint) VALUES ($1, 'Historical subject') RETURNING id",
+          [tenant],
+        );
+        expect(thread.rowCount).toBe(1);
+        if (!thread.rows[0]) throw new Error("Missing historical thread");
+        const email = await createItemWithClient(
+          client,
+          {
+            databaseId: emails.id,
+            properties: { name: "Historical subject", date: "2025-01-01T00:00:00Z" },
+          },
+          { allowedSystemKeys: ["name", "date"] },
+        );
+        const meta = await client.query(
+          "INSERT INTO mail_message_meta (tenant_id, item_id, message_id, thread_id) VALUES ($1, $2, $3, $4)",
+          [tenant, email.id, `<historical-${thread.rows[0].id}@example.test>`, thread.rows[0].id],
+        );
+        expect(meta.rowCount).toBe(1);
+        return thread.rows[0].id;
+      }),
+    );
+    const run = () => runAsSystem("test registered missing Threads cutover", () => runTenantCutoverMigrations(runtime));
+    await run();
+    const read = () =>
+      runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threads = await getDatabaseByModuleId(client, "threads");
+          if (!threads) throw new Error("Threads catalog was not created");
+          const properties = await createChokePoint(runtime).listProperties(threads.id);
+          const row = await client.query<{ item_id: string; name: string; created_at: string }>(
+            `SELECT t.item_id, i.properties->>'name' AS name,
+          to_char(t.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
+         FROM mail_threads t JOIN items i ON i.tenant_id = t.tenant_id AND i.database_id = $2 AND i.id = t.item_id
+         WHERE t.tenant_id = $1 AND t.id = $3`,
+            [tenant, threads.id, threadId],
+          );
+          return { threads, properties, rows: row.rows };
+        }),
+      );
+    const first = await read();
+    expect(first.threads.schemaLocked).toBe(true);
+    expect(first.properties.map((property) => property.key).sort()).toEqual(["company", "name", "project"]);
+    expect(first.rows).toEqual([
+      { item_id: expect.any(String), name: "Historical subject", created_at: "2025-01-01T00:00:00.000000Z" },
+    ]);
+    await run();
+    expect(await read()).toEqual(first);
   });
   it("runs the registered populated-tenant cutover and preserves its result on replay", async () => {
     const id = await runInTenant(tenant, async () => {

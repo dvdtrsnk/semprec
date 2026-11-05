@@ -4,9 +4,16 @@ import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getItemById, lockItemById } from "../../chokePoint/itemsStore.js";
+import { createRelationPropertyWithClient } from "../../chokePoint/relationPropertyWrites.js";
+import { registerRelationEdgeWriteHook } from "../../chokePoint/hooks.js";
 import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
 import { VALUE_LINKS_OWNER_PROCESS } from "../../chokePoint/valueLinkWrites.js";
-import { assertRelationTargetLinkableWithClient, createRelationWithClient } from "../../chokePoint/relationOps.js";
+import {
+  assertRelationTargetLinkableWithClient,
+  createRelationWithClient,
+  deleteRelationWithClient,
+  updateRelationWithClient,
+} from "../../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem } from "../../chokePoint/relationsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -183,6 +190,151 @@ describe("Threads single-value edges", () => {
       expect(results.loser).toEqual([]);
       const deleted = await withTransaction(runtime, (client) => getItemById(client, db("threads"), loserItem));
       expect(deleted?.deletedAt).toBeTruthy();
+    });
+  });
+
+  it.each(["project", "company"])("keeps the winning %s or inherits it when absent", async (key) => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(runtime);
+      const databases = await cp.listDatabases();
+      const threads = databases.find((database) => database.ownerModuleId === "threads");
+      const targets = databases.find(
+        (database) => database.ownerModuleId === (key === "project" ? "projects" : "companies"),
+      );
+      if (!threads || !targets) throw new Error("Missing merge databases");
+      const property = (await cp.listProperties(threads.id)).find((entry) => entry.key === key);
+      if (!property) throw new Error(`Missing Threads.${key}`);
+      const inherited = await cp.createItem({ databaseId: targets.id, properties: { name: "Inherited" } });
+      const retained = await cp.createItem({ databaseId: targets.id, properties: { name: "Retained" } });
+      const merge = async (winnerHasValue: boolean) => {
+        const loser = await withTransaction(runtime, (client) => createMailThread(client, "Loser"));
+        const winner = await withTransaction(runtime, (client) => createMailThread(client, "Winner"));
+        const rows = await withTransaction(runtime, (client) =>
+          client.query<{ id: string; item_id: string }>(
+            "SELECT id, item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = ANY($1::uuid[])",
+            [[loser.id, winner.id]],
+          ),
+        );
+        const loserItem = rows.rows.find((row) => row.id === loser.id)?.item_id;
+        const winnerItem = rows.rows.find((row) => row.id === winner.id)?.item_id;
+        if (!loserItem || !winnerItem) throw new Error("Missing thread bindings");
+        await cp.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: loserItem,
+          targetItemId: inherited.id,
+        });
+        if (winnerHasValue)
+          await cp.createRelation({
+            relationPropertyId: property.id,
+            callerItemId: winnerItem,
+            targetItemId: retained.id,
+          });
+        await withTransaction(runtime, (client) => reassignThread(client, loser.id, winner.id));
+        const edges = await withTransaction(runtime, async (client) => {
+          const definition = await getRelationDefinitionByPropertyId(client, property.id);
+          if (!definition) throw new Error("Missing definition");
+          return listRelationsForItem(client, definition.id, winnerItem);
+        });
+        expect(edges).toHaveLength(1);
+        expect([edges[0]?.itemA, edges[0]?.itemB]).toContain(winnerHasValue ? retained.id : inherited.id);
+        expect([edges[0]?.itemA, edges[0]?.itemB]).not.toContain(winnerHasValue ? inherited.id : retained.id);
+        expect(
+          (await withTransaction(runtime, (client) => getItemById(client, threads.id, loserItem)))?.deletedAt,
+        ).toBeTruthy();
+      };
+      await merge(false);
+      await merge(true);
+    });
+  });
+
+  it("transfers a protected incoming edge without granting generic writes and rolls back hook refusal", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(runtime);
+      const threads = (await cp.listDatabases()).find((database) => database.ownerModuleId === "threads");
+      if (!threads) throw new Error("Missing Threads database");
+      const source = await cp.createDatabase({ name: "Protected source" });
+      const item = await cp.createItem({ databaseId: source.id, properties: {} });
+      const { property } = await withTransaction(runtime, (client) =>
+        createRelationPropertyWithClient(
+          client,
+          {
+            sourceDatabaseId: source.id,
+            targetDatabaseId: threads.id,
+            key: "protectedThread",
+            name: "Protected thread",
+            cardinality: "many_to_many",
+            owner: "system",
+            ownerProcess: "fixtureOwner",
+          },
+          { ownerProcess: "fixtureOwner" },
+        ),
+      );
+      const loser = await withTransaction(runtime, (client) => createMailThread(client, "Loser"));
+      const winner = await withTransaction(runtime, (client) => createMailThread(client, "Winner"));
+      const bindings = await withTransaction(runtime, (client) =>
+        client.query<{ id: string; item_id: string }>(
+          "SELECT id, item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = ANY($1::uuid[])",
+          [[loser.id, winner.id]],
+        ),
+      );
+      const loserItem = bindings.rows.find((row) => row.id === loser.id)?.item_id;
+      const winnerItem = bindings.rows.find((row) => row.id === winner.id)?.item_id;
+      if (!loserItem || !winnerItem) throw new Error("Missing thread bindings");
+      const edge = {
+        relationPropertyId: property.id,
+        callerItemId: item.id,
+        targetItemId: loserItem,
+        metadata: { source: "protected" },
+      };
+      await expect(cp.createRelation(edge)).rejects.toMatchObject({ code: "owner_violation" });
+      await withTransaction(runtime, (client) =>
+        createRelationWithClient(client, edge, { ownerProcess: "fixtureOwner" }),
+      );
+      let refuse = true;
+      let refusalCalls = 0;
+      registerRelationEdgeWriteHook(async (context) => {
+        if (refuse && context.edgeContext.property.id === property.id && context.targetItemId === winnerItem) {
+          refusalCalls += 1;
+          throw new Error("fixture domain refusal");
+        }
+      });
+      try {
+        await expect(
+          withTransaction(runtime, async (client) => {
+            await client.query("SAVEPOINT merge_attempt");
+            try {
+              await reassignThread(client, loser.id, winner.id);
+            } catch {
+              await client.query("ROLLBACK TO SAVEPOINT merge_attempt");
+            }
+          }),
+        ).rejects.toThrow("fixture domain refusal");
+        expect(refusalCalls).toBe(1);
+        const original = await withTransaction(runtime, async (client) => {
+          const definition = await getRelationDefinitionByPropertyId(client, property.id);
+          if (!definition) throw new Error("Missing protected definition");
+          return listRelationsForItem(client, definition.id, loserItem);
+        });
+        expect(original).toHaveLength(1);
+        expect(original[0]?.metadata).toEqual({ source: "protected" });
+        expect(
+          (await withTransaction(runtime, (client) => getItemById(client, threads.id, loserItem)))?.deletedAt,
+        ).toBeNull();
+        expect(await withTransaction(runtime, (client) => resolveMergedThreadId(client, loser.id))).toBe(loser.id);
+      } finally {
+        refuse = false;
+      }
+      await withTransaction(runtime, (client) => reassignThread(client, loser.id, winner.id));
+      const transferred = await withTransaction(runtime, async (client) => {
+        const definition = await getRelationDefinitionByPropertyId(client, property.id);
+        if (!definition) throw new Error("Missing protected definition");
+        return listRelationsForItem(client, definition.id, winnerItem);
+      });
+      expect(transferred).toHaveLength(1);
+      expect(transferred[0]?.metadata).toEqual({ source: "protected" });
+      await expect(cp.createRelation({ ...edge, targetItemId: winnerItem })).rejects.toMatchObject({
+        code: "owner_violation",
+      });
     });
   });
 
@@ -595,6 +747,91 @@ describe("Threads single-value edges", () => {
         if (lateOutcome) await lateOutcome;
         if (secondFailures.length === 1) throw secondFailures[0];
         if (secondFailures.length > 1) throw new AggregateError(secondFailures, "Merge-first writer or cleanup failed");
+
+        for (const mutation of ["update", "delete", "rollback"] as const) {
+          const pair = await threadPair();
+          const edge = {
+            relationPropertyId: initialProperty.property.id,
+            callerItemId: related.id,
+            targetItemId: pair.losingItem,
+          };
+          await cp.createRelation({ ...edge, metadata: { version: "original" } });
+          let release!: () => void;
+          let started!: (pid: number) => void;
+          const gate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const ready = new Promise<number>((resolve) => {
+            started = resolve;
+          });
+          const rollback = new Error("rollback thread relation mutation");
+          const writing = withTransaction(runtime, async (client) => {
+            const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!pid.rows[0]) throw new Error("Missing mutation PID");
+            if (mutation === "delete") await deleteRelationWithClient(client, edge);
+            else await updateRelationWithClient(client, { ...edge, metadata: { version: "updated" } });
+            started(pid.rows[0].pid);
+            await gate;
+            if (mutation === "rollback") throw rollback;
+          });
+          const writerOutcome = writing.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          let merging: Promise<unknown> | undefined;
+          const failures: unknown[] = [];
+          try {
+            const writerPid = await bounded(
+              Promise.race([
+                ready,
+                writerOutcome.then(() => {
+                  throw new Error("Mutation exited early");
+                }),
+              ]),
+            );
+            let mergeStarted!: (pid: number) => void;
+            const mergeReady = new Promise<number>((resolve) => {
+              mergeStarted = resolve;
+            });
+            merging = withTransaction(runtime, async (client) => {
+              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+              if (!pid.rows[0]) throw new Error("Missing merge PID");
+              mergeStarted(pid.rows[0].pid);
+              await reassignThread(client, pair.loser, pair.winner);
+            }).then(
+              () => null,
+              (error: unknown) => error,
+            );
+            const mergePid = await bounded(mergeReady);
+            expect(mergePid).not.toBe(writerPid);
+            await observeBlock(writerPid, mergePid);
+          } catch (error) {
+            failures.push(error);
+          }
+          release();
+          const writerError = await writerOutcome;
+          if (mutation === "rollback") expect(writerError).toBe(rollback);
+          else if (writerError) failures.push(writerError);
+          if (merging) {
+            const mergeError = await merging;
+            if (mergeError) failures.push(mergeError);
+          }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, "Thread mutation overlap failed");
+          const definition = await withTransaction(runtime, (client) =>
+            getRelationDefinitionByPropertyId(client, initialProperty.property.id),
+          );
+          if (!definition) throw new Error("Missing mutation definition");
+          const retained = await withTransaction(runtime, (client) =>
+            listRelationsForItem(client, definition.id, pair.winningItem),
+          );
+          expect(retained.map((entry) => entry.metadata)).toEqual(
+            mutation === "delete" ? [] : [{ version: mutation === "rollback" ? "original" : "updated" }],
+          );
+          expect(await withTransaction(runtime, (client) => resolveMergedThreadId(client, pair.loser))).toBe(
+            pair.winner,
+          );
+        }
       });
     } catch (error) {
       allFailures.push(error);

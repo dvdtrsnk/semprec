@@ -255,10 +255,11 @@ async function resolveItemOriginSource(
 /**
  * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
  * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
- * which only a `kind = 'transcript'` card has. A transcript card accepts exactly three shapes:
+ * which only a `kind = 'transcript'` card has. A transcript card can:
  * create a new Event (`'database'` targeting Events), link its transcript to an existing Event
  * (`'relation'` through the Transcripts `event` property), or map one of its speaker keys to a
- * person (`'relation'` through `speakers`, issue #185) — and never switches between an Event shape
+ * person (`'relation'` through `speakers`, issue #185), or create a person for a speaker card —
+ * and never switches between an Event shape
  * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
  * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
  * itself would raise. Returns the edge confirm must write for a transcript card (`null` for any

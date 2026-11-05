@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { createBlob } from "../../blobs/blobsStore.js";
@@ -58,10 +58,11 @@ describe("transcript detail", () => {
       const segments = [
         { speaker: "SPEAKER_00", text: "Hello", startsAt: 0, endsAt: 1 },
         { speaker: "SPEAKER_01", text: "Hi", startsAt: 2, endsAt: 3 },
+        { speaker: "SPEAKER_01", text: "Again", startsAt: 4, endsAt: 5 },
       ];
       await withTransaction(runtime, async (client) => {
         await writeComputed(client, f.db("transcripts"), f.transcript.id, "segments", segments);
-        await writeComputed(client, f.db("transcripts"), f.transcript.id, "durationSeconds", 3);
+        await writeComputed(client, f.db("transcripts"), f.transcript.id, "durationSeconds", 5);
         await writeComputed(client, f.db("transcripts"), f.transcript.id, "finalizedAt", "2026-01-01T12:00:00Z");
         await writeComputed(client, f.db("transcripts"), f.transcript.id, "language", "cs");
         await updateItemWithClient(client, {
@@ -89,7 +90,7 @@ describe("transcript detail", () => {
       expect(first.body).toMatchObject({
         speakerCount: 2,
         displayName: "Meeting",
-        durationSeconds: 3,
+        durationSeconds: 5,
         finalizedAt: "2026-01-01T12:00:00Z",
         language: "cs",
         notes: "Personal notes",
@@ -104,7 +105,81 @@ describe("transcript detail", () => {
         speakers: expect.arrayContaining([
           expect.objectContaining({ speaker: "SPEAKER_01", label: "Alice", personId: person.id }),
         ]),
-        segments: expect.arrayContaining([expect.objectContaining({ index: 1, label: "Alice" })]),
+        segments: [
+          expect.objectContaining({ index: 0, speaker: "SPEAKER_00", label: "Bob" }),
+          expect.objectContaining({ index: 1, speaker: "SPEAKER_01", label: "Alice" }),
+          expect.objectContaining({ index: 2, speaker: "SPEAKER_01", label: "Alice" }),
+        ],
+      });
+    });
+  });
+  it("keeps one captured transcript when segments publish during a detail read", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      const published = [{ speaker: "SPEAKER_00", text: "Published after capture", startsAt: 0, endsAt: 1 }];
+      let reads = 0;
+      let readerPid: number | undefined;
+      let writerPid: number | undefined;
+      let committed = false;
+      const readingPool = new Proxy(runtime, {
+        get(target, property, receiver) {
+          if (property !== "connect") {
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async (): Promise<PoolClient> => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, key, innerReceiver) {
+                if (key !== "query") {
+                  const value: unknown = Reflect.get(connection, key, innerReceiver);
+                  return typeof value === "function" ? value.bind(connection) : value;
+                }
+                return async (...args: unknown[]) => {
+                  const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                  const sql = args[0];
+                  const values = args[1];
+                  if (
+                    typeof sql === "string" &&
+                    sql.includes("FROM items WHERE database_id = $1 AND id = $2") &&
+                    Array.isArray(values) &&
+                    values[0] === f.db("transcripts") &&
+                    values[1] === f.transcript.id
+                  ) {
+                    reads += 1;
+                    if (reads === 1) {
+                      const reader = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                      readerPid = reader.rows[0]?.pid;
+                      await withTransaction(runtime, async (writer) => {
+                        const writerRow = await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                        writerPid = writerRow.rows[0]?.pid;
+                        await writeComputed(writer, f.db("transcripts"), f.transcript.id, "segments", published);
+                      });
+                      committed = true;
+                    }
+                  }
+                  return result;
+                };
+              },
+            });
+          };
+        },
+      });
+      const response = await createTranscriptDetailRouteHandler(readingPool)({
+        params: { id: f.transcript.id },
+        identity: { user: { locale: "en" } },
+      });
+      expect(committed).toBe(true);
+      expect(readerPid).toBeTypeOf("number");
+      expect(writerPid).toBeTypeOf("number");
+      expect(writerPid).not.toBe(readerPid);
+      expect(reads).toBe(1);
+      expect(response.body).toMatchObject({ speakerCount: 0, speakers: [], segments: [] });
+      const next = await handler()({ params: { id: f.transcript.id }, identity: { user: { locale: "en" } } });
+      expect(next.body).toMatchObject({
+        speakerCount: 1,
+        speakers: [{ speaker: "SPEAKER_00" }],
+        segments: [{ text: "Published after capture" }],
       });
     });
   });

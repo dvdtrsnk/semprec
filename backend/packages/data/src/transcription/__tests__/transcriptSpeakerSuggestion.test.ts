@@ -208,6 +208,19 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(found?.candidates).toHaveLength(2);
     });
 
+    it("ignores an incidental historical title on a participant", async () => {
+      // Synthetic historical JSON: the current People writer has no supported title property.
+      const historical = await pool.query(
+        "UPDATE items SET properties = jsonb_set(properties, '{title}', to_jsonb($4::text)) WHERE tenant_id = $1 AND database_id = $2 AND id = $3",
+        [getTenantZeroId(), peopleId, aliceId, "Historical title"],
+      );
+      expect(historical.rowCount).toBe(1);
+      await linkEvent();
+      expect((await context())?.candidates).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: aliceId, name: "Alice", title: null })]),
+      );
+    });
+
     it("excludes participants of a trashed Event while keeping the tenant's own person", async () => {
       await withTransaction(pool, (client) => setSelfPersonId(client, aliceId));
       await linkEvent();
@@ -294,6 +307,38 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     for (const card of cards)
       for (const quote of card.context.quotes)
         expect(segments[quote.segmentIndex]?.text.startsWith(quote.text)).toBe(true);
+  });
+
+  it("uses only eligible quotes while retaining each speaker's actual first start", async () => {
+    const segments = [
+      { speaker: "SPEAKER_00", text: "First short", startsAt: 0, endsAt: 1 },
+      { speaker: "SPEAKER_01", text: "Short one", startsAt: 1, endsAt: 2 },
+      { speaker: "SPEAKER_01", text: "Short two", startsAt: 2, endsAt: 3 },
+      { speaker: "SPEAKER_02", text: "No quote one", startsAt: 3, endsAt: 4 },
+      { speaker: "SPEAKER_02", text: "No quote two", startsAt: 4, endsAt: 5 },
+      { speaker: "SPEAKER_02", text: "No quote three", startsAt: 5, endsAt: 6 },
+      { speaker: "SPEAKER_00", text: "One two three four five six", startsAt: 6, endsAt: 7 },
+      { speaker: "SPEAKER_00", text: "One two three four five six seven", startsAt: 7, endsAt: 8 },
+      { speaker: "SPEAKER_00", text: "One two three four five six seven eight", startsAt: 8, endsAt: 9 },
+      { speaker: "SPEAKER_00", text: "One two three four five six seven eight nine", startsAt: 9, endsAt: 10 },
+      { speaker: "SPEAKER_01", text: "One eligible quote has exactly six words", startsAt: 10, endsAt: 11 },
+    ];
+    await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
+    const result = await context();
+    expect(result?.details).toEqual([
+      {
+        speaker: "SPEAKER_00",
+        ordinal: 1,
+        firstStartsAt: 0,
+        quotes: [
+          { segmentIndex: 7, text: segments[7]!.text },
+          { segmentIndex: 8, text: segments[8]!.text },
+          { segmentIndex: 9, text: segments[9]!.text },
+        ],
+      },
+      { speaker: "SPEAKER_01", ordinal: 2, firstStartsAt: 1, quotes: [{ segmentIndex: 10, text: segments[10]!.text }] },
+      { speaker: "SPEAKER_02", ordinal: 3, firstStartsAt: 3, quotes: [] },
+    ]);
   });
 
   describe("proposeSpeakerMappings", () => {

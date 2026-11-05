@@ -145,7 +145,7 @@ describe("mail thread list", () => {
       const f = await setup();
       const email = await f.ingest({ id: "<related@example.test>" });
       const reply = await f.ingest({ id: "<related-reply@example.test>", refs: ["<related@example.test>"] });
-      await f.ingest({ id: "<unrelated@example.test>" });
+      const unrelated = await f.ingest({ id: "<unrelated@example.test>" });
       const area = await f.cp.createItem({ databaseId: f.db("areas"), properties: { name: "Area" } });
       const project = await f.cp.createItem({ databaseId: f.db("projects"), properties: { name: "Project" } });
       const person = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Person" } });
@@ -158,12 +158,18 @@ describe("mail thread list", () => {
       const threadProject = await property("threads", "project");
       const sender = await property("emails", "senderPeople");
       const recipients = await property("emails", "recipientsPeople");
-      const raw = await runtime.query<{ item_id: string }>(
-        `SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id WHERE m.tenant_id = app_tenant_default() AND m.item_id = $1`,
-        [email.itemId],
+      const raw = await runtime.query<{ item_id: string; thread_id: string; email_id: string }>(
+        `SELECT t.item_id, t.id AS thread_id, m.item_id AS email_id FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id WHERE m.tenant_id = app_tenant_default() AND m.item_id = ANY($1::uuid[])`,
+        [[email.itemId, unrelated.itemId]],
       );
-      const threadItem = raw.rows[0]?.item_id;
-      if (!threadItem) throw new Error("Missing Threads item");
+      const matching = raw.rows.find((row) => row.email_id === email.itemId);
+      const nonmatching = raw.rows.find((row) => row.email_id === unrelated.itemId);
+      const threadItem = matching?.item_id;
+      if (!threadItem || !matching || !nonmatching || matching.thread_id === nonmatching.thread_id)
+        throw new Error("Missing distinct Threads items");
+      expect(new Set((await list()).body.threads.map((thread) => thread.threadId))).toEqual(
+        new Set([matching.thread_id, nonmatching.thread_id]),
+      );
       await withTransaction(runtime, async (client) => {
         await createRelationWithClient(client, {
           relationPropertyId: projectArea,
@@ -193,7 +199,9 @@ describe("mail thread list", () => {
         `areaId=${area.id}&unread=true`,
         `areaId=${area.id}&personId=${person.id}`,
       ])
-        expect((await list(`/api/mail/threads?${query}`)).body.threads).toHaveLength(1);
+        expect((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId)).toEqual([
+          matching.thread_id,
+        ]);
       await expect(list("/api/mail/threads?personId=bad")).rejects.toMatchObject({
         status: 400,
         details: { field: "personId" },

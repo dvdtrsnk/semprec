@@ -18,6 +18,7 @@ import {
   enqueueTranscriptionJob,
   findTranscriptionJobId,
   readTranscriptionSourceFileItemId,
+  TRANSCRIPTION_OWNER_PROCESS,
 } from "./transcriptionJob.js";
 
 const requestRow = z.object({ event_item_id: z.uuid().nullable(), recorded_at: z.string().nullable() });
@@ -114,11 +115,11 @@ export async function recordRecordingIntake(
     }
     if (requested && transcriptId && transcript && !transcript.deletedAt && !existingEventId) {
       if (!(await tryLockRelationDefinition(client, definition.id))) throw recordingBusy();
-      await createRelationWithClient(client, {
-        relationPropertyId: property.id,
-        callerItemId: transcriptId,
-        targetItemId: requested,
-      });
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: property.id, callerItemId: transcriptId, targetItemId: requested },
+        { ownerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
     }
     if (!transcriptId && !(await findTranscriptionJobId(client, file.id)))
       await enqueueTranscriptionJob(client, { fileItemId: file.id });

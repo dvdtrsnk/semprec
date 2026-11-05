@@ -120,7 +120,7 @@ export async function readSpeakerSuggestionContext(
       {
         id: person.id,
         name,
-        title: typeof person.properties.title === "string" ? person.properties.title : null,
+        title: null,
         invitationStatus: statuses.get(person.id) ?? null,
       },
     ];
