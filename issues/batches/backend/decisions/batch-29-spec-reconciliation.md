@@ -135,3 +135,16 @@ Use existing runtime-role and socket composition, bounded injected provider
 fixtures and actual library task owner. A hook observation alone remains partial
 for client receipt. No production transport, provider, timeout or authentication
 change is authorized. Fold this evidence into a coherent targeted group.
+
+## Both transcription producer jobs: gh1624
+
+Authorize recordingsHandler.test.ts for actual POST /api/recordings and
+transcriptionActions.test.ts for actual core.filesTranscriptionTrigger. Assert
+both transcriptionCreate and transcriptionJob payloads, trusted tenant envelope
+and expected lane/key registration from each named producer, with successful
+commit and rollback-or-refusal/no-effect controls. Preserve prior assertions
+and use existing queue inspection, runtime-role and HTTP harnesses. Mock no
+producer or enqueue owner; no provider call or production scope is added.
+Consolidating the duplicate recordingIntake Touches entry preserves enqueue
+and typed reader permissions, event/time invariance and exact-shape/tenant
+controls. Source Task/AC and outer six criteria remain unchanged.
