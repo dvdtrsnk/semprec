@@ -2546,8 +2546,8 @@
       "sequence": 26,
       "status": "proposed",
       "title": "[backend-delivery 26/74] Implement data/tasks, application/projectAgentGuidance, data/guidanceDrift changes",
-      "bodyCharacters": 56852,
-      "specSha256": "d359587f8d84dfd22eed8009d5d022b263068ca2e8bc75ff8b02f574d90cda1f",
+      "bodyCharacters": 59279,
+      "specSha256": "39a337c2d80d6e4b8f06910797bf6acf3ac2fda12178680d66472f2227d756a9",
       "members": [
         {
           "id": "gh-1540",
@@ -2571,7 +2571,7 @@
         },
         {
           "id": "gh-1544",
-          "specSha256": "826224c3ef9b7db9e988b91bf5597b681aba193ddaf58e4fbfeafa676b381503",
+          "specSha256": "364eded05f02a2fa8579b26a935e73640eaa976b94d4c113142953f8a6d70c77",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1540"
@@ -2580,7 +2580,7 @@
         },
         {
           "id": "gh-1602",
-          "specSha256": "1ba0f46d718abded13c56fdc202e22a38f410b6621fd36ff473b34d7b9c964b5",
+          "specSha256": "3aecf2955b5cbfebd286597c0eb344c64a3f323abcdfa099b6573cfff5cb5208",
           "parent": "gh-1345",
           "dependencies": [
             "gh-1540"
@@ -2598,7 +2598,7 @@
         },
         {
           "id": "gh-1548",
-          "specSha256": "fb0609b5c7a31839cba8a695e02d0a471dcdfb1cfd24ac894d20c5682d573b6b",
+          "specSha256": "27396345ca47b043ed08b8ccba2618e42392e5135919a8fb1af31e1979e14709",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1546"
@@ -2607,7 +2607,7 @@
         },
         {
           "id": "gh-1629",
-          "specSha256": "a24a0cbf65a93384fa61927f7fb76e4d55753dbf502b20e75541cc7102a8ee71",
+          "specSha256": "9f7d3adbd1e72bad2da25047635480a0edd473aa6f1bd13d1cbaf06feba19ec7",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1375",
