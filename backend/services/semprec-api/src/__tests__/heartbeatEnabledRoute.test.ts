@@ -186,6 +186,7 @@ describe("heartbeat enabled route", () => {
         });
       const enabled = await patch({ enabled: true });
       expect(enabled.status).toBe(200);
+      expect(enabled.headers.get("cache-control")).toBe("no-store");
       expect(await enabled.json()).toEqual({ id: heartbeat.id, enabled: true, nextFireAt: "2031-01-01T00:00:00.000Z" });
       expect((await patch({ enabled: false, name: "unexpected" })).status).toBe(400);
       active.delete("fixtureRule");

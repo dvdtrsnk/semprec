@@ -1127,6 +1127,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       ids.push(result.problemId);
     }
     const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" }, [ids[1]!]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
     expect(answer.text).not.toContain(ids[0]);
   },
   "ai usage report": async () => {
@@ -1228,6 +1229,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const first = await seed(a);
     const second = await seed(b);
     const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/threads" }, [second]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
     expect(answer.text).not.toContain(first);
   },
   "mailbox removal impact": async () => {
