@@ -507,7 +507,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     }
   });
 
-  it("replays an idempotent create without writing, running a create hook, or keeping the second transform result", async () => {
+  it("replays an idempotent create without running the transform or create side effects again", async () => {
     const databaseId = await makeProbeDatabase();
     let transformCalls = 0;
     registerItemPreWriteTransform(PROBE_MODULE, async ({ patch }) => {
@@ -570,13 +570,30 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       expect(heartbeat).toHaveBeenCalledTimes(1);
       expect(firstEvents).toEqual([expect.objectContaining({ scope: "item", itemId: first.id, op: "create" })]);
       expect(events).toEqual(firstEvents);
-      // The transforms run before insertItemWithReplay checks the key, so the replay invokes the transform
-      // once more and discards that result (see the choke-point ADR, consequences).
-      expect(transformCalls).toBe(2);
+      expect(transformCalls).toBe(1);
     } finally {
       heartbeat.mockRestore();
       setInvalidationHook(() => {});
     }
+  });
+
+  it("rolls back the idempotency reservation when a fresh create transform fails", async () => {
+    const databaseId = await makeProbeDatabase();
+    registerItemPreWriteTransform(PROBE_MODULE, async () => {
+      throw new ValidationError("fixture failure");
+    });
+    await expect(
+      inTenantZero(() =>
+        chokePoint.createItem({ databaseId, properties: { title: "x" }, idempotencyKey: "failed-transform" }),
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(await countItems(databaseId)).toBe(0);
+    const result = await inTenantZero(() =>
+      pool.query<{ count: string }>("SELECT count(*)::text AS count FROM idempotency_keys WHERE key = $1", [
+        "failed-transform",
+      ]),
+    );
+    expect(result.rows).toEqual([{ count: "0" }]);
   });
 
   it("refuses a create whose transform adds an owner:system key of another process, and stores nothing", async () => {

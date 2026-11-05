@@ -23,6 +23,13 @@ const AGENT_GUIDANCE_DRIFT_RULE = { kind: "dailyTime", at: "04:30" } as const;
  * computed occurrence actually differs from what's stored — never just because this ran again.
  */
 export const guidanceDriftHeartbeatStore: GuidanceHeartbeatStore<PoolClient> = {
+  async disableDriftHeartbeat(tx, projectItemId) {
+    const result = await tx.query(
+      "UPDATE project_heartbeats SET enabled = false WHERE project_item_id = $1 AND action_id = $2 AND enabled = true",
+      [projectItemId, AGENT_GUIDANCE_DRIFT_ACTION_ID],
+    );
+    if (result.rowCount === null || result.rowCount > 1) throw new Error("Unexpected guidance heartbeat update count");
+  },
   async upsertDriftHeartbeat(tx, projectItemId) {
     const timezone = await getSystemTimezone(tx);
     const nextFireAt = computeNextFireAt(AGENT_GUIDANCE_DRIFT_RULE, timezone, new Date());

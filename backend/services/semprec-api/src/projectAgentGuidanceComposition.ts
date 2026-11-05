@@ -13,6 +13,7 @@ import {
   guidanceDriftHeartbeatStore,
   guidanceReferenceStore,
   projectAgentGuidanceStore,
+  projectToolCallUsageStore,
 } from "@semprec/data";
 import { createGuidanceNotificationWriter } from "@semprec/notifications";
 import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
@@ -61,6 +62,7 @@ export function createAgentGuidanceDriftActionForApi(
   return createAgentGuidanceDriftAction<PoolClient>({
     transactions: createPoolClientTransactionRunner(pool),
     guidance: projectAgentGuidanceStore,
+    toolCallUsage: projectToolCallUsageStore,
     references: guidanceReferenceStore,
     findings: agentGuidanceDriftFindingsStore,
     notifications: createGuidanceNotificationWriter(),

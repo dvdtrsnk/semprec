@@ -1864,6 +1864,86 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await edgeExists(project, newArea)).toBe(true);
     });
 
+    it("requires before and no predicted after for implicit task completion, then confirms", async () => {
+      const task = await createIn("tasks", { name: "Task", status: "notDone" });
+      const base: Step = {
+        ref: "task",
+        op: "update",
+        itemId: task,
+        role: "primary",
+        properties: { status: "done" },
+        before: { properties: { status: "notDone" } },
+        after: { properties: { status: "done" } },
+      };
+      const missing = await cardWithSteps("tasks", [base]);
+      await expect(confirm(missing)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "task", field: "completedOn" },
+      });
+      expect(await cardStatus(missing)).toBe("proposed");
+      const predicted = await cardWithSteps("tasks", [
+        {
+          ...base,
+          before: { properties: { status: "notDone", completedOn: null } },
+          after: { properties: { status: "done", completedOn: "2020-01-01" } },
+        },
+      ]);
+      await expect(confirm(predicted)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "task", field: "completedOn" },
+      });
+      const [unchanged] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(unchanged?.properties).toMatchObject({ status: "notDone" });
+      expect(unchanged?.properties.completedOn).toBeUndefined();
+      const valid = await cardWithSteps("tasks", [
+        { ...base, before: { properties: { status: "notDone", completedOn: null } } },
+      ]);
+      await confirm(valid);
+      const [done] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(done?.properties.status).toBe("done");
+      expect(typeof done?.properties.completedOn).toBe("string");
+    });
+
+    it("requires ordinary before and after values for explicit completion and clearing", async () => {
+      const task = await createIn("tasks", { name: "Task", status: "notDone" });
+      const complete: Step = {
+        ref: "task",
+        op: "update",
+        itemId: task,
+        role: "primary",
+        properties: { status: "done", completedOn: "2020-01-01" },
+        before: { properties: { status: "notDone", completedOn: null } },
+        after: { properties: { status: "done", completedOn: "2020-01-01" } },
+      };
+      await confirm(await cardWithSteps("tasks", [complete]));
+      const clear: Step = {
+        ref: "task",
+        op: "update",
+        itemId: task,
+        role: "primary",
+        properties: { status: "notDone" },
+        before: { properties: { status: "done" } },
+        after: { properties: { status: "notDone" } },
+      };
+      const missing = await cardWithSteps("tasks", [clear]);
+      await expect(confirm(missing)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "task", field: "completedOn" },
+      });
+      const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(before?.properties.completedOn).toBe("2020-01-01");
+      const valid = await cardWithSteps("tasks", [
+        {
+          ...clear,
+          before: { properties: { status: "done", completedOn: "2020-01-01" } },
+          after: { properties: { status: "notDone", completedOn: null } },
+        },
+      ]);
+      await confirm(valid);
+      const [after] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(after?.properties).toMatchObject({ status: "notDone", completedOn: null, completedAt: null });
+    });
+
     it("clears task times only with explicit before and after coverage", async () => {
       const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
       const base: Step = {

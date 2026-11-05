@@ -19,6 +19,7 @@ import {
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29, same caveat as
@@ -45,8 +46,7 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
  * Same hand-maintained stand-in as `KNOWN_HEARTBEAT_ACTION_IDS` above, until the module registry
  * (issue #29) owns it: every `properties.owner_process` value the seeds and migrations write for a
  * system-owned property, so `moduleRegistry.checkDrift` has a real default to diff live
- * `owner_process` values against. The ten-database specs (seed/seedTenDatabases.ts) declare only
- * `TRANSCRIPTION_OWNER_PROCESS`.
+ * `owner_process` values against, including the ten-database Tasks and Transcripts owners.
  */
 export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   CALENDAR_MODULE_ID,
@@ -55,4 +55,5 @@ export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   INBOX_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
   TRANSCRIPTION_OWNER_PROCESS,
+  TASKS_MODULE_ID,
 ]);

@@ -32,11 +32,11 @@ export interface AiGatewayCompletionInput {
    * The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`.
    * `null` only for an operation the gateway attributes to no project
    * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`).
-   * Required for `'agent_guidance_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
+   * Required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
    */
   projectItemId: string | null;
   /**
-   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'inbox_proposal'`,
+   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'`,
    * `'inbox_attachment_extraction'`, `'transcript_summary'`, `'transcript_speaker_suggestion'`
    * or `'transcript_event_pick'`.
    */

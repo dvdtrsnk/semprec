@@ -27,7 +27,7 @@ import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServe
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
-import { prepareTaskWrite, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
+import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
@@ -42,10 +42,7 @@ import { inboxTypeEdgeDeleteHook, inboxTypeEdgeWriteHook } from "./inbox/inboxSo
 import { blobReferenceItemCreateHook, blobReferenceItemUpdateHook } from "./blobs/blobReferenceWriteHook.js";
 import { filesItemPreWriteTransform } from "./blobs/filesItemPreWriteTransform.js";
 
-registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, async (context) => ({
-  patch: await prepareTaskWrite(context),
-  deferredKeys: [],
-}));
+registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
 registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (context) => ({
   patch: await booksPreWriteTransform(context),
   deferredKeys: [],

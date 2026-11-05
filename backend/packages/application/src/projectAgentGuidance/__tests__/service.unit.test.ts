@@ -42,6 +42,12 @@ function fakeStore(initial: ProjectAgentGuidance | null = null): ProjectAgentGui
     async load(_tx, projectItemId) {
       return rows.get(projectItemId) ?? null;
     },
+    async loadForUpdate(_tx, projectItemId) {
+      return rows.get(projectItemId) ?? null;
+    },
+    async delete(_tx, projectItemId) {
+      rows.delete(projectItemId);
+    },
     async upsert(_tx, row) {
       const saved = { ...row, updatedAt: new Date().toISOString() };
       rows.set(row.projectItemId, saved);
@@ -64,6 +70,7 @@ function recordingHeartbeats(): GuidanceHeartbeatStore<FakeTx> & { calls: string
     async upsertDriftHeartbeat(_tx, projectItemId) {
       calls.push(projectItemId);
     },
+    async disableDriftHeartbeat() {},
   };
 }
 

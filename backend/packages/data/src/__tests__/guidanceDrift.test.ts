@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -13,6 +13,11 @@ import {
 } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { agentGuidanceDriftFindingsStore } from "../guidanceDrift/agentGuidanceDriftFindingsStore.js";
 import type { GuidanceDriftContradiction } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { createUser } from "../auth/usersStore.js";
+import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
+import { projectToolCallUsageStore } from "../guidanceDrift/projectToolCallUsageStore.js";
 
 let pool: Pool;
 
@@ -43,6 +48,89 @@ describe("guidanceDrift stores (issue #85)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("groups typed generic and MCP events by distinct run inside the runtime tenant", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const a = await createTestTenant(pool);
+      const b = await createTestTenant(pool);
+      const userA = await createUser(pool, { email: "drift-a@example.test", passwordHash: "hash", tenantId: a });
+      const userB = await createUser(pool, { email: "drift-b@example.test", passwordHash: "hash", tenantId: b });
+      const projectA = randomUUID();
+      const projectB = randomUUID();
+      const databaseId = randomUUID();
+      for (const [tenant, user, project] of [
+        [a, userA.id, projectA],
+        [b, userB.id, projectB],
+      ] as const) {
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (tx) => {
+            for (let index = 0; index < 3; index++) {
+              const run = await createAgentRun(tx, {
+                projectItemId: project,
+                userId: user,
+                triggeredBy: "user",
+                task: "test",
+              });
+              await insertAgentRunEvent(tx, run.id, "tool_use", {
+                toolCallId: `c${index}`,
+                name: "create",
+                arguments: {},
+                operation: "item.create",
+                targetDatabaseId: databaseId,
+              });
+              await insertAgentRunEvent(tx, run.id, "tool_use", {
+                toolCallId: `m${index}`,
+                name: "search",
+                arguments: {},
+                mcp: {
+                  toolRegistrationId: "registration",
+                  serverItemId: "server",
+                  serverName: "Server",
+                  toolName: "search",
+                },
+              });
+            }
+          }),
+        );
+      }
+      const since = new Date(Date.now() - 14 * 86400_000);
+      const groups = await runInTenant(a, () =>
+        withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectA, since)),
+      );
+      expect(groups).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ subject: { operation: "item.create", databaseId }, count: 3 }),
+          expect.objectContaining({
+            subject: { mcpTool: "registration", databaseId: null },
+            count: 3,
+            toolName: "Server/search",
+          }),
+        ]),
+      );
+      expect(groups).toHaveLength(2);
+      expect(
+        await runInTenant(a, () =>
+          withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectB, since)),
+        ),
+      ).toEqual([]);
+      expect(
+        await runInTenant(a, () =>
+          withTransaction(runtime, (tx) =>
+            projectToolCallUsageStore.listProjectToolCallGroups(tx, randomUUID(), since),
+          ),
+        ),
+      ).toEqual([]);
+    } finally {
+      await runtime.end();
+    }
   });
 
   describe("guidanceDriftHeartbeatStore", () => {

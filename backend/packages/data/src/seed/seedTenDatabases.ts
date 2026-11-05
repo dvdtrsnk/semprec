@@ -8,6 +8,7 @@ import {
   type CreateRelationPropertyInput,
 } from "../chokePoint/relationPropertyOps.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
@@ -94,11 +95,14 @@ export async function seedTenDatabasesInTransaction(
   // of one of these ten databases is as much a built-in property as the plain ones `createProps`
   // creates, so it gets the same null-name treatment (issue #235). Each call site below still
   // spells out its intended label as documentation for the future translation catalog (#146).
-  const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
+  const relate = (
+    input: CreateRelationPropertyInput,
+    context?: SystemRelationWriteContext,
+  ): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(
       client,
       { ...input, name: null, inverse: input.inverse ? { ...input.inverse, name: null } : undefined },
-      undefined,
+      context,
       computedKeyRegistry,
     );
 
@@ -150,14 +154,39 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["notDone", "done", "wontDo"]), default: "notDone" },
+      config: { ...selectConfig(["notDone", "done", "wontDo", "missed"]), default: "notDone" },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
     { key: "timeTo", name: "Time to", type: "time", owner: "user" },
     // Derived from timeFrom/timeTo; not directly editable — see the issue's "the generic
     // update path refuses this field" pattern (assertWritableProperties on owner:'system').
-    { key: "time", name: "Time", type: "time", owner: "system", locked: true },
+    { key: "time", name: "Time", type: "time", owner: "system", ownerProcess: TASKS_MODULE_ID, locked: true },
+    { key: "flagged", name: null, type: "checkbox", owner: "user" },
+    { key: "description", name: null, type: "longText", owner: "user" },
+    { key: "since", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "sinceTime", name: null, type: "json", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "completedOn", name: null, type: "date", owner: "user" },
+    {
+      key: "completedAt",
+      name: null,
+      type: "date",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      config: { includeTime: true },
+    },
+    {
+      key: "hiddenUntil",
+      name: null,
+      type: "date",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      config: { includeTime: true },
+    },
+    { key: "effectiveDate", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "seriesId", name: null, type: "text", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "occurrenceDate", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "recurrence", name: null, type: "json", owner: "system", ownerProcess: TASKS_MODULE_ID },
     { key: "notifications", name: "Notifications", type: "checkbox", owner: "user" },
     { key: "persistent", name: "Persistent", type: "checkbox", owner: "user" },
   ]);
@@ -281,6 +310,49 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   // ---- phase 2: relations — every target database above already exists, so declaration order doesn't matter here ----
+
+  await relate({
+    sourceDatabaseId: tasks.id,
+    key: "people",
+    name: null,
+    targetDatabaseId: people.id,
+    cardinality: "many_to_many",
+    inverse: { key: "tasks", name: null },
+  });
+  await relate({
+    sourceDatabaseId: tasks.id,
+    key: "files",
+    name: null,
+    targetDatabaseId: files.id,
+    cardinality: "many_to_many",
+    inverse: { key: "tasks", name: null },
+  });
+  await relate(
+    {
+      sourceDatabaseId: tasks.id,
+      key: "hostEvents",
+      name: null,
+      targetDatabaseId: events.id,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      inverse: { key: "hostedTasks", name: null, owner: "system", ownerProcess: TASKS_MODULE_ID },
+    },
+    { ownerProcess: TASKS_MODULE_ID },
+  );
+  await relate(
+    {
+      sourceDatabaseId: events.id,
+      key: "completedTasks",
+      name: null,
+      targetDatabaseId: tasks.id,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      inverse: { key: "completedInEvent", name: null, owner: "system", ownerProcess: TASKS_MODULE_ID },
+    },
+    { ownerProcess: TASKS_MODULE_ID },
+  );
 
   // Areas <-> Projects ("Hub"): one area has many projects. `property_id_a` is Areas.projects
   // (the "one" side, issue #82's cardinality contract), Projects.area/"Hub" is the inverse —
@@ -432,13 +504,14 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "event", name: "Event" },
   });
-  // Events -> Tasks (action items from a meeting): one-directional only (Tasks' own relation list doesn't name Events).
+  // Events <-> Tasks: action items and their source events.
   await relate({
     sourceDatabaseId: events.id,
     key: "actionItems",
     name: "Action items",
     targetDatabaseId: tasks.id,
     cardinality: "many_to_many",
+    inverse: { key: "sourceEvents", name: null },
   });
   // Fix: Events <-> Companies ("firma") was a free-form multiSelect in the mock, the same
   // inconsistency as Projects'; unified with the existing Companies -> Events ("meetings") relation.
@@ -504,6 +577,14 @@ export async function seedTenDatabasesInTransaction(
     key: "area",
     name: "Area",
     targetDatabaseId: areas.id,
+    cardinality: "many_to_many",
+  });
+
+  await relate({
+    sourceDatabaseId: journal.id,
+    key: "project",
+    name: null,
+    targetDatabaseId: projects.id,
     cardinality: "many_to_many",
   });
 

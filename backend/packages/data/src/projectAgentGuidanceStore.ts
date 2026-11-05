@@ -31,6 +31,18 @@ function mapRow(row: ProjectAgentGuidanceRow): ProjectAgentGuidance {
 
 /** Concrete `PoolClient` implementation of `@semprec/shared`'s `ProjectAgentGuidanceStore`. */
 export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = {
+  async loadForUpdate(tx, projectItemId) {
+    const { rows } = await tx.query<ProjectAgentGuidanceRow>(
+      `SELECT project_item_id, owner_user_id, markdown, updated_at
+       FROM project_agent_guidance WHERE project_item_id = $1 FOR UPDATE`,
+      [projectItemId],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  },
+  async delete(tx, projectItemId) {
+    const result = await tx.query("DELETE FROM project_agent_guidance WHERE project_item_id = $1", [projectItemId]);
+    if (result.rowCount !== 1) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+  },
   async load(tx, projectItemId) {
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `SELECT project_item_id, owner_user_id, markdown, updated_at

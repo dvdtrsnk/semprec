@@ -14,6 +14,8 @@ const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
  * test below — the mapping cannot silently drift out of date the way a route-count check could.
  */
 const ROUTE_HANDLER_FILES: Record<string, string> = {
+  "project guidance read": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
+  "project guidance save": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
   "semp thread detail": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread messages": "services/semprec-api/src/sempThreadsHandler.ts",
   "server identity": "services/semprec-api/src/serverInfoHandler.ts",

@@ -1,9 +1,15 @@
 import { DateTime } from "luxon";
-import type { ItemPreWriteTransform, ItemPreWriteTransformContext } from "../chokePoint/hooks.js";
+import type {
+  ItemPreWritePreparation,
+  ItemPreWriteTransform,
+  ItemPreWriteTransformContext,
+} from "../chokePoint/hooks.js";
 import type { ItemRow } from "../types.js";
 import { ValidationError } from "../errors.js";
-import { normalizeWallClockTime } from "../timezone.js";
+import { assertValidTimezone, normalizeWallClockTime } from "../timezone.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import { deriveTaskTime } from "./deriveTaskTime.js";
+import { taskSinceRule } from "./taskSinceRule.js";
 
 const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -14,9 +20,8 @@ const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * See docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md and
  * docs/adr/2026-10-29-tasks-date-and-time-rules-in-pre-write-transform.md.
  *
- * On update a rule runs only when the patch names a key it reads (`name` for the name rule; `date`, `timeFrom` or
- * `timeTo` for the time rules), so an unrelated write such as a status change still succeeds on a stored row that
- * predates these rules. A create runs the time rules always and the name rule when it sends a `name`.
+ * Schedule validation runs only when its input keys are named, so a status-only write does not revalidate a
+ * legacy schedule. Completion and first-planned-day rules run separately in the managed write.
  */
 export const prepareTaskWrite = async ({
   stored,
@@ -31,7 +36,69 @@ export const prepareTaskWrite = async ({
   return deriveTimeAndCheckSchedule(stored, patch);
 };
 
-export const taskPreWriteTransform: ItemPreWriteTransform = prepareTaskWrite;
+export const prepareTaskProposal: ItemPreWritePreparation = async ({ stored, patch }) => {
+  let prepared = await prepareTaskWrite({ stored, patch });
+  const oldStatus = stored?.properties.status;
+  const status = Object.hasOwn(patch, "status") ? patch.status : oldStatus;
+  const enteringDone = status === "done" && oldStatus !== "done";
+  const leavingDone =
+    stored !== null &&
+    Object.hasOwn(patch, "status") &&
+    status !== oldStatus &&
+    (status === "notDone" || status === "wontDo");
+  if (leavingDone && !Object.hasOwn(patch, "completedOn")) prepared = { ...prepared, completedOn: null };
+  return { patch: prepared, deferredKeys: enteringDone && !Object.hasOwn(patch, "completedOn") ? ["completedOn"] : [] };
+};
+
+export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
+  const { stored, patch, client } = context;
+  let output = await prepareTaskWrite({ stored, patch });
+  const old = stored?.properties ?? {};
+  const status = Object.hasOwn(patch, "status") ? patch.status : old.status;
+  const enteringDone = status === "done" && old.status !== "done";
+  const leavingDone =
+    stored !== null &&
+    Object.hasOwn(patch, "status") &&
+    status !== old.status &&
+    (status === "notDone" || status === "wontDo");
+  const needsDay =
+    enteringDone || Object.hasOwn(patch, "completedOn") || (stored !== null && Object.hasOwn(patch, "date"));
+  if (!needsDay && !leavingDone) return output;
+  const now = DateTime.utc();
+  let today = "";
+  if (needsDay) {
+    const zone = await getSystemTimezone(client);
+    assertValidTimezone(zone);
+    today = now.setZone(zone).toFormat("yyyy-MM-dd");
+  }
+  if (Object.hasOwn(patch, "completedOn") && patch.completedOn != null) {
+    const value = patch.completedOn;
+    if (
+      typeof value !== "string" ||
+      !CALENDAR_DATE_PATTERN.test(value) ||
+      !DateTime.fromISO(value, { zone: "utc" }).isValid ||
+      value > today ||
+      status !== "done"
+    ) {
+      throw new ValidationError("Property 'completedOn' must be a nonfuture completion day of a done task", {
+        field: "completedOn",
+      });
+    }
+  }
+  if (enteringDone) {
+    if (Object.hasOwn(patch, "completedOn") && patch.completedOn == null)
+      throw new ValidationError("Property 'completedOn' must be a completion day", { field: "completedOn" });
+    output = {
+      ...output,
+      completedOn: Object.hasOwn(patch, "completedOn") ? patch.completedOn : today,
+      completedAt: now.toISO(),
+    };
+  } else if (leavingDone) {
+    output = { ...output, completedOn: null, completedAt: null };
+  }
+  if (stored && Object.hasOwn(patch, "date")) output = { ...output, ...taskSinceRule(old, output, today) };
+  return output;
+};
 
 function assertNonBlankName(value: unknown): void {
   if (typeof value !== "string" || value.trim() === "") {
