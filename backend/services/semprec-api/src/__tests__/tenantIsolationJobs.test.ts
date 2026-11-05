@@ -1542,6 +1542,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         await removeJob(jobKey);
         if (c.expectedError) {
           expect(outcome.lastError).toMatch(c.expectedError);
+          if (name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE) expect(outcome.attempts).toBe(1);
         } else {
           expect(outcome).toEqual({ attempts: null, lastError: null });
         }
