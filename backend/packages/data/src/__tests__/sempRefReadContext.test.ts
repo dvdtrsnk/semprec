@@ -351,7 +351,9 @@ describe("Semp reference turn reads", () => {
       await rm(directory, { recursive: true, force: true });
     } catch (cleanupError) {
       if (failed)
-        throw new AggregateError([failure, cleanupError], "Mail reference test and cleanup failed", { cause: failure });
+        throw new AggregateError([failure, cleanupError], "Mail reference test and cleanup failed", {
+          cause: cleanupError,
+        });
       throw cleanupError;
     }
     if (failed) throw failure instanceof Error ? failure : new Error("Mail reference test failed", { cause: failure });
