@@ -489,4 +489,93 @@ describe("queued Semp messages", () => {
       );
     if (failure) throw failure.error;
   });
+
+  it("stores interrupted status when the Semp shutdown controller aborts actual work", async () => {
+    const shutdownPool = await createRuntimeRolePool(admin, "semprec_data");
+    const inFlight = createInFlightAgentRuns();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const faux = fauxProvider();
+    faux.setResponses([
+      async (_context, options) => {
+        if (!options?.signal) throw new Error("Missing provider abort signal");
+        const signal = options.signal;
+        entered();
+        return new Promise((_, reject) => {
+          if (signal.aborted) reject(new Error("provider aborted"));
+          else signal.addEventListener("abort", () => reject(new Error("provider aborted")), { once: true });
+        });
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    let actualRuntime: AgentsQueueRuntime | undefined;
+    let closed = false;
+    let failure: { error: unknown } | undefined;
+    try {
+      actualRuntime = await createAgentsQueueRuntime(shutdownPool, registry, {
+        sempMessageTask: createSempMessageTask(shutdownPool, registry, gateway, inFlight),
+      });
+      const turn = await runInTenant(tenant, () =>
+        withTransaction(shutdownPool, (client) =>
+          sendSempMessage(client, { text: "interrupt", context: [], hasContext: false }),
+        ),
+      );
+      await started;
+      const shutdown = createGracefulShutdown({
+        queueRuntime: actualRuntime,
+        tenantDeactivationListener: { close: async () => {} },
+        pool: shutdownPool,
+        logger,
+        closeIdleThreadSessions,
+        abortSempTurns: () => {
+          inFlight.abortSemp();
+        },
+        observeSempSettlement: () => inFlight.observeSempSettlement(),
+      })("SIGTERM");
+      // Exercise the real deadline action without advancing or shortening the production timer.
+      expect(inFlight.abortSemp()).toBe(1);
+      await shutdown;
+      closed = true;
+      const status = await runInTenant(tenant, () =>
+        pool.query<{ status: string; error_code: string | null }>(
+          "SELECT status, error_code FROM semp_messages WHERE id = $1",
+          [turn.assistantMessageId],
+        ),
+      );
+      expect(status.rows).toEqual([{ status: "error", error_code: "interrupted" }]);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => {
+        if (!closed) {
+          inFlight.abortSemp();
+          await actualRuntime?.stop();
+        }
+      },
+      async () => {
+        if (!closed) await shutdownPool.end();
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Semp abort test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+  });
 });
