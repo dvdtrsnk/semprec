@@ -249,6 +249,57 @@ it("does not admit the alternate when cancellation occurs during ENOENT cleanup"
   }
 });
 
+it("uses the same absolute cleanup allowance for both roots under a controlled clock", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const firstMissing = Object.assign(new Error("first missing"), { code: "ENOENT" });
+  const secondMissing = Object.assign(new Error("second missing"), { code: "ENOENT" });
+  let now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const first = new Readable({
+    read() {
+      this.emit("error", firstMissing);
+    },
+  });
+  const second = new Readable({
+    read() {
+      this.emit("error", secondMissing);
+    },
+    destroy(_error, callback) {
+      now = 5_001;
+      callback(null);
+    },
+  });
+  const secondClosed = new Promise<void>((resolve) => second.once("close", resolve));
+  vi.spyOn(primary, "readStream").mockReturnValue(first);
+  vi.spyOn(alternate, "readStream").mockImplementation(() => {
+    now = 4_999;
+    return second;
+  });
+  try {
+    let failure: unknown;
+    try {
+      await openBlobFromRoots({ primary, alternate, storageKey: "key" });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected shared cleanup deadline failure");
+    expect(failure.errors[0]).toBe(secondMissing);
+    expect(failure.errors[1]).toMatchObject({
+      message: "Blob stream cleanup closure was not observed within its deadline",
+    });
+    expect(first.closed).toBe(true);
+    await secondClosed;
+    expect(second.closed).toBe(true);
+  } finally {
+    if (!first.destroyed) first.destroy();
+    if (!second.destroyed) second.destroy();
+    await secondClosed;
+    vi.restoreAllMocks();
+  }
+});
+
 it("handles already closed and destroyed-but-not-yet-closed streams", async () => {
   const primary = new LocalFsBlobStorageWriter("/unused-primary");
   const alternate = new LocalFsBlobStorageWriter("/unused-alternate");

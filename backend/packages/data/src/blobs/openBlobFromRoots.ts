@@ -180,12 +180,6 @@ async function openIn(
     if (isMissingFileError(err)) {
       signal?.throwIfAborted();
       budget.lastMissing = err;
-      if (budget.deadline !== undefined && performance.now() >= budget.deadline)
-        throw new AggregateError(
-          [err, new Error("Blob stream cleanup deadline expired before fallback")],
-          "Blob cleanup deadline expired before fallback",
-          { cause: err },
-        );
       return null;
     }
     throw err;
