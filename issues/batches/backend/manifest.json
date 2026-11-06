@@ -3103,8 +3103,8 @@
       "sequence": 32,
       "status": "proposed",
       "title": "[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes",
-      "bodyCharacters": 59674,
-      "specSha256": "067b263e5a3a8882404dc1422516561bb9ea0e3118542e63de7e5cf8cd5b5f03",
+      "bodyCharacters": 59819,
+      "specSha256": "c158efd50fae0e01e6b585dcad1b4d69dc41226a5c481c6937598e02583f5c18",
       "members": [
         {
           "id": "gh-1682",
@@ -3138,7 +3138,7 @@
         },
         {
           "id": "gh-1733",
-          "specSha256": "99bd6da3bb579b8731cb496577d854cdc93f168a7753187cdb5eebb2770895c2",
+          "specSha256": "cf699f25895dc8c845540167067788d2656714c0fd5131a5e3a35da3a4c93876",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1682",
