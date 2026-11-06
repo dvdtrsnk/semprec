@@ -252,6 +252,7 @@ describe("Inbox proposal tool owner", () => {
       const history = appendHistoryEntry(original.rows[0]?.properties.history, "Synthetic historical entry", "user", {
         addedRelations: [descriptor],
       });
+      expect(history.slice(0, -1)).toEqual(original.rows[0]?.properties.history);
       await withTransaction(runtime, (client) =>
         updateItemWithClient(
           client,
@@ -266,9 +267,11 @@ describe("Inbox proposal tool owner", () => {
       const snapshot = () =>
         runtime.query(
           `SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card,
+         (SELECT row_to_json(edge) FROM (SELECT * FROM item_relations WHERE id = $2) edge) AS association,
+         (SELECT row_to_json(thread) FROM (SELECT * FROM semp_threads WHERE id = $3) thread) AS thread,
          (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM items) AS items,
          (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments`,
-          [own.cardId],
+          [own.cardId, actual.edge_id, own.threadId],
         );
       const baseline = await snapshot();
       const result = await tool(own.runId, { proposalId: own.cardId });
