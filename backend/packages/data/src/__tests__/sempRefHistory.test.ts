@@ -143,6 +143,8 @@ describe("Semp history reference resolution", () => {
     expect(user?.context).toEqual(
       expect.arrayContaining([
         { ...ref, label: "Historic", resolved: { label: "New", databaseKey: "tasks", state: "trashed" } },
+        { ...blockRef, resolved: { label: "New", databaseKey: "tasks", state: "trashed" } },
+        { ...segmentRef, resolved: { label: "New", databaseKey: "tasks", state: "trashed" } },
       ]),
     );
     await runInTenant(tenant, () => cp.purgeExpiredTrashSubtree(item.id, new Date("9999-01-01T00:00:00Z")));
@@ -151,6 +153,8 @@ describe("Semp history reference resolution", () => {
     expect(user?.context).toEqual(
       expect.arrayContaining([
         { ...ref, label: "Historic", resolved: { label: null, databaseKey: null, state: "purged" } },
+        { ...blockRef, resolved: { label: null, databaseKey: null, state: "purged" } },
+        { ...segmentRef, resolved: { label: null, databaseKey: null, state: "purged" } },
       ]),
     );
   });
