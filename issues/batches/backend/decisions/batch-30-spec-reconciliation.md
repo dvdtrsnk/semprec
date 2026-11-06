@@ -157,3 +157,21 @@ no module regrant and no document/approval effects; direct gateway tests with
 explicitly supplied page grants are separate binding evidence. Legacy item-only
 agent access to page.restoreVersion is not grandfathered. Human MCP page
 discovery and calls remain supported. Old accepted ADR bodies stay unchanged.
+
+## R1: page.get rejects a document of another kind
+
+The page-family summary describes kind page. An existing canvas is not an
+empty page. Gh1615 rejects it through the existing ConflictError, status409
+and code version_conflict, without converting, creating or changing any
+document state. PageSummary.kind is the page literal. Keep the documented
+no-document success unchanged and retain the existing ensure wrong-kind
+conflict. REST returns409; MCP uses its existing HTTP200/JSON-RPC -32000
+conflict envelope. Already scoped actual HTTP/MCP harnesses must prove the
+refusal and unchanged document. No new error code, adapter, persistence owner,
+lock or accepted ADR edit is required. This pins the implementing issue
+contract under the page ADR, rather than expanding canvas behavior.
+
+R1 on48e09b0 remains changes required and immutable. Bundle this repair with
+the other confirmed R1 test/evidence repairs, then use the one remaining
+focused R2 in the same reviewer context. No third review or final gate is
+authorized by this metadata decision. The six aggregate criteria stay unchanged.
