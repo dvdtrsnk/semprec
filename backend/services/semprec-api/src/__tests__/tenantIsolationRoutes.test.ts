@@ -1770,10 +1770,24 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
   "ensure page": async () => {
-    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({ method: "PUT", path: `/api/items/${id}/page` }));
+    const before = await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` });
+    expect(before.status).toBe(200);
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "PUT",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect(await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` })).toEqual(before);
+    const own = await send(b.member, { method: "PUT", path: `/api/items/${b.itemId}/page` });
+    expect(own.status).toBe(200);
   },
   "get page": async () => {
-    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({ method: "GET", path: `/api/items/${id}/page` }));
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
   },
   "restore page version": () =>
     leavesAUnchanged(async () => {

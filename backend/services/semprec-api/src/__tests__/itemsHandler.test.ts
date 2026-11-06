@@ -690,6 +690,11 @@ describe("item routes (issue #241)", () => {
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fixture.item.id])).rows).toHaveLength(1);
     const wrongKind = await fetch(`${baseUrl}/api/items/${fixture.canvas.id}/page`, { method: "PUT", headers });
     expect(wrongKind.status).toBe(409);
+    const canvasRows = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM docs WHERE item_id = $1", [
+      fixture.canvas.id,
+    ]);
+    expect(canvasRows.rows).toHaveLength(1);
+    expect(canvasRows.rows[0]?.kind).toBe("canvas");
     await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(fixture.database.id, fixture.item.id));
     expect((await fetch(path, { method: "PUT", headers })).status).toBe(404);
     expect((await fetch(path, { method: "PUT" })).status).toBe(401);
