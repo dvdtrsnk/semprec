@@ -372,11 +372,8 @@ export class SempConversation {
             try {
               await failRun(this.pool, entry.agentRunId, err);
             } catch (cleanupError) {
-              const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", {
-                cause: err,
-              });
-              sendOptions.onFailurePersistenceError?.(failure);
-              throw failure;
+              sendOptions.onFailurePersistenceError?.(cleanupError);
+              throw cleanupError;
             }
             throw err;
           }
@@ -443,11 +440,8 @@ export class SempConversation {
           try {
             await failRun(this.pool, run.id, err);
           } catch (cleanupError) {
-            const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", {
-              cause: err,
-            });
-            sendOptions.onFailurePersistenceError?.(failure);
-            throw failure;
+            sendOptions.onFailurePersistenceError?.(cleanupError);
+            throw cleanupError;
           }
           throw err;
         }

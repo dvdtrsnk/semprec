@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createBoundedSempHistory } from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, createBoundedSempHistory } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -25,6 +25,8 @@ import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
+import { createGracefulShutdown } from "../shutdown.js";
+import { logger } from "../logger.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -367,5 +369,124 @@ describe("queued Semp messages", () => {
       ),
     );
     expect(checkpoints.rows).toEqual([{ count: 0 }]);
+  });
+
+  it("rejects shutdown when a real worker absorbs a terminal persistence failure", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const shutdownPool = await createRuntimeRolePool(admin, "semprec_data");
+    const inFlight = createInFlightAgentRuns();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const faux = fauxProvider();
+    faux.setResponses([
+      async () => {
+        entered();
+        await gate;
+        return fauxAssistantMessage("reply");
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    let actualRuntime: AgentsQueueRuntime | undefined;
+    let closed = false;
+    let triggerInstalled = false;
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `test_semp_terminal_${suffix}`;
+    const triggerName = `test_semp_terminal_${suffix}`;
+    let failure: { error: unknown } | undefined;
+    try {
+      actualRuntime = await createAgentsQueueRuntime(shutdownPool, registry, {
+        sempMessageTask: createSempMessageTask(shutdownPool, registry, gateway, inFlight),
+      });
+      const turn = await runInTenant(tenant, () =>
+        withTransaction(shutdownPool, (client) =>
+          sendSempMessage(client, { text: "fail terminal persistence", context: [], hasContext: false }),
+        ),
+      );
+      await started;
+      // Fault injection is scoped to this one synthetic message in this suite's owned database.
+      await admin.query(
+        `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${turn.assistantMessageId}'::uuid AND NEW.status IN ('done', 'error') THEN RAISE EXCEPTION 'terminal fixture failure'; END IF; RETURN NEW; END $$`,
+      );
+      await admin.query(
+        `CREATE TRIGGER ${triggerName} BEFORE UPDATE ON semp_messages FOR EACH ROW EXECUTE FUNCTION ${functionName}()`,
+      );
+      triggerInstalled = true;
+      let runnerStopped = false;
+      const currentRuntime = actualRuntime;
+      const queueRuntime = {
+        stop: async () => {
+          await currentRuntime.stop();
+          runnerStopped = true;
+        },
+      };
+      const shutdown = createGracefulShutdown({
+        queueRuntime,
+        tenantDeactivationListener: { close: async () => {} },
+        pool: shutdownPool,
+        logger,
+        closeIdleThreadSessions,
+        abortSempTurns: () => {
+          inFlight.abortSemp();
+        },
+        observeSempSettlement: () => inFlight.observeSempSettlement(),
+      })("SIGTERM");
+      release();
+      const error: unknown = await shutdown.catch((reason: unknown) => reason);
+      closed = true;
+      expect(runnerStopped).toBe(true);
+      expect(error).toBeInstanceOf(AggregateError);
+      if (!(error instanceof AggregateError)) throw new Error("Expected persistence failure");
+      expect(error.errors).toHaveLength(2);
+      expect(error.cause).toBe(error.errors[0]);
+      const status = await runInTenant(tenant, () =>
+        pool.query<{ status: string; error_code: string | null }>(
+          "SELECT status, error_code FROM semp_messages WHERE id = $1",
+          [turn.assistantMessageId],
+        ),
+      );
+      expect(status.rows).toEqual([{ status: "running", error_code: null }]);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => {
+        if (!closed) await actualRuntime?.stop();
+      },
+      async () => {
+        if (!closed) await shutdownPool.end();
+      },
+      async () => {
+        if (triggerInstalled) await admin.query(`DROP TRIGGER ${triggerName} ON semp_messages`);
+      },
+      async () => {
+        await admin.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Semp shutdown test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
   });
 });
