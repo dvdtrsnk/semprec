@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
+import { BlobReadCleanupError, labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
 import {
   createChokePoint,
   createItemWithClient,
@@ -131,6 +131,41 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(result.images[0]?.mimeType).toBe("image/jpeg");
     expect(result.context).toHaveLength(3);
     expect(JSON.stringify(result.context)).not.toContain(result.images[0]?.data ?? "missing");
+  });
+
+  it("stops before the next reference on a synthetic post-transfer cleanup failure", async () => {
+    const first = await createFile(tenant, "First PDF", pdfFixture());
+    const second = await createFile(tenant, "Second PDF", Buffer.concat([pdfFixture(), Buffer.from("next")]));
+    const cleanupFailure = new Error("synthetic destroy failure after delegation");
+    const realRead = files.readStream.bind(files);
+    const opened: Readable[] = [];
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      const stream = realRead(key, range);
+      opened.push(stream);
+      if (opened.length === 1) {
+        const destroy = stream.destroy.bind(stream);
+        vi.spyOn(stream, "destroy").mockImplementation((error) => {
+          destroy(error);
+          throw cleanupFailure;
+        });
+      }
+      return stream;
+    });
+    try {
+      let caught: unknown;
+      try {
+        await runInTenant(tenant, () => expandSempRefs(runtime, [first, second], { files, mailAttachments }));
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(BlobReadCleanupError);
+      if (!(caught instanceof BlobReadCleanupError)) throw new Error("Missing cleanup failure");
+      expect(caught.errors).toContain(cleanupFailure);
+      expect(opened).toHaveLength(1);
+      expect(opened[0]?.closed).toBe(true);
+    } finally {
+      observer.mockRestore();
+    }
   });
 
   it("expands real mail text bytes ephemerally and refuses foreign, random and invalid UTF-8 references", async () => {
