@@ -275,6 +275,16 @@ describe("semprec-agents startup repair (issue #642)", () => {
       const before = (await locks()).rows;
       expect(before).toHaveLength(1);
       expect(before[0]).toMatchObject({ job_owner: "pool-fixture", queue_owner: "pool-fixture" });
+      const oldActivity = new Date("2001-01-01T00:00:00.000Z");
+      for (const [tenantId, threadId] of [
+        [getTenantZeroId(), first.threadId],
+        [other, second.threadId],
+      ] as const) {
+        const backdated = await runInTenant(tenantId, () =>
+          runtimePool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [threadId, oldActivity]),
+        );
+        expect(backdated.rowCount).toBe(1);
+      }
       await repairInterruptedRuns(runtimePool);
       const notifyDeadline = Date.now() + 5_000;
       while (observed.length < 2 && Date.now() < notifyDeadline) await sleep(25);
@@ -313,6 +323,8 @@ describe("semprec-agents startup repair (issue #642)", () => {
         );
       const firstBefore = (await snapshot(getTenantZeroId(), first.assistantMessageId)).rows;
       const secondBefore = (await snapshot(other, second.assistantMessageId)).rows;
+      expect(firstBefore[0]?.last_activity_at.getTime()).toBeGreaterThan(oldActivity.getTime());
+      expect(secondBefore[0]?.last_activity_at.getTime()).toBeGreaterThan(oldActivity.getTime());
       const again = await repairInterruptedRuns(runtimePool);
       expect(again.repairedRunIds).toEqual([]);
       expect((await snapshot(getTenantZeroId(), first.assistantMessageId)).rows).toEqual(firstBefore);
