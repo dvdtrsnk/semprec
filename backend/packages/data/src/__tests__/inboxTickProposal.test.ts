@@ -3,6 +3,7 @@ import { writeBlock } from "@semprec/block-model";
 import { mutateDoc } from "../docs/docPersistence.js";
 import { createDocStore } from "../docs/docStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
+import { resolveModelPagePlacement } from "../inbox/inboxTickSnapshot.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5827,6 +5828,27 @@ describe("Markdown page proposal validation", () => {
           writeBlock(ydoc, { id: "text", type: "text", text: "Paragraph" });
         }),
       );
+      const resolvePlacement = (target: string, properties: Record<string, unknown>) =>
+        runInTenant(owner, () =>
+          withTransaction(runtime, (client) =>
+            resolveModelPagePlacement(client, { entityKind: "pageContent", target, properties }),
+          ),
+        );
+      const modelEnvelope = { markdown: "Hello", placement: { afterHeadingText: "  HEADING " } };
+      expect((await resolvePlacement(own.project.id, modelEnvelope)).properties.placement).toEqual({
+        afterHeading: "heading",
+      });
+      expect(
+        (await resolvePlacement(own.project.id, { markdown: "Hello", placement: { afterHeadingText: "missing" } }))
+          .properties.placement,
+      ).toBe("end");
+      expect(
+        (await resolvePlacement(own.area.id, { markdown: "Hello", placement: { afterHeadingText: "heading" } }))
+          .properties.placement,
+      ).toBe("end");
+      expect((await resolvePlacement(own.project.id, { flavour: "paragraph" })).properties).toEqual({
+        flavour: "paragraph",
+      });
       await expect(
         validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "heading" } }),
       ).resolves.toBeNull();

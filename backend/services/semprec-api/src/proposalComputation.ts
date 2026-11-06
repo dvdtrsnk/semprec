@@ -50,7 +50,11 @@ const PROPOSAL_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
     target: { type: "string", description: "For a page proposal: the id of the target page. Omit otherwise." },
-    properties: { type: "object", description: "The property values (or page block fields) to propose, by key." },
+    properties: {
+      type: "object",
+      description:
+        "For a page proposal use markdown, placement (start, end or {afterHeadingText}) and optional heading; otherwise use target database property keys.",
+    },
     relations: { type: "object", additionalProperties: { type: "array", items: { type: "string" } } },
     operations: {
       type: "array",
@@ -249,7 +253,7 @@ function buildSystemPrompt(input: ProposalComputationInput): string {
   }
   if (input.recognition || input.entityKind !== "database") {
     lines.push(
-      "For a pageContent-method type, propose content for an existing page: set 'target' to the page id and 'properties.flavour' to the block flavour, optionally 'properties.fields' (object) and 'properties.children' (array of strings). Omit 'target' if you do not know a page id.",
+      "For a pageContent-method type, set 'target' to an existing page id and 'properties' to {markdown, placement, heading?}. Write nonempty page Markdown without page links. Use placement 'start', 'end', or {afterHeadingText: <existing section heading text>}; omit heading when unnecessary. Omit 'target' if you do not know a page id.",
     );
   }
   return lines.join("\n");

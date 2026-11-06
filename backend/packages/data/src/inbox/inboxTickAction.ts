@@ -8,6 +8,7 @@ import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedTyp
 import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
+  resolveModelPagePlacement,
   type TickSnapshot,
   type ProposalComputationResult,
   type ComputeSemprecProposalFn,
@@ -958,6 +959,7 @@ async function writeTickResult(
   try {
     if (!envelope) throw new ValidationError("Page target needs clarification");
     if (invalidProposal) throw new ValidationError("Proposal needs clarification");
+    envelope = await resolveModelPagePlacement(client, envelope);
     envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
