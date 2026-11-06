@@ -14,6 +14,7 @@ import { createRelationWithClient, deleteRelationWithClient } from "../../chokeP
 import { getRelationDefinitionByPropertyId, listRelationsForItem } from "../../chokePoint/relationsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
+import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
 
 let admin: Pool;
@@ -398,7 +399,7 @@ describe("Inbox thread association reservations", () => {
     const foreign = await createCard(other);
     await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, own.databaseId, own.cardId, { queueAffinity: "api" }),
+        itemDeleteWithClient(client, own.databaseId, own.cardId, { queueAffinity: createActionQueueAffinity() }),
       ),
     );
     const send = (proposalId?: string) =>
