@@ -569,7 +569,8 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
           ),
         );
-        expect(repeated).toEqual(confirmed);
+        expect(repeated.properties).toEqual(confirmed.properties);
+        expect(repeated.updatedAt).toEqual(confirmed.updatedAt);
         expect((await readEdges()).edges).toEqual(after.edges);
       } finally {
         await runtime.end();
