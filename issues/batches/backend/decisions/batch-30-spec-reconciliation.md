@@ -175,3 +175,23 @@ R1 on48e09b0 remains changes required and immutable. Bundle this repair with
 the other confirmed R1 test/evidence repairs, then use the one remaining
 focused R2 in the same reviewer context. No third review or final gate is
 authorized by this metadata decision. The six aggregate criteria stay unchanged.
+
+## R1: fixture-configured relink propagation evidence
+
+Only gh1587 valueLinkOps.test.ts may reuse the existing linkRulePropagation
+fixture seam: construct a real ModuleRegistry from the existing
+linkRuleValidModule and required real manifests; replace only
+loadFullModuleRegistry with a restored spy. Install it before the first rule
+catalog read in that isolated test-file module lifetime, restore the loader
+in cleanup, and introduce no production cache reset/export or shared cache trick.
+The real relink owner, linkRuleItemHook, SQL queue and registered worker execute
+unchanged. Observe actual downstream work and resulting state, including rollback
+without escaped work/invalidation. Do not mock those execution owners.
+
+This is an explicit exception to the worker prompt provider-only injection rule
+for configuration supplied by an existing test loader. It authorizes no change
+to production manifests/rules, propagation code, dispatchers or registry loader.
+The current built-in registry has no linkRules declaration; report these results
+as fixture-configured integration evidence, not proof of an active production
+rule. Existing runtime-role, tenant and no-effect requirements remain. R1 report
+and reviewed ledger stay immutable; one same-context R2 remains after repairs.
