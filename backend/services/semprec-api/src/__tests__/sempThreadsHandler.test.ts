@@ -427,7 +427,9 @@ describe("durable Semp thread history", () => {
         [`sempMessage:${second.assistantMessageId}`],
       ),
     );
-    expect(duplicate.rows).toEqual([{ id: stored.job[0]?.id, revision: stored.job[0]?.revision }]);
+    const originalJob = stored.job[0];
+    if (!originalJob) throw new Error("Missing queued Semp job");
+    expect(duplicate.rows).toEqual([{ id: originalJob.id, revision: originalJob.revision + 1 }]);
     const opaqueContext = [{ kind: "futureRef", value: "opaque" }];
     const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
