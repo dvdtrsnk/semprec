@@ -408,8 +408,9 @@ describe("Semp thread live prompt", () => {
       const itemTools = toolLists[1] ?? [];
       for (const name of GENERIC_OPERATION_NAMES) {
         if (OPERATION_METADATA[name].riskClass !== "read") expect(itemTools).not.toContain(modelName(name));
-        if (chatTools.includes(modelName(name)))
-          expect(fixture.grants).toContain(OPERATION_METADATA[name].requiresCapability);
+        if (fixture.grants.includes(OPERATION_METADATA[name].requiresCapability))
+          expect(chatTools).toContain(modelName(name));
+        else expect(chatTools).not.toContain(modelName(name));
       }
       expect(itemTools).toContain("item_get");
       expect(chatTools).not.toContain("page_create");
