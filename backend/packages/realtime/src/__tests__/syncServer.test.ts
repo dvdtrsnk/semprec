@@ -1693,6 +1693,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(received).toHaveLength(257);
     expect(errors).toEqual([]);
     const refused: string[] = [];
+    const refusalCauses: Array<string | undefined> = [];
     await expect(
       tenantServer.subscribeVoice({
         ...input,
@@ -1701,9 +1702,13 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
           if (frame.type === "event") refused.push(frame.event.id);
           return true;
         },
+        onFailure: (_error, cause) => {
+          refusalCauses.push(cause);
+        },
       }),
     ).rejects.toThrow("replay exceeds");
     expect(refused).toEqual([]);
+    expect(refusalCauses).toEqual(["overloaded"]);
     for (const other of [
       { tenantId: tenantB },
       { userId: randomUUID() },
