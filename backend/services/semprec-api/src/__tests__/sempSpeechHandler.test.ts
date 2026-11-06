@@ -1,13 +1,13 @@
 import { createServer, type Server } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -19,12 +19,14 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createUser,
+  getMessageSpeech,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   sendSempMessage,
   storeMessageSpeech,
+  withMessageSpeechGuard,
   withTransaction,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -433,6 +435,238 @@ describe("message speech HTTP", () => {
       () => setMode("normal"),
     );
   });
+
+  it("rolls back a late final callback after a synthetic deadline signal", async () => {
+    const value = await turn("Late speech");
+    const beforeBlobs = await runInTenant(tenant, () =>
+      pool.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs"),
+    );
+    const beforeFiles = (await readdir(directory, { recursive: true })).sort();
+    const deadline = new AbortController();
+    const originalTimeout = AbortSignal.timeout;
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((milliseconds) =>
+        milliseconds === 300_000 ? deadline.signal : originalTimeout(milliseconds),
+      );
+    const originals = new Map<PoolClient, PoolClient["query"]>();
+    let release!: () => void;
+    const proceed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let intercepted = false;
+    let observed = false;
+    const instrument = (client: PoolClient) => {
+      if (originals.has(client)) return;
+      /* eslint-disable @typescript-eslint/unbound-method */
+      originals.set(client, client.query);
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (intercepted || typeof args[0] !== "string" || !args[0].includes("INSERT INTO semp_message_speech"))
+            return result;
+          intercepted = true;
+          return Promise.resolve(result).then(async (actual: unknown) => {
+            observed = true;
+            await proceed;
+            return actual;
+          });
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
+    };
+    pool.on("acquire", instrument);
+    const request = post(value.threadId, value.messageId, "", originalTimeout(10_000));
+    const settled = Promise.allSettled([request]);
+    let failure: unknown;
+    let failed = false;
+    try {
+      await vi.waitFor(() => expect(observed).toBe(true), { timeout: 5000 });
+      deadline.abort(new Error("Synthetic deadline"));
+      release();
+      const outcomes = await settled;
+      const response = outcomes[0];
+      if (!response || response.status === "rejected") throw new Error("Speech request did not return");
+      expect(response.value.status).toBe(500);
+      await response.value.arrayBuffer();
+      const rows = await runInTenant(tenant, () =>
+        pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_message_speech WHERE message_id = $1", [
+          value.messageId,
+        ]),
+      );
+      expect(rows.rows).toEqual([{ count: 0 }]);
+      expect(
+        (await runInTenant(tenant, () => pool.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs")))
+          .rows,
+      ).toEqual(beforeBlobs.rows);
+      expect((await readdir(directory, { recursive: true })).sort()).toEqual(beforeFiles);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    await settled;
+    pool.off("acquire", instrument);
+    for (const [client, query] of originals) client.query = query;
+    timeoutSpy.mockRestore();
+    if (failed) throw failure instanceof Error ? failure : new Error("Deadline test failed", { cause: failure });
+  });
+
+  it("retains committed audio after a synthetic lost COMMIT acknowledgement", async () => {
+    const value = await turn("Lost acknowledgement");
+    const calls = providerCalls();
+    const originals = new Map<PoolClient, PoolClient["query"]>();
+    const writers = new Set<PoolClient>();
+    let injected = false;
+    const instrument = (client: PoolClient) => {
+      if (originals.has(client)) return;
+      /* eslint-disable @typescript-eslint/unbound-method */
+      originals.set(client, client.query);
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (typeof args[0] !== "string") return result;
+          if (args[0].includes("INSERT INTO semp_message_speech")) {
+            return Promise.resolve(result).then((actual: unknown) => {
+              writers.add(client);
+              return actual;
+            });
+          }
+          if (!injected && writers.has(client) && args[0] === "COMMIT") {
+            injected = true;
+            return Promise.resolve(result).then(() => {
+              throw new Error("Synthetic lost COMMIT acknowledgement");
+            });
+          }
+          return result;
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
+    };
+    pool.on("acquire", instrument);
+    let failure: unknown;
+    let failed = false;
+    try {
+      const response = await post(value.threadId, value.messageId);
+      expect(response.status).toBe(500);
+      await response.arrayBuffer();
+      expect(injected).toBe(true);
+      const blob = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getMessageSpeech(client, value.messageId, "alloy")),
+      );
+      if (!blob) throw new Error("Committed cache was not retained");
+      expect(await readFile(join(directory, blob.storageKey))).toEqual(Buffer.alloc(480, 1));
+      const cached = await post(value.threadId, value.messageId);
+      expect(cached.status).toBe(200);
+      expect(Buffer.from(await cached.arrayBuffer())).toEqual(Buffer.alloc(480, 1));
+      await vi.waitFor(() => expect(providerCalls()).toBe(calls + 1), { timeout: 5000 });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    pool.off("acquire", instrument);
+    for (const [client, query] of originals) client.query = query;
+    if (failed) throw failure instanceof Error ? failure : new Error("Lost-ack test failed", { cause: failure });
+  });
+
+  it.each(["acquisition acknowledgement", "unlock acknowledgement"] as const)(
+    "discards a plain pooled session after synthetic loss of the %s",
+    async (fault) => {
+      const databaseUrl = z.object({ connectionString: z.string() }).parse(pool.options).connectionString;
+      const guardPool = new Pool({ connectionString: databaseUrl, max: 3 });
+      const messageId = randomUUID();
+      const key = `semp-message-speech:v1:${tenant.toLowerCase()}:${messageId}:alloy`;
+      let guardPid: number | undefined;
+      let releases = 0;
+      let faulted = false;
+      let worked = false;
+      const instrument = (client: PoolClient) => {
+        /* eslint-disable @typescript-eslint/unbound-method */
+        client.release = new Proxy(client.release, {
+          apply(target, receiver, args: unknown[]) {
+            releases += 1;
+            return Reflect.apply(target, receiver, args);
+          },
+        });
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            const result: unknown = Reflect.apply(target, receiver, args);
+            const targetSql = fault === "acquisition acknowledgement" ? "pg_try_advisory_lock" : "pg_advisory_unlock";
+            if (faulted || typeof args[0] !== "string" || !args[0].includes(targetSql)) return result;
+            faulted = true;
+            return Promise.resolve(result).then(async (actual: unknown) => {
+              const expected = fault === "acquisition acknowledgement" ? "acquired" : "released";
+              const parsed = z.object({ rows: z.array(z.record(z.string(), z.unknown())) }).parse(actual);
+              expect(parsed.rows[0]?.[expected]).toBe(true);
+              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+              guardPid = pid.rows[0]?.pid;
+              throw new Error(`Synthetic lost ${fault}`);
+            });
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+      };
+      guardPool.on("acquire", instrument);
+      let failure: unknown;
+      let failed = false;
+      try {
+        await expect(
+          runInTenant(tenant, () =>
+            withMessageSpeechGuard(guardPool, messageId, "alloy", AbortSignal.timeout(5000), async () => {
+              worked = true;
+            }),
+          ),
+        ).rejects.toThrow(`Synthetic lost ${fault}`);
+        expect(faulted).toBe(true);
+        expect(worked).toBe(fault === "unlock acknowledgement");
+        expect(releases).toBe(1);
+        if (guardPid === undefined) throw new Error("Missing observed guard PID");
+        const pid = guardPid;
+        const observer = await runInTenant(tenant, () => pool.connect());
+        try {
+          await vi.waitFor(
+            async () => {
+              const result = await observer.query<{ alive: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1) AS alive",
+                [pid],
+              );
+              expect(result.rows[0]?.alive).toBe(false);
+            },
+            { timeout: 5000 },
+          );
+          const acquired = await observer.query<{ locked: boolean }>(
+            "SELECT pg_try_advisory_lock(hashtextextended($1::text, 0)) AS locked",
+            [key],
+          );
+          expect(acquired.rows[0]?.locked).toBe(true);
+          const unlocked = await observer.query<{ unlocked: boolean }>(
+            "SELECT pg_advisory_unlock(hashtextextended($1::text, 0)) AS unlocked",
+            [key],
+          );
+          expect(unlocked.rows[0]?.unlocked).toBe(true);
+        } finally {
+          observer.release();
+        }
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      guardPool.off("acquire", instrument);
+      let cleanupFailure: unknown;
+      try {
+        await guardPool.end();
+      } catch (error) {
+        cleanupFailure = error;
+      }
+      if (failed && cleanupFailure !== undefined)
+        throw new AggregateError([failure, cleanupFailure], "Guard fault and cleanup failed", { cause: failure });
+      if (failed) throw failure instanceof Error ? failure : new Error("Guard fault test failed", { cause: failure });
+      if (cleanupFailure !== undefined)
+        throw cleanupFailure instanceof Error
+          ? cleanupFailure
+          : new Error("Guard pool cleanup failed", { cause: cleanupFailure });
+    },
+  );
 
   it("serves each pinned voice and treats absent voice as the same cached alloy", async () => {
     const value = await turn("Hello");

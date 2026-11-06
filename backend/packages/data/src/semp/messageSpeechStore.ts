@@ -36,6 +36,7 @@ export async function withMessageSpeechGuard<T>(
   const key = `semp-message-speech:v1:${scope.tenantId.toLowerCase()}:${messageId.toLowerCase()}:${voice}`;
   let client: PoolClient | undefined;
   let held = false;
+  let acquisitionUncertain = false;
   let failure: unknown;
   let failed = false;
   let result: { value: T } | undefined;
@@ -48,11 +49,15 @@ export async function withMessageSpeechGuard<T>(
     client.on("end", onEnd);
     for (;;) {
       guardedSignal.throwIfAborted();
-      const attempt = await client.query<{ acquired: boolean }>(
+      acquisitionUncertain = true;
+      const attempt = await client.query<{ acquired: unknown }>(
         "SELECT pg_try_advisory_lock(hashtextextended($1::text, 0)) AS acquired",
         [key],
       );
-      held = requireSingleRow(attempt.rows, "speech guard acquisition").acquired;
+      const acquired = requireSingleRow(attempt.rows, "speech guard acquisition").acquired;
+      if (typeof acquired !== "boolean") throw new Error("Invalid speech guard acquisition result");
+      held = acquired;
+      acquisitionUncertain = false;
       if (held) break;
       await delay(SPEECH_GUARD_POLL_MS, undefined, { signal: guardedSignal });
     }
@@ -63,49 +68,48 @@ export async function withMessageSpeechGuard<T>(
     failed = true;
     failure = error;
   }
-  let cleanupFailure: unknown;
-  let cleanupFailed = false;
+  const cleanupFailures: unknown[] = [];
   if (client) {
     try {
       if (held && !lost.signal.aborted) {
-        const unlock = await client.query<{ released: boolean }>(
+        const unlock = await client.query<{ released: unknown }>(
           "SELECT pg_advisory_unlock(hashtextextended($1::text, 0)) AS released",
           [key],
         );
-        if (!requireSingleRow(unlock.rows, "speech guard release").released)
+        if (requireSingleRow(unlock.rows, "speech guard release").released !== true)
           throw new Error("Speech guard release failed");
       } else if (held) {
         throw new Error("Speech guard session was lost", { cause: lost.signal.reason });
       }
     } catch (error) {
-      cleanupFailed = true;
-      cleanupFailure = error;
+      cleanupFailures.push(error);
     }
     client.off("error", onError);
     client.off("end", onEnd);
     try {
-      client.release(cleanupFailed || lost.signal.aborted ? new Error("Discarding speech guard session") : undefined);
+      client.release(
+        cleanupFailures.length || lost.signal.aborted || acquisitionUncertain
+          ? new Error("Discarding speech guard session")
+          : undefined,
+      );
     } catch (error) {
-      if (cleanupFailed)
-        cleanupFailure = new AggregateError([cleanupFailure, error], "Speech guard cleanup failed", { cause: error });
-      else {
-        cleanupFailed = true;
-        cleanupFailure = error;
-      }
+      cleanupFailures.push(error);
     }
   }
   const remaining = (guardAdmissions.get(pool) ?? 1) - 1;
   if (remaining === 0) guardAdmissions.delete(pool);
   else guardAdmissions.set(pool, remaining);
-  if (failed && cleanupFailed)
-    throw new AggregateError([failure, cleanupFailure], "Speech guard operation and cleanup failed", {
+  if (failed && cleanupFailures.length)
+    throw new AggregateError([failure, ...cleanupFailures], "Speech guard operation and cleanup failed", {
       cause: failure,
     });
   if (failed) throw failure instanceof Error ? failure : new Error("Speech guard failed", { cause: failure });
-  if (cleanupFailed)
-    throw cleanupFailure instanceof Error
-      ? cleanupFailure
-      : new Error("Speech guard cleanup failed", { cause: cleanupFailure });
+  if (cleanupFailures.length === 1) {
+    const error = cleanupFailures[0];
+    throw error instanceof Error ? error : new Error("Speech guard cleanup failed", { cause: error });
+  }
+  if (cleanupFailures.length > 1)
+    throw new AggregateError(cleanupFailures, "Speech guard cleanup failed", { cause: cleanupFailures[0] });
   if (!result) throw new Error("Speech guard returned no result");
   return result.value;
 }
