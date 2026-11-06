@@ -46,6 +46,7 @@ export function createSempMessageTask(
       return;
     }
     const turnState: { start?: SempTurnStart } = {};
+    let runPersistenceFailed = false;
     try {
       const turn = claimed.turn;
       if (!turn || turn.text === null) throw new Error("Semp source message is unavailable");
@@ -70,6 +71,7 @@ export function createSempMessageTask(
       });
       const result = await conversation.send(turn.text, thread, {
         context, signal, modelPrefix: prefix, messageId: assistantMessageId,
+        onFailurePersistenceError: () => { runPersistenceFailed = true; },
         onTurnStart: async (value) => {
           turnState.start = value;
           await withTransaction(pool, (client) => startSempMessageTurn(client, assistantMessageId, value.agentRunId, value.firstEventId));
@@ -105,6 +107,7 @@ export function createSempMessageTask(
       } catch (persistenceError) {
         throw new AggregateError([error, persistenceError], "Semp turn and error persistence failed", { cause: error });
       }
+      if (runPersistenceFailed) throw error;
       logger.warn({ threadId, assistantMessageId }, "Semp turn failed");
     }
   }, true));

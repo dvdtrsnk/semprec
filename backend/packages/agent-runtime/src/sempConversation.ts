@@ -137,6 +137,7 @@ export interface SempSendOptions {
    * prompted further. A throw ends the turn: the run closes as `error` and the error propagates.
    */
   onTurnStart?: (turn: SempTurnStart) => Promise<void> | void;
+  onFailurePersistenceError?: (error: unknown) => void;
 }
 
 async function* preserveUserText(messages: AsyncIterable<AgentMessage>, task: string): AsyncIterable<AgentMessage> {
@@ -365,7 +366,13 @@ export class SempConversation {
             state.entry = null;
             clearTimeout(entry.ttlTimer);
             this.releaseIfIdle(state);
-            await failRun(this.pool, entry.agentRunId, err);
+            try {
+              await failRun(this.pool, entry.agentRunId, err);
+            } catch (cleanupError) {
+              const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", { cause: err });
+              sendOptions.onFailurePersistenceError?.(failure);
+              throw failure;
+            }
             throw err;
           }
           if (state.dropped) {
@@ -428,7 +435,13 @@ export class SempConversation {
             onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: run.id, firstEventId })),
           );
         } catch (err) {
-          await failRun(this.pool, run.id, err);
+          try {
+            await failRun(this.pool, run.id, err);
+          } catch (cleanupError) {
+            const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", { cause: err });
+            sendOptions.onFailurePersistenceError?.(failure);
+            throw failure;
+          }
           throw err;
         }
 

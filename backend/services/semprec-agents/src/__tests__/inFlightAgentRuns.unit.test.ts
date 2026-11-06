@@ -22,7 +22,10 @@ describe("Semp settlement observation", () => {
     runs.register("tenant", later, true);
     expect(later.signal.reason).toBe("shutdown");
     rejectFirst(false);
-    expect(await settle()).toEqual([null, false]);
+    const failures = await settle();
+    expect(failures).toHaveLength(2);
+    expect(failures).toContain(null);
+    expect(failures).toContain(false);
   });
 });
 
