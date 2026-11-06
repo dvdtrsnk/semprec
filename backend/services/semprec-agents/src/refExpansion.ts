@@ -48,10 +48,9 @@ async function readRefBytes(stream: Readable, cap: number, signal?: AbortSignal)
     resolve();
   };
   const data = (raw: unknown) => {
-    if (typeof raw !== "string" && !(raw instanceof Uint8Array))
-      return finish({ error: new Error("Invalid attachment byte stream") });
+    if (!(raw instanceof Uint8Array)) return finish({ error: new Error("Invalid attachment byte stream") });
+    if (size + raw.byteLength > cap) return finish({ error: new Error("Attachment exceeds the size limit") });
     const bytes = Buffer.from(raw);
-    if (size + bytes.length > cap) return finish({ error: new Error("Attachment exceeds the size limit") });
     size += bytes.length;
     chunks.push(bytes);
   };

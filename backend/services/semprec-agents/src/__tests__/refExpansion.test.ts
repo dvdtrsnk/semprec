@@ -166,6 +166,45 @@ describe("tenant-scoped reference blob expansion", () => {
     }
   });
 
+  it("preserves an aborted read as primary when a synthetic cleanup error follows", async () => {
+    const first = await createFile(tenant, "Abort PDF", pdfFixture());
+    const second = await createFile(tenant, "Later PDF", Buffer.concat([pdfFixture(), Buffer.from("later")]));
+    const controller = new AbortController();
+    const abortReason = new Error("synthetic turn cancellation");
+    const cleanupFailure = new Error("synthetic cleanup error after cancellation");
+    const realRead = files.readStream.bind(files);
+    const opened: Readable[] = [];
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      const stream = realRead(key, range);
+      opened.push(stream);
+      if (opened.length === 1) {
+        stream.once("end", () => {
+          controller.abort(abortReason);
+          queueMicrotask(() => stream.emit("error", cleanupFailure));
+        });
+      }
+      return stream;
+    });
+    try {
+      let caught: unknown;
+      try {
+        await runInTenant(tenant, () =>
+          expandSempRefs(runtime, [first, second], { files, mailAttachments }, controller.signal),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(BlobReadCleanupError);
+      if (!(caught instanceof BlobReadCleanupError)) throw new Error("Missing cleanup failure");
+      expect(caught.errors).toEqual([abortReason, cleanupFailure]);
+      expect(caught.cause).toBe(abortReason);
+      expect(opened).toHaveLength(1);
+      expect(opened[0]?.closed).toBe(true);
+    } finally {
+      observer.mockRestore();
+    }
+  });
+
   it("expands real mail text bytes ephemerally and refuses foreign, random and invalid UTF-8 references", async () => {
     const createMail = (owner: string, attachments: Array<{ filename: string; bytes: Buffer }>) =>
       runInTenant(owner, () =>

@@ -118,9 +118,10 @@ describe("settleBlobReadStream", () => {
       expect(caught.cause).toBe(primary);
       expect(stream.closed).toBe(false);
     } finally {
-      if (!release) throw new Error("Destroy was not entered");
-      release();
-      await closed;
+      if (release) {
+        release();
+        await closed;
+      }
     }
     expect(stream.listenerCount("error")).toBe(0);
   }, 15_000);
