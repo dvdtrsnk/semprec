@@ -221,6 +221,8 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     const empty = await createTestTenant(adminPool);
     const emptyBefore = await runInTenant(empty, () => dataPool.query("SELECT id FROM properties"));
     await runInTenant(empty, () => runSelectOptionColorsCutoverMigration(dataPool));
+    await runCutovers(dataPool);
+    await runCutovers(dataPool);
     expect((await runInTenant(empty, () => dataPool.query("SELECT id FROM properties"))).rows).toEqual(
       emptyBefore.rows,
     );
@@ -251,6 +253,8 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
       );
     const before = await read();
     await runInTenant(b, () => runSelectOptionColorsCutoverMigration(dataPool));
+    await runCutovers(dataPool);
+    await runCutovers(dataPool);
     expect((await read()).rows).toEqual(before.rows);
   });
 

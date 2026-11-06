@@ -117,6 +117,8 @@ describe("select option order tenant cutover", () => {
     const deleted = await admin.query("DELETE FROM properties WHERE tenant_id = $1 AND id = $2", [second, removed.id]);
     expect(deleted.rowCount).toBe(1);
     await runInTenant(second, () => runSelectOptionOrderCutoverMigration(data));
+    await runAsSystem("missing option property cutover test", () => runTenantCutoverMigrations(data));
+    await runAsSystem("missing option property cutover replay", () => runTenantCutoverMigrations(data));
     expect(await property(second, "projects", "status")).toEqual(before);
     expect(await property(first, "events", "type")).toEqual(foreign);
     const missing = await runInTenant(second, () =>

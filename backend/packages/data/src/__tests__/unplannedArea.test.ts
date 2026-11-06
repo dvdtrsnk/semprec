@@ -73,6 +73,8 @@ describe("unplanned system area", () => {
       }));
     const before = await snapshot();
     await runInTenant(emptyTenant, () => runAreasUnplannedCutoverMigration(data));
+    await runAsSystem("missing Areas cutover test", () => runTenantCutoverMigrations(data));
+    await runAsSystem("missing Areas cutover replay", () => runTenantCutoverMigrations(data));
     expect(await snapshot()).toEqual(before);
     expect(await runInTenant(tenant, () => cp.listItems(areasId))).toEqual(ownerBefore);
   });
