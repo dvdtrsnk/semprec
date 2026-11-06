@@ -727,6 +727,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "upsertRollupDependency",
   "upsertWebPushSubscription",
   "validateRollupConfig",
+  "validateSempMessageRefs",
   "verifyMailCredentials",
   "verifyPassword",
   "verifySessionToken",

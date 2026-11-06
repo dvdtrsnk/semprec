@@ -133,6 +133,38 @@ export interface PageStateRead {
   updates: Buffer[];
 }
 
+/** Reads item-backed documents and their state in a single non-compacting statement. */
+export async function readRefDocumentStates(client: Queryable, itemIds: string[]): Promise<PageStateRead[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<{ item_id: string; kind: number; bytes: unknown }>(
+    `WITH selected AS (
+       SELECT d.id, d.item_id FROM docs d
+       JOIN items i ON i.tenant_id = d.tenant_id AND i.id = d.item_id
+       WHERE d.item_id = ANY($1::uuid[])
+     )
+     SELECT selected.item_id, 0 AS kind, 0::bigint AS seq, s.state AS bytes
+     FROM selected LEFT JOIN doc_snapshots s ON s.doc_id = selected.id
+     UNION ALL
+     SELECT selected.item_id, 1 AS kind, u.id AS seq, u.update AS bytes
+     FROM selected JOIN doc_updates u ON u.doc_id = selected.id
+     ORDER BY item_id, kind, seq`,
+    [itemIds],
+  );
+  const documents = new Map<string, PageStateRead>();
+  for (const row of rows) {
+    if (row.bytes !== null && !Buffer.isBuffer(row.bytes)) throw new Error("Invalid document state bytes");
+    let document = documents.get(row.item_id);
+    if (!document) {
+      document = { itemId: row.item_id, snapshot: null, updates: [] };
+      documents.set(row.item_id, document);
+    }
+    if (row.kind === 0) document.snapshot = row.bytes;
+    else if (row.kind === 1 && row.bytes !== null) document.updates.push(row.bytes);
+    else throw new Error("Invalid document state row");
+  }
+  return [...documents.values()];
+}
+
 /** Reads selected page snapshots and updates in one statement without compaction. */
 export async function readPageStatesForItems(client: Queryable, itemIds: string[]): Promise<PageStateRead[]> {
   if (itemIds.length === 0) return [];

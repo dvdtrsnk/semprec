@@ -1,0 +1,110 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createChokePoint,
+  getDatabaseByModuleId,
+  seedSystem,
+  sendSempMessage,
+  validateSempMessageRefs,
+  withTransaction,
+} from "../index.js";
+
+describe("Semp reference observation", () => {
+  let admin: Pool;
+  let runtime: Pool;
+  beforeAll(async () => {
+    admin = getTestPool();
+    await resetDatabase(admin);
+    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+  });
+  afterAll(async () => {
+    await runtime.end();
+    await admin.end();
+  });
+
+  it("refuses deletion before observation and permits deletion after observation", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const taskDb = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!taskDb) throw new Error("Missing tasks database");
+    const cp = createChokePoint(runtime);
+    const first = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: taskDb.id, properties: { name: "First" } }),
+    );
+    const second = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: taskDb.id, properties: { name: "Second" } }),
+    );
+    const purge = (id: string) =>
+      runInTenant(tenant, async () => {
+        await cp.softDeleteItem(taskDb.id, id);
+        const result = await cp.purgeExpiredTrashSubtree(id, new Date("9999-01-01T00:00:00Z"));
+        expect(result.purgedItemIds).toContain(id);
+      });
+    await purge(first.id);
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          validateSempMessageRefs(client, [{ kind: "item", itemId: first.id, databaseId: taskDb.id }]),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "validation_failed", details: { field: "context[0]" } });
+
+    let observed!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const proceed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operation = runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const context = await validateSempMessageRefs(client, [
+          { kind: "item", itemId: second.id, databaseId: taskDb.id },
+        ]);
+        observed();
+        await proceed;
+        return sendSempMessage(client, { text: "question", context, hasContext: true });
+      }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let failure: unknown;
+    try {
+      await Promise.race([
+        ready,
+        operation.then(() => {
+          throw new Error("Send completed before observation barrier");
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Observation timed out")), 10_000);
+        }),
+      ]);
+      await purge(second.id);
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+    }
+    const settled = await Promise.allSettled([operation]);
+    const result = settled[0];
+    if (failure !== undefined) {
+      if (result?.status === "rejected")
+        throw new AggregateError([failure, result.reason], "Observation and send failed");
+      throw failure;
+    }
+    if (!result || result.status === "rejected") throw result?.reason ?? new Error("Missing send result");
+    const row = await runInTenant(tenant, () =>
+      runtime.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [result.value.messageId]),
+    );
+    expect(row.rows).toEqual([{ context: [{ kind: "item", itemId: second.id, databaseId: taskDb.id }] }]);
+  });
+});

@@ -684,6 +684,7 @@ export {
   sendSempMessage,
 } from "./sempThreads/sempThreadsStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
+export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export {
   claimSempMessage,
   finishSempMessageTurn,
