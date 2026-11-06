@@ -31,7 +31,7 @@ interface CleanupBudget {
 interface OpenedStream {
   stream: Readable;
   openingErrors: unknown[];
-  detachOpeningObserver(): void;
+  detachOpeningObserver: () => void;
 }
 
 async function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Promise<void> {
