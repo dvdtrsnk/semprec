@@ -27,7 +27,7 @@ interface Session {
   speechController: AbortController | undefined;
   textState: VoiceTextState;
   speaking: boolean;
-  dispose: (() => void) | undefined;
+  dispose: (() => Promise<void>) | undefined;
 }
 
 const MAX_QUEUED_TURNS = 16;
@@ -265,9 +265,10 @@ export function createVoiceSessionHandler(
         afterEventId: delivery.firstEventId,
         signal,
         onFrame,
-        onFailure(error) {
+        onFailure(error, cause) {
           failed = true;
           watchFailure = error;
+          if (cause === "overloaded") session.sender.fail("overloaded");
         },
       });
       for (;;) {
@@ -287,7 +288,7 @@ export function createVoiceSessionHandler(
       session.textState.finishMessage(undefined);
       await session.speech;
     } finally {
-      session.dispose?.();
+      await session.dispose?.();
       session.dispose = undefined;
     }
   }
@@ -391,10 +392,10 @@ export function createVoiceSessionHandler(
     async onClose(identity) {
       const session = sessions.get(identity.userId);
       if (!session) return;
-      session.dispose?.();
+      const disposing = session.dispose?.();
       session.speechController?.abort();
       session.stream?.close();
-      const results = await Promise.allSettled([session.streamClosed, session.work, session.speech]);
+      const results = await Promise.allSettled([session.streamClosed, session.work, session.speech, disposing]);
       sessions.delete(identity.userId);
       const failures: unknown[] = [];
       for (const result of results) if (result.status === "rejected") failures.push(result.reason);

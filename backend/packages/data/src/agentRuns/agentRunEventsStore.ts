@@ -127,14 +127,22 @@ export async function listAgentRunEventsAfter(
   agentRunId: string,
   afterEventId: string,
   rowLimit?: number,
-  scope?: { threadId: string; sempMessageId: string },
+  scope?: { threadId: string; sempMessageId: string; throughEventId?: string },
 ): Promise<AgentRunEventRow[]> {
   if (rowLimit !== undefined && (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 257)) {
     throw new ValidationError("Invalid agent run event row limit");
   }
   if (scope !== undefined) {
     validateSempEventScope(scope);
+    if (
+      scope.throughEventId !== undefined &&
+      (typeof scope.throughEventId !== "string" ||
+        !/^[1-9][0-9]{0,18}$/.test(scope.throughEventId) ||
+        BigInt(scope.throughEventId) > 9_223_372_036_854_775_807n)
+    )
+      throw new ValidationError("Invalid agent run event upper bound");
     const params: unknown[] = [agentRunId, afterEventId, scope.threadId, scope.sempMessageId];
+    if (scope.throughEventId !== undefined) params.push(scope.throughEventId);
     if (rowLimit !== undefined) params.push(rowLimit);
     const { rows } = await client.query<AgentRunEventDbRow>(
       `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
@@ -145,7 +153,8 @@ export async function listAgentRunEventsAfter(
          AND e.id >= m.event_from_id
          AND ((m.status = 'running' AND m.event_to_id IS NULL)
            OR (m.status IN ('done', 'error') AND m.event_to_id IS NOT NULL AND e.id <= m.event_to_id))
-       ORDER BY e.id ASC${rowLimit === undefined ? "" : " LIMIT $5"}`,
+         ${scope.throughEventId === undefined ? "" : "AND e.id <= $5::bigint"}
+       ORDER BY e.id ASC${rowLimit === undefined ? "" : ` LIMIT $${scope.throughEventId === undefined ? 5 : 6}`}`,
       params,
     );
     return rows.map(mapRow);

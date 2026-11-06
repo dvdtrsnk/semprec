@@ -1858,9 +1858,11 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
       await settle();
       await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "untagged" }));
-      await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "other" }, randomUUID()));
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "owned" }, target.sempMessageId),
+        publishAgentRunDelta(runtimePool, run.id, { text: "other" }, randomUUID(), first.id, 1),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "owned" }, target.sempMessageId, first.id, 1),
       );
       await vi.waitFor(() => expect(voiceFrames.filter((frame) => frame.type === "delta")).toHaveLength(1));
       expect(voiceFrames[0]).toMatchObject({
@@ -1869,20 +1871,19 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       });
       const before = voiceFrames.length;
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId),
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId, first.id, 2),
       );
-      await vi.waitFor(() => expect(voiceFrames.length).toBeGreaterThan(before + 1));
+      await vi.waitFor(() => expect(voiceFrames.length).toBe(before + 1));
       const chunks = voiceFrames.slice(before);
       expect(
         chunks.every(
           (frame) =>
             frame.type === "delta" &&
             frame.message.sempMessageId === target.sempMessageId &&
-            "chunk" in frame.message &&
-            Buffer.byteLength(JSON.stringify(frame.message)) < 7500,
+            !("chunk" in frame.message),
         ),
       ).toBe(true);
-      await vi.waitFor(() => expect(wire.length).toBeGreaterThanOrEqual(3 + chunks.length));
+      await vi.waitFor(() => expect(wire.length).toBeGreaterThanOrEqual(4));
       expect(wire.every((frame) => frame.type === "agent:delta" && !("sempMessageId" in frame))).toBe(true);
       await expect(
         runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "invalid" }, "not-a-uuid")),
@@ -1980,7 +1981,14 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         }),
       );
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "next while replay held" }, second.assistantMessageId),
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next while replay held" },
+          second.assistantMessageId,
+          secondFirst.id,
+          1,
+        ),
       );
       await announcedEventIn(tenantA, sentinelRun.id);
       await waitUntil(() => sentinelFrames.length === 1);
@@ -1995,20 +2003,34 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: secondFirst.id }),
       );
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "next after replay" }, second.assistantMessageId),
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next after replay" },
+          second.assistantMessageId,
+          secondFirst.id,
+          2,
+        ),
       );
       await runInTenant(tenantA, () =>
         publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: last.id }),
       );
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "first delayed" }, target.sempMessageId),
+        publishAgentRunDelta(runtimePool, run.id, { text: "first delayed" }, target.sempMessageId, last.id, 1),
       );
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1));
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "first before next" }, target.sempMessageId),
+        publishAgentRunDelta(runtimePool, run.id, { text: "first before next" }, target.sempMessageId, last.id, 2),
       );
       await runInTenant(tenantA, () =>
-        publishAgentRunDelta(runtimePool, run.id, { text: "next after first" }, second.assistantMessageId),
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next after first" },
+          second.assistantMessageId,
+          secondFirst.id,
+          3,
+        ),
       );
       await announcedEventIn(tenantA, sentinelRun.id);
       await waitUntil(() => sentinelFrames.length === 2);

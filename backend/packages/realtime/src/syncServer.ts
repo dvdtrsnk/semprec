@@ -46,7 +46,7 @@ export interface SyncServerOptions {
 }
 
 export interface SyncServer {
-  subscribeVoice(input: VoiceRunWatchInput): Promise<() => void>;
+  subscribeVoice(input: VoiceRunWatchInput): Promise<() => Promise<void>>;
   /** Wire this to the underlying `http.Server`'s `'upgrade'` event for the `/api/sync` path. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**

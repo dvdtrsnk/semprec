@@ -89,9 +89,11 @@ async function pushLiveDelta(
   agentRunId: string,
   delta: AgentMessage,
   sempMessageId?: string,
+  afterEventId?: string,
+  deltaSequence?: number,
 ): Promise<void> {
   try {
-    await publishAgentRunDelta(client, agentRunId, delta, sempMessageId);
+    await publishAgentRunDelta(client, agentRunId, delta, sempMessageId, afterEventId, deltaSequence);
   } catch (err) {
     logger.error({ err, agentRunId, kind: delta.kind }, "Failed to publish agent_run_delta realtime message");
   }
@@ -132,6 +134,8 @@ export async function runAgentTurn(
 ): Promise<AgentMessage | null> {
   let firstEventReported = false;
   let lastMessage: AgentMessage | null = null;
+  let lastPersistedId: string | undefined;
+  let deltaSequence = 0;
   const iterator = messages[Symbol.asyncIterator]();
   let finished = false;
   let cancelled = false;
@@ -173,10 +177,20 @@ export async function runAgentTurn(
       // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
       // a missed message_update is deliberately lost, same as a dropped WS typing frame.
       if (message.kind === "message_update") {
-        await pushLiveDelta(client, agentRunId, message, sempMessageId);
+        deltaSequence++;
+        await pushLiveDelta(
+          client,
+          agentRunId,
+          message,
+          sempMessageId,
+          sempMessageId === undefined ? undefined : lastPersistedId,
+          sempMessageId === undefined ? undefined : deltaSequence,
+        );
       } else {
         if (PERSISTED_EVENT_KINDS.has(message.kind)) {
           const stored = await recordPersistentEvent(client, agentRunId, message.kind, message);
+          lastPersistedId = stored.id;
+          deltaSequence = 0;
           if (!firstEventReported) {
             firstEventReported = true;
             await onFirstEvent?.(stored.id);

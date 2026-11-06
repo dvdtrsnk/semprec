@@ -90,9 +90,12 @@ async function publishEnveloped(pool: Pool | PoolClient, channel: string, messag
   );
 }
 
-export type AgentStreamMessage =
-  | { type: "agent_run_delta"; agentRunId: string; delta: unknown; sempMessageId?: string }
-  | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk; sempMessageId?: string };
+type VoiceDeltaIdentity = { sempMessageId?: string; afterEventId?: string; deltaSequence?: number };
+export type AgentStreamMessage = VoiceDeltaIdentity &
+  (
+    | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
+    | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk }
+  );
 
 function serializedBytes(message: AgentStreamMessage): number {
   return Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -108,8 +111,21 @@ export async function publishAgentRunDelta(
   agentRunId: string,
   delta: unknown,
   sempMessageId?: string,
+  afterEventId?: string,
+  deltaSequence?: number,
 ): Promise<void> {
-  if (sempMessageId !== undefined && !isUuid(sempMessageId)) throw new Error("Invalid Semp message id");
+  const attributed = sempMessageId !== undefined || afterEventId !== undefined || deltaSequence !== undefined;
+  if (
+    attributed &&
+    (!isUuid(sempMessageId) ||
+      !isAgentRunEventId(afterEventId) ||
+      afterEventId === "0" ||
+      !Number.isSafeInteger(deltaSequence) ||
+      deltaSequence === undefined ||
+      deltaSequence < 1)
+  )
+    throw new Error("Invalid Semp delta identity");
+  const identity = attributed ? { sempMessageId, afterEventId, deltaSequence } : {};
   // `JSON.stringify` drops an object key whose value is `undefined`, and `parseAgentStreamMessage`
   // requires a `delta` key to be present — normalize so an explicit `undefined` delta still
   // round-trips instead of being silently dropped on the fast (unchunked) path below.
@@ -117,7 +133,7 @@ export async function publishAgentRunDelta(
     type: "agent_run_delta",
     agentRunId,
     delta: delta === undefined ? null : delta,
-    ...(sempMessageId === undefined ? {} : { sempMessageId }),
+    ...identity,
   };
   if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
     await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(single));
@@ -134,7 +150,7 @@ export async function publishAgentRunDelta(
     const message: AgentStreamMessage = {
       type: "agent_run_delta",
       agentRunId,
-      ...(sempMessageId === undefined ? {} : { sempMessageId }),
+      ...identity,
       delta: encoded.slice(index * AGENT_STREAM_CHUNK_BYTES, (index + 1) * AGENT_STREAM_CHUNK_BYTES),
       chunk,
     };
@@ -265,9 +281,25 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   const value = raw as Record<string, unknown>;
   if (value.type !== "agent_run_delta" || !isUuid(value.agentRunId) || !("delta" in value)) return null;
   if (value.sempMessageId !== undefined && !isUuid(value.sempMessageId)) return null;
-  const sempMessageId = value.sempMessageId === undefined ? {} : { sempMessageId: value.sempMessageId };
+  const ordered = value.afterEventId !== undefined || value.deltaSequence !== undefined;
+  if (
+    ordered &&
+    (!isUuid(value.sempMessageId) ||
+      !isAgentRunEventId(value.afterEventId) ||
+      value.afterEventId === "0" ||
+      typeof value.deltaSequence !== "number" ||
+      !Number.isSafeInteger(value.deltaSequence) ||
+      value.deltaSequence < 1)
+  )
+    return null;
+  const identity: VoiceDeltaIdentity = {
+    ...(value.sempMessageId === undefined ? {} : { sempMessageId: value.sempMessageId }),
+    ...(typeof value.afterEventId === "string" && typeof value.deltaSequence === "number"
+      ? { afterEventId: value.afterEventId, deltaSequence: value.deltaSequence }
+      : {}),
+  };
   if (value.chunk === undefined)
-    return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta, ...sempMessageId };
+    return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta, ...identity };
   if (typeof value.chunk !== "object" || value.chunk === null || Array.isArray(value.chunk)) return null;
   const chunk = value.chunk as Record<string, unknown>;
   if (
@@ -287,7 +319,7 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   return {
     type: "agent_run_delta",
     agentRunId: value.agentRunId,
-    ...sempMessageId,
+    ...identity,
     delta: value.delta,
     chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
   };
