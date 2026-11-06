@@ -14,6 +14,7 @@ import {
   createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
+  createRelationWithClient,
   createSemprecTickAction,
   createUser,
   getDatabaseByModuleId,
@@ -129,15 +130,28 @@ describe("tenant-scoped reference blob expansion", () => {
       withTransaction(runtime, async (client) => ({
         tasks: await getDatabaseByModuleId(client, "tasks"),
         transcripts: await getDatabaseByModuleId(client, "transcripts"),
+        projects: await getDatabaseByModuleId(client, "projects"),
+        people: await getDatabaseByModuleId(client, "people"),
+        companies: await getDatabaseByModuleId(client, "companies"),
       })),
     );
-    if (!databases.tasks || !databases.transcripts) throw new Error("Missing reference fixture databases");
+    if (!databases.tasks || !databases.transcripts || !databases.projects || !databases.people || !databases.companies)
+      throw new Error("Missing reference fixture databases");
     const cp = createChokePoint(runtime);
     const page = await runInTenant(tenant, () =>
       cp.createItem({ databaseId: databases.tasks!.id, properties: { name: "Page sentinel" } }),
     );
     const transcript = await runInTenant(tenant, () =>
       cp.createItem({ databaseId: databases.transcripts!.id, properties: { name: "Transcript sentinel" } }),
+    );
+    const project = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: databases.projects!.id, properties: { name: "Project relation sentinel" } }),
+    );
+    const person = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: databases.people!.id, properties: { name: "Person relation sentinel" } }),
+    );
+    const company = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: databases.companies!.id, properties: { name: "Company relation sentinel" } }),
     );
     const first = randomUUID();
     const sibling = randomUUID();
@@ -152,6 +166,35 @@ describe("tenant-scoped reference blob expansion", () => {
           { speaker: "SPEAKER_00", text: "Segment sentinel", startsAt: 0, endsAt: 1 },
         ]),
       );
+      await withTransaction(runtime, async (client) => {
+        const taskProperties = await listPropertiesByDatabase(client, databases.tasks!.id);
+        const projectProperties = await listPropertiesByDatabase(client, databases.projects!.id);
+        const links = [
+          {
+            property: taskProperties.find((entry) => entry.key === "project"),
+            callerItemId: page.id,
+            targetItemId: project.id,
+          },
+          {
+            property: projectProperties.find((entry) => entry.key === "people"),
+            callerItemId: project.id,
+            targetItemId: person.id,
+          },
+          {
+            property: projectProperties.find((entry) => entry.key === "company"),
+            callerItemId: project.id,
+            targetItemId: company.id,
+          },
+        ];
+        for (const link of links) {
+          if (!link.property) throw new Error("Missing reference relation property");
+          await createRelationWithClient(client, {
+            relationPropertyId: link.property.id,
+            callerItemId: link.callerItemId,
+            targetItemId: link.targetItemId,
+          });
+        }
+      });
     });
     const run = await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => {
@@ -172,6 +215,7 @@ describe("tenant-scoped reference blob expansion", () => {
     );
     const refs = [
       { kind: "item" as const, itemId: page.id, databaseId: databases.tasks.id },
+      { kind: "item" as const, itemId: project.id, databaseId: databases.projects.id },
       { kind: "block" as const, itemId: page.id, blockId: first, label: "Saved block" },
       { kind: "transcriptSegment" as const, itemId: transcript.id, startsAt: 0, endsAt: 1 },
       { kind: "agentRun" as const, agentRunId: run.id },
@@ -180,12 +224,13 @@ describe("tenant-scoped reference blob expansion", () => {
     await runInTenant(tenant, async () => {
       const snapshot = () =>
         runtime.query(
-          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM doc_updates) AS updates, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM approval_requests) AS approvals",
+          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM doc_updates) AS updates, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM approval_requests) AS approvals",
         );
       const before = await snapshot();
       const result = await expandSempRefs(runtime, refs, { files, mailAttachments });
       expect(result.context.map((entry) => entry.label)).toEqual([
         "Page sentinel",
+        "Project relation sentinel",
         "Saved block",
         "Transcript sentinel",
         "Run sentinel",
@@ -193,6 +238,9 @@ describe("tenant-scoped reference blob expansion", () => {
       ]);
       for (const sentinel of [
         "Page sentinel",
+        "Project relation sentinel",
+        "Person relation sentinel",
+        "Company relation sentinel",
         "Block sentinel",
         "Sibling sentinel",
         "Segment sentinel",
@@ -206,8 +254,10 @@ describe("tenant-scoped reference blob expansion", () => {
       expect((await snapshot()).rows).toEqual(before.rows);
     });
     const refused = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
-    expect(refused.context.map((entry) => entry.label)).toEqual(["", "Saved block", "", "", ""]);
+    expect(refused.context.map((entry) => entry.label)).toEqual(["", "", "Saved block", "", "", ""]);
     expect(refused.text).not.toContain("Page sentinel");
+    expect(refused.text).not.toContain("Person relation sentinel");
+    expect(refused.text).not.toContain("Company relation sentinel");
     expect(refused.text).not.toContain("Tool sentinel");
     expect(refused.text).not.toContain("Approval sentinel");
   });
