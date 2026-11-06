@@ -169,13 +169,21 @@ describe("Semp title through the real gateway", () => {
     const result = await runInTenant(tenant, async () => ({
       title: (await pool.query<{ title: string }>("SELECT title FROM semp_threads WHERE id = $1", [threadId])).rows,
       accounting: (
-        await pool.query<{ operation: string; input_tokens: number; output_tokens: number }>(
-          "SELECT operation, input_tokens, output_tokens FROM ai_gateway_calls WHERE operation = 'semp_thread_title'",
+        await pool.query<{
+          operation: string;
+          input_tokens: number;
+          output_tokens: number;
+          project_item_id: string | null;
+        }>(
+          "SELECT operation, input_tokens, output_tokens, project_item_id FROM ai_gateway_calls WHERE operation = 'semp_thread_title'",
         )
       ).rows,
     }));
     expect(result.title).toEqual([{ title: "Useful title" }]);
-    expect(result.accounting).toEqual([{ operation: "semp_thread_title", input_tokens: 31, output_tokens: 8 }]);
+    expect(result.accounting).toEqual([
+      { operation: "semp_thread_title", input_tokens: 31, output_tokens: 8, project_item_id: null },
+    ]);
+    expect(Array.from(result.title[0]?.title ?? "").length).toBeLessThanOrEqual(60);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.system).toContain("locale: en");
     expect(calls[0]?.system).toContain("user's language");
@@ -185,6 +193,13 @@ describe("Semp title through the real gateway", () => {
     ]);
     await runInTenant(tenant, () => handleSempThreadTitle(pool, threadId, gateway));
     expect(calls).toHaveLength(1);
+    expect(
+      (
+        await runInTenant(tenant, () =>
+          pool.query<{ title: string }>("SELECT title FROM semp_threads WHERE id = $1", [threadId]),
+        )
+      ).rows,
+    ).toEqual([{ title: "Useful title" }]);
   });
 
   it("keeps user titles, budget refusals and provider failures unchanged", async () => {
