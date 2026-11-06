@@ -651,6 +651,117 @@ describe("queued Semp messages", () => {
     if (failure) throw failure.error;
   });
 
+  it("preserves the turn and run-recovery failures through actual Semp settlement", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const shutdownPool = await createRuntimeRolePool(admin, "semprec_data");
+    const inFlight = createInFlightAgentRuns();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const faux = fauxProvider();
+    faux.setResponses([
+      async () => {
+        entered();
+        await gate;
+        return fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider fixture refused" });
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `test_semp_recovery_${suffix}`;
+    const triggerName = `test_semp_recovery_${suffix}`;
+    let actualRuntime: AgentsQueueRuntime | undefined;
+    let closed = false;
+    let triggerInstalled = false;
+    let failure: { error: unknown } | undefined;
+    try {
+      actualRuntime = await createAgentsQueueRuntime(shutdownPool, registry, {
+        sempMessageTask: createSempMessageTask(shutdownPool, registry, gateway, inFlight),
+      });
+      const turn = await runInTenant(tenant, () =>
+        withTransaction(shutdownPool, (client) =>
+          sendSempMessage(client, { text: "fail run recovery", context: [], hasContext: false }),
+        ),
+      );
+      await started;
+      const rows = await runInTenant(tenant, () =>
+        shutdownPool.query<{ agent_run_id: string }>("SELECT agent_run_id FROM semp_messages WHERE id = $1", [
+          turn.assistantMessageId,
+        ]),
+      );
+      const runId = rows.rows[0]?.agent_run_id;
+      if (!runId) throw new Error("Missing active Semp run");
+      await admin.query(
+        `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.agent_run_id = '${runId}'::uuid AND NEW.kind = 'run_status' AND NEW.payload->>'status' = 'error' THEN RAISE EXCEPTION 'run recovery fixture failure'; END IF; RETURN NEW; END $$`,
+      );
+      await admin.query(
+        `CREATE TRIGGER ${triggerName} BEFORE INSERT ON agent_run_events FOR EACH ROW EXECUTE FUNCTION ${functionName}()`,
+      );
+      triggerInstalled = true;
+      const shutdown = createGracefulShutdown({
+        queueRuntime: actualRuntime,
+        tenantDeactivationListener: { close: async () => {} },
+        pool: shutdownPool,
+        logger,
+        closeIdleThreadSessions,
+        abortSempTurns: () => inFlight.abortSemp(),
+        observeSempSettlement: () => inFlight.observeSempSettlement(),
+      })("SIGTERM");
+      release();
+      const error: unknown = await shutdown.catch((reason: unknown) => reason);
+      closed = true;
+      expect(error).toBeInstanceOf(AggregateError);
+      if (!(error instanceof AggregateError)) throw new Error("Expected run recovery failure");
+      expect(error.errors).toHaveLength(2);
+      expect(error.cause).toBe(error.errors[0]);
+      expect(error.errors[0]).toBeInstanceOf(Error);
+      expect(error.errors[1]).toMatchObject({ message: "run recovery fixture failure" });
+      const status = await runInTenant(tenant, () =>
+        pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [turn.assistantMessageId]),
+      );
+      expect(status.rows).toEqual([{ status: "error" }]);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const cleanup: unknown[] = [];
+    for (const action of [
+      async () => {
+        if (!closed) await actualRuntime?.stop();
+      },
+      async () => {
+        if (!closed) await shutdownPool.end();
+      },
+      async () => {
+        if (triggerInstalled) await admin.query(`DROP TRIGGER ${triggerName} ON agent_run_events`);
+      },
+      async () => {
+        await admin.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+      },
+    ]) {
+      try {
+        await action();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(failure ? [failure.error, ...cleanup] : cleanup, "Run recovery test cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+  });
+
   it("stores interrupted status when the Semp shutdown controller aborts actual work", async () => {
     const shutdownPool = await createRuntimeRolePool(admin, "semprec_data");
     const inFlight = createInFlightAgentRuns();
