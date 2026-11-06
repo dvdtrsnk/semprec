@@ -1,6 +1,5 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolve as baseResolve } from "../../../../semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs";
 
 const backend = resolvePath(dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const entries = new Map([
@@ -10,5 +9,5 @@ const entries = new Map([
 export function resolve(specifier, context, nextResolve) {
   const entry = entries.get(specifier);
   if (entry) return { url: pathToFileURL(entry).href, shortCircuit: true };
-  return baseResolve(specifier, context, nextResolve);
+  return nextResolve(specifier, context);
 }

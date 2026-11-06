@@ -1,5 +1,9 @@
 import { register } from "node:module";
 
+register(
+  new URL("../../../../semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs", import.meta.url),
+  import.meta.url,
+);
 register(new URL("../../../src/__tests__/fixtures/liveVoiceWorkerResolver.mjs", import.meta.url), import.meta.url);
 const { createPool, loadFullModuleRegistry, LocalFsBlobStorageWriter } = await import("@semprec/data");
 const { wireRealtimeHooks } = await import("@semprec/realtime");
