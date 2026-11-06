@@ -68,6 +68,23 @@ export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
 
 export type LabeledSempMessageRef = z.infer<typeof labeledSempMessageRefSchema>;
 
+/** Current display metadata; approval descriptions remain localizable templates. */
+export interface SempApprovalDescription {
+  key: string;
+  params: Record<string, string | number | null>;
+  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string }>;
+}
+
+export type SempRefResolution = {
+  label: string | SempApprovalDescription | null;
+  databaseKey: string | null;
+  state: "active" | "trashed" | "purged";
+};
+
+export type ResolvedSempMessageRef = (SempMessageRef | LabeledSempMessageRef) & {
+  resolved: SempRefResolution;
+};
+
 export const SEMP_MESSAGE_REF_KINDS = [
   "item",
   "block",

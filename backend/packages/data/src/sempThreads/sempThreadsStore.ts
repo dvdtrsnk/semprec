@@ -6,6 +6,7 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import type { SempThreadMessage } from "@semprec/shared";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
+import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
 
 interface ThreadRow {
   id: string;
@@ -204,14 +205,18 @@ export async function listSempThreadMessages(
   );
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
+  const contexts = await resolveSempHistoryContexts(
+    client,
+    page.map((row) => row.context),
+  );
   const last = page.at(-1);
   return {
-    rows: page.map((row): SempThreadMessage => ({
+    rows: page.map((row, index): SempThreadMessage => ({
       id: row.id,
       role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
       text: row.text,
       system: row.system_key === null ? null : { key: row.system_key, params: row.system_params },
-      context: row.context,
+      context: contexts[index],
       replyToMessageId: row.reply_to_message_id,
       agentRunId: row.agent_run_id,
       eventFromId: row.event_from_id,
