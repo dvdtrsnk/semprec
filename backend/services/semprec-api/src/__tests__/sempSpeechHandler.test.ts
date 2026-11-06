@@ -214,7 +214,10 @@ describe("message speech HTTP", () => {
     if (pool) await cleanup(() => pool.end());
     if (admin) await cleanup(() => admin.end());
     if (!child || childSettled) {
-      if (blockDir) await cleanup(() => rm(blockDir, { recursive: true, force: true }));
+      if (blockDir) {
+        const ownedBlockDir = blockDir;
+        await cleanup(() => rm(ownedBlockDir, { recursive: true, force: true }));
+      }
       if (directory) await cleanup(() => rm(directory, { recursive: true, force: true }));
     } else failures.push(new Error("Gateway child settlement unknown; fixture files retained"));
     if (failures.length) throw new AggregateError(failures, "Speech fixture cleanup failed");
@@ -330,7 +333,7 @@ describe("message speech HTTP", () => {
     const signal = AbortSignal.timeout(10_000);
     const first = post(value.threadId, value.messageId, "", signal);
     let second: Promise<Response> | undefined;
-    let settled = Promise.allSettled([first]);
+    let settled: Promise<PromiseSettledResult<Response>[]> = Promise.allSettled([first]);
     let failure: unknown;
     let failed = false;
     try {
