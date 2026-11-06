@@ -97,6 +97,7 @@ const gateway = createServer(
       internalToken: token,
       provider: createOpenAiSpeechSynthesisProvider("fixture-key"),
       pricePerAudioHour: 36,
+    maxConcurrentStreams: 4,
       globalCaps: caps,
     },
   ),
