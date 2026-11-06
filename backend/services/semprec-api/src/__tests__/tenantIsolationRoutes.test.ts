@@ -44,6 +44,7 @@ import {
   handleObservabilityCheckSystemTask,
   handleAgentRunEventsRetentionTask,
   insertAgentRunEvent,
+  insertValueLink,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
   listAgentRunsByHeartbeat,
@@ -3453,6 +3454,42 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       expect(body).not.toHaveProperty("blobs");
     } finally {
       await replaceProperties(original);
+    }
+  });
+
+  it("isolates link operations through HTTP on the runtime role", async () => {
+    const cp = createChokePoint(pool);
+    const setup = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const database = await cp.createDatabase({ name: "Link isolation" });
+        await cp.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+        const source = await cp.createItem({ databaseId: database.id, properties: { note: "source" } });
+        const target = await cp.createItem({ databaseId: database.id, properties: { note: "target" } });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: target.id,
+            propertyKey: "note",
+            ruleKey: "test",
+            sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "note" }],
+          }),
+        );
+        return target.id;
+      });
+    const foreign = await setup(a.tenantId);
+    const own = await setup(b.tenantId);
+    const readForeign = () => send(a.member, { method: "GET", path: `/api/items/${foreign}?include=links` });
+    const before = await readForeign();
+    expect(before.status).toBe(200);
+    for (const action of ["unlink", "relink"]) {
+      const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/links/note/${action}`,
+      }));
+      expect(refused.status).toBe(404);
+      expect((await send(b.member, { method: "POST", path: `/api/items/${own}/links/note/${action}` })).status).toBe(
+        200,
+      );
+      expect(await readForeign()).toEqual(before);
     }
   });
 
