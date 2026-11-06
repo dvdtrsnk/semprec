@@ -16,8 +16,11 @@ type Ready = {
 type Assembly = { message: OrderedMessage; id: string; total: number; parts: string[]; bytes: number; since: number };
 
 export class VoiceDeltaBufferError extends Error {
-  constructor(readonly causeCode: "overloaded" | "unavailable") {
-    super("Voice delta buffer unavailable");
+  constructor(
+    readonly causeCode: "overloaded" | "unavailable",
+    message = "Voice delta buffer unavailable",
+  ) {
+    super(message);
   }
 }
 

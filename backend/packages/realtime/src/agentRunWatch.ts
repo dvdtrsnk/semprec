@@ -412,7 +412,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           throw new Error("Voice run watch unavailable");
         }
         if (replay.length > 256) {
-          const error = new VoiceDeltaBufferError("overloaded");
+          const error = new VoiceDeltaBufferError("overloaded", "Voice run replay exceeds event limit");
           reportVoiceFailure(watcher, error, "overloaded");
           if (watcher.drainFailure) throw watcher.drainFailure.error;
           throw error;
