@@ -31,6 +31,7 @@ import {
 } from "@semprec/data/testSupport";
 import { runAsSystem, runInTenant, type Logger } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
+import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createGracefulShutdown } from "../shutdown.js";
@@ -181,7 +182,29 @@ describe("semprec-agents startup repair (issue #642)", () => {
 
   it("repairs running Semp rows idempotently without modifying existing job or queue lock markers", async () => {
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    const observed: Array<{ tenantId: string; threadId: string }> = [];
+    listener.on("notification", (notification) => {
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
+      const value: unknown = JSON.parse(notification.payload);
+      if (typeof value !== "object" || value === null || !("tenantId" in value) || typeof value.tenantId !== "string")
+        return;
+      if (!("message" in value) || typeof value.message !== "object" || value.message === null) return;
+      const message = value.message;
+      if (
+        !("type" in message) ||
+        message.type !== "invalidation" ||
+        !("scope" in message) ||
+        message.scope !== "sempThread" ||
+        !("threadId" in message) ||
+        typeof message.threadId !== "string"
+      )
+        return;
+      observed.push({ tenantId: value.tenantId, threadId: message.threadId });
+    });
     try {
+      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+      wireRealtimeHooks(runtimePool);
       const role = await runAsSystem("test:repair-role", () =>
         runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
           "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -232,6 +255,11 @@ describe("semprec-agents startup repair (issue #642)", () => {
       expect(before).toHaveLength(1);
       expect(before[0]).toMatchObject({ job_owner: "pool-fixture", queue_owner: "pool-fixture" });
       await repairInterruptedRuns(runtimePool);
+      const notifyDeadline = Date.now() + 5_000;
+      while (observed.length < 2 && Date.now() < notifyDeadline) await sleep(25);
+      expect(observed).toContainEqual({ tenantId: getTenantZeroId(), threadId: first.threadId });
+      expect(observed).toContainEqual({ tenantId: other, threadId: second.threadId });
+      expect(observed).not.toContainEqual({ tenantId: other, threadId: first.threadId });
       const read = (tenant: string, id: string) =>
         runInTenant(tenant, () =>
           runtimePool.query<{ status: string; error_code: string | null }>(
@@ -256,6 +284,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
       ]);
       expect((await locks()).rows).toEqual(before);
     } finally {
+      listener.release(true);
       await runtimePool.end();
     }
   });
