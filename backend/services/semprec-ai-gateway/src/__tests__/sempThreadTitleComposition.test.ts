@@ -7,8 +7,11 @@ import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 import {
   claimSempMessage,
   createAgentRun,
+  createChokePoint,
+  createHeartbeat,
   createUser,
   finishSempMessageTurn,
+  getDatabaseByModuleId,
   handleSempThreadTitle,
   insertAgentRunEvent,
   seedSystem,
@@ -241,6 +244,7 @@ describe("Semp title through the real gateway", () => {
       await gate;
     };
     const request = runInTenant(tenant, () => handleSempThreadTitle(pool, threadId, gateway));
+    let failure: { error: unknown } | undefined;
     try {
       await started;
       expect(pool.totalCount - pool.idleCount).toBe(0);
@@ -248,12 +252,87 @@ describe("Semp title through the real gateway", () => {
         withTransaction(pool, async (client) => {
           const locked = await client.query("SELECT id FROM semp_threads WHERE id = $1 FOR UPDATE NOWAIT", [threadId]);
           expect(locked.rowCount).toBe(1);
+          // Renaming has no production writer in this batch; model an existing valid user-set title.
+          const renamed = await client.query(
+            "UPDATE semp_threads SET title = 'User title', title_source = 'user' WHERE id = $1",
+            [threadId],
+          );
+          expect(renamed.rowCount).toBe(1);
         }),
       );
-    } finally {
-      release();
-      providerGate = undefined;
-      await request;
+    } catch (error) {
+      failure = { error };
     }
+    release();
+    providerGate = undefined;
+    try {
+      await request;
+    } catch (error) {
+      if (failure) {
+        // Keep the assertion failure primary while retaining the in-flight request failure.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure.error, error], "Title request cleanup failed", { cause: failure.error });
+      }
+      throw error;
+    }
+    if (failure) throw failure.error;
+    const title = await runInTenant(tenant, () =>
+      pool.query<{ title: string; title_source: string }>(
+        "SELECT title, title_source FROM semp_threads WHERE id = $1",
+        [threadId],
+      ),
+    );
+    expect(title.rows).toEqual([{ title: "User title", title_source: "user" }]);
+  });
+
+  it("does not call the gateway for item, tick, foreign or missing threads", async () => {
+    const nonChat = await runInTenant(tenant, async () => {
+      const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      const projectId = inbox.ownerProjectItemId;
+      const source = await createChokePoint(pool).createItem({
+        databaseId: inbox.id,
+        properties: { date: "2026-01-01", time: "12:00", text: "source" },
+      });
+      return withTransaction(pool, async (client) => {
+        const item = await sendSempMessage(client, {
+          subject: { inboxItemId: source.id },
+          text: "item",
+          context: [],
+          hasContext: false,
+        });
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: projectId,
+          name: "Tick",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+        });
+        // This valid tick row stands in for the private data tick-store producer.
+        const tick = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
+        if (!tick.rows[0]) throw new Error("Missing tick thread");
+        return [item.threadId, tick.rows[0].id];
+      });
+    });
+    const other = await createTestTenant(admin);
+    const foreign = await runInTenant(other, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "foreign", context: [], hasContext: false })),
+    );
+    const before = calls.length;
+    const gateway = createHttpAiGatewayClient({ port, token });
+    for (const threadId of [...nonChat, foreign.threadId, randomUUID()]) {
+      await runInTenant(tenant, () => handleSempThreadTitle(pool, threadId, gateway));
+    }
+    expect(calls).toHaveLength(before);
+    const titles = await runInTenant(tenant, () =>
+      pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = ANY($1::uuid[])", [nonChat]),
+    );
+    expect(titles.rows).toEqual([{ title: null }, { title: null }]);
+    const foreignTitle = await runInTenant(other, () =>
+      pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [foreign.threadId]),
+    );
+    expect(foreignTitle.rows).toEqual([{ title: null }]);
   });
 });
