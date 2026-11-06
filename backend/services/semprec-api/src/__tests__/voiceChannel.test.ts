@@ -590,7 +590,7 @@ describe("voice channel", () => {
     await closedTarget;
     expect(cleanupCount).toBe(0);
     if (!targetSender) throw new Error("Missing sender");
-    expect(targetSender.signal.aborted).toBe(true);
+    await vi.waitFor(() => expect(targetSender?.signal.aborted).toBe(true));
     expect(targetSender.sendControl({ type: "ready" })).toBe(false);
     if (ending !== "shutdown") {
       const duplicate = await connect(target.session.token),
