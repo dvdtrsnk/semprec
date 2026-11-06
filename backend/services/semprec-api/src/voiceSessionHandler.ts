@@ -255,6 +255,8 @@ export function createVoiceSessionHandler(
       if (frame.type === "event") lastEventId = frame.event.id;
       return true;
     };
+    let turnFailed = false;
+    let turnFailure: unknown;
     try {
       session.dispose = await sync.subscribeVoice({
         tenantId: session.identity.tenantId,
@@ -287,10 +289,25 @@ export function createVoiceSessionHandler(
       }
       session.textState.finishMessage(undefined);
       await session.speech;
-    } finally {
-      await session.dispose?.();
-      session.dispose = undefined;
+    } catch (error) {
+      turnFailed = true;
+      turnFailure = error;
     }
+    let cleanupFailed = false;
+    let cleanupFailure: unknown;
+    try {
+      await session.dispose?.();
+    } catch (error) {
+      cleanupFailed = true;
+      cleanupFailure = error;
+    }
+    session.dispose = undefined;
+    if (turnFailed && cleanupFailed)
+      throw new AggregateError([turnFailure, cleanupFailure], "Voice turn and watch cleanup failed", {
+        cause: turnFailure,
+      });
+    if (turnFailed) throw turnFailure;
+    if (cleanupFailed) throw cleanupFailure;
   }
   return {
     async onStart(identity, frame, sender) {

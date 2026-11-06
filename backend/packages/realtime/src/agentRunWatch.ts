@@ -33,6 +33,7 @@ interface VoiceWatcher {
   replaying: boolean;
   draining: boolean;
   queuedEventIds: Set<string>;
+  staleAnchors: Set<string>;
   active: boolean;
   abort: () => void;
   live: VoiceRunDeltaBuffer;
@@ -105,6 +106,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     watchers?.delete(watcher);
     if (watchers?.size === 0) voiceByRun.delete(watcher.input.runId);
     watcher.queuedEventIds.clear();
+    watcher.staleAnchors.clear();
     if (watcher.timer) clearTimeout(watcher.timer);
     watcher.live.clear();
   }
@@ -115,12 +117,22 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     watcher.input.onFailure(error, cause);
   }
 
+  function reportVoiceFailure(watcher: VoiceWatcher, error: unknown, cause?: "overloaded" | "unavailable"): void {
+    try {
+      failVoice(watcher, error, cause);
+    } catch (callbackError) {
+      watcher.drainFailure = {
+        error: new AggregateError([error, callbackError], "Voice failure callback failed", { cause: error }),
+      };
+    }
+  }
+
   function deliverVoice(watcher: VoiceWatcher, frame: VoiceRunFrame): void {
     if (!watcher.active) return;
     try {
-      if (!watcher.input.onFrame(frame)) failVoice(watcher, new Error("Voice run watch sink closed"));
+      if (!watcher.input.onFrame(frame)) reportVoiceFailure(watcher, new Error("Voice run watch sink closed"));
     } catch (error) {
-      failVoice(watcher, error);
+      reportVoiceFailure(watcher, error);
     }
   }
 
@@ -165,6 +177,19 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     watcher.draining = true;
     try {
       while (watcher.active) {
+        const staleAnchor = watcher.staleAnchors.values().next().value;
+        if (staleAnchor !== undefined) {
+          watcher.staleAnchors.delete(staleAnchor);
+          const anchor = await runInTenant(watcher.input.tenantId, () =>
+            getAgentRunEventById(pool, watcher.input.runId, staleAnchor, {
+              threadId: watcher.input.threadId,
+              sempMessageId: watcher.input.sempMessageId,
+            }),
+          );
+          if (!watcher.active) return;
+          if (!anchor) throw new Error("Voice delta anchor unavailable");
+          continue;
+        }
         releaseVoiceDeltas(watcher);
         for (const id of watcher.queuedEventIds)
           if (!isLater(id, watcher.lastEventId)) watcher.queuedEventIds.delete(id);
@@ -195,11 +220,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         }
       }
     } catch (error) {
-      try {
-        failVoice(watcher, error, error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable");
-      } catch (callbackError) {
-        throw new AggregateError([error, callbackError], "Voice drain and failure callback failed", { cause: error });
-      }
+      reportVoiceFailure(watcher, error, error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable");
     } finally {
       watcher.draining = false;
       scheduleVoice(watcher);
@@ -211,10 +232,18 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     const task = drainVoice(watcher)
       .catch((error: unknown) => {
         watcher.drainFailure = { error };
-        failVoice(watcher, error, "unavailable");
+        reportVoiceFailure(watcher, error, "unavailable");
       })
       .finally(() => {
-        if (watcher.drainPromise === task) watcher.drainPromise = undefined;
+        if (watcher.drainPromise === task) {
+          watcher.drainPromise = undefined;
+          if (
+            watcher.active &&
+            !watcher.replaying &&
+            (watcher.queuedEventIds.size || watcher.staleAnchors.size || watcher.live.peek())
+          )
+            void startVoiceDrain(watcher);
+        }
       });
     watcher.drainPromise = task;
     return task;
@@ -341,6 +370,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         replaying: true,
         draining: false,
         queuedEventIds: new Set(),
+        staleAnchors: new Set(),
         active: true,
         abort: () => {},
         live: new VoiceRunDeltaBuffer(input.afterEventId),
@@ -377,18 +407,14 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           }),
         );
         if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
           input.signal?.throwIfAborted();
           throw new Error("Voice run watch unavailable");
         }
         if (replay.length > 256) {
           const error = new VoiceDeltaBufferError("overloaded");
-          try {
-            failVoice(watcher, error, "overloaded");
-          } catch (callbackError) {
-            throw new AggregateError([error, callbackError], "Voice replay and failure callback failed", {
-              cause: error,
-            });
-          }
+          reportVoiceFailure(watcher, error, "overloaded");
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
           throw error;
         }
         for (const event of replay) {
@@ -396,12 +422,16 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           deliverVoiceEvent(watcher, event);
         }
         if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
           input.signal?.throwIfAborted();
           throw new Error("Voice run watch unavailable");
         }
         watcher.replaying = false;
         await startVoiceDrain(watcher);
-        if (!watcher.active) throw new Error("Voice run watch unavailable");
+        if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+          throw new Error("Voice run watch unavailable");
+        }
         return async () => {
           removeVoice(watcher);
           await watcher.drainPromise;
@@ -416,18 +446,18 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       tenantGenerations.set(tenantId, (tenantGenerations.get(tenantId) ?? 0) + 1);
       for (const watchers of voiceByRun.values())
         for (const watcher of [...watchers])
-          if (watcher.input.tenantId === tenantId) failVoice(watcher, new Error("Voice tenant closed"));
+          if (watcher.input.tenantId === tenantId) reportVoiceFailure(watcher, new Error("Voice tenant closed"));
     },
     resetVoice() {
       voiceGeneration++;
       for (const watchers of voiceByRun.values())
-        for (const watcher of [...watchers]) failVoice(watcher, new Error("Voice run watch unavailable"));
+        for (const watcher of [...watchers]) reportVoiceFailure(watcher, new Error("Voice run watch unavailable"));
     },
     close() {
       voiceClosed = true;
       voiceGeneration++;
       for (const watchers of voiceByRun.values())
-        for (const watcher of [...watchers]) failVoice(watcher, new Error("Voice run watch unavailable"));
+        for (const watcher of [...watchers]) reportVoiceFailure(watcher, new Error("Voice run watch unavailable"));
     },
     async watch(ws, tenantId, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
@@ -529,7 +559,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       for (const watcher of voices) {
         watcher.queuedEventIds.add(eventId);
         if (watcher.queuedEventIds.size > MAX_VOICE_PENDING_EVENTS)
-          failVoice(watcher, new Error("Voice run watch overflow"), "overloaded");
+          reportVoiceFailure(watcher, new Error("Voice run watch overflow"), "overloaded");
         else if (!watcher.replaying) void startVoiceDrain(watcher);
       }
       if (watchers.size === 0 && voices.length === 0) return;
@@ -562,6 +592,12 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
             message.deltaSequence !== undefined
           ) {
             try {
+              if (isLater(watcher.lastEventId, message.afterEventId)) {
+                watcher.staleAnchors.add(message.afterEventId);
+                if (watcher.staleAnchors.size > MAX_VOICE_PENDING_EVENTS) throw new VoiceDeltaBufferError("overloaded");
+                if (!watcher.replaying) void startVoiceDrain(watcher);
+                continue;
+              }
               watcher.live.admit(
                 {
                   ...message,
@@ -574,7 +610,11 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
               scheduleVoice(watcher);
               if (!watcher.replaying) void startVoiceDrain(watcher);
             } catch (error) {
-              failVoice(watcher, error, error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable");
+              reportVoiceFailure(
+                watcher,
+                error,
+                error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable",
+              );
             }
           }
       const watchers = watchersByRun.get(message.agentRunId);
