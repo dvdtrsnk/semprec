@@ -4,14 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  createChokePoint,
+  createItemWithClient,
+  createPendingApprovalRequest,
+  createRelationWithClient,
   createSempChatThread,
   claimSempMessage,
   createUser,
   finishAgentRun,
+  getDatabaseByModuleId,
   handleAgentRunEventsRetentionTask,
   hashPassword,
   insertAgentRunEvent,
@@ -20,8 +26,10 @@ import {
   LocalFsBlobStorageWriter,
   login,
   sendSempMessage,
+  seedSystem,
   startSempMessageTurn,
   listSempThreadMessages,
+  updateItemWithClient,
   withTransaction,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -313,5 +321,194 @@ describe("durable Semp thread history", () => {
     expect(remaining.threads.rows).toEqual([]);
     expect(remaining.messages.rows).toEqual([]);
     expect(remaining.jobs.rows).toEqual([]);
+  });
+
+  it("queues chat messages while leaving an existing approval pending regardless of text", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const headers = { authorization: `Bearer ${session.token}`, "content-type": "application/json" };
+    const invalid = await fetch(`${baseUrl}/api/semp/threads`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: " \n " }),
+    });
+    expect(invalid.status).toBe(400);
+    const empty = await runInTenant(tenant, () =>
+      pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages"),
+    );
+    expect(empty.rows).toEqual([{ count: 0 }]);
+    const created = await fetch(`${baseUrl}/api/semp/threads`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "first" }),
+    });
+    expect(created.status).toBe(202);
+    const first = z
+      .object({ threadId: z.string().uuid(), messageId: z.string().uuid(), assistantMessageId: z.string().uuid() })
+      .parse(await created.json());
+    const request = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const run = await createAgentRun(client, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "first",
+          threadId: first.threadId,
+        });
+        return createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "search_web",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      }),
+    );
+    const sent = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "approve yes" }),
+    });
+    expect(sent.status).toBe(202);
+    const second = z
+      .object({ threadId: z.string().uuid(), messageId: z.string().uuid(), assistantMessageId: z.string().uuid() })
+      .parse(await sent.json());
+    expect(second.threadId).toBe(first.threadId);
+    const stored = await runInTenant(tenant, async () => ({
+      approval: (
+        await pool.query<{ status: string }>("SELECT status FROM approval_requests WHERE id = $1", [request.id])
+      ).rows,
+      messages: (
+        await pool.query<{ role: string; status: string | null; text: string | null }>(
+          "SELECT role, status, text FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
+          [[second.messageId, second.assistantMessageId]],
+        )
+      ).rows,
+      job: (
+        await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `sempMessage:${second.assistantMessageId}`,
+        ])
+      ).rows,
+    }));
+    expect(stored.approval).toEqual([{ status: "pending" }]);
+    expect(stored.messages).toEqual([
+      { role: "user", status: null, text: "approve yes" },
+      { role: "assistant", status: "queued", text: null },
+    ]);
+    expect(stored.job).toEqual([{ key: `sempMessage:${second.assistantMessageId}` }]);
+  });
+
+  it("reuses an item thread and refuses a current reserved or decided proposal without effects", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    await runInTenant(tenant, () => seedSystem(pool));
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const fixture = await runInTenant(tenant, async () => {
+      const { inbox, proposals } = await withTransaction(pool, async (client) => ({
+        inbox: await getDatabaseByModuleId(client, "inbox"),
+        proposals: await getDatabaseByModuleId(client, "processingProposals"),
+      }));
+      if (!inbox || !proposals) throw new Error("Missing seeded Inbox databases");
+      const sourceProperty = (await createChokePoint(pool).listProperties(proposals.id)).find(
+        (property) => property.key === "sourceInbox",
+      );
+      if (!sourceProperty) throw new Error("Missing sourceInbox property");
+      return withTransaction(pool, async (client) => {
+        const source = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-01-01", time: "12:00", text: "source" },
+        });
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: proposals.id,
+            properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "pending" },
+          },
+          { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: sourceProperty.id, callerItemId: card.id, targetItemId: source.id },
+          { ownerProcess: "processingProposals" },
+        );
+        return { sourceId: source.id, cardId: card.id, databaseId: proposals.id };
+      });
+    });
+    const headers = { authorization: `Bearer ${session.token}`, "content-type": "application/json" };
+    const post = (body: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads`, { method: "POST", headers, body: JSON.stringify(body) });
+    const firstResponse = await post({
+      text: "first",
+      subject: { inboxItemId: fixture.sourceId, proposalId: fixture.cardId },
+    });
+    expect(firstResponse.status).toBe(202);
+    const first = z.object({ threadId: z.string().uuid() }).parse(await firstResponse.json());
+    const secondResponse = await post({ text: "second", subject: { inboxItemId: fixture.sourceId } });
+    expect(secondResponse.status).toBe(202);
+    expect(z.object({ threadId: z.string().uuid() }).parse(await secondResponse.json()).threadId).toBe(first.threadId);
+    const invalid = await post({ text: "context", context: [], subject: { inboxItemId: fixture.sourceId } });
+    expect(invalid.status).toBe(400);
+    expect(
+      (await post({ text: "bad hint", subject: { inboxItemId: fixture.sourceId, proposalId: randomUUID() } })).status,
+    ).toBe(400);
+    const count = async () =>
+      (
+        await runInTenant(tenant, () =>
+          pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+            first.threadId,
+          ]),
+        )
+      ).rows[0]?.count;
+    expect(await count()).toBe(4);
+    const jobsBefore = (await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs"))
+      .rows;
+    let release!: () => void;
+    let locked!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const writer = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        await updateItemWithClient(
+          client,
+          { databaseId: fixture.databaseId, itemId: fixture.cardId, propertiesPatch: { status: "confirmed" } },
+          { allowedSystemKeys: ["status"] },
+        );
+        locked();
+        await gate;
+      }),
+    );
+    try {
+      await Promise.race([
+        ready,
+        writer.then(() => {
+          throw new Error("Proposal writer exited before reservation");
+        }),
+      ]);
+      const busy = await post({ text: "during", subject: { inboxItemId: fixture.sourceId } });
+      expect(busy.status).toBe(409);
+      expect(await busy.json()).toMatchObject({ error: { code: "version_conflict" } });
+      expect(await count()).toBe(4);
+      expect(
+        (await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")).rows,
+      ).toEqual(jobsBefore);
+    } finally {
+      release();
+      await writer;
+    }
+    const decided = await post({ text: "after", subject: { inboxItemId: fixture.sourceId } });
+    expect(decided.status).toBe(409);
+    expect(await decided.json()).toMatchObject({ error: { code: "proposal_locked" } });
+    expect(await count()).toBe(4);
+    expect(
+      (await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")).rows,
+    ).toEqual(jobsBefore);
+    const history = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, { headers });
+    expect(history.status).toBe(200);
   });
 });
