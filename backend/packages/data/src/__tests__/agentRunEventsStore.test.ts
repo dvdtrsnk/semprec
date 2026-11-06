@@ -221,7 +221,8 @@ describe("agentRunEventsStore", () => {
       expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, randomUUID(), "0", 257, scopeA))).toEqual(
         [],
       );
-      await expect(listAgentRunEventsAfter(runtime, run.id, "0", 257, scopeA)).rejects.toThrow();
+      expect(await listAgentRunEventsAfter(runtime, run.id, "0", 257, scopeA)).toEqual([]);
+      expect(await getAgentRunEventById(runtime, run.id, last.id, scopeA)).toBeNull();
       await expect(list({ ...scopeA, threadId: "invalid" })).rejects.toBeInstanceOf(ValidationError);
       expect(
         (await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0"))).map((event) => event.id),
