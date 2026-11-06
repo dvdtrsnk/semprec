@@ -14,6 +14,7 @@ import {
   createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
+  createSemprecTickAction,
   createUser,
   getDatabaseByModuleId,
   ingestUploadedBlob,
@@ -28,10 +29,12 @@ import {
 import {
   createRuntimeRolePool,
   createTestTenant,
+  createInboxItemWithClient,
   ensureFolderItem,
   getTestPool,
   ingestEmailMessage,
   resetDatabase,
+  reviseProposalWithClient,
 } from "@semprec/data/testSupport";
 import { expandSempRefs } from "../refExpansion.js";
 
@@ -76,6 +79,7 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
     foreign = await createTestTenant(admin);
+    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     await runInTenant(tenant, () => seedSystem(runtime));
     await runInTenant(foreign, () => seedSystem(runtime));
     root = await mkdtemp(join(tmpdir(), "semp-ref-expansion-"));
@@ -121,7 +125,6 @@ describe("tenant-scoped reference blob expansion", () => {
   }
 
   it("expands actual item, block, transcript, run and approval refs without writes", async () => {
-    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     const databases = await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => ({
         tasks: await getDatabaseByModuleId(client, "tasks"),
@@ -207,6 +210,102 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(refused.text).not.toContain("Page sentinel");
     expect(refused.text).not.toContain("Tool sentinel");
     expect(refused.text).not.toContain("Approval sentinel");
+  });
+
+  it("expands a real Inbox capture and its revised tick-created card in both directions", async () => {
+    const fixture = await runInTenant(tenant, async () => {
+      const databases = await withTransaction(runtime, async (client) => ({
+        inbox: await getDatabaseByModuleId(client, "inbox"),
+        types: await getDatabaseByModuleId(client, "inboxItemTypes"),
+        proposals: await getDatabaseByModuleId(client, "processingProposals"),
+        projects: await getDatabaseByModuleId(client, "projects"),
+      }));
+      if (!databases.inbox?.ownerProjectItemId || !databases.types || !databases.proposals || !databases.projects)
+        throw new Error("Missing Inbox fixture databases");
+      const source = await withTransaction(runtime, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: databases.inbox!.id,
+          date: "2026-11-06",
+          time: "12:00",
+          text: "",
+        }),
+      );
+      const tick = createSemprecTickAction(runtime, async () => {
+        throw new Error("Unexpected model computation");
+      });
+      await tick(
+        {
+          inboxDatabaseId: databases.inbox.id,
+          inboxItemTypesDatabaseId: databases.types.id,
+          processingProposalsDatabaseId: databases.proposals.id,
+        },
+        { heartbeatId: randomUUID(), projectItemId: databases.inbox.ownerProjectItemId, itemId: source.id },
+      );
+      const cards = await runtime.query<{ id: string }>(
+        `SELECT card.id FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+         WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+        [databases.proposals.id, source.id],
+      );
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing tick-created card");
+      const project = await createChokePoint(runtime).createItem({
+        databaseId: databases.projects.id,
+        properties: { name: "Inbox fixture project" },
+      });
+      const envelope = {
+        entityKind: "pageContent" as const,
+        target: project.id,
+        properties: { flavour: "paragraph", fields: { content: "Inbox envelope sentinel" } },
+      };
+      await withTransaction(runtime, (client) =>
+        reviseProposalWithClient(
+          client,
+          { processingProposalsDatabaseId: databases.proposals!.id },
+          cards.rows[0]!.id,
+          { message: "Inbox revision sentinel", ...envelope },
+        ),
+      );
+      return {
+        capture: { kind: "item" as const, databaseId: databases.inbox.id, itemId: source.id },
+        card: { kind: "item" as const, databaseId: databases.proposals.id, itemId: cards.rows[0].id },
+        projectId: project.id,
+      };
+    });
+    const refs = [fixture.capture, fixture.card];
+    await runInTenant(tenant, async () => {
+      const snapshot = () =>
+        runtime.query(
+          `SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges,
+         (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($1::uuid[])) AS fixture_items,
+         (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM item_relations r WHERE r.item_a = ANY($1::uuid[]) OR r.item_b = ANY($1::uuid[])) AS fixture_edges`,
+          [[fixture.capture.itemId, fixture.card.itemId]],
+        );
+      const before = await snapshot();
+      const result = await expandSempRefs(runtime, refs, { files, mailAttachments });
+      const sections = result.text.split("\n\n");
+      expect(sections).toHaveLength(2);
+      expect(sections[0]).toContain('"text":""');
+      expect(sections[0]).toContain(fixture.card.itemId);
+      expect(sections[0]).toContain("Inbox envelope sentinel");
+      expect(sections[0]).toContain("Inbox revision sentinel");
+      expect(sections[1]).toContain(fixture.capture.itemId);
+      expect(sections[1]).toContain(fixture.projectId);
+      expect(sections[1]).toContain("Inbox revision sentinel");
+      expect(result.context).toEqual(refs.map((ref) => ({ ...ref, label: expect.any(String) })));
+      for (const ref of result.context) expect(labeledSempMessageRefSchema.safeParse(ref).success).toBe(true);
+      expect(JSON.stringify(result.context)).not.toContain("Inbox envelope sentinel");
+      const random = await expandSempRefs(
+        runtime,
+        refs.map((ref) => ({ ...ref, itemId: randomUUID() })),
+        { files, mailAttachments },
+      );
+      expect(random.context.map((ref) => ref.label)).toEqual(["", ""]);
+      expect(random.text).not.toContain("Inbox revision sentinel");
+      const foreignResult = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+      expect(foreignResult.context.map((ref) => ref.label)).toEqual(["", ""]);
+      expect(foreignResult.text).not.toContain("Inbox envelope sentinel");
+      expect(foreignResult.text).not.toContain("Inbox revision sentinel");
+      expect((await snapshot()).rows).toEqual(before.rows);
+    });
   });
 
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {

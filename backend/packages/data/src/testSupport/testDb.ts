@@ -104,3 +104,4 @@ export async function resetDatabase(pool: Pool): Promise<void> {
 export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 export { createInboxItemWithClient } from "../inbox/inboxStore.js";
+export { reviseProposalWithClient } from "../inbox/proposalActions.js";

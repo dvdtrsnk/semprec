@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
@@ -526,11 +527,113 @@ describe("Semp reference turn reads", () => {
     } catch (cleanupError) {
       if (failed)
         throw new AggregateError([failure, cleanupError], "Mail reference test and cleanup failed", {
-          cause: cleanupError,
+          // Preserve the original test failure; the cleanup failure remains in errors.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure,
         });
       throw cleanupError;
     }
     if (failed) throw failure instanceof Error ? failure : new Error("Mail reference test failed", { cause: failure });
+  });
+
+  it("bounds a real 101-message mail thread to its newest 100 entries", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    const directory = await mkdtemp(join(tmpdir(), "semp-ref-thread-limit-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const folders = await listPropertiesByDatabase(client, ids.foldersDatabaseId);
+          const attachment = properties.find((entry) => entry.key === "attachments");
+          const folder = properties.find((entry) => entry.key === "folder");
+          const mailboxProperty = folders.find((entry) => entry.key === "mailbox");
+          if (!attachment || !folder || !mailboxProperty) throw new Error("Missing mail relations");
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mail" },
+          });
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId: mailbox.id,
+            mailboxRelationPropertyId: mailboxProperty.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const firstMessageId = `<${randomUUID()}@example.test>`;
+          const storage = new LocalFsBlobStorageWriter(directory);
+          const itemIds: string[] = [];
+          for (let index = 0; index < 101; index += 1) {
+            const email = await ingestEmailMessage(client, {
+              emailsDatabaseId: ids.emailsDatabaseId,
+              filesDatabaseId: ids.filesDatabaseId,
+              folderRelationPropertyId: folder.id,
+              attachmentsRelationPropertyId: attachment.id,
+              folderItemId: folderId,
+              mailboxItemId: mailbox.id,
+              messageId: index === 0 ? firstMessageId : `<${randomUUID()}@example.test>`,
+              references: index === 0 ? [] : [firstMessageId],
+              date: new Date(Date.UTC(2026, 10, 1, 0, index)),
+              subject: `Thread ${index}`,
+              envelope: {},
+              attachments: [],
+              storage,
+              storageKeyPrefix: "ref-thread-limit",
+            });
+            itemIds.push(email.itemId);
+          }
+          return { databaseId: ids.emailsDatabaseId, itemIds };
+        }),
+      );
+      const first = fixture.itemIds[0];
+      if (!first) throw new Error("Missing first mail item");
+      const ref = { kind: "item" as const, itemId: first, databaseId: fixture.databaseId };
+      const detailsSchema = z.object({
+        thread: z.object({ messages: z.array(z.object({ id: z.string() })), truncated: z.boolean() }),
+      });
+      await runInTenant(tenant, async () => {
+        const snapshot = () =>
+          runtime.query(
+            "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM mail_message_meta) AS messages, (SELECT count(*)::int FROM item_search_index) AS search",
+          );
+        const before = await snapshot();
+        const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
+        if (!resolved) throw new Error("Missing own mail thread");
+        const thread = detailsSchema.parse(resolved.details).thread;
+        expect(thread.truncated).toBe(true);
+        expect(thread.messages.map((message) => message.id)).toEqual([...fixture.itemIds].reverse().slice(0, 100));
+        expect(thread.messages).toHaveLength(100);
+        await expect(
+          withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, itemId: randomUUID() })),
+        ).resolves.toBeNull();
+        await expect(
+          runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+        ).resolves.toBeNull();
+        expect((await snapshot()).rows).toEqual(before.rows);
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (failed)
+        throw new AggregateError([failure, cleanupError], "Mail thread test and cleanup failed", {
+          // The operation failure remains primary; retain cleanup failure in errors.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure,
+        });
+      throw cleanupError;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("Mail thread test failed", { cause: failure });
   });
 
   it("reads a run's actual task, status and ordered tool steps under tenant scope", async () => {

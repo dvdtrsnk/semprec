@@ -1031,7 +1031,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     } catch (cleanupError) {
       if (failure)
         throw new AggregateError([failure.error, cleanupError], "Transcript proposal test and cleanup failed", {
-          cause: cleanupError,
+          // Preserve the original test failure; the cleanup failure remains in errors.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
         });
       throw cleanupError;
     }
