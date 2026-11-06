@@ -13,6 +13,7 @@ import {
   claimSempMessage,
   createAgentRun,
   createUser,
+  finishAgentRun,
   getDatabaseByModuleId,
   hashPassword,
   insertAgentRunEvent,
@@ -224,6 +225,25 @@ describe("semprec-agents startup repair (issue #642)", () => {
         );
       const first = await createTurn(getTenantZeroId());
       const second = await createTurn(other);
+      const completedRun = await runInTenant(getTenantZeroId(), () =>
+        createAgentRun(runtimePool, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "completed",
+          threadId: first.threadId,
+        }),
+      );
+      const event = await runInTenant(getTenantZeroId(), () =>
+        insertAgentRunEvent(runtimePool, completedRun.id, "turn_start", { kind: "turn_start" }),
+      );
+      expect(
+        await runInTenant(getTenantZeroId(), () => finishAgentRun(runtimePool, completedRun.id, "done", null)),
+      ).toBe(true);
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtimePool, (client) =>
+          startSempMessageTurn(client, first.assistantMessageId, completedRun.id, event.id),
+        ),
+      );
       const queued = await runInTenant(other, () =>
         withTransaction(runtimePool, (client) =>
           sendSempMessage(client, { text: "queued", context: [], hasContext: false }),
@@ -271,6 +291,10 @@ describe("semprec-agents startup repair (issue #642)", () => {
       expect((await read(getTenantZeroId(), first.assistantMessageId)).rows).toEqual([
         { status: "error", error_code: "interrupted" },
       ]);
+      const completedState = await runInTenant(getTenantZeroId(), () =>
+        runtimePool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [completedRun.id]),
+      );
+      expect(completedState.rows).toEqual([{ status: "done" }]);
       expect((await read(other, second.assistantMessageId)).rows).toEqual([
         { status: "error", error_code: "interrupted" },
       ]);
