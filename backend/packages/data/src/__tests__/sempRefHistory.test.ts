@@ -1,19 +1,28 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   createAgentRun,
   createChokePoint,
+  createItemWithClient,
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
   listSempThreadMessages,
+  listPropertiesByDatabase,
+  LocalFsBlobStorageWriter,
+  resolveMailModuleIds,
   seedSystem,
   sendSempMessage,
   withTransaction,
 } from "../index.js";
+import { ingestAttachments } from "../mail/attachments.js";
 
 describe("Semp history reference resolution", () => {
   let admin: Pool;
@@ -196,5 +205,85 @@ describe("Semp history reference resolution", () => {
       { ...context[2], resolved: { label: null, databaseKey: null, state: "active" } },
       { ...context[3], resolved: { label: null, databaseKey: null, state: "purged" } },
     ]);
+  });
+
+  it("shows the filename of a real ingested mail attachment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semp-ref-history-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const tenant = await createTestTenant(admin);
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const attachmentProperty = properties.find((property) => property.key === "attachments");
+          if (!attachmentProperty) throw new Error("Missing attachment relation");
+          const email = await createItemWithClient(client, {
+            databaseId: ids.emailsDatabaseId,
+            properties: { name: "Mail" },
+          });
+          await ingestAttachments(client, {
+            messageItemId: email.id,
+            filesDatabaseId: ids.filesDatabaseId,
+            attachmentsRelationPropertyId: attachmentProperty.id,
+            attachments: [
+              {
+                filename: "note.txt",
+                contentType: "text/plain",
+                contentId: null,
+                disposition: "attachment",
+                openStream: () => Readable.from(["note"]),
+              },
+            ],
+            storage: new LocalFsBlobStorageWriter(directory),
+            storageKeyPrefix: "history-test",
+          });
+          const result = await client.query<{ id: string }>(
+            "SELECT id FROM mail_attachments WHERE message_item_id = $1",
+            [email.id],
+          );
+          if (!result.rows[0]) throw new Error("Missing attachment");
+          return { attachmentId: result.rows[0].id, emailId: email.id, databaseId: ids.emailsDatabaseId };
+        }),
+      );
+      const ref = { kind: "mailAttachment", attachmentId: fixture.attachmentId };
+      const missing = { kind: "mailAttachment", attachmentId: randomUUID() };
+      const sent = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, { text: "Question", context: [ref, missing], hasContext: true }),
+        ),
+      );
+      const read = () =>
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+        );
+      let page = await read();
+      expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
+        { ...ref, resolved: { label: "note.txt", databaseKey: "emails", state: "active" } },
+        { ...missing, resolved: { label: null, databaseKey: null, state: "purged" } },
+      ]);
+      await runInTenant(tenant, () => createChokePoint(runtime).softDeleteItem(fixture.databaseId, fixture.emailId));
+      page = await read();
+      expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
+        { ...ref, resolved: { label: "note.txt", databaseKey: "emails", state: "active" } },
+        { ...missing, resolved: { label: null, databaseKey: null, state: "purged" } },
+      ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true });
+    } catch (cleanupError) {
+      if (failed)
+        throw new AggregateError([failure, cleanupError], "Attachment history test and cleanup failed", {
+          cause: failure,
+        });
+      throw cleanupError;
+    }
+    if (failed)
+      throw failure instanceof Error ? failure : new Error("Attachment history test failed", { cause: failure });
   });
 });
