@@ -443,7 +443,7 @@ describe("message speech HTTP", () => {
     );
     const beforeFiles = (await readdir(directory, { recursive: true })).sort();
     const deadline = new AbortController();
-    const originalTimeout = AbortSignal.timeout;
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
     const timeoutSpy = vi
       .spyOn(AbortSignal, "timeout")
       .mockImplementation((milliseconds) =>
@@ -610,7 +610,7 @@ describe("message speech HTTP", () => {
       const originalConnect = guardPool.connect;
       guardPool.connect = new Proxy(originalConnect, {
         apply(target, receiver, args: unknown[]) {
-          const result: unknown = Reflect.apply(target, receiver, args);
+          const result: Promise<PoolClient> = Reflect.apply(target, receiver, args);
           return Promise.resolve(result).then((client: PoolClient) => {
             instrument(client);
             return client;
@@ -695,7 +695,7 @@ describe("message speech HTTP", () => {
     const originalConnect = guardPool.connect;
     guardPool.connect = new Proxy(originalConnect, {
       apply(target, receiver, args: unknown[]) {
-        const result: unknown = Reflect.apply(target, receiver, args);
+        const result: Promise<PoolClient> = Reflect.apply(target, receiver, args);
         return Promise.resolve(result).then((client: PoolClient) => {
           const errorListeners = client.listenerCount("error");
           const endListeners = client.listenerCount("end");
@@ -727,6 +727,8 @@ describe("message speech HTTP", () => {
       try {
         await runInTenant(tenant, () =>
           withMessageSpeechGuard(guardPool, randomUUID(), "alloy", AbortSignal.timeout(5000), async () => {
+            // Synthetic faults exercise preservation of non-Error thrown values.
+            // eslint-disable-next-line @typescript-eslint/only-throw-error
             if (fails) throw primary;
           }),
         );
