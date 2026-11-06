@@ -451,11 +451,13 @@ describe("Semp thread live prompt", () => {
     });
     const prompts: string[] = [];
     const toolLists: string[][] = [];
+    const userInputs: string[] = [];
     const faux = fauxProvider();
     faux.setResponses(
       Array.from({ length: 3 }, () => (context) => {
         prompts.push(context.systemPrompt ?? "");
         toolLists.push((context.tools ?? []).map((tool) => tool.name));
+        userInputs.push(JSON.stringify(context.messages));
         return fauxAssistantMessage("answer");
       }),
     );
@@ -501,6 +503,8 @@ describe("Semp thread live prompt", () => {
       const modelName = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
       const chatTools = toolLists[0] ?? [];
       const itemTools = toolLists[1] ?? [];
+      expect(userInputs[0]).not.toContain("Automation:");
+      expect(userInputs[1]).not.toContain("Automation:");
       for (const name of GENERIC_OPERATION_NAMES) {
         if (OPERATION_METADATA[name].riskClass !== "read") expect(itemTools).not.toContain(modelName(name));
         if (fixture.grants.includes(OPERATION_METADATA[name].requiresCapability))
