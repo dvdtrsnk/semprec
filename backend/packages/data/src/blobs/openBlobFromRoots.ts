@@ -28,8 +28,8 @@ interface CleanupBudget {
   lastMissing?: Error;
 }
 
-function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve, reject) => {
+async function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Promise<void> {
+  const outcome = await new Promise<{ ok: true } | { ok: false; error: unknown }>((resolve) => {
     const remove = () => {
       stream.off("readable", readable);
       stream.off("error", error);
@@ -38,11 +38,11 @@ function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Pro
     };
     const readable = () => {
       remove();
-      resolve();
+      resolve({ ok: true });
     };
     const error = (value: unknown) => {
       remove();
-      reject(value);
+      resolve({ ok: false, error: value });
     };
     const closed = () => error(new Error("Blob stream closed before becoming readable"));
     const aborted = () => {
@@ -59,6 +59,7 @@ function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Pro
     if (signal?.aborted) aborted();
     else if (stream.closed) closed();
   });
+  if (!outcome.ok) throw outcome.error;
 }
 
 /** Observe closure of a stream retained by this helper before allowing fallback or failure. */
