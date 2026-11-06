@@ -686,6 +686,7 @@ export {
 } from "./sempThreads/sempThreadsStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
+export { readSempRefContext, type SempRefContext } from "./semp/sempRefReadContext.js";
 export {
   getMessageSpeech,
   getMessageSpeechSource,

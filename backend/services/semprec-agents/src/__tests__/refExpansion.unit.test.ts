@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundRefSections, MAX_REF_CONTEXT_CHARS, MAX_TURN_REF_CONTEXT_CHARS } from "../refExpansion.js";
+import { boundRefSections, MAX_REF_CONTEXT_CHARS, MAX_TURN_REF_CONTEXT_CHARS } from "../refExpansionLimits.js";
 
 describe("reference context limits", () => {
   it("keeps short sections in order without a truncation notice", () => {

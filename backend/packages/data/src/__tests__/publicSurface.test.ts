@@ -595,6 +595,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "readProposalRelationCatalog",
   "readProposalWorkspaceContext",
   "readRecordingRequest",
+  "readSempRefContext",
   "readSpeakerSuggestionContext",
   "rebaselineDocHistory",
   "reclassifyMcpTool",
