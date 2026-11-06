@@ -259,6 +259,7 @@ describe("Semp thread live prompt", () => {
     const faux = fauxProvider();
     const prompts: string[] = [];
     const tools: string[][] = [];
+    const missingHeartbeat = randomUUID();
     faux.setResponses([
       (context) => {
         prompts.push(JSON.stringify(context.messages));
@@ -271,6 +272,19 @@ describe("Semp thread live prompt", () => {
         prompts.push(JSON.stringify(context.messages));
         return fauxAssistantMessage("tick answer");
       },
+      () =>
+        fauxAssistantMessage(
+          [
+            fauxToolCall("heartbeat_history", { heartbeatId: fixture.own }, { id: "history-own" }),
+            fauxToolCall("heartbeat_history", { heartbeatId: fixture.other }, { id: "history-other" }),
+            fauxToolCall("heartbeat_history", { heartbeatId: missingHeartbeat }, { id: "history-missing" }),
+            fauxToolCall("heartbeat_trigger", { heartbeatId: fixture.other }, { id: "trigger-other" }),
+            fauxToolCall("heartbeat_trigger", { heartbeatId: missingHeartbeat }, { id: "trigger-missing" }),
+            fauxToolCall("heartbeat_trigger", { heartbeatId: fixture.own }, { id: "trigger-own" }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+      () => fauxAssistantMessage("tool results checked"),
       (context) => {
         prompts.push(JSON.stringify(context.messages));
         tools.push((context.tools ?? []).map((tool) => tool.name));
@@ -312,6 +326,48 @@ describe("Semp thread live prompt", () => {
     const rendered = JSON.stringify(events.rows);
     expect(rendered).toContain(fixture.own);
     expect(rendered).not.toContain(fixture.other);
+    const followup = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) =>
+        sendSempMessage(client, {
+          threadId: fixture.threadId,
+          text: "Check automation",
+          context: [],
+          hasContext: false,
+        }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      task(
+        { threadId: followup.threadId, assistantMessageId: followup.assistantMessageId },
+        { job: { id: "tick-tools" } },
+      ),
+    );
+    const followupEvents = await runInTenant(tenant, () =>
+      runtime.query<{ payload: unknown }>(
+        "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_result' ORDER BY id",
+        [row.rows[0]?.agent_run_id],
+      ),
+    );
+    const resultFor = (id: string) => {
+      const entry = followupEvents.rows.find(
+        ({ payload }) =>
+          typeof payload === "object" && payload !== null && "toolCallId" in payload && payload.toolCallId === id,
+      );
+      if (!entry) throw new Error(`Missing tool result ${id}`);
+      return JSON.stringify(entry.payload);
+    };
+    expect(resultFor("history-own")).toContain("Earlier result");
+    expect(resultFor("history-other")).toContain("not found");
+    expect(resultFor("history-missing")).toContain("not found");
+    expect(resultFor("trigger-other")).toContain("not found");
+    expect(resultFor("trigger-missing")).toContain("not found");
+    expect(resultFor("trigger-own")).toContain(fixture.own);
+    const jobs = await runInTenant(tenant, () =>
+      runtime.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])", [
+        [fixture.own, fixture.other, missingHeartbeat].map((id) => `heartbeat-fire:manual:${id}`),
+      ]),
+    );
+    expect(jobs.rows).toEqual([{ key: `heartbeat-fire:manual:${fixture.own}` }]);
     const chat = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) =>
         sendSempMessage(client, { text: "normal chat", context: [], hasContext: false }),
