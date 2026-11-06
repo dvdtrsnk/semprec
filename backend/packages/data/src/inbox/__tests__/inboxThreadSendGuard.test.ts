@@ -16,6 +16,7 @@ import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
+import { confirmProposalWithClient } from "../proposalActions.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -75,7 +76,7 @@ describe("Inbox thread association reservations", () => {
         if (!definition) throw new Error("Missing sourceInbox definition");
         return { propertyId: property.id, definitionId: definition.id };
       });
-      return { sourceId: source.id, cardId: card.id, ...relation };
+      return { sourceId: source.id, cardId: card.id, proposalsId: proposals.id, ...relation };
     });
     const edgeInput = {
       relationPropertyId: fixture.propertyId,
@@ -335,6 +336,98 @@ describe("Inbox thread association reservations", () => {
       if (primary) throw primary.error;
       expect(await edges()).toHaveLength(phase === "insert-first" ? 1 : 0);
     }
+
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!tasks) throw new Error("Missing tasks database");
+        await updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.proposalsId,
+            itemId: fixture.cardId,
+            propertiesPatch: {
+              status: "proposed",
+              proposal: { entityKind: "database", target: tasks.id, properties: { name: "Confirmation" } },
+            },
+          },
+          { allowedSystemKeys: ["status", "proposal"] },
+        );
+        await createRelationWithClient(client, edgeInput, owner);
+      }),
+    );
+    let releaseSend!: () => void;
+    let sendReady!: () => void;
+    let confirmPid!: (pid: number) => void;
+    const holdSend = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const sendHeld = new Promise<void>((resolve) => {
+      sendReady = resolve;
+    });
+    const confirmBackend = new Promise<number>((resolve) => {
+      confirmPid = resolve;
+    });
+    const holder = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        await sendSempMessage(client, {
+          threadId: sentTurn.threadId,
+          text: "before confirm",
+          context: [],
+          hasContext: false,
+        });
+        sendReady();
+        await holdSend;
+      }),
+    );
+    let confirm: Promise<unknown> | undefined;
+    let primary: { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        sendHeld,
+        holder.then(() => {
+          throw new Error("Send ended before confirmation overlap");
+        }),
+      ]);
+      confirm = runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!identity.rows[0]) throw new Error("Missing confirm backend identity");
+          confirmPid(identity.rows[0].pid);
+          return confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: fixture.proposalsId },
+            fixture.cardId,
+          );
+        }),
+      );
+      void confirm.catch(() => {});
+      await waitForLock(await confirmBackend);
+    } catch (error) {
+      primary = { error };
+    }
+    releaseSend();
+    const results = await Promise.allSettled([holder, ...(confirm ? [confirm] : [])]);
+    const extra = results.flatMap((result) =>
+      result.status === "rejected" && result.reason !== primary?.error ? [result.reason] : [],
+    );
+    if (extra.length)
+      throw new AggregateError(primary ? [primary.error, ...extra] : extra, "Confirmation overlap failed", {
+        cause: primary?.error,
+      });
+    if (primary) throw primary.error;
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            threadId: sentTurn.threadId,
+            text: "after confirm",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "proposal_locked" });
   }, 60_000);
 
   it("uses live associations rather than a stale decided thread hint", async () => {
