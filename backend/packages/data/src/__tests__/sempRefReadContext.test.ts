@@ -7,8 +7,11 @@ import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createUser } from "../auth/usersStore.js";
 import {
   createChokePoint,
+  createAgentRun,
+  createPendingApprovalRequest,
   createDocStore,
   createRelationWithClient,
   getDatabaseByModuleId,
@@ -152,7 +155,7 @@ describe("Semp reference turn reads", () => {
     const foreign = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));
     await runInTenant(foreign, () => seedSystem(runtime));
-    await runInTenant(tenant, async () => {
+    const ref = await runInTenant(tenant, async () => {
       const databases = await withTransaction(runtime, async (client) => ({
         tasks: await getDatabaseByModuleId(client, "tasks"),
         projects: await getDatabaseByModuleId(client, "projects"),
@@ -190,9 +193,61 @@ describe("Semp reference turn reads", () => {
         withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, itemId: randomUUID() })),
       ).resolves.toBeNull();
       expect((await snapshot()).rows).toEqual(before.rows);
-      await expect(
-        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
-      ).resolves.toBeNull();
+      return ref;
+    });
+    await expect(
+      runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+    ).resolves.toBeNull();
+  });
+
+  it("reads present approvals with null or structured descriptions and refuses foreign and random ids", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    for (const id of [tenant, foreign]) {
+      await createUser(admin, { tenantId: id, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      await runInTenant(id, () => seedSystem(runtime));
+    }
+    const description = { key: "approval.itemDelete", params: { itemName: "Example" } };
+    const create = (owner: string, described: boolean) =>
+      runInTenant(owner, () =>
+        withTransaction(runtime, async (client) => {
+          const run = await createAgentRun(client, { triggeredBy: "user", task: "Approval fixture" });
+          return createPendingApprovalRequest(client, {
+            agentRunId: run.id,
+            toolName: "test",
+            riskClass: "unclassified",
+            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+            resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+            ...(described ? { description } : {}),
+          });
+        }),
+      );
+    const missingDescription = await create(tenant, false);
+    const described = await create(tenant, true);
+    const privateRequest = await create(foreign, true);
+    await runInTenant(tenant, async () => {
+      const snapshot = () =>
+        runtime.query(
+          "SELECT (SELECT count(*)::int FROM approval_requests) AS approvals, (SELECT count(*)::int FROM agent_runs) AS runs",
+        );
+      const before = await snapshot();
+      const read = (id: string) =>
+        withTransaction(runtime, (client) =>
+          readSempRefContext(client, { kind: "approvalRequest", approvalRequestId: id }),
+        );
+      await expect(read(missingDescription.id)).resolves.toMatchObject({
+        label: "",
+        state: "active",
+        details: { description: null },
+      });
+      await expect(read(described.id)).resolves.toMatchObject({
+        label: description.key,
+        state: "active",
+        details: { description },
+      });
+      await expect(read(privateRequest.id)).resolves.toBeNull();
+      await expect(read(randomUUID())).resolves.toBeNull();
+      expect((await snapshot()).rows).toEqual(before.rows);
     });
   });
 

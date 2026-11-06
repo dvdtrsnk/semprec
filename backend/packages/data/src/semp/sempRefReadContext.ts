@@ -167,7 +167,7 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
     const request = await getApprovalRequest(client, ref.approvalRequestId);
     if (!request) return null;
     return {
-      label: request.description?.key ?? "approvalRequest",
+      label: request.description?.key ?? "",
       state: "active",
       details: { description: request.description, status: request.status, reason: request.reason },
       blob: null,
