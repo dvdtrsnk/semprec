@@ -30,3 +30,7 @@ All six original outer acceptance criteria remain unchanged. These exact source 
 ## Message order and real title accounting
 
 Gh1620/1727 use docs/adr/2026-11-06-semp-message-order-and-session-freshness.md. All three existing message inserters participate; no timestamp tie, UUID inference, new durable sequence or history rewrite is authorized. Gh1769 receives a service-owned real title/client/gateway/accounting test and exactly one workspace devDependency/importer link. Background-only paragraphs are condensed without changing Task/AC decisions. No dependency upgrade or production reverse import is allowed.
+
+## Explicit startup and stop preconditions
+
+Gh1732 follows docs/adr/2026-11-06-agents-startup-requires-a-quiesced-predecessor.md. Single owning agents instance and externally quiesced predecessor are bounded operational preconditions, not a new proven fence. Repository TimeoutStopSec is120s, named margin30s and grace deadline90s from shutdown entry. No running service or host manager is changed by this permission.
