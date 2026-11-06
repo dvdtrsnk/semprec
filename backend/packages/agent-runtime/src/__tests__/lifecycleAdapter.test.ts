@@ -339,7 +339,8 @@ describe("runAgentSession", () => {
   it("increments the ordinal after one synthetic pre-dispatch publication failure", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const listener = await pool.connect();
-    const original = runtime.query;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(runtime, "query");
+    const original = runtime.query.bind(runtime);
     const queryOutcomes: Array<Promise<PromiseSettledResult<unknown>>> = [];
     const received: unknown[] = [];
     const synthetic = new Error("Synthetic selected voice publication failure");
@@ -457,7 +458,8 @@ describe("runAgentSession", () => {
       cleanupErrors.push(error);
     }
     try {
-      runtime.query = original;
+      if (originalDescriptor) Object.defineProperty(runtime, "query", originalDescriptor);
+      else if (!Reflect.deleteProperty(runtime, "query")) throw new Error("Cannot restore runtime query");
     } catch (error) {
       cleanupErrors.push(error);
     }
