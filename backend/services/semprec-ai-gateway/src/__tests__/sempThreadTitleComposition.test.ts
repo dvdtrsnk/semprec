@@ -43,6 +43,7 @@ let port: number;
 const calls: StructuredCompletionRequest[] = [];
 let providerFailure = false;
 let providerGate: (() => Promise<void>) | undefined;
+let providerTitle = '  "Useful title"  ';
 const token = "title-test-token";
 const provider: StructuredCompletionProvider = {
   id: "title-provider",
@@ -51,27 +52,27 @@ const provider: StructuredCompletionProvider = {
     calls.push(request);
     await providerGate?.();
     if (providerFailure) throw new ProviderCallError("provider unavailable");
-    return { content: { title: '  "Useful title"  ' }, inputTokens: 31, outputTokens: 8 };
+    return { content: { title: providerTitle }, inputTokens: 31, outputTokens: 8 };
   },
 };
 
-async function completedChat(): Promise<string> {
+async function completedChat(userText = "My first question", assistantText = "First answer"): Promise<string> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {
-      const turn = await sendSempMessage(client, { text: "My first question", context: [], hasContext: false });
+      const turn = await sendSempMessage(client, { text: userText, context: [], hasContext: false });
       expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
       const run = await createAgentRun(client, {
         triggeredBy: "user",
         unit: "session",
-        task: "My first question",
+        task: userText,
         threadId: turn.threadId,
       });
-      const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "First answer" });
+      const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: assistantText });
       await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
       expect(
         await finishSempMessageTurn(client, turn.assistantMessageId, {
           status: "done",
-          text: "First answer",
+          text: assistantText,
           lastEventId: event.id,
         }),
       ).toBe(true);
@@ -241,6 +242,34 @@ describe("Semp title through the real gateway", () => {
         [failed, null],
       ]),
     );
+  });
+
+  it("bounds the first exchange and discards an empty normalized title", async () => {
+    const gateway = createHttpAiGatewayClient({ port, token });
+    const threadId = await completedChat("u".repeat(1001), "a".repeat(1001));
+    const before = calls.length;
+    try {
+      providerTitle = '  "first\nsecond"  ';
+      await runInTenant(tenant, () => handleSempThreadTitle(pool, threadId, gateway));
+      expect(calls).toHaveLength(before + 1);
+      expect(calls[before]?.messages).toEqual([
+        { role: "user", content: "u".repeat(1000) },
+        { role: "assistant", content: "a".repeat(1000) },
+      ]);
+      const title = await runInTenant(tenant, () =>
+        pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [threadId]),
+      );
+      expect(title.rows).toEqual([{ title: "first second" }]);
+      const empty = await completedChat();
+      providerTitle = '""';
+      await runInTenant(tenant, () => handleSempThreadTitle(pool, empty, gateway));
+      const discarded = await runInTenant(tenant, () =>
+        pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [empty]),
+      );
+      expect(discarded.rows).toEqual([{ title: null }]);
+    } finally {
+      providerTitle = '  "Useful title"  ';
+    }
   });
 
   it("does not hold the thread lock while the real gateway is in flight", async () => {
