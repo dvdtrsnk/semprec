@@ -16,6 +16,7 @@ import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
+import { proposalHistoryEntrySchema } from "../../inbox/proposalHistory.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
@@ -616,6 +617,15 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             }),
           ]),
         );
+        const parsedHistory = z.array(proposalHistoryEntrySchema).parse(confirmed.properties.history);
+        expect(parsedHistory.at(-1)?.addedRelations).toEqual([
+          {
+            edgeId: extra[0]!.id,
+            relationPropertyId: after.propertyId,
+            callerItemId: eventId,
+            targetItemId: person.id,
+          },
+        ]);
         const repeated = await runInTenant(tenant, () =>
           withTransaction(runtime, (client) =>
             confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),

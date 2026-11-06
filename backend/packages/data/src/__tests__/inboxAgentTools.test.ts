@@ -15,6 +15,7 @@ import { insertInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
 import { ingestUploadedBlob } from "../blobs/fileUploadStore.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
@@ -149,9 +150,75 @@ describe("Inbox proposal tool owner", () => {
         unit: "session",
         task: "Question",
       });
-      return { cardId: card.rows[0].id, sourceId: source.id, runId: run.id, envelope, attachmentIds };
+      return {
+        cardId: card.rows[0].id,
+        sourceId: source.id,
+        runId: run.id,
+        threadId: turn.threadId,
+        proposalsId: dbs.proposals.id,
+        envelope,
+        attachmentIds,
+      };
     });
   }
+
+  it("refuses a synthetic historical stale hint after the actual association is removed", async () => {
+    const fixture = await createCard(owner, false);
+    const tool = createInboxProposalGetTool(runtime);
+    await runInTenant(owner, async () => {
+      expect((await tool(fixture.runId, { proposalId: fixture.cardId })).error).toBe(false);
+      const property = await runtime.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'sourceInbox'",
+        [fixture.proposalsId],
+      );
+      if (!property.rows[0]) throw new Error("Missing sourceInbox property");
+      const edge = {
+        relationPropertyId: property.rows[0].id,
+        callerItemId: fixture.cardId,
+        targetItemId: fixture.sourceId,
+      };
+      const before = await runtime.query<{ id: string }>(
+        "SELECT edge.id FROM item_relations edge JOIN relation_definitions def ON def.id = edge.relation_definition_id WHERE (def.property_id_a = $1 OR def.property_id_b = $1) AND (($2 = edge.item_a AND $3 = edge.item_b) OR ($2 = edge.item_b AND $3 = edge.item_a))",
+        [edge.relationPropertyId, fixture.cardId, fixture.sourceId],
+      );
+      expect(before.rows).toHaveLength(1);
+      // Synthetic historical state: the actual tick-created association is removed through its owner.
+      const deleted = await withTransaction(runtime, (client) =>
+        deleteRelationWithClient(client, edge, { ownerProcess: "processingProposals" }),
+      );
+      expect(deleted?.id).toBe(before.rows[0]?.id);
+      const state = await runtime.query<{
+        edge_count: number;
+        live_source: boolean;
+        live_card: boolean;
+        hint: string | null;
+        status: string;
+      }>(
+        `SELECT (SELECT count(*)::int FROM item_relations WHERE id = $1) AS edge_count,
+          EXISTS (SELECT 1 FROM items WHERE id = $2 AND deleted_at IS NULL) AS live_source,
+          EXISTS (SELECT 1 FROM items WHERE id = $3 AND deleted_at IS NULL) AS live_card,
+          (SELECT subject_proposal_id FROM semp_threads WHERE id = $4) AS hint,
+          (SELECT properties->>'status' FROM items WHERE id = $3) AS status`,
+        [deleted?.id, fixture.sourceId, fixture.cardId, fixture.threadId],
+      );
+      expect(state.rows).toEqual([
+        { edge_count: 0, live_source: true, live_card: true, hint: fixture.cardId, status: "proposed" },
+      ]);
+      const baseline = await runtime.query<{ items: number; edges: number; events: number; attachments: number }>(
+        "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
+      );
+      const missing = await tool(fixture.runId, { proposalId: randomUUID() });
+      expect(await tool(fixture.runId, { proposalId: fixture.cardId })).toEqual(missing);
+      expect(missing).toEqual({ error: true, result: "Proposal not found" });
+      expect(
+        (
+          await runtime.query(
+            "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
+          )
+        ).rows,
+      ).toEqual(baseline.rows);
+    });
+  });
 
   it("reads the real revised envelope and ordered unnamed attachments and uniformly refuses unrelated cards", async () => {
     const own = await createCard(owner, true);
