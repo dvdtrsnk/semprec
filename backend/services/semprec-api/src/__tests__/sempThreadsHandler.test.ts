@@ -398,6 +398,18 @@ describe("durable Semp thread history", () => {
       { role: "assistant", status: "queued", text: null },
     ]);
     expect(stored.job).toEqual([{ key: `sempMessage:${second.assistantMessageId}` }]);
+    const opaqueContext = [{ kind: "futureRef", value: "opaque" }];
+    const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "context question", context: opaqueContext }),
+    });
+    expect(withContext.status).toBe(202);
+    const contextMessage = z.object({ messageId: z.string().uuid() }).parse(await withContext.json());
+    const contextRows = await runInTenant(tenant, () =>
+      pool.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [contextMessage.messageId]),
+    );
+    expect(contextRows.rows).toEqual([{ context: opaqueContext }]);
   });
 
   it("reuses an item thread and refuses a current reserved or decided proposal without effects", async () => {
