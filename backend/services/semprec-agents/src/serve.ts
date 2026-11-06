@@ -13,6 +13,7 @@ import { createInFlightAgentRuns } from "./inFlightAgentRuns.js";
 import { createGatewayModel } from "./modelComposition.js";
 import { createAgentsQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
+import { createSempMessageTask } from "./sempMessageTask.js";
 import { logger } from "./logger.js";
 
 // Installed before anything else runs: an uncaught exception or unhandled rejection during
@@ -65,6 +66,7 @@ const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
   runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway, inFlightAgentRuns),
   agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
   delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
+  sempMessageTask: createSempMessageTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
 });
 
 // A run already executing when its tenant leaves `active` is aborted here and closes as `error`;
@@ -80,6 +82,8 @@ const shutdown = createGracefulShutdown({
   pool,
   logger,
   closeIdleThreadSessions,
+  abortSempTurns: () => { inFlightAgentRuns.abortSemp(); },
+  observeSempSettlement: () => inFlightAgentRuns.observeSempSettlement(),
 });
 registerShutdownSignals(shutdown);
 

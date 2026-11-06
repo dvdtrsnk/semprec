@@ -78,6 +78,7 @@ function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow>
       provider: ctx.provider,
       model: ctx.model,
       agentRunId: ctx.agentRunId,
+      sempMessageId: ctx.sempMessageId,
       projectItemId: ctx.projectItemId,
       operation: ctx.operation,
       estimatedCostUsd: ctx.estimatedCostUsd,

@@ -111,6 +111,7 @@ export const CORE_TASK_NAMES = {
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
   SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
+  SEMP_THREAD_TITLE: "sempThreadTitle",
   // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
   QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
   // Issue #1043: builds one requested tenant export archive, and the daily sweep that removes
@@ -167,6 +168,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "api",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
@@ -184,6 +186,7 @@ export const AGENT_TASK_NAMES = {
   HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",
   AGENT_RUN: "agentRun",
   DELEGATED_AGENT_RUN: "delegatedAgentRun",
+  SEMP_MESSAGE: "sempMessage",
 } as const;
 export type AgentTaskName = (typeof AGENT_TASK_NAMES)[keyof typeof AGENT_TASK_NAMES];
 
@@ -229,6 +232,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "tenant",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
@@ -237,6 +241,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
+  [AGENT_TASK_NAMES.SEMP_MESSAGE]: "tenant",
 };
 
 /** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
@@ -307,6 +312,7 @@ export interface EnqueueJobOptions {
   maxAttempts?: number;
   runAt?: Date;
   queueName?: string;
+  priority?: number;
 }
 
 /**
@@ -338,7 +344,8 @@ export async function enqueueJob(
        run_at => $4,
        max_attempts => $5,
        job_key => $6,
-       job_key_mode => $7
+       job_key_mode => $7,
+       priority => $8
      )`,
     [
       identifier,
@@ -348,6 +355,7 @@ export async function enqueueJob(
       options.maxAttempts ?? null,
       options.jobKey ?? null,
       options.jobKeyMode ?? "replace",
+      options.priority ?? 0,
     ],
   );
 }
@@ -488,6 +496,15 @@ export function resolveQueueConcurrency(env: NodeJS.ProcessEnv): number {
   if (raw === undefined || raw === "") return QUEUE_CONCURRENCY_DEFAULT;
   if (!/^[1-9][0-9]*$/.test(raw)) {
     throw new Error(`QUEUE_CONCURRENCY is not a positive integer: ${raw}`);
+  }
+  return Number(raw);
+}
+
+export function resolveSempChatQueueConcurrency(env: NodeJS.ProcessEnv): number {
+  const raw = env.SEMP_CHAT_QUEUE_CONCURRENCY;
+  if (raw === undefined || raw === "") return 2;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`SEMP_CHAT_QUEUE_CONCURRENCY is not a positive integer: ${raw}`);
   }
   return Number(raw);
 }

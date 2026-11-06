@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
+import { AGENT_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges, resolveSempChatQueueConcurrency, runWorker } from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
   createAgentTaskList,
@@ -10,29 +10,31 @@ import {
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryComposition.js";
+import { AGENTS_STOP_WINDOW_MS } from "./shutdown.js";
 
 export interface AgentsQueueRuntime {
-  /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
+  /** Idempotent: awaits both runners exactly once. The caller owns `pool`. */
   stop(): Promise<void>;
 }
 
 /**
  * The agent session wiring `serve.ts` composes (issue #647). Each one left out keeps its
- * placeholder: `core.agentRun` closes its run as `error`, and `agentRun`/`delegatedAgentRun` jobs
+ * placeholder: `core.agentRun` closes its run as `error`, and the optional queued handlers
  * complete without doing anything.
  */
 export interface AgentsQueueRuntimeOptions {
   runAgent?: RunAgentFn;
   agentRunTask?: AgentQueueTaskHandler;
   delegatedAgentRunTask?: AgentQueueTaskHandler;
+  sempMessageTask?: AgentQueueTaskHandler;
 }
 
 /**
  * Issue #91's `agents` composition root: the second long-lived graphile-worker runner over the
  * same queue as `services/semprec-api`'s. Hosts every `queueAffinity: 'agents'` handler —
- * `heartbeatFireAgent`, `agentRun`, `delegatedAgentRun`, plus active modules' agents-affinity
- * tasks — and installs no crontab: `semprec-api`'s runtime is the queue's one scheduler, this
- * one is a plain consumer.
+ * `heartbeatFireAgent`, `agentRun`, `delegatedAgentRun`, `sempMessage`, plus active modules'
+ * agents-affinity tasks. A dedicated runner reserves capacity for Semp messages. Neither runner
+ * installs a crontab; `semprec-api` is the queue's scheduler.
  */
 export async function createAgentsQueueRuntime(
   pool: Pool,
@@ -51,6 +53,7 @@ export async function createAgentsQueueRuntime(
     moduleRegistry,
     options.agentRunTask,
     options.delegatedAgentRunTask,
+    options.sempMessageTask,
   );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
 
@@ -59,16 +62,41 @@ export async function createAgentsQueueRuntime(
   const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
   assertTaskListMatchesAffinity(taskList, affinitySets.agents, "agents");
 
+  const chatTask = taskList[AGENT_TASK_NAMES.SEMP_MESSAGE];
+  if (!chatTask) throw new Error("Missing Semp message task");
+  const generalTasks = Object.fromEntries(Object.entries(taskList).filter(([name]) => name !== AGENT_TASK_NAMES.SEMP_MESSAGE));
+  const chatConcurrency = resolveSempChatQueueConcurrency(process.env);
   const runner = await runWorker({
     pgPool: pool,
-    taskList,
+    taskList: generalTasks,
     noHandleSignals: true,
   });
+  let chatRunner: Awaited<ReturnType<typeof runWorker>>;
+  try {
+    chatRunner = await runWorker({
+      pgPool: pool,
+      taskList: { [AGENT_TASK_NAMES.SEMP_MESSAGE]: chatTask },
+      concurrency: chatConcurrency,
+      gracefulShutdownAbortTimeout: AGENTS_STOP_WINDOW_MS,
+      noHandleSignals: true,
+    });
+  } catch (error) {
+    try {
+      await runner.stop();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Chat worker startup and general worker cleanup failed", { cause: error });
+    }
+    throw error;
+  }
 
   let stopped: Promise<void> | null = null;
   return {
     stop(): Promise<void> {
-      stopped ??= runner.stop();
+      stopped ??= (async () => {
+        const results = await Promise.allSettled([runner.stop(), chatRunner.stop()]);
+        const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        if (errors.length) throw new AggregateError(errors, "Agent queue workers failed to stop", { cause: errors[0] });
+      })();
       return stopped;
     },
   };

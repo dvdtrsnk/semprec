@@ -17,6 +17,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "project guidance read": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
   "project guidance save": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
   "semp thread detail": "services/semprec-api/src/sempThreadsHandler.ts",
+  "semp thread create message": "services/semprec-api/src/sempThreadsHandler.ts",
+  "semp thread send message": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread messages": "services/semprec-api/src/sempThreadsHandler.ts",
   "server identity": "services/semprec-api/src/serverInfoHandler.ts",
   "shallow health check": "services/semprec-api/src/healthzHandler.ts",

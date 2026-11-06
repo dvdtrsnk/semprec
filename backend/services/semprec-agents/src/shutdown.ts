@@ -4,6 +4,9 @@ import { logger } from "./logger.js";
 
 export const POOL_END_TIMEOUT_MS = 5_000;
 export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
+export const AGENTS_STOP_WINDOW_MS = 120_000;
+export const SEMP_CLEANUP_MARGIN_MS = 30_000;
+export const SEMP_TURN_GRACE_MS = AGENTS_STOP_WINDOW_MS - SEMP_CLEANUP_MARGIN_MS;
 
 function errorCategory(error: unknown): string {
   if (error instanceof AggregateError) return "aggregate_error";
@@ -26,10 +29,12 @@ export interface CreateGracefulShutdownOptions {
   logger: Logger;
   /** Closes every idle thread session as `done`; runs after the queue stopped, while the pool is open. */
   closeIdleThreadSessions: (pool: Pool) => Promise<{ closedRunIds: string[] }>;
+  abortSempTurns: () => void;
+  observeSempSettlement: () => () => Promise<unknown[]>;
 }
 
 /** Ends `pool`, bounded by `POOL_END_TIMEOUT_MS` so a hung or unreachable database can never stall shutdown indefinitely. */
-function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
+function endPool(pool: Pool, logger: Logger, signal: string): Promise<{ failed: false } | { failed: true; error: unknown }> {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -37,7 +42,7 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
       if (settled) return;
       settled = true;
       logger.error({ signal }, "pool.end() did not settle within POOL_END_TIMEOUT_MS");
-      resolve();
+      resolve({ failed: true, error: new Error("pool.end() did not settle within POOL_END_TIMEOUT_MS") });
     }, POOL_END_TIMEOUT_MS);
 
     pool.end().then(
@@ -45,7 +50,7 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
         if (settled) return;
         settled = true;
         clearTimeout(boundTimer);
-        resolve();
+        resolve({ failed: false });
       },
       (err: unknown) => {
         if (settled) {
@@ -58,7 +63,7 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
         settled = true;
         clearTimeout(boundTimer);
         logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
-        resolve();
+        resolve({ failed: true, error: err });
       },
     );
   });
@@ -110,19 +115,32 @@ async function closeListener(
  * note, this ordering is specific to this service — it names no heartbeat step.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { queueRuntime, tenantDeactivationListener, pool, logger, closeIdleThreadSessions } = options;
+  const { queueRuntime, tenantDeactivationListener, pool, logger, closeIdleThreadSessions, abortSempTurns, observeSempSettlement } = options;
 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
-    logger.info({ signal }, "semprec-agents shutting down");
-
-    await closeListener(tenantDeactivationListener, logger, signal);
-
+    const settleSemp = observeSempSettlement();
+    const deadline = setTimeout(abortSempTurns, SEMP_TURN_GRACE_MS);
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      bound = setTimeout(() => reject(new Error("Semp shutdown did not settle within the stop window")), AGENTS_STOP_WINDOW_MS);
+    });
+    let failures: unknown[];
     try {
-      await queueRuntime.stop();
-    } catch (err) {
-      logger.error({ errorCategory: errorCategory(err), signal }, "queueRuntime.stop() failed");
+      logger.info({ signal }, "semprec-agents shutting down");
+      failures = await Promise.race([(async () => {
+        await closeListener(tenantDeactivationListener, logger, signal);
+        try {
+          await queueRuntime.stop();
+        } catch (err) {
+          logger.error({ errorCategory: errorCategory(err), signal }, "queueRuntime.stop() failed");
+        }
+        return settleSemp();
+      })(), timeout]);
+    } finally {
+      clearTimeout(deadline);
+      clearTimeout(bound);
     }
 
     // After the queue stopped, so no turn is still being written; before the pool ends. A failure
@@ -132,9 +150,14 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       logger.info({ signal, closedIdleSessionCount: closedRunIds.length }, "Closed idle thread sessions");
     } catch (err) {
       logger.error({ errorCategory: errorCategory(err), signal }, "closeIdleThreadSessions() failed");
+      if (failures.length) failures.push(err);
     }
 
-    await endPool(pool, logger, signal);
+    const poolResult = await endPool(pool, logger, signal);
+    if (poolResult.failed && failures.length) failures.push(poolResult.error);
+
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Semp settlement and cleanup failed", { cause: failures[0] });
 
     logger.info({ signal }, "semprec-agents shutdown complete");
   }

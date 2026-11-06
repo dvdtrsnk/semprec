@@ -7,6 +7,7 @@ import {
   insertAgentRunEvent,
   listAgentRunEvents,
   listRunningAgentRuns,
+  repairInterruptedSempMessages,
   withTransaction,
   type AgentRunEventRow,
   type AgentRunRow,
@@ -128,6 +129,7 @@ async function repairCurrentTenant(pool: Pool): Promise<{ repaired: string[]; cl
       repaired.push(run.id);
     }
 
+    await repairInterruptedSempMessages(client);
     return { repaired, closedIdle };
   });
 }

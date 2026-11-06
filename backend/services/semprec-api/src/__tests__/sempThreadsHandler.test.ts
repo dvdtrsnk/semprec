@@ -2,20 +2,27 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  createSempChatThread,
+  claimSempMessage,
   createUser,
   finishAgentRun,
   handleAgentRunEventsRetentionTask,
   hashPassword,
   insertAgentRunEvent,
+  insertSempUserTurn,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  sendSempMessage,
+  startSempMessageTurn,
+  listSempThreadMessages,
+  withTransaction,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
@@ -86,7 +93,15 @@ describe("durable Semp thread history", () => {
       );
       const id = system.rows[0]?.id;
       if (!id || system.rowCount !== 1) throw new Error("Missing system message");
-      return { threadId, id, replyId, runId: run.id };
+      const failedRun = await createAgentRun(pool, { triggeredBy: "user", unit: "session", task: "failed", userId: user.id, threadId });
+      expect(await finishAgentRun(pool, failedRun.id, "error", null, "internal")).toBe(true);
+      const failed = await pool.query<{ id: string }>(
+        "INSERT INTO semp_messages (thread_id, role, agent_run_id, status) VALUES ($1, 'assistant', $2, 'error') RETURNING id",
+        [threadId, failedRun.id],
+      );
+      const failedId = failed.rows[0]?.id;
+      if (!failedId || failed.rowCount !== 1) throw new Error("Missing failed message");
+      return { threadId, id, replyId, runId: run.id, failedId };
     });
     const headers = { authorization: `Bearer ${session.token}` };
     const response = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, { headers });
@@ -105,7 +120,32 @@ describe("durable Semp thread history", () => {
           eventFromId: "123",
           status: "done",
           createdAt: expect.any(String),
+          run: { startedAt: expect.any(String), finishedAt: null, status: "running" },
         },
+        { id: fixture.replyId, run: null },
+        { id: fixture.failedId, run: { startedAt: expect.any(String), finishedAt: expect.any(String), status: "error" } },
+      ]),
+    });
+    await runInTenant(tenant, () => withTransaction(pool, async (client) => {
+      const query = vi.spyOn(client, "query");
+      try {
+        await listSempThreadMessages(client, fixture.threadId, 1, null);
+        expect(query).toHaveBeenCalledTimes(1);
+        query.mockClear();
+        await listSempThreadMessages(client, fixture.threadId, 50, null);
+        expect(query).toHaveBeenCalledTimes(1);
+      } finally {
+        query.mockRestore();
+      }
+    }));
+    expect(await runInTenant(tenant, () => finishAgentRun(pool, fixture.runId, "done", null))).toBe(true);
+    const finished = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, { headers });
+    expect(finished.status).toBe(200);
+    const finishedBody: unknown = await finished.json();
+    expect(finishedBody).toMatchObject({
+      rows: expect.arrayContaining([
+        { id: fixture.id, run: { startedAt: expect.any(String), finishedAt: expect.any(String), status: "done" } },
+        { id: fixture.replyId, run: null },
       ]),
     });
     for (const suffix of ["", "/messages"]) {
@@ -166,5 +206,60 @@ describe("durable Semp thread history", () => {
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
     expect(body).toMatchObject({ rows: [{ id: fixture.messageId, text: "old history" }], nextCursor: null });
+  });
+
+  it("does not expose run data through another tenant's thread id", async () => {
+    const ownerTenant = await createTestTenant(admin);
+    const foreignTenant = await createTestTenant(admin);
+    const ownerEmail = `${randomUUID()}@example.test`;
+    const foreignEmail = `${randomUUID()}@example.test`;
+    for (const [tenantId, email] of [[ownerTenant, ownerEmail], [foreignTenant, foreignEmail]] as const) {
+      await createUser(admin, { tenantId, email, passwordHash: await hashPassword("thread-test-password") });
+    }
+    const ownerSession = await login(admin, { email: ownerEmail, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const foreignSession = await login(admin, { email: foreignEmail, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const threadId = await runInTenant(ownerTenant, () => withTransaction(pool, async (client) => {
+      const id = await createSempChatThread(client);
+      const turn = await insertSempUserTurn(client, id, "Question", []);
+      expect(await claimSempMessage(client, id, turn.assistantMessageId)).toBe(true);
+      const run = await createAgentRun(client, { triggeredBy: "user", unit: "session", task: "private", threadId: id });
+      const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "private" });
+      await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+      return id;
+    }));
+    const owner = await fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, { headers: { authorization: `Bearer ${ownerSession.token}` } });
+    expect(owner.status).toBe(200);
+    const ownerBody: unknown = await owner.json();
+    expect(ownerBody).toMatchObject({ rows: expect.arrayContaining([{ run: { status: "running", finishedAt: null } }]) });
+    const headers = { authorization: `Bearer ${foreignSession.token}` };
+    const foreign = await fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, { headers });
+    const unknown = await fetch(`${baseUrl}/api/semp/threads/${randomUUID()}/messages`, { headers });
+    expect(foreign.status).toBe(404);
+    expect(unknown.status).toBe(foreign.status);
+    expect(await foreign.text()).toBe(await unknown.text());
+    const ownerAfter = await fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, { headers: { authorization: `Bearer ${ownerSession.token}` } });
+    expect(await ownerAfter.json()).toEqual(ownerBody);
+  });
+
+  it("rolls back a visible queued job together with the new thread and messages", async () => {
+    const tenant = await createTestTenant(admin);
+    let threadId = "";
+    let messageId = "";
+    let assistantId = "";
+    await expect(runInTenant(tenant, () => withTransaction(pool, async (client) => {
+      const turn = await sendSempMessage(client, { text: "Rollback", context: [], hasContext: false });
+      ({ threadId, messageId, assistantMessageId: assistantId } = turn);
+      const job = await client.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempMessage:${assistantId}`]);
+      expect(job.rows).toEqual([{ key: `sempMessage:${assistantId}` }]);
+      throw new Error("rollback sentinel");
+    }))).rejects.toThrow("rollback sentinel");
+    const remaining = await runInTenant(tenant, () => withTransaction(pool, async (client) => ({
+      threads: await client.query("SELECT id FROM semp_threads WHERE id = $1", [threadId]),
+      messages: await client.query("SELECT id FROM semp_messages WHERE id = ANY($1::uuid[])", [[messageId, assistantId]]),
+      jobs: await client.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempMessage:${assistantId}`]),
+    })));
+    expect(remaining.threads.rows).toEqual([]);
+    expect(remaining.messages.rows).toEqual([]);
+    expect(remaining.jobs.rows).toEqual([]);
   });
 });

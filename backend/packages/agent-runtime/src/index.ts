@@ -27,6 +27,7 @@ export {
   SempConversation,
   SEMP_BUSY_ERROR_MESSAGE,
   createReconstructConversationHistory,
+  createBoundedSempHistory,
   type SempConversationOptions,
   type SempSendOptions,
   type SempThread,

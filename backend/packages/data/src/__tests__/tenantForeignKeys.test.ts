@@ -21,6 +21,7 @@ import { writeNotification } from "../notifications/notify.js";
 import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { createSempChatThread, insertSempUserTurn } from "../sempThreads/sempThreadsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
@@ -49,6 +50,7 @@ interface Parents {
   pushSubscriptionId: string;
   toolRegistrationId: string;
   problemId: string;
+  sempMessageId: string;
 }
 
 let adminPool: Pool;
@@ -128,6 +130,8 @@ async function seedParents(tenantId: string): Promise<Parents> {
       sourceId: randomUUID(),
       dedupeKey: "fk-probe",
     });
+    const sempThreadId = await createSempChatThread(client);
+    const sempTurn = await insertSempUserTurn(client, sempThreadId, "FK probe", []);
     return {
       userId: user.id,
       databaseId: database.id,
@@ -144,6 +148,7 @@ async function seedParents(tenantId: string): Promise<Parents> {
       pushSubscriptionId: subscription.id,
       toolRegistrationId: registration.id,
       problemId: problem.problemId,
+      sempMessageId: sempTurn.assistantMessageId,
     };
   });
 }
@@ -167,6 +172,17 @@ interface Reference {
 }
 
 const REFERENCES: Reference[] = [
+  {
+    parent: "Semp message",
+    constraint: "ai_gateway_calls_semp_message_id_tenant_fkey",
+    table: "ai_gateway_calls",
+    column: "semp_message_id",
+    parentId: (p) => p.sempMessageId,
+    insert: (client, id) => client.query(
+      "INSERT INTO ai_gateway_calls (provider, model, cost_usd, semp_message_id) VALUES ('fixture', 'fixture', 0, $1)",
+      [id],
+    ),
+  },
   {
     parent: "problem",
     constraint: "semp_problem_occurrences_problem_id_tenant_fkey",

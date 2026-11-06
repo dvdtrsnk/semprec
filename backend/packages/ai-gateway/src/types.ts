@@ -9,6 +9,7 @@ export interface GatewayCallContext {
   model: string;
   /** Set when the call originates inside an agent run; omit/NULL otherwise. */
   agentRunId?: string | null;
+  sempMessageId?: string | null;
   /**
    * #215: set together with `operation` by `POST /internal/complete`, the only current caller that
    * attributes a call to a project item; every other caller omits it. The audio routes set only

@@ -13,6 +13,11 @@ import {
 import {
   createPoolClientTransactionRunner,
   getTenantUserLocale,
+  getSempThread,
+  getSempMessageTurn,
+  generateSchemaProjection,
+  toManifestLocale,
+  withTransaction,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
@@ -21,7 +26,7 @@ import {
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName } from "@semprec/shared";
 import type { GatewayModel } from "./modelComposition.js";
 import { createPiAgentSessionFactory } from "./piAgentSession.js";
 import { logger } from "./logger.js";
@@ -42,8 +47,14 @@ const AGENT_BASE_SYSTEM_PROMPT = [
   "say so in your summary instead of retrying it.",
 ].join(" ");
 
+const ITEM_THREAD_OPERATIONS = [
+  "database.list", "database.get", "property.list", "property.get", "property.getByKey",
+  "view.list", "view.get", "view.query", "item.get", "database.query",
+] as const satisfies readonly GenericOperationName[];
+
 /** The header `semprec-ai-gateway`'s pi-messages route attributes its `ai_gateway_calls` row by. */
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
+const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
 /**
  * Accepts any JSON object as tool arguments: an MCP tool's synchronized schema is validated by
@@ -272,17 +283,43 @@ export async function createAgentSessionFactoryForRun(
   moduleRegistry: ModuleRegistry,
   gateway: GatewayModel,
   run: AgentRunRow,
+  currentSempMessage?: { current: string | null },
 ): Promise<CreateAgentSession> {
-  const tools = await createGenericOperationTools(pool, moduleRegistry, run.id);
+  if (!ITEM_THREAD_OPERATIONS.every((name) => GENERIC_OPERATION_NAMES.includes(name)))
+    throw new Error("Unknown item-thread generic operation");
+  const allGenericTools = await createGenericOperationTools(pool, moduleRegistry, run.id);
+  const locale = await getTenantUserLocale(pool);
+  const threadId = run.threadId;
+  const threadContext = threadId ? await withTransaction(pool, async (client) => {
+    const thread = await getSempThread(client, threadId);
+    if (!thread) throw new Error("Semp thread not found for run");
+    const schema = await generateSchemaProjection(client, moduleRegistry, { locale: toManifestLocale(locale ?? "en") });
+    const turn = thread.kind === "tick" && currentSempMessage?.current
+      ? await getSempMessageTurn(client, threadId, currentSempMessage.current) : null;
+    return { kind: thread.kind, databases: schema.databases, missingHeartbeat: thread.kind === "tick" && !!currentSempMessage?.current && !turn?.projectItemId };
+  }) : null;
+  const tools = threadContext?.kind === "item"
+    ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
+    : allGenericTools;
   let moduleTools: typeof tools = [];
   // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
-  const instruction = languageInstruction(await getTenantUserLocale(pool));
-  let systemPrompt = instruction ? `${AGENT_BASE_SYSTEM_PROMPT}\n${instruction}` : AGENT_BASE_SYSTEM_PROMPT;
+  const instruction = languageInstruction(locale);
+  const basePrompt = threadContext ? [
+    "You are Semp, the user's assistant for tasks, calendar, notes and other data.",
+    "Answer in the user's language. A tool requiring approval has not run yet.",
+    "Deleting an item moves it to trash for 30 days; item.restore restores it.",
+    "Link items as semprec://items/<id>.",
+    `Data schema: ${JSON.stringify(threadContext.databases)}`,
+  ].join("\n") : AGENT_BASE_SYSTEM_PROMPT;
+  let systemPrompt = instruction ? `${basePrompt}\n${instruction}` : basePrompt;
 
   if (run.projectItemId) {
-    tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
-    moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
-    tools.push(...moduleTools);
+    if (threadContext?.kind !== "item") {
+      tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
+      moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
+      if (threadContext?.missingHeartbeat) moduleTools = moduleTools.filter((tool) => !tool.label.startsWith("heartbeat."));
+      tools.push(...moduleTools);
+    }
     const transactions = createPoolClientTransactionRunner(pool);
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       (projectItemId) =>
@@ -294,8 +331,12 @@ export async function createAgentSessionFactoryForRun(
     systemPrompt = override(systemPrompt);
   }
 
-  const streamFn: StreamFn = (model, context, options) =>
-    gateway.streamFn(model, context, { ...options, headers: { ...options?.headers, [AGENT_RUN_ID_HEADER]: run.id } });
+  const streamFn: StreamFn = (model, context, options) => {
+    const headers: Record<string, string> = { ...options?.headers, [AGENT_RUN_ID_HEADER]: run.id };
+    delete headers[SEMP_MESSAGE_ID_HEADER];
+    if (currentSempMessage?.current) headers[SEMP_MESSAGE_ID_HEADER] = currentSempMessage.current;
+    return gateway.streamFn(model, context, { ...options, headers });
+  };
 
   const uniqueTools = withUniqueNames(tools);
   const toolEventMetadata = new Map(

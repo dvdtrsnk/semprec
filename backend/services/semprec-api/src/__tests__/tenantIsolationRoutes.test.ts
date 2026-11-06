@@ -1397,6 +1397,22 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(answer.text, "error", "code")).toBe("not_found");
     await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}` });
   },
+  "semp thread create message": () => leavesAUnchanged(async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST", path: "/api/semp/threads", body: { text: "Question", subject: { inboxItemId: id } },
+    }));
+    expect(answer.status).toBe(400);
+    const own = await send(b.member, { method: "POST", path: "/api/semp/threads", body: { text: "Question" } });
+    expect(own.status).toBe(202);
+  }),
+  "semp thread send message": () => leavesAUnchanged(async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "POST", path: `/api/semp/threads/${id}/messages`, body: { text: "Question" },
+    }));
+    expect(answer.status).toBe(404);
+    const own = await send(b.member, { method: "POST", path: `/api/semp/threads/${b.sempThreadId}/messages`, body: { text: "Question" } });
+    expect(own.status).toBe(202);
+  }),
   "semp thread messages": async () => {
     const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
       method: "GET",

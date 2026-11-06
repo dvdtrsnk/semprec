@@ -306,6 +306,22 @@ describe("POST /internal/complete", () => {
     expect(rows).toEqual([{ project_item_id: null, operation: "transcript_summary", input_tokens: 100 }]);
   });
 
+  it("attributes thread title completion to its operation and refuses a project id", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+    const refused = await post("/internal/complete", { ...VALID_BODY, operation: "semp_thread_title" });
+    expect(refused.status).toBe(400);
+    expect(provider.calls).toHaveLength(0);
+    const accepted = await post("/internal/complete", { ...VALID_BODY, operation: "semp_thread_title", projectItemId: null });
+    expect(accepted.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "semp_thread_title" }]);
+  });
+
   it("dispatches transcript_speaker_suggestion with a null projectItemId and records an unattributed audit row", async () => {
     const provider = new FakeProvider();
     startServer(provider);

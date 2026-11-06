@@ -34,6 +34,13 @@ export class ConflictError extends ChokePointError {
   }
 }
 
+export class ProposalLockedError extends ChokePointError {
+  constructor() {
+    super(409, "proposal_locked", "Proposal is locked");
+    this.name = "ProposalLockedError";
+  }
+}
+
 export class ApprovalResourceBusyError extends ChokePointError {
   constructor() {
     super(409, "approval_resource_busy", "Approval resource is busy");

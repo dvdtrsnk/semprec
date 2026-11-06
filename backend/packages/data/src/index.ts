@@ -675,7 +675,10 @@ export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 
 export type { ConfirmationResult } from "./inbox/proposalActions.js";
 
-export { getSempThread, listSempThreadMessages } from "./sempThreads/sempThreadsStore.js";
+export { createSempChatThread, getSempMessageTurn, getSempThread, insertSempUserTurn, listSempThreadMessages, sendSempMessage } from "./sempThreads/sempThreadsStore.js";
+export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
+export { claimSempMessage, finishSempMessageTurn, getSempMessageFrontier, getSempMessageToken, repairInterruptedSempMessages, startSempMessageTurn } from "./semp/sempMessagesStore.js";
+export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 
 export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";
 

@@ -1,7 +1,21 @@
 import type { Pool } from "pg";
-import { getSempThread, listSempThreadMessages, NotFoundError, ValidationError, withTransaction } from "@semprec/data";
-import { assertUuid, requireUuidParam } from "./adapter/requestValidation.js";
+import { z } from "zod";
+import { getSempThread, listSempThreadMessages, NotFoundError, sendSempMessage, ValidationError, withTransaction } from "@semprec/data";
+import { assertUuid, requireJsonObjectBody, requireStringField, requireUuidParam } from "./adapter/requestValidation.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
+
+const messageRunSchema = z.object({
+  startedAt: z.string().datetime(),
+  finishedAt: z.string().datetime().nullable(),
+  status: z.enum(["running", "done", "error"]),
+}).nullable();
+
+function parseMessageInput(value: unknown) {
+  const body = requireJsonObjectBody(value);
+  const text = requireStringField(body, "text");
+  if (!text.trim()) throw new ValidationError("'text' must not be whitespace", { field: "text" });
+  return { text, context: body.context === undefined ? [] : body.context, hasContext: "context" in body };
+}
 
 function parseCursor(value: string | null): { createdAt: string; id: string } | null {
   if (value === null) return null;
@@ -37,6 +51,33 @@ function parseCursor(value: string | null): { createdAt: string; id: string } | 
 export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
   return [
     {
+      method: "POST",
+      path: "/api/semp/threads",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const message = parseMessageInput(body);
+        let subject: { inboxItemId: string; proposalId?: string } | undefined;
+        if (body.subject !== undefined) {
+          const value = requireJsonObjectBody(body.subject);
+          const inboxItemId = assertUuid(requireStringField(value, "inboxItemId"), "inboxItemId");
+          const proposalId = value.proposalId === undefined ? undefined : assertUuid(requireStringField(value, "proposalId"), "proposalId");
+          subject = { inboxItemId, ...(proposalId === undefined ? {} : { proposalId }) };
+        }
+        const result = await withTransaction(pool, (client) => sendSempMessage(client, { ...message, subject }));
+        return { status: 202, body: result };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/semp/threads/:id/messages",
+      handler: async (ctx) => {
+        const threadId = requireUuidParam(ctx.params, "id");
+        const message = parseMessageInput(ctx.body);
+        const result = await withTransaction(pool, (client) => sendSempMessage(client, { ...message, threadId }));
+        return { status: 202, body: result };
+      },
+    },
+    {
       method: "GET",
       path: "/api/semp/threads/:id",
       handler: async (ctx) => {
@@ -61,7 +102,10 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
           if (!(await getSempThread(client, id))) throw new NotFoundError("Thread not found");
           return listSempThreadMessages(client, id, limit, before);
         });
-        return { status: 200, body: result };
+        return {
+          status: 200,
+          body: { ...result, rows: result.rows.map((row) => ({ ...row, run: messageRunSchema.parse(row.run) })) },
+        };
       },
     },
   ];

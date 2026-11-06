@@ -12,6 +12,7 @@ import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,
   reconstructConversationHistory as reconstructHistoryEntries,
+  reconstructBoundedThreadHistory,
   type ReconstructedHistory,
 } from "./conversationReconstruction.js";
 import { closeFailedAgentRun, extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
@@ -61,10 +62,16 @@ export function createReconstructConversationHistory(compaction: CompactionAdapt
     reconstructHistoryEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, compaction);
 }
 
+export function createBoundedSempHistory(): ReconstructConversationHistory {
+  return (pool, { threadId }) => reconstructBoundedThreadHistory(pool, threadId);
+}
+
 interface ConversationRegistryEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
+  lastCompletedToken?: string;
+  currentSempMessage?: { current: string | null };
   /** The pending TTL pause, or, once its conversation is dropped, the pending close retry. */
   ttlTimer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -100,7 +107,7 @@ export interface SempConversationOptions {
    * waking turn, after the run is `running` and before the first prompt, so the session's tools
    * bind to that run's id. A test double can return a constant factory.
    */
-  createAgentSessionForRun: (run: AgentRunRow) => Promise<CreateAgentSession>;
+  createAgentSessionForRun: (run: AgentRunRow, currentSempMessage?: { current: string | null }) => Promise<CreateAgentSession>;
   /**
    * Resolves the waking tenant's own Semprec project item id — `agent_runs.project_item_id` for
    * a chat or item thread's wake run (a tick thread supplies its heartbeat's project instead and
@@ -120,6 +127,9 @@ export interface SempTurnStart {
 
 export interface SempSendOptions {
   context?: readonly UserTurnContextRef[];
+  /** Text prepended only to the model input; the durable user event keeps the original task. */
+  modelPrefix?: string;
+  messageId?: string;
   /** Cancels the turn, including a prompt blocked on its next event; the run then closes as `error`. */
   signal?: AbortSignal;
   /**
@@ -127,6 +137,12 @@ export interface SempSendOptions {
    * prompted further. A throw ends the turn: the run closes as `error` and the error propagates.
    */
   onTurnStart?: (turn: SempTurnStart) => Promise<void> | void;
+}
+
+async function* preserveUserText(messages: AsyncIterable<AgentMessage>, task: string): AsyncIterable<AgentMessage> {
+  for await (const message of messages) {
+    yield message.kind === "user_message" ? { ...message, text: task } : message;
+  }
 }
 
 interface ThreadConversation {
@@ -195,6 +211,24 @@ export class SempConversation {
       if (state.entry) clearTimeout(state.entry.ttlTimer);
     }
     this.conversations.clear();
+  }
+
+  async ensureFresh(threadId: string, frontier: string | null): Promise<void> {
+    const scope = currentTenantScope();
+    if (scope?.kind !== "tenant") throw new Error("Semp conversation requires a tenant scope");
+    const state = this.conversations.get(conversationKey(scope.tenantId, threadId));
+    if (!state?.entry) return;
+    if (state.entry.busy || state.waking || state.dropped) throw new Error("Semp conversation is not idle");
+    if (state.entry.lastCompletedToken !== undefined && state.entry.lastCompletedToken === frontier) return;
+    await this.pause(state);
+    if (state.entry) throw new Error("Could not pause stale Semp conversation");
+  }
+
+  markCompleted(threadId: string, token: string): void {
+    const scope = currentTenantScope();
+    if (scope?.kind !== "tenant") throw new Error("Semp conversation requires a tenant scope");
+    const state = this.conversations.get(conversationKey(scope.tenantId, threadId));
+    if (state?.entry && !state.dropped) state.entry.lastCompletedToken = token;
   }
 
   /**
@@ -279,6 +313,7 @@ export class SempConversation {
 
   async send(task: string, thread: SempThread, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
     const { signal, onTurnStart } = sendOptions;
+    const modelTask = sendOptions.modelPrefix ? `${sendOptions.modelPrefix}\n\n${task}` : task;
     const parsedContext = labeledSempMessageRefSchema
       .array()
       .safeParse(sendOptions.context === undefined ? [] : sendOptions.context);
@@ -304,6 +339,7 @@ export class SempConversation {
     if (state?.entry) {
       const entry = state.entry;
       entry.busy = true;
+      if (entry.currentSempMessage) entry.currentSempMessage.current = sendOptions.messageId ?? null;
       try {
         return await withTraceContext({ agentRunId: entry.agentRunId }, async () => {
           let lastMessage: AgentMessage | null;
@@ -316,7 +352,7 @@ export class SempConversation {
             lastMessage = await runAgentTurn(
               this.pool,
               entry.agentRunId,
-              entry.session.send(task, context),
+              preserveUserText(entry.session.send(modelTask, context), task),
               undefined,
               signal,
               onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: entry.agentRunId, firstEventId })),
@@ -340,11 +376,13 @@ export class SempConversation {
           return { ok: true, message: extractResultSnapshot(lastMessage) };
         });
       } finally {
+        if (entry.currentSempMessage) entry.currentSempMessage.current = null;
         entry.busy = false;
       }
     }
 
     const wakeState: ThreadConversation = { tenantId, threadId: thread.threadId, entry: null, waking: true };
+    const currentSempMessage = { current: sendOptions.messageId ?? null };
     this.conversations.set(key, wakeState);
     try {
       const projectItemId =
@@ -374,9 +412,9 @@ export class SempConversation {
               parentRunId: null,
             });
           }
-          const createAgentSession = await this.options.createAgentSessionForRun(run);
+          const createAgentSession = await this.options.createAgentSessionForRun(run, currentSempMessage);
           session = createAgentSession({
-            task,
+            task: modelTask,
             context,
             signal,
             initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
@@ -384,7 +422,7 @@ export class SempConversation {
           lastMessage = await runAgentTurn(
             this.pool,
             run.id,
-            session.messages(),
+            preserveUserText(session.messages(), task),
             undefined,
             signal,
             onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: run.id, firstEventId })),
@@ -395,13 +433,14 @@ export class SempConversation {
         }
 
         if (wakeState.dropped) {
-          const entry: ConversationRegistryEntry = { agentRunId: run.id, session, busy: true, ttlTimer: undefined };
+          const entry: ConversationRegistryEntry = { agentRunId: run.id, session, busy: true, ttlTimer: undefined, currentSempMessage };
           wakeState.entry = entry;
           await this.closeDropped(wakeState, entry);
         } else {
           wakeState.entry = {
             agentRunId: run.id,
             session,
+            currentSempMessage,
             busy: false,
             ttlTimer: this.scheduleTtl(wakeState),
           };
@@ -410,6 +449,7 @@ export class SempConversation {
         return { ok: true, message: extractResultSnapshot(lastMessage) };
       });
     } finally {
+      currentSempMessage.current = null;
       wakeState.waking = false;
       this.releaseIfIdle(wakeState);
     }
