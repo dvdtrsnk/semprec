@@ -1,20 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions, SempConversation } from "@semprec/agent-runtime";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createSempChatThread,
+  createChokePoint,
   createUser,
   getDatabaseByModuleId,
   loadFullModuleRegistry,
   seedSystem,
+  sendSempMessage,
   withTransaction,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import type { GatewayModel } from "../modelComposition.js";
+import { createSempMessageTask } from "../sempMessageTask.js";
+import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -109,6 +113,82 @@ describe("Semp thread live prompt", () => {
       await closeIdleThreadSessions(runtime);
     } finally {
       conversation.clear();
+    }
+  });
+
+  it("recomputes live dates across midnight and uses a changed stored timezone", async () => {
+    const registry = await loadFullModuleRegistry();
+    const faux = fauxProvider();
+    const prompts: string[] = [];
+    faux.setResponses(
+      Array.from({ length: 3 }, (_, i) => (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage(`reply ${i}`);
+      }),
+    );
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const settings = await runInTenant(tenant, async () => {
+      const result = await runtime.query<{ id: string; database_id: string }>(
+        "SELECT i.id, i.database_id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.owner_module_id = 'systemSettings' AND d.system = true",
+      );
+      if (result.rows.length !== 1 || !result.rows[0]) throw new Error("Expected one settings item");
+      return result.rows[0];
+    });
+    const setZone = (timezone: string) =>
+      runInTenant(tenant, () =>
+        createChokePoint(runtime).updateItem({
+          databaseId: settings.database_id,
+          itemId: settings.id,
+          propertiesPatch: { timezone },
+        }),
+      );
+    const task = createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns());
+    const send = (text: string, threadId?: string) =>
+      runInTenant(tenant, async () => {
+        const turn = await withTransaction(runtime, (client) =>
+          sendSempMessage(client, { text, context: [], hasContext: false, ...(threadId ? { threadId } : {}) }),
+        );
+        await task(
+          { threadId: turn.threadId, assistantMessageId: turn.assistantMessageId },
+          { job: { id: "prompt-test" } },
+        );
+        const status = await runtime.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+          turn.assistantMessageId,
+        ]);
+        expect(status.rows).toEqual([{ status: "done" }]);
+        return turn.threadId;
+      });
+    await setZone("UTC");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T23:59:00Z"));
+      const threadId = await send("first");
+      vi.setSystemTime(new Date("2026-01-02T00:01:00Z"));
+      await send("second", threadId);
+      await setZone("America/Los_Angeles");
+      await send("third", threadId);
+      const formatted = (date: string, timeZone: string) =>
+        new Intl.DateTimeFormat("en-CA", { timeZone, dateStyle: "full", timeStyle: "long" }).format(new Date(date));
+      expect(prompts[0]).toContain(formatted("2026-01-01T23:59:00Z", "UTC"));
+      expect(prompts[1]).toContain(formatted("2026-01-02T00:01:00Z", "UTC"));
+      expect(prompts[2]).toContain(formatted("2026-01-02T00:01:00Z", "America/Los_Angeles"));
+      const events = await runInTenant(tenant, () =>
+        runtime.query<{ payload: unknown }>(
+          "SELECT e.payload FROM agent_run_events e JOIN agent_runs r ON r.id = e.agent_run_id AND r.tenant_id = e.tenant_id WHERE r.thread_id = $1 AND e.kind = 'user_message' ORDER BY e.id",
+          [threadId],
+        ),
+      );
+      expect(events.rows.map((row) => row.payload)).toEqual(
+        ["first", "second", "third"].map((text) => ({ kind: "user_message", text, context: [] })),
+      );
+    } finally {
+      vi.useRealTimers();
+      await setZone("Europe/Prague");
+      await closeIdleThreadSessions(runtime);
     }
   });
 });
