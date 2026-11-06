@@ -12,6 +12,7 @@ import {
   createChokePoint,
   createAgentRun,
   createPendingApprovalRequest,
+  insertAgentRunEvent,
   createDocStore,
   createRelationWithClient,
   getDatabaseByModuleId,
@@ -249,6 +250,45 @@ describe("Semp reference turn reads", () => {
       await expect(read(randomUUID())).resolves.toBeNull();
       expect((await snapshot()).rows).toEqual(before.rows);
     });
+  });
+
+  it("reads a run's actual task, status and ordered tool steps under tenant scope", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    const run = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const created = await createAgentRun(client, { triggeredBy: "user", task: "Run reference sentinel" });
+        await insertAgentRunEvent(client, created.id, "tool_use", { name: "fixtureTool" });
+        await insertAgentRunEvent(client, created.id, "tool_result", { result: "fixtureResult" });
+        return created;
+      }),
+    );
+    const ref = { kind: "agentRun" as const, agentRunId: run.id };
+    await runInTenant(tenant, async () => {
+      const before = await runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM agent_run_events");
+      const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
+      expect(resolved).toMatchObject({
+        label: "Run reference sentinel",
+        state: "active",
+        details: {
+          task: "Run reference sentinel",
+          status: "running",
+          truncated: false,
+          steps: [
+            { kind: "tool_use", payload: '{"name": "fixtureTool"}', truncated: false },
+            { kind: "tool_result", payload: '{"result": "fixtureResult"}', truncated: false },
+          ],
+        },
+      });
+      await expect(
+        withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, agentRunId: randomUUID() })),
+      ).resolves.toBeNull();
+      expect((await runtime.query("SELECT count(*)::int AS count FROM agent_run_events")).rows).toEqual(before.rows);
+    });
+    await expect(
+      runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+    ).resolves.toBeNull();
   });
 
   it("reads a transcript segment with three neighbors and the current speaker name", async () => {
