@@ -26,3 +26,7 @@ One writer; one complete read-only R1 and one same-context focused R2, then pare
 - Gh1731 preserves the existing required heartbeat reference and RESTRICT FK. Its impossible deleted-heartbeat fixture is replaced by actual FK refusal plus honest defensive-branch limits, without a lifecycle migration.
 
 All six original outer acceptance criteria remain unchanged. These exact source changes require fresh approvals and regenerated embedded snapshots; they authorize no source staging during the metadata hold.
+
+## Message order and real title accounting
+
+Gh1620/1727 use docs/adr/2026-11-06-semp-message-order-and-session-freshness.md. All three existing message inserters participate; no timestamp tie, UUID inference, new durable sequence or history rewrite is authorized. Gh1769 receives a service-owned real title/client/gateway/accounting test and exactly one workspace devDependency/importer link. Background-only paragraphs are condensed without changing Task/AC decisions. No dependency upgrade or production reverse import is allowed.

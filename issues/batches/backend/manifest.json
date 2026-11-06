@@ -3001,12 +3001,12 @@
       "sequence": 31,
       "status": "proposed",
       "title": "[backend-delivery 31/74] Implement semprec-agents, data/semp, queue changes",
-      "bodyCharacters": 59846,
-      "specSha256": "c29072377679a8272a7506fe332f5cafeba4e3c478ea80d23c990845a9d7dd68",
+      "bodyCharacters": 59802,
+      "specSha256": "1ae3e980860bfeb5f15ffef2c62a08da0f52f7e9ce46523b5e367b0b7646549a",
       "members": [
         {
           "id": "gh-1620",
-          "specSha256": "5fb891f5b64d34007ffd6cb267da042c2104811e7b1e15c1fb17c61528c56052",
+          "specSha256": "652448b8fd0b82eb1373f0cad40d018bdf178863a3563ed061ba2f7b173af3f4",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1452",
@@ -3017,7 +3017,7 @@
         },
         {
           "id": "gh-1727",
-          "specSha256": "13e020db1b727d0c12a148e5734b0d4f1a6932121099ba9cc2da18be35cce037",
+          "specSha256": "4e31a70a58bc8a5b97b1c8b2e5991dd854e2c6906101a1b4534f8922ff441c9e",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1370",
@@ -3031,7 +3031,7 @@
         },
         {
           "id": "gh-1769",
-          "specSha256": "4faeea9728efed98fafcc6f74c479a13857f7e0f31043875909fc06bf7b6752d",
+          "specSha256": "7d102fccef658c9e6183a8c234145168595ce34e87e041422e716b854e3de09c",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1727"
