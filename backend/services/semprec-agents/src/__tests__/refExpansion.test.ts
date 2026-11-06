@@ -458,6 +458,13 @@ describe("tenant-scoped reference blob expansion", () => {
     const privateRows = await createMail(foreign, [
       { filename: "private.txt", bytes: Buffer.from("Foreign fixture sentinel") },
     ]);
+    const longRows = await createMail(
+      tenant,
+      Array.from({ length: 5 }, (_, index) => ({
+        filename: `long-${index}.txt`,
+        bytes: Buffer.from(`Reference ${index}: ${"x".repeat(9000)}`),
+      })),
+    );
     expect(own.map(({ filename, content_type, mime_type }) => ({ filename, content_type, mime_type }))).toEqual([
       { filename: "invalid.txt", content_type: "text/plain", mime_type: "text/plain" },
       { filename: "plain.txt", content_type: "text/plain", mime_type: "text/plain" },
@@ -515,6 +522,16 @@ describe("tenant-scoped reference blob expansion", () => {
       expect(JSON.stringify(result.context)).not.toContain(
         Buffer.from("Mail text fixture sentinel").toString("base64"),
       );
+      const longRefs = longRows.map(({ id }) => ({ kind: "mailAttachment" as const, attachmentId: id }));
+      const single = await expandSempRefs(runtime, longRefs.slice(0, 1), { files, mailAttachments });
+      expect(single.text).toHaveLength(8000);
+      expect(single.text.endsWith("\n[truncated]")).toBe(true);
+      const bounded = await expandSempRefs(runtime, longRefs, { files, mailAttachments });
+      const sections = bounded.text.split("\n\n");
+      expect(bounded.text.length).toBeLessThanOrEqual(32000);
+      expect(sections).toHaveLength(5);
+      expect(sections.every((section) => section.length <= 8000 && section.endsWith("\n[truncated]"))).toBe(true);
+      expect(bounded.context.map((entry) => entry.label)).toEqual(longRows.map((row) => row.filename));
       expect((await snapshot()).rows).toEqual(before.rows);
     });
   });
