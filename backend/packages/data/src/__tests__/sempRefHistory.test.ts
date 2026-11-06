@@ -14,6 +14,8 @@ import {
   createItemWithClient,
   createPendingApprovalRequest,
   createDocStore,
+  decideAndEnqueueApprovalRequest,
+  finishAgentRun,
   createUser,
   getDatabaseByModuleId,
   listSempThreadMessages,
@@ -611,7 +613,11 @@ describe("Semp history reference resolution", () => {
   it("returns code-point-bounded run labels and structured or null approval labels", async () => {
     const tenant = await createTestTenant(admin);
     const foreign = await createTestTenant(admin);
-    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    const owner = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+    });
     await createUser(admin, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     await runInTenant(tenant, () => seedSystem(runtime));
     await runInTenant(foreign, () => seedSystem(runtime));
@@ -671,14 +677,30 @@ describe("Semp history reference resolution", () => {
     );
     expect(runQueries).toBe(1);
     expect(approvalQueries).toBe(1);
-    expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
+    const expected = [
       { ...context[0], resolved: { label: "😀".repeat(120), databaseKey: null, state: "active" } },
       { ...context[1], resolved: { label: description, databaseKey: null, state: "active" } },
       { ...context[2], resolved: { label: null, databaseKey: null, state: "active" } },
       { ...context[3], resolved: { label: null, databaseKey: null, state: "purged" } },
       { ...context[4], resolved: { label: null, databaseKey: null, state: "purged" } },
       { ...context[5], resolved: { label: null, databaseKey: null, state: "purged" } },
-    ]);
+    ];
+    expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual(expected);
+    await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        expect(await finishAgentRun(client, run.id, "done", null)).toBe(true);
+        const decision = await decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: legacy.id,
+          decision: "rejected",
+          decidedByUserId: owner.id,
+        });
+        expect(decision?.request.status).toBe("rejected");
+      }),
+    );
+    const afterDecision = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+    );
+    expect(afterDecision.rows.find((row) => row.id === sent.messageId)?.context).toEqual(expected);
     // Synthetic corrupt stored JSON exercises the existing approval-owner validator.
     await runInTenant(tenant, () =>
       runtime.query("UPDATE approval_requests SET description = $1::jsonb WHERE id = $2", [
