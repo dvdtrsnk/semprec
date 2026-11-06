@@ -265,9 +265,29 @@ describe("queued Semp messages", () => {
         AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
         AGENT_MODEL: "claude-haiku-4-5",
       });
+      const requiredColumns: Record<string, string[]> = {
+        semp_messages: ["id", "status", "error_code", "agent_run_id"],
+        agent_runs: ["id", "status", "error_code", "result"],
+        agent_run_events: ["agent_run_id", "payload"],
+        ai_gateway_calls: ["status", "operation", "provider", "model", "at", "agent_run_id", "semp_message_id"],
+      };
+      const availableColumns = await runInTenant(tenant, () =>
+        pool.query<{ table_name: string; column_name: string }>(
+          "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ANY($1::text[])",
+          [Object.keys(requiredColumns)],
+        ),
+      );
+      for (const [table, columns] of Object.entries(requiredColumns)) {
+        for (const column of columns) {
+          if (!availableColumns.rows.some((row) => row.table_name === table && row.column_name === column)) {
+            throw new Error("Diagnostic schema preflight failed");
+          }
+        }
+      }
       runtime = await createAgentsQueueRuntime(pool, registry, {
         sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
       });
+      let diagnosticReported = false;
       let runId = "";
       await vi.waitFor(
         async () => {
@@ -277,6 +297,74 @@ describe("queued Semp messages", () => {
               [turn.assistantMessageId],
             ),
           );
+          const target = result.rows[0];
+          if (!diagnosticReported && (target?.status === "done" || target?.status === "error")) {
+            diagnosticReported = true;
+            try {
+              const diagnostic = await runInTenant(tenant, async () => {
+                const message = await pool.query<{
+                  status: string;
+                  error_code: string | null;
+                  agent_run_id: string | null;
+                }>("SELECT status, error_code, agent_run_id FROM semp_messages WHERE id = $1", [
+                  turn.assistantMessageId,
+                ]);
+                const actualRun = message.rows[0]?.agent_run_id ?? null;
+                const run = await pool.query<{
+                  status: string;
+                  error_code: string | null;
+                  result_present: boolean;
+                  result_length: number;
+                  categories: boolean[];
+                }>(
+                  `SELECT status, error_code, result IS NOT NULL AS result_present,
+                    length(coalesce(result, '')) AS result_length,
+                    ARRAY(SELECT position(term IN lower(coalesce(result, '') || ' ' ||
+                      coalesce((SELECT string_agg(payload::text, ' ') FROM agent_run_events WHERE agent_run_id = agent_runs.id), ''))) > 0
+                      FROM unnest(ARRAY['fetch','model','tenant','unknown_model','validation','budget','provider','schema','400','401','403','404']) AS term) AS categories
+                   FROM agent_runs WHERE id = $1`,
+                  [actualRun],
+                );
+                const calls = await pool.query<{
+                  status: string;
+                  operation: string | null;
+                  provider: string;
+                  model: string;
+                  at: Date;
+                  agent_run_id: string | null;
+                  semp_message_id: string | null;
+                }>(
+                  `SELECT status, operation, provider, model, at, agent_run_id, semp_message_id
+                   FROM ai_gateway_calls WHERE agent_run_id = $1 OR semp_message_id = $2 ORDER BY at LIMIT 20`,
+                  [actualRun, turn.assistantMessageId],
+                );
+                return { message: message.rows[0] ?? null, run: run.rows[0] ?? null, calls: calls.rows };
+              });
+              const record = {
+                assistantId: turn.assistantMessageId,
+                ...diagnostic,
+                observations: messages.filter((entry) => entry.type === "observation"),
+                childExited: exited,
+                outputBytes,
+              };
+              const encoded = JSON.stringify(record);
+              process.stderr.write(
+                `REF_DIAGNOSTIC ${encoded.length <= 4096 ? encoded : '{"error":"record_too_large"}'}\n`,
+              );
+            } catch (error: unknown) {
+              const code =
+                typeof error === "object" &&
+                error !== null &&
+                "code" in error &&
+                typeof error.code === "string" &&
+                /^[0-9A-Z]{5}$/.test(error.code)
+                  ? error.code
+                  : null;
+              process.stderr.write(
+                `REF_DIAGNOSTIC ${JSON.stringify({ error: "diagnostic_read_failed", sqlstate: code })}\n`,
+              );
+            }
+          }
           expect(result.rows[0]?.status).toBe("done");
           runId = result.rows[0]?.agent_run_id ?? "";
           expect(runId).not.toBe("");
