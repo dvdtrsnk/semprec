@@ -494,7 +494,7 @@ describe("Semp thread live prompt", () => {
         expect(prompt).toContain("semprec://items/<id>");
         expect(prompt).toContain("Data schema:");
         expect(prompt).toContain(`"databaseId":"${fixture.inboxId}","key":null,"name":"Inbox"`);
-        expect(prompt).toContain('"key":"inbox"');
+        expect(prompt).toContain('"key":"areas","name":"Areas"');
         expect(prompt).toContain('"properties":');
         expect(prompt).toContain('"key":"text"');
       }
