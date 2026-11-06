@@ -462,6 +462,27 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("ensures and reads the same page through a human MCP session", async () => {
+    const fx = await buildFixtures();
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const content = (response: JsonRpcResponse): unknown => {
+      expect(response.error).toBeUndefined();
+      const text = response.result?.content[0]?.text;
+      if (!text) throw new Error("Missing MCP output");
+      return JSON.parse(text) as unknown;
+    };
+    const first = z
+      .object({ docId: z.string() })
+      .parse(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id })));
+    expect(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id }))).toEqual(first);
+    expect(
+      content(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
+    ).toMatchObject(first);
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fx.itemA.id])).rows).toHaveLength(1);
+  });
+
   it("validates Areas create and patch through MCP", async () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
     if (!database) throw new Error("Areas not seeded");
