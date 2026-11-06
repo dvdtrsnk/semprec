@@ -14,7 +14,7 @@ import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { getSempMessageFrontier, getSempMessageToken } from "../semp/sempMessagesStore.js";
-import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
+import { createSempChatThread, sendSempMessage } from "../sempThreads/sempThreadsStore.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -243,4 +243,77 @@ describe("Semp thread message ordering", () => {
     );
     expect(after).toEqual({ messages: 7, job: 0 });
   }, 60_000);
+
+  it("orders a transaction that started earlier after the newer reservation commits", async () => {
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    let release!: () => void;
+    let started!: (timestamp: string) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstStart = new Promise<string>((resolve) => {
+      started = resolve;
+    });
+    const older = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const stamp = await client.query<{ value: string }>(
+          "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS value",
+        );
+        if (!stamp.rows[0]) throw new Error("Missing transaction timestamp");
+        started(stamp.rows[0].value);
+        await gate;
+        return sendSempMessage(client, { threadId, text: "older start", context: [], hasContext: false });
+      }),
+    );
+    let failure: { error: unknown } | undefined;
+    let oldTurn: Awaited<typeof older> | undefined;
+    let newerTurn: Awaited<typeof older> | undefined;
+    try {
+      const oldStart = await Promise.race([
+        firstStart,
+        older.then(() => {
+          throw new Error("Older transaction ended early");
+        }),
+      ]);
+      const newer = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const stamp = await client.query<{ value: string }>(
+            "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS value",
+          );
+          if (!stamp.rows[0]) throw new Error("Missing transaction timestamp");
+          expect(stamp.rows[0].value > oldStart).toBe(true);
+          return sendSempMessage(client, { threadId, text: "newer start", context: [], hasContext: false });
+        }),
+      );
+      newerTurn = newer;
+      release();
+      oldTurn = await older;
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const settled = await Promise.allSettled([older]);
+    const errors = settled.flatMap((result) =>
+      result.status === "rejected" && (!failure || result.reason !== failure.error) ? [result.reason] : [],
+    );
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Transaction ordering failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    if (!newerTurn || !oldTurn) throw new Error("Missing ordered turns");
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; stamp: string }>(
+        `SELECT id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS stamp FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id`,
+        [threadId],
+      ),
+    );
+    expect(rows.rows.map((row) => row.id)).toEqual([
+      newerTurn.messageId,
+      newerTurn.assistantMessageId,
+      oldTurn.messageId,
+      oldTurn.assistantMessageId,
+    ]);
+    expect(new Set(rows.rows.map((row) => row.stamp)).size).toBe(4);
+  });
 });
