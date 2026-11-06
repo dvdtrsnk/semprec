@@ -965,6 +965,79 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     }
   });
 
+  it("refuses a Markdown page revision on a real transcript proposal without effects", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      await runInTenant(getTenantZeroId(), async () => {
+        const databases = await withTransaction(runtime, async (client) => ({
+          transcripts: await databasesStore.getDatabaseByModuleId(client, "transcripts"),
+          projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+          proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+        }));
+        if (!databases.transcripts || !databases.projects || !databases.proposals)
+          throw new Error("Missing fixture databases");
+        const transcript = await withTransaction(runtime, (client) =>
+          createItemWithClient(
+            client,
+            {
+              databaseId: databases.transcripts!.id,
+              properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" },
+            },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        );
+        const outcome = await withTransaction(runtime, (client) =>
+          matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 }),
+        );
+        expect(outcome).toBe("suggested");
+        const cards = await runtime.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+          [databases.proposals.id],
+        );
+        expect(cards.rows).toHaveLength(1);
+        const cardId = cards.rows[0]?.id;
+        if (!cardId) throw new Error("Missing actual transcript proposal");
+        const project = await withTransaction(runtime, (client) =>
+          createItemWithClient(client, { databaseId: databases.projects!.id, properties: { name: "Project" } }),
+        );
+        const snapshot = () =>
+          runtime.query(
+            "SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card, (SELECT count(*)::int FROM docs WHERE item_id = $2) AS docs, (SELECT count(*)::int FROM item_relations) AS edges",
+            [cardId, project.id],
+          );
+        const before = await snapshot();
+        await expect(
+          withTransaction(runtime, (client) =>
+            reviseProposalWithClient(client, { processingProposalsDatabaseId: databases.proposals!.id }, cardId, {
+              message: "Revise",
+              entityKind: "pageContent",
+              target: project.id,
+              properties: { markdown: "A paragraph", placement: "end" },
+            }),
+          ),
+        ).rejects.toMatchObject({ status: 400, details: { field: "entityKind" } });
+        expect((await snapshot()).rows).toEqual(before.rows);
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Transcript proposal test and cleanup failed", {
+          cause: cleanupError,
+        });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
+  });
+
   it("confirm on a 'pageContent' proposal appends the block and locks confirmed", async () => {
     const { proposal, targetPageId } = await createPageContentProposal("A thought");
 
