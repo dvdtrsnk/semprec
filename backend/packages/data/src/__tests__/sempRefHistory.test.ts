@@ -22,7 +22,8 @@ import {
   sendSempMessage,
   withTransaction,
 } from "../index.js";
-import { ingestAttachments } from "../mail/attachments.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
 
 describe("Semp history reference resolution", () => {
   let admin: Pool;
@@ -218,16 +219,34 @@ describe("Semp history reference resolution", () => {
         withTransaction(runtime, async (client) => {
           const ids = await resolveMailModuleIds(client);
           const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const folderProperties = await listPropertiesByDatabase(client, ids.foldersDatabaseId);
           const attachmentProperty = properties.find((property) => property.key === "attachments");
-          if (!attachmentProperty) throw new Error("Missing attachment relation");
-          const email = await createItemWithClient(client, {
-            databaseId: ids.emailsDatabaseId,
+          const folderProperty = properties.find((property) => property.key === "folder");
+          const mailboxProperty = folderProperties.find((property) => property.key === "mailbox");
+          if (!attachmentProperty || !folderProperty || !mailboxProperty) throw new Error("Missing mail relation");
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
             properties: { name: "Mail" },
           });
-          await ingestAttachments(client, {
-            messageItemId: email.id,
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId: mailbox.id,
+            mailboxRelationPropertyId: mailboxProperty.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const email = await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: folderProperty.id,
             attachmentsRelationPropertyId: attachmentProperty.id,
+            folderItemId: folderId,
+            mailboxItemId: mailbox.id,
+            messageId: `<${randomUUID()}@example.test>`,
+            subject: "Mail",
+            envelope: {},
             attachments: [
               {
                 filename: "note.txt",
@@ -242,10 +261,10 @@ describe("Semp history reference resolution", () => {
           });
           const result = await client.query<{ id: string }>(
             "SELECT id FROM mail_attachments WHERE message_item_id = $1",
-            [email.id],
+            [email.itemId],
           );
           if (!result.rows[0]) throw new Error("Missing attachment");
-          return { attachmentId: result.rows[0].id, emailId: email.id, databaseId: ids.emailsDatabaseId };
+          return { attachmentId: result.rows[0].id, emailId: email.itemId, databaseId: ids.emailsDatabaseId };
         }),
       );
       const ref = { kind: "mailAttachment", attachmentId: fixture.attachmentId };
