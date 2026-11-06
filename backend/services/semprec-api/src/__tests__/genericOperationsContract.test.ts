@@ -569,6 +569,48 @@ describe("generic operation REST contract (issue #219)", () => {
     await pool?.end();
   });
 
+  it("returns link conflicts over REST without changing the target or link", async () => {
+    const fx = await buildFixtures();
+    const headers = await authHeader();
+    const relink = () => fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/relink`, { method: "POST", headers });
+    const beforeItem = await chokePoint.getItem(fx.database.id, fx.itemA.id);
+    const missing = await relink();
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+
+    const other = await chokePoint.createItem({ databaseId: fx.database.id, properties: { title: "Other" } });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        state: "broken",
+        brokenBy: "user",
+        brokenAt: new Date(),
+        sources: [fx.itemB, other].map((item) => ({
+          kind: "item" as const,
+          sourceItemId: item.id,
+          sourcePropertyKey: "title",
+        })),
+      }),
+    );
+    const beforeLinks = await chokePoint.getValueLinksForItems([fx.itemA.id]);
+    const overCardinality = await relink();
+    expect(overCardinality.status).toBe(409);
+    expect(await overCardinality.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(beforeLinks);
+
+    await chokePoint.softDeleteItem(fx.database.id, fx.itemB.id);
+    await chokePoint.softDeleteItem(fx.database.id, other.id);
+    const noLiveSource = await relink();
+    expect(noLiveSource.status).toBe(409);
+    expect(await noLiveSource.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(beforeLinks);
+  });
+
   it("filters the system area from database.query and refuses its deletion", async () => {
     const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
     if (!areas) throw new Error("Areas missing");
