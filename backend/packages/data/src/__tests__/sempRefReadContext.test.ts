@@ -147,6 +147,55 @@ describe("Semp reference turn reads", () => {
     }
   });
 
+  it("reads an item's properties and actual project relation names without writes", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    await runInTenant(tenant, async () => {
+      const databases = await withTransaction(runtime, async (client) => ({
+        tasks: await getDatabaseByModuleId(client, "tasks"),
+        projects: await getDatabaseByModuleId(client, "projects"),
+      }));
+      if (!databases.tasks || !databases.projects) throw new Error("Missing task or project database");
+      const cp = createChokePoint(runtime);
+      const task = await cp.createItem({ databaseId: databases.tasks.id, properties: { name: "Named task" } });
+      const project = await cp.createItem({ databaseId: databases.projects.id, properties: { name: "Named project" } });
+      await withTransaction(runtime, async (client) => {
+        const property = (await listPropertiesByDatabase(client, databases.tasks!.id)).find(
+          (entry) => entry.key === "project",
+        );
+        if (!property) throw new Error("Missing task project relation");
+        await createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: task.id,
+          targetItemId: project.id,
+        });
+      });
+      const ref = { kind: "item" as const, itemId: task.id, databaseId: databases.tasks.id };
+      const snapshot = () =>
+        runtime.query(
+          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
+        );
+      const before = await snapshot();
+      const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
+      expect(resolved).toMatchObject({
+        label: "Named task",
+        details: {
+          properties: { name: "Named task" },
+          relations: { project: { names: ["Named project"], truncated: false } },
+        },
+      });
+      await expect(
+        withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, itemId: randomUUID() })),
+      ).resolves.toBeNull();
+      expect((await snapshot()).rows).toEqual(before.rows);
+      await expect(
+        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+      ).resolves.toBeNull();
+    });
+  });
+
   it("reads a transcript segment with three neighbors and the current speaker name", async () => {
     const tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));
