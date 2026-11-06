@@ -13,6 +13,7 @@ import {
   withTransaction,
   createAgentRun,
   createUser,
+  finishSempMessageTurn,
   hashPassword,
   insertAndNotifyAgentRunEvent,
   insertAgentRunEvent,
@@ -1883,9 +1884,139 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       await expect(
         runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "invalid" }, "not-a-uuid")),
       ).rejects.toThrow();
+      expect(
+        parseAgentStreamEnvelope({
+          tenantId: tenantA,
+          message: {
+            type: "agent_run_delta",
+            agentRunId: run.id,
+            sempMessageId: "invalid",
+            delta: {},
+          },
+        }),
+      ).toBeNull();
     } finally {
       dispose();
       socket.close();
+    }
+  });
+
+  it("keeps a delayed replay and later live deltas within their assistant turn", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const last = await silentEventIn(tenantA, run.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("correlation-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("JOIN semp_messages") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return original(...args);
+    };
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    try {
+      const registration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        onFrame(frame) {
+          frames.push(frame);
+          return true;
+        },
+        onFailure(error) {
+          throw error;
+        },
+      });
+      await queried;
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          finishSempMessageTurn(client, target.sempMessageId, {
+            status: "done",
+            text: "first answer",
+            lastEventId: last.id,
+          }),
+        ),
+      );
+      const secondFirst = await silentEventIn(tenantA, run.id);
+      const second = await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, async (client) => {
+          const turn = await sendSempMessage(client, {
+            threadId: target.threadId,
+            text: "next",
+            context: [],
+            hasContext: false,
+          });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, secondFirst.id);
+          return turn;
+        }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "next while replay held" }, second.assistantMessageId),
+      );
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      release();
+      const dispose = await registration;
+      expect(frames.filter((frame) => frame.type === "event").map((frame) => frame.event.id)).toEqual([
+        first.id,
+        last.id,
+      ]);
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+      await runInTenant(tenantA, () =>
+        publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: secondFirst.id }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "next after replay" }, second.assistantMessageId),
+      );
+      await runInTenant(tenantA, () =>
+        publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: last.id }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "first delayed" }, target.sempMessageId),
+      );
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1));
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "first before next" }, target.sempMessageId),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "next after first" }, second.assistantMessageId),
+      );
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(2));
+      expect(frames.filter((frame) => frame.type === "event").map((frame) => frame.event.id)).toEqual([
+        first.id,
+        last.id,
+      ]);
+      expect(frames.at(-1)).toMatchObject({ type: "delta", message: { sempMessageId: target.sempMessageId } });
+      dispose();
+    } finally {
+      release();
+      spy.mockRestore();
+      sentinel.close();
     }
   });
 
