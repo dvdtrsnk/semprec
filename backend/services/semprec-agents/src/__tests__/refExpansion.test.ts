@@ -390,6 +390,76 @@ describe("tenant-scoped reference blob expansion", () => {
     expect((await snapshot()).rows).toEqual(before.rows);
   });
 
+  it("marks only an own trashed item during direct tenant-scoped expansion", async () => {
+    const ownDatabase = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    const foreignDatabase = await runInTenant(foreign, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!ownDatabase || !foreignDatabase) throw new Error("Missing task databases");
+    const cp = createChokePoint(runtime);
+    const active = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: ownDatabase.id, properties: { name: "Active marker control" } }),
+    );
+    const trashed = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: ownDatabase.id, properties: { name: "Trashed marker sentinel" } }),
+    );
+    const privateItem = await runInTenant(foreign, () =>
+      cp.createItem({ databaseId: foreignDatabase.id, properties: { name: "Foreign trash sentinel" } }),
+    );
+    await runInTenant(tenant, () => cp.softDeleteItem(ownDatabase.id, trashed.id));
+    await runInTenant(foreign, () => cp.softDeleteItem(foreignDatabase.id, privateItem.id));
+    const refs = [
+      { kind: "item" as const, itemId: active.id, databaseId: ownDatabase.id },
+      { kind: "item" as const, itemId: trashed.id, databaseId: ownDatabase.id, label: "Saved trash label" },
+      { kind: "item" as const, itemId: privateItem.id, databaseId: foreignDatabase.id },
+      { kind: "item" as const, itemId: randomUUID(), databaseId: ownDatabase.id },
+    ];
+    const snapshot = () =>
+      runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          client.query(
+            `SELECT (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($1::uuid[])) AS items,
+             (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM doc_updates) AS docs,
+             (SELECT count(*)::int FROM semp_messages) AS messages, (SELECT count(*)::int FROM agent_runs) AS runs,
+             (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM graphile_worker.jobs) AS jobs`,
+            [[active.id, trashed.id]],
+          ),
+        ),
+      );
+    const before = await snapshot();
+    const foreignSnapshot = () =>
+      runInTenant(foreign, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ id: string; trashed: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1",
+            [privateItem.id],
+          ),
+        ),
+      );
+    const foreignBefore = await foreignSnapshot();
+    expect(foreignBefore.rows).toEqual([{ id: privateItem.id, trashed: true }]);
+    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+    const sections = result.text.split("\n\n");
+    expect(sections).toHaveLength(4);
+    expect(sections[0]).toContain("Active marker control");
+    expect(sections[0]).not.toContain("[trashed]");
+    expect(sections[1]).toContain("[trashed] Trashed marker sentinel");
+    expect(sections[2]).toContain("item: no longer exists or is unavailable.");
+    expect(sections[2]).not.toContain("[trashed]");
+    expect(sections[2]).not.toContain("Foreign trash sentinel");
+    expect(sections[3]).toContain("item: no longer exists or is unavailable.");
+    expect(sections[3]).not.toContain("[trashed]");
+    expect(result.context).toEqual(
+      refs.map((ref, index) => ({ ...ref, label: ["Active marker control", "Saved trash label", "", ""][index] })),
+    );
+    for (const ref of result.context) expect(labeledSempMessageRefSchema.safeParse(ref).success).toBe(true);
+    expect(JSON.stringify(result.context)).not.toContain("Trashed marker sentinel");
+    expect((await snapshot()).rows).toEqual(before.rows);
+    expect((await foreignSnapshot()).rows).toEqual(foreignBefore.rows);
+  });
+
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {
     const docx = await readFile(join(dirname(fileURLToPath(import.meta.url)), "fixtures/reference-text.docx"));
     const image = await sharp({ create: { width: 2000, height: 1000, channels: 3, background: "#abc123" } })
