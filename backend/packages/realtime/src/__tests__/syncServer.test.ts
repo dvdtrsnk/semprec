@@ -1686,8 +1686,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(received).toEqual(inserted);
     const live = await announcedEventIn(tenantA, run.id);
     await vi.waitFor(() => expect(received.at(-1)).toBe(live.id));
-    dispose();
-    dispose();
+    await dispose();
+    await dispose();
     await announcedEventIn(tenantA, run.id);
     await settle();
     expect(received).toHaveLength(257);
@@ -1774,7 +1774,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       release();
       const dispose = await registration;
       expect(received).toEqual([first.id, live.id]);
-      dispose();
+      await dispose();
     } finally {
       release();
       spy.mockRestore();
@@ -1903,7 +1903,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       if (typeof args[0] === "string" && args[0].includes("JOIN semp_messages")) scopedReads++;
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     let failed = false;
     let failure: unknown;
     try {
@@ -2167,7 +2167,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     let failed = false;
     let failure: unknown;
     try {
@@ -2248,7 +2248,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     let publication: Promise<void> | undefined;
     let failed = false;
     let failure: unknown;
@@ -2349,7 +2349,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     let publication: Promise<void> | undefined;
     let failed = false;
     let failure: unknown;
@@ -2437,7 +2437,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     let failed = false;
     let failure: unknown;
     let disposing: Promise<void> | undefined;
@@ -2606,7 +2606,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         }),
       ).toBeNull();
     } finally {
-      dispose();
+      await dispose();
       socket.close();
     }
   });
@@ -2746,7 +2746,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         last.id,
       ]);
       expect(frames.at(-1)).toMatchObject({ type: "delta", message: { sempMessageId: target.sempMessageId } });
-      dispose();
+      await dispose();
     } finally {
       release();
       spy.mockRestore();
