@@ -426,6 +426,7 @@ export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.j
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
 export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
+export { extractAttachmentText, isTextExtractableContentType } from "./mail/attachmentTextExtraction.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
 export { taskDisplayDay } from "./tasks/taskDisplayDay.js";
