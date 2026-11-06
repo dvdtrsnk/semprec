@@ -136,17 +136,15 @@ describe("tenant-scoped reference blob expansion", () => {
   it("stops before the next reference on a synthetic post-transfer cleanup failure", async () => {
     const first = await createFile(tenant, "First PDF", pdfFixture());
     const second = await createFile(tenant, "Second PDF", Buffer.concat([pdfFixture(), Buffer.from("next")]));
-    const cleanupFailure = new Error("synthetic destroy failure after delegation");
+    const cleanupFailure = new Error("synthetic post-read transport error");
     const realRead = files.readStream.bind(files);
     const opened: Readable[] = [];
     const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
       const stream = realRead(key, range);
       opened.push(stream);
       if (opened.length === 1) {
-        const destroy = stream.destroy.bind(stream);
-        vi.spyOn(stream, "destroy").mockImplementation((error) => {
-          destroy(error);
-          throw cleanupFailure;
+        stream.once("end", () => {
+          queueMicrotask(() => stream.emit("error", cleanupFailure));
         });
       }
       return stream;
