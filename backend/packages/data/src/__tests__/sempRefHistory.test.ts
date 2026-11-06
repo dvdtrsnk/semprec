@@ -187,6 +187,19 @@ describe("Semp history reference resolution", () => {
       { ...context[1], resolved: { label: null, databaseKey: null, state: "active" } },
     ]);
   });
+
+  it("passes an unrecognized historical non-array context through unchanged", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const context = { legacy: ["opaque"] };
+    const sent = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => sendSempMessage(client, { text: "Question", context, hasContext: true })),
+    );
+    const page = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+    );
+    expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual(context);
+  });
   it("returns code-point-bounded run labels and structured or null approval labels", async () => {
     const tenant = await createTestTenant(admin);
     const foreign = await createTestTenant(admin);
