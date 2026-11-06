@@ -18,7 +18,16 @@ import {
   resetDatabase,
   setTenantAiBudget,
 } from "@semprec/data/testSupport";
-import { createUser, hashPassword, login, seedSystem } from "@semprec/data";
+import {
+  createUser,
+  hashPassword,
+  loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
+  login,
+  seedSystem,
+  withTransaction,
+} from "@semprec/data";
+import { createDispatcher } from "../app.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createVoiceChannel, type VoiceChannel } from "../voiceChannel.js";
 import { createVoiceSessionHandler } from "../voiceSessionHandler.js";
@@ -179,7 +188,15 @@ describe("voice session through the real gateway and registered worker", () => {
     voice = createVoiceChannel(pool, {
       handler: createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync),
     });
-    server = createServer();
+    const dispatch = await createDispatcher(pool, {
+      passwordResetMailer: { async sendPasswordResetEmail() {} },
+      appBaseUrl: "https://example.test",
+      setupToken: "test",
+      moduleRegistry: await loadFullModuleRegistry(),
+      blobStorage: new LocalFsBlobStorageWriter(directory),
+      maxFileSizeBytes: 1024,
+    });
+    server = createServer(dispatch);
     server.on("upgrade", (req, stream, head) => voice.handleUpgrade(req, stream, head));
     await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
@@ -419,5 +436,50 @@ describe("voice session through the real gateway and registered worker", () => {
     }));
     expect(state.messages.rows).toEqual(before.messages.rows);
     expect(state.calls.rows).toEqual(before.calls.rows);
+  }, 30_000);
+
+  it("keeps HTTP source untrusted and enforces the additive stored source constraint", async () => {
+    const response = await fetch(url.replace("ws://", "http://").replace("/api/voice", "/api/semp/threads"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ text: "ordinary message", source: "voice" }),
+    });
+    expect(response.status).toBe(202);
+    const turn = z
+      .object({ threadId: z.string().uuid(), messageId: z.string().uuid(), assistantMessageId: z.string().uuid() })
+      .parse(await response.json());
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; source: string | null }>(
+        "SELECT id, source FROM semp_messages WHERE id=ANY($1::uuid[]) ORDER BY id",
+        [[turn.messageId, turn.assistantMessageId]],
+      ),
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows.every((row) => row.source === null)).toBe(true);
+    // Synthetic omitted-column insert exercises the additive schema, not an old deployed binary.
+    const legacy = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        client.query<{ source: string | null }>(
+          "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'legacy fixture') RETURNING source",
+          [turn.threadId],
+        ),
+      ),
+    );
+    expect(legacy.rows).toEqual([{ source: null }]);
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          client.query(
+            "INSERT INTO semp_messages (thread_id, role, text, source) VALUES ($1, 'user', 'invalid fixture', 'invalid')",
+            [turn.threadId],
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    const foreign = await createTestTenant(admin);
+    const invisible = await runInTenant(foreign, () =>
+      pool.query("SELECT id FROM semp_messages WHERE id=ANY($1::uuid[])", [[turn.messageId, turn.assistantMessageId]]),
+    );
+    expect(invisible.rows).toEqual([]);
   }, 30_000);
 });

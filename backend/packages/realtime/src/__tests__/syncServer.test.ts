@@ -1678,6 +1678,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     await expect(
       tenantServer.subscribeVoice({
         ...input,
+        afterEventId: inserted[0]!,
         onFrame: (frame) => {
           if (frame.type === "event") refused.push(frame.event.id);
           return true;
@@ -1687,6 +1688,119 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(refused).toEqual([]);
     for (const other of [{ tenantId: tenantB }, { userId: randomUUID() }, { runId: randomUUID() }])
       await expect(tenantServer.subscribeVoice({ ...input, ...other })).rejects.toThrow("unavailable");
+  });
+
+  it("hands off voice replay to live notifications and aborts an in-flight replay", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("voice-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $3")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return result;
+    };
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const received: string[] = [];
+    try {
+      const input = {
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        afterEventId: "0",
+        onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
+          if (frame.type === "event") received.push(frame.event.id);
+          return true;
+        },
+        onFailure(error: unknown) {
+          throw error;
+        },
+      };
+      const registration = tenantServer.subscribeVoice(input);
+      await queried;
+      const live = await announcedEventIn(tenantA, run.id);
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      release();
+      const dispose = await registration;
+      expect(received).toEqual([first.id, live.id]);
+      dispose();
+    } finally {
+      release();
+      spy.mockRestore();
+      sentinel.close();
+    }
+
+    let releaseAbort!: () => void;
+    let observedAbort!: () => void;
+    const abortGate = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    const abortQueried = new Promise<void>((resolve) => {
+      observedAbort = resolve;
+    });
+    let abortHeld = false;
+    const abortObserver = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !abortHeld &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $3")
+      ) {
+        abortHeld = true;
+        observedAbort();
+        await abortGate;
+      }
+      return result;
+    };
+    const abortSpy = vi.spyOn(runtimePool, "query").mockImplementation(abortObserver as unknown as () => void);
+    const controller = new AbortController();
+    const afterAbort: string[] = [];
+    try {
+      const registration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        afterEventId: "0",
+        signal: controller.signal,
+        onFrame(frame) {
+          if (frame.type === "event") afterAbort.push(frame.event.id);
+          return true;
+        },
+        onFailure() {},
+      });
+      await abortQueried;
+      controller.abort();
+      releaseAbort();
+      await expect(registration).rejects.toThrow();
+      expect(afterAbort).toEqual([]);
+    } finally {
+      releaseAbort();
+      abortSpy.mockRestore();
+    }
   });
 
   it("delivers nothing to a socket of another tenant watching a run, as for an unknown run id", async () => {
