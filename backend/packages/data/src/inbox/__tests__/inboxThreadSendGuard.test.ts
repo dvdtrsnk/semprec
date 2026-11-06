@@ -408,13 +408,17 @@ describe("Inbox thread association reservations", () => {
     }
     releaseSend();
     const results = await Promise.allSettled([holder, ...(confirm ? [confirm] : [])]);
-    const extra = results.flatMap((result) =>
+    const confirmErrors = results.flatMap((result) =>
       result.status === "rejected" && result.reason !== primary?.error ? [result.reason] : [],
     );
-    if (extra.length)
-      throw new AggregateError(primary ? [primary.error, ...extra] : extra, "Confirmation overlap failed", {
-        cause: primary?.error,
-      });
+    if (confirmErrors.length)
+      throw new AggregateError(
+        primary ? [primary.error, ...confirmErrors] : confirmErrors,
+        "Confirmation overlap failed",
+        {
+          cause: primary?.error,
+        },
+      );
     if (primary) throw primary.error;
     await expect(
       runInTenant(tenant, () =>
