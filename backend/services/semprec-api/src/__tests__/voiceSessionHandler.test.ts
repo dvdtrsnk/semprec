@@ -133,7 +133,7 @@ describe("voice session through the real gateway and registered worker", () => {
     for (const [built, source] of [
       [gatewayPath, join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/liveVoiceGateway.ts")],
       [workerPath, join(backend, "services/semprec-agents/src/__tests__/fixtures/liveVoiceWorker.ts")],
-    ])
+    ] as const)
       if ((await stat(built)).mtimeMs < (await stat(source)).mtimeMs) throw new Error("Stale voice fixture build");
     const args = [
       join(backend, "node_modules/typescript/bin/tsc"),
