@@ -434,7 +434,13 @@ describe("durable Semp thread history", () => {
           { relationPropertyId: sourceProperty.id, callerItemId: card.id, targetItemId: source.id },
           { ownerProcess: "processingProposals" },
         );
-        return { sourceId: source.id, cardId: card.id, databaseId: proposals.id };
+        return {
+          sourceId: source.id,
+          cardId: card.id,
+          databaseId: proposals.id,
+          inboxId: inbox.id,
+          propertyId: sourceProperty.id,
+        };
       });
     });
     const headers = { authorization: `Bearer ${session.token}`, "content-type": "application/json" };
@@ -484,6 +490,7 @@ describe("durable Semp thread history", () => {
         await gate;
       }),
     );
+    let busyFailure: { error: unknown } | undefined;
     try {
       await Promise.race([
         ready,
@@ -498,10 +505,20 @@ describe("durable Semp thread history", () => {
       expect(
         (await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")).rows,
       ).toEqual(jobsBefore);
-    } finally {
-      release();
-      await writer;
+    } catch (error) {
+      busyFailure = { error };
     }
+    release();
+    try {
+      await writer;
+    } catch (error) {
+      if (busyFailure)
+        throw new AggregateError([busyFailure.error, error], "Proposal overlap cleanup failed", {
+          cause: busyFailure.error,
+        });
+      throw error;
+    }
+    if (busyFailure) throw busyFailure.error;
     const decided = await post({ text: "after", subject: { inboxItemId: fixture.sourceId } });
     expect(decided.status).toBe(409);
     expect(await decided.json()).toMatchObject({ error: { code: "proposal_locked" } });
@@ -511,6 +528,65 @@ describe("durable Semp thread history", () => {
     ).toEqual(jobsBefore);
     const history = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, { headers });
     expect(history.status).toBe(200);
+    const laterSource = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        createItemWithClient(client, {
+          databaseId: fixture.inboxId,
+          properties: { date: "2026-01-01", time: "12:01", text: "later source" },
+        }),
+      ),
+    );
+    const beforeCard = await post({ text: "before card", subject: { inboxItemId: laterSource.id } });
+    expect(beforeCard.status).toBe(202);
+    const nullHintThread = z.object({ threadId: z.string().uuid() }).parse(await beforeCard.json()).threadId;
+    const hint = await runInTenant(tenant, () =>
+      pool.query<{ subject_proposal_id: string | null }>("SELECT subject_proposal_id FROM semp_threads WHERE id = $1", [
+        nullHintThread,
+      ]),
+    );
+    expect(hint.rows).toEqual([{ subject_proposal_id: null }]);
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const rejected = await createItemWithClient(
+          client,
+          {
+            databaseId: fixture.databaseId,
+            properties: {
+              kind: "inbox",
+              fingerprint: randomUUID(),
+              proposal: {},
+              history: [],
+              status: "rejected",
+            },
+          },
+          { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: fixture.propertyId, callerItemId: rejected.id, targetItemId: laterSource.id },
+          { ownerProcess: "processingProposals" },
+        );
+      }),
+    );
+    const beforeRejectedJobs = (
+      await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")
+    ).rows;
+    const rejected = await fetch(`${baseUrl}/api/semp/threads/${nullHintThread}/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "after rejection" }),
+    });
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toMatchObject({ error: { code: "proposal_locked" } });
+    const untouched = await runInTenant(tenant, () =>
+      pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+        nullHintThread,
+      ]),
+    );
+    expect(untouched.rows).toEqual([{ count: 2 }]);
+    expect(
+      (await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")).rows,
+    ).toEqual(beforeRejectedJobs);
   });
 
   it("accepts text-only tick questions and refuses context and foreign threads", async () => {
