@@ -569,6 +569,47 @@ describe("generic operation REST contract (issue #219)", () => {
     await pool?.end();
   });
 
+  it("unlinks a file's inherited project over REST and preserves break metadata on repeat", async () => {
+    const files = await chokePoint.createDatabase({ name: "Files" });
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: files.id,
+      targetDatabaseId: projects.id,
+      key: "projects",
+      name: "Projects",
+      cardinality: "many_to_many",
+    });
+    const source = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const file = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    for (const item of [source, file])
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: item.id,
+        targetItemId: project.id,
+      });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: file.id,
+        propertyKey: "projects",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "projects" }],
+      }),
+    );
+    const headers = await authHeader();
+    const unlink = () => fetch(`${baseUrl}/api/items/${file.id}/links/projects/unlink`, { method: "POST", headers });
+    const first = await unlink();
+    expect(first.status).toBe(200);
+    const body: unknown = await first.json();
+    expect(body).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user", brokenAt: expect.any(String) });
+    expect((await chokePoint.listItemRelations(file.id, property.id)).map((edge) => edge.targetItemId)).toEqual([
+      project.id,
+    ]);
+    const again = await unlink();
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(body);
+  });
+
   it("returns link conflicts over REST without changing the target or link", async () => {
     const fx = await buildFixtures();
     const headers = await authHeader();
