@@ -274,6 +274,7 @@ it("handles already closed and destroyed-but-not-yet-closed streams", async () =
       },
     });
     pending.destroy();
+    const repeatDestroy = vi.spyOn(pending, "destroy");
     first.mockReturnValue(pending);
     const control = new AbortController();
     const opened = openBlobFromRoots({ primary, alternate, storageKey: "key", signal: control.signal });
@@ -288,6 +289,7 @@ it("handles already closed and destroyed-but-not-yet-closed streams", async () =
       release?.();
       await expect(opened).rejects.toMatchObject({ name: "AbortError" });
       expect(pending.closed).toBe(true);
+      expect(repeatDestroy).not.toHaveBeenCalled();
     } finally {
       release?.();
       await observed;
@@ -318,6 +320,34 @@ it("preserves primary and asynchronous cleanup errors in order after close", asy
       cause: original,
       errors: [original, cleanup],
     });
+    expect(stream.closed).toBe(true);
+    expect(second).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it("preserves a falsy primary stream error after observed cleanup", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const stream = new Readable({
+    read() {
+      this.emit("error", 0);
+    },
+  });
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  try {
+    let caught = false;
+    let value: unknown;
+    try {
+      await openBlobFromRoots({ primary, alternate, storageKey: "key" });
+    } catch (error) {
+      caught = true;
+      value = error;
+    }
+    expect(caught).toBe(true);
+    expect(value).toBe(0);
     expect(stream.closed).toBe(true);
     expect(second).not.toHaveBeenCalled();
   } finally {

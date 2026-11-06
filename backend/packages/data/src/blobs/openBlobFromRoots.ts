@@ -75,6 +75,12 @@ async function closeOwnedStream(
   let firstAsyncError: unknown;
   let hasAsyncError = false;
   let settled = false;
+  const lateObservation: { count: number; hasFirst: boolean; first: unknown; category: "error" | "other" } = {
+    count: 0,
+    hasFirst: false,
+    first: undefined,
+    category: "other",
+  };
   let closureObserved = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let continuation: ReturnType<typeof setImmediate> | undefined;
@@ -103,6 +109,15 @@ async function closeOwnedStream(
     remove();
   };
   const onError = (error: unknown) => {
+    if (settled) {
+      lateObservation.count = Math.min(lateObservation.count + 1, 1_000_000);
+      if (!lateObservation.hasFirst && error !== primary) {
+        lateObservation.hasFirst = true;
+        lateObservation.first = error;
+        lateObservation.category = error instanceof Error ? "error" : "other";
+      }
+      return;
+    }
     if (error !== primary && !hasAsyncError) {
       hasAsyncError = true;
       firstAsyncError = error;
@@ -126,7 +141,7 @@ async function closeOwnedStream(
   stream.on("close", onClose);
   stream.on("error", onError);
   detachOpeningObserver();
-  if (!stream.closed) {
+  if (!stream.closed && !stream.destroyed) {
     try {
       stream.destroy();
     } catch (error) {
