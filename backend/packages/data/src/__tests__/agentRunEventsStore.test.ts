@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { runInTenant, runAsSystem } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
@@ -105,6 +113,38 @@ describe("agentRunEventsStore", () => {
     });
     await expect(getAgentRunEventById(pool, runB.id, second.id)).resolves.toBeNull();
     await expect(getAgentRunEventById(pool, runA.id, otherRunEvent.id)).resolves.toBeNull();
+  });
+
+  it("bounds cursor reads before materialization while preserving unlimited and tenant-scoped reads", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      const foreign = await createTestTenant(pool);
+      const run = await runInTenant(tenant, () => createAgentRun(runtime, { triggeredBy: "user", task: "bounded" }));
+      for (let i = 0; i < 260; i++)
+        await runInTenant(tenant, () => insertAgentRunEvent(runtime, run.id, "message", { kind: "message", index: i }));
+      const all = await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0"));
+      expect(all).toHaveLength(260);
+      for (const limit of [1, 2, 256, 257]) {
+        const actual = await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0", limit));
+        expect(actual.map((event) => event.id)).toEqual(all.slice(0, limit).map((event) => event.id));
+      }
+      expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, all[0]!.id, 2))).toEqual(
+        all.slice(1, 3),
+      );
+      expect(await runInTenant(foreign, () => listAgentRunEventsAfter(runtime, run.id, "0", 257))).toEqual([]);
+      expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, randomUUID(), "0", 257))).toEqual([]);
+      for (const limit of [0, -1, 1.5, NaN, Infinity, 258])
+        await expect(listAgentRunEventsAfter(runtime, run.id, "0", limit)).rejects.toBeInstanceOf(ValidationError);
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("announces a thin event reference only after its transaction commits", async () => {

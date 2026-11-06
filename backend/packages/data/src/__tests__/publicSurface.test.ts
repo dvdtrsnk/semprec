@@ -419,6 +419,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getSempMessageFrontier",
   "getSempMessageToken",
   "getSempMessageTurn",
+  "getSempVoiceDelivery",
   "getSempThread",
   "getSystemHealthReport",
   "getSystemSettingsDatabaseId",

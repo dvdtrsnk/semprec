@@ -32,3 +32,4 @@ export {
 } from "./protocolV1.js";
 
 export { sendWithBackpressure, BACKPRESSURE_CLOSE_CODE } from "./backpressure.js";
+export type { VoiceRunFrame, VoiceRunWatchInput } from "./agentRunWatch.js";

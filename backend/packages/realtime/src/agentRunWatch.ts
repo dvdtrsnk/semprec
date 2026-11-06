@@ -6,6 +6,30 @@ import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 
+export type VoiceRunFrame = { type: "event"; event: AgentRunEventRow } | { type: "delta"; message: AgentStreamMessage };
+
+export interface VoiceRunWatchInput {
+  tenantId: string;
+  userId: string;
+  runId: string;
+  afterEventId: string;
+  signal?: AbortSignal;
+  onFrame(frame: VoiceRunFrame): boolean;
+  onFailure(error: unknown): void;
+}
+
+interface VoiceWatcher {
+  input: VoiceRunWatchInput;
+  lastEventId: string;
+  replaying: boolean;
+  draining: boolean;
+  queuedEventIds: Set<string>;
+  active: boolean;
+  abort: () => void;
+}
+
+const MAX_VOICE_PENDING_EVENTS = 256;
+
 interface Watcher {
   ws: WebSocket;
   tenantId: string;
@@ -24,6 +48,10 @@ interface Watcher {
 export interface AgentRunWatchRegistry {
   /** A socket of `tenantId` watches `runId`; authorization and replay resolve inside that tenant. */
   watch(ws: WebSocket, tenantId: string, userId: string, runId: string, afterEventId: string): Promise<void>;
+  subscribeVoice(input: VoiceRunWatchInput): Promise<() => void>;
+  closeTenant(tenantId: string): void;
+  resetVoice(): void;
+  close(): void;
   unwatch(ws: WebSocket, runId: string): void;
   handleSocketClosed(ws: WebSocket): void;
   /** Delivers one durable event reference from `tenantId`'s NOTIFY to that tenant's watchers of `runId` only. */
@@ -51,6 +79,66 @@ function deltaFrame(message: AgentStreamMessage): OutboundFrame {
 
 export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   const watchersByRun = new Map<string, Set<Watcher>>();
+  const voiceByRun = new Map<string, Set<VoiceWatcher>>();
+  const tenantGenerations = new Map<string, number>();
+  let voiceClosed = false;
+  let voiceGeneration = 0;
+
+  function removeVoice(watcher: VoiceWatcher): void {
+    if (!watcher.active) return;
+    watcher.active = false;
+    watcher.input.signal?.removeEventListener("abort", watcher.abort);
+    const watchers = voiceByRun.get(watcher.input.runId);
+    watchers?.delete(watcher);
+    if (watchers?.size === 0) voiceByRun.delete(watcher.input.runId);
+    watcher.queuedEventIds.clear();
+  }
+
+  function failVoice(watcher: VoiceWatcher, error: unknown): void {
+    if (!watcher.active) return;
+    removeVoice(watcher);
+    watcher.input.onFailure(error);
+  }
+
+  function deliverVoice(watcher: VoiceWatcher, frame: VoiceRunFrame): void {
+    if (!watcher.active) return;
+    try {
+      if (!watcher.input.onFrame(frame)) failVoice(watcher, new Error("Voice run watch sink closed"));
+    } catch (error) {
+      failVoice(watcher, error);
+    }
+  }
+
+  function deliverVoiceEvent(watcher: VoiceWatcher, event: AgentRunEventRow): void {
+    if (!watcher.active || !isLater(event.id, watcher.lastEventId)) return;
+    deliverVoice(watcher, { type: "event", event });
+    if (watcher.active) watcher.lastEventId = event.id;
+  }
+
+  async function drainVoice(watcher: VoiceWatcher): Promise<void> {
+    if (watcher.draining || watcher.replaying || !watcher.active) return;
+    watcher.draining = true;
+    try {
+      while (watcher.active && watcher.queuedEventIds.size) {
+        const ids = [...watcher.queuedEventIds].sort((a, b) =>
+          BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0,
+        );
+        watcher.queuedEventIds.clear();
+        for (const id of ids) {
+          if (!watcher.active || !isLater(id, watcher.lastEventId)) continue;
+          const event = await runInTenant(watcher.input.tenantId, () =>
+            getAgentRunEventById(pool, watcher.input.runId, id),
+          );
+          if (event) deliverVoiceEvent(watcher, event);
+        }
+      }
+    } catch (error) {
+      failVoice(watcher, error);
+    } finally {
+      watcher.draining = false;
+    }
+  }
+
   const watchersBySocket = new WeakMap<WebSocket, Map<string, Watcher>>();
   // A replacement replays alongside the current watcher. It is not made active until replay has
   // succeeded, so a transient replay failure cannot silently drop an established subscription.
@@ -131,6 +219,90 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   }
 
   return {
+    async subscribeVoice(input) {
+      input.signal?.throwIfAborted();
+      if (voiceClosed) throw new Error("Voice run watch unavailable");
+      const generation = tenantGenerations.get(input.tenantId) ?? 0;
+      const connectionGeneration = voiceGeneration;
+      const run = await runInTenant(input.tenantId, () => getAgentRun(pool, input.runId));
+      input.signal?.throwIfAborted();
+      if (
+        voiceClosed ||
+        connectionGeneration !== voiceGeneration ||
+        generation !== (tenantGenerations.get(input.tenantId) ?? 0)
+      )
+        throw new Error("Voice run watch unavailable");
+      if (!run || run.actorUserId !== input.userId) throw new Error("Voice run watch unavailable");
+      const watcher: VoiceWatcher = {
+        input,
+        lastEventId: input.afterEventId,
+        replaying: true,
+        draining: false,
+        queuedEventIds: new Set(),
+        active: true,
+        abort: () => {},
+      };
+      watcher.abort = () => removeVoice(watcher);
+      input.signal?.addEventListener("abort", watcher.abort, { once: true });
+      if (input.signal?.aborted) {
+        removeVoice(watcher);
+        input.signal.throwIfAborted();
+      }
+      let watchers = voiceByRun.get(input.runId);
+      if (!watchers) {
+        watchers = new Set();
+        voiceByRun.set(input.runId, watchers);
+      }
+      watchers.add(watcher);
+      try {
+        const replay = await runInTenant(input.tenantId, () =>
+          listAgentRunEventsAfter(pool, input.runId, input.afterEventId, 257),
+        );
+        if (!watcher.active) {
+          input.signal?.throwIfAborted();
+          throw new Error("Voice run watch unavailable");
+        }
+        if (replay.length > 256) throw new Error("Voice run replay exceeds event limit");
+        for (const event of replay) deliverVoiceEvent(watcher, event);
+        while (watcher.active && watcher.queuedEventIds.size) {
+          const queued = [...watcher.queuedEventIds].sort((a, b) =>
+            BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0,
+          );
+          watcher.queuedEventIds.clear();
+          for (const eventId of queued) {
+            if (!watcher.active || !isLater(eventId, watcher.lastEventId)) continue;
+            const event = await runInTenant(input.tenantId, () => getAgentRunEventById(pool, input.runId, eventId));
+            if (event) deliverVoiceEvent(watcher, event);
+          }
+        }
+        if (!watcher.active) {
+          input.signal?.throwIfAborted();
+          throw new Error("Voice run watch unavailable");
+        }
+        watcher.replaying = false;
+        return () => removeVoice(watcher);
+      } catch (error) {
+        removeVoice(watcher);
+        throw error;
+      }
+    },
+    closeTenant(tenantId) {
+      tenantGenerations.set(tenantId, (tenantGenerations.get(tenantId) ?? 0) + 1);
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers])
+          if (watcher.input.tenantId === tenantId) failVoice(watcher, new Error("Voice tenant closed"));
+    },
+    resetVoice() {
+      voiceGeneration++;
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers]) failVoice(watcher, new Error("Voice run watch unavailable"));
+    },
+    close() {
+      voiceClosed = true;
+      voiceGeneration++;
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers]) failVoice(watcher, new Error("Voice run watch unavailable"));
+    },
     async watch(ws, tenantId, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
 
@@ -224,8 +396,17 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     },
 
     async forwardEvent(tenantId, runId, eventId) {
-      const watchers = watchersByRun.get(runId);
-      if (!watchers || watchers.size === 0) return;
+      const watchers = watchersByRun.get(runId) ?? new Set<Watcher>();
+      const voices = [...(voiceByRun.get(runId) ?? [])].filter(
+        (watcher) => watcher.active && watcher.input.tenantId === tenantId,
+      );
+      for (const watcher of voices) {
+        watcher.queuedEventIds.add(eventId);
+        if (watcher.queuedEventIds.size > MAX_VOICE_PENDING_EVENTS)
+          failVoice(watcher, new Error("Voice run watch overflow"));
+        else if (!watcher.replaying) void drainVoice(watcher);
+      }
+      if (watchers.size === 0 && voices.length === 0) return;
 
       // Only the publisher's tenant's watchers may hold or receive this reference; a watcher of
       // another tenant that shares the run id is left alone.
@@ -244,6 +425,11 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     },
 
     forwardDelta(tenantId, message) {
+      const voices = voiceByRun.get(message.agentRunId);
+      if (voices)
+        for (const watcher of voices)
+          if (watcher.active && !watcher.replaying && watcher.input.tenantId === tenantId)
+            deliverVoice(watcher, { type: "delta", message });
       const watchers = watchersByRun.get(message.agentRunId);
       if (!watchers) return;
       const frame = deltaFrame(message);

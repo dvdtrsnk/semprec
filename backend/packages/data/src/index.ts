@@ -700,6 +700,7 @@ export {
   finishSempMessageTurn,
   getSempMessageFrontier,
   getSempMessageToken,
+  getSempVoiceDelivery,
   repairInterruptedSempMessages,
   startSempMessageTurn,
 } from "./semp/sempMessagesStore.js";

@@ -1,0 +1,305 @@
+import { setTimeout as delay } from "node:timers/promises";
+import type { Pool } from "pg";
+import {
+  openSttStream,
+  synthesizeSpeech,
+  type HttpAiGatewayClientConfig,
+  type SttStream,
+} from "@semprec/ai-gateway-client";
+import { getSempThread, getSempVoiceDelivery, sendSempMessage, withTransaction } from "@semprec/data";
+import type { SyncServer, VoiceRunFrame } from "@semprec/realtime";
+import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
+import { DEFAULT_MESSAGE_SPEECH_VOICE } from "./sempSpeechHandler.js";
+import type { VoiceIdentity, VoiceSender, VoiceSessionHandler } from "./voiceChannel.js";
+
+interface Session {
+  identity: VoiceIdentity;
+  sender: VoiceSender;
+  threadId: string | undefined;
+  stream: SttStream | undefined;
+  streamClosed: Promise<void>;
+  resolveStreamClosed(): void;
+  work: Promise<void>;
+  queued: number;
+  speech: Promise<void>;
+  speechController: AbortController | undefined;
+  interrupted: boolean;
+  pendingText: string;
+  heardText: string;
+  sentences: string[];
+  speaking: boolean;
+  dispose: (() => void) | undefined;
+}
+
+const MAX_QUEUED_TURNS = 16;
+const MAX_SENTENCES = 32;
+const MAX_TEXT = 4000;
+
+export function createVoiceSessionHandler(
+  pool: Pool,
+  gateway: HttpAiGatewayClientConfig,
+  sync: SyncServer,
+): VoiceSessionHandler {
+  const sessions = new Map<string, Session>();
+  function fail(session: Session, error: unknown): void {
+    if (session.sender.signal.aborted) return;
+    session.sender.fail(
+      error instanceof AiGatewayFailedError && error.reason === "budget_exceeded" ? "budgetExceeded" : "unavailable",
+    );
+  }
+  function stopSpeech(session: Session): void {
+    session.interrupted = true;
+    session.sentences.length = 0;
+    session.pendingText = "";
+    session.speechController?.abort();
+    if (session.speaking) {
+      session.speaking = false;
+      session.sender.sendControl({ type: "speaking", state: "stopped" });
+    }
+  }
+  function pump(session: Session): void {
+    if (session.speechController || session.interrupted || session.sender.signal.aborted || !session.sentences.length)
+      return;
+    const controller = new AbortController();
+    session.speechController = controller;
+    const signal = AbortSignal.any([controller.signal, session.sender.signal]);
+    session.speech = runInTenant(session.identity.tenantId, async () => {
+      while (session.sentences.length && !signal.aborted) {
+        const text = session.sentences.shift();
+        if (!text) continue;
+        const audio = await synthesizeSpeech(gateway, { text, voice: DEFAULT_MESSAGE_SPEECH_VOICE, signal });
+        if (signal.aborted) break;
+        if (!session.speaking) {
+          session.speaking = true;
+          if (!session.sender.sendControl({ type: "speaking", state: "started" })) throw new Error("Voice sink closed");
+        }
+        let remainder = Buffer.alloc(0);
+        for await (const chunk of audio) {
+          if (signal.aborted) break;
+          const bytes = Buffer.concat([remainder, Buffer.from(chunk)]);
+          let offset = 0;
+          while (bytes.length - offset >= 2) {
+            const length = Math.min(4800, (bytes.length - offset) & ~1);
+            if (!session.sender.sendAudio(bytes.subarray(offset, offset + length)))
+              throw new Error("Voice sink closed");
+            offset += length;
+          }
+          remainder = Buffer.from(bytes.subarray(offset));
+        }
+        if (!signal.aborted && remainder.length) throw new Error("Invalid PCM stream");
+      }
+    })
+      .catch((error: unknown) => {
+        if (!signal.aborted) fail(session, error);
+      })
+      .finally(() => {
+        if (session.speechController === controller) session.speechController = undefined;
+        if (session.speaking) {
+          session.speaking = false;
+          session.sender.sendControl({ type: "speaking", state: "stopped" });
+        }
+        if (session.sentences.length && !session.interrupted && !session.sender.signal.aborted) pump(session);
+      });
+  }
+  function appendText(session: Session, value: string, flush: boolean): boolean {
+    if (session.interrupted) return true;
+    session.pendingText += value;
+    if (session.pendingText.length > MAX_TEXT) return false;
+    for (;;) {
+      const match = /[.!?](?:\s|$)/u.exec(session.pendingText);
+      if (!match && !flush) break;
+      const end = match ? match.index + match[0].length : session.pendingText.length;
+      const sentence = session.pendingText.slice(0, end);
+      session.pendingText = session.pendingText.slice(end);
+      if (sentence.trim()) session.sentences.push(sentence);
+      if (session.sentences.length > MAX_SENTENCES) return false;
+      if (!session.pendingText) break;
+    }
+    pump(session);
+    return true;
+  }
+  async function turn(session: Session, text: string): Promise<void> {
+    const signal = session.sender.signal;
+    signal.throwIfAborted();
+    const result = await runInTenant(session.identity.tenantId, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(
+          client,
+          { threadId: session.threadId, text, context: [], hasContext: false },
+          { source: "voice" },
+        ),
+      ),
+    );
+    session.threadId = result.threadId;
+    signal.throwIfAborted();
+    let delivery = await runInTenant(session.identity.tenantId, () =>
+      getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
+    );
+    while (delivery && !delivery.runId && (delivery.status === "queued" || delivery.status === "running")) {
+      await delay(100, undefined, { signal });
+      delivery = await runInTenant(session.identity.tenantId, () =>
+        getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
+      );
+    }
+    signal.throwIfAborted();
+    if (!delivery?.runId || !delivery.firstEventId) throw new Error("Voice turn unavailable");
+    session.interrupted = false;
+    session.pendingText = "";
+    session.heardText = "";
+    let finish!: () => void;
+    let reject!: (error: unknown) => void;
+    const ended = new Promise<void>((resolve, rejectPromise) => {
+      finish = resolve;
+      reject = rejectPromise;
+    });
+    void ended.catch(() => {});
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    const onFrame = (frame: VoiceRunFrame): boolean => {
+      if (signal.aborted) return false;
+      if (frame.type === "delta" && !("chunk" in frame.message)) {
+        const delta = frame.message.delta;
+        if (
+          typeof delta === "object" &&
+          delta !== null &&
+          "kind" in delta &&
+          delta.kind === "message_update" &&
+          "type" in delta &&
+          delta.type === "text_delta" &&
+          "delta" in delta &&
+          typeof delta.delta === "string"
+        ) {
+          session.heardText += delta.delta;
+          if (session.heardText.length > MAX_TEXT) return false;
+          return appendText(session, delta.delta, false);
+        }
+      }
+      if (frame.type === "event" && frame.event.kind === "message") {
+        const value = frame.event.payload;
+        if (typeof value === "object" && value !== null && "text" in value && typeof value.text === "string") {
+          const remaining = value.text.startsWith(session.heardText) ? value.text.slice(session.heardText.length) : "";
+          if (!appendText(session, remaining, true)) return false;
+        }
+      }
+      if (frame.type === "event" && frame.event.kind === "turn_end") {
+        if (!appendText(session, "", true)) return false;
+        finish();
+      }
+      return true;
+    };
+    try {
+      session.dispose = await sync.subscribeVoice({
+        tenantId: session.identity.tenantId,
+        userId: session.identity.userId,
+        runId: delivery.runId,
+        afterEventId: delivery.firstEventId,
+        signal,
+        onFrame,
+        onFailure: reject,
+      });
+      if (signal.aborted) throw signal.reason;
+      await ended;
+      await session.speech;
+    } finally {
+      signal.removeEventListener("abort", aborted);
+      session.dispose?.();
+      session.dispose = undefined;
+    }
+  }
+  return {
+    async onStart(identity, frame, sender) {
+      if (frame.threadId) {
+        const thread = await runInTenant(identity.tenantId, () =>
+          withTransaction(pool, (client) => getSempThread(client, frame.threadId!)),
+        );
+        sender.signal.throwIfAborted();
+        if (!thread) throw new Error("Voice thread unavailable");
+      }
+      let resolveStreamClosed!: () => void;
+      const streamClosed = new Promise<void>((resolve) => {
+        resolveStreamClosed = resolve;
+      });
+      const session: Session = {
+        identity,
+        sender,
+        threadId: frame.threadId,
+        stream: undefined,
+        streamClosed,
+        resolveStreamClosed,
+        work: Promise.resolve(),
+        queued: 0,
+        speech: Promise.resolve(),
+        speechController: undefined,
+        interrupted: false,
+        pendingText: "",
+        heardText: "",
+        sentences: [],
+        speaking: false,
+        dispose: undefined,
+      };
+      sessions.set(identity.userId, session);
+      try {
+        session.stream = await runInTenant(identity.tenantId, () =>
+          openSttStream(
+            gateway,
+            { language: frame.language, signal: sender.signal },
+            {
+              onPartial(text) {
+                if (sender.signal.aborted) return;
+                if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
+                sender.sendControl({ type: "transcript", text, final: false });
+              },
+              onFinal(text) {
+                if (sender.signal.aborted) return;
+                if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
+                if (!sender.sendControl({ type: "transcript", text, final: true }) || !text.trim()) return;
+                if (session.queued >= MAX_QUEUED_TURNS) {
+                  sender.fail("overloaded");
+                  return;
+                }
+                session.queued++;
+                session.work = session.work
+                  .then(() => turn(session, text))
+                  .catch((error: unknown) => fail(session, error))
+                  .finally(() => {
+                    session.queued--;
+                  });
+              },
+              onError(code) {
+                sender.fail(
+                  code === "budget_exceeded" ? "budgetExceeded" : code === "capacity" ? "overloaded" : "unavailable",
+                );
+              },
+              onClose() {
+                session.resolveStreamClosed();
+                if (!sender.signal.aborted) sender.fail("unavailable");
+              },
+            },
+          ),
+        );
+        sender.signal.throwIfAborted();
+        sender.sendControl({ type: "ready" });
+      } catch (error) {
+        if (!session.stream) session.resolveStreamClosed();
+        throw error;
+      }
+    },
+    onAudio(identity, pcm) {
+      return sessions.get(identity.userId)?.stream?.sendAudio(pcm) ?? false;
+    },
+    onControl(identity, frame) {
+      if (frame.type === "end") sessions.get(identity.userId)?.stream?.end();
+    },
+    async onClose(identity) {
+      const session = sessions.get(identity.userId);
+      if (!session) return;
+      session.dispose?.();
+      session.speechController?.abort();
+      session.stream?.close();
+      const results = await Promise.allSettled([session.streamClosed, session.work, session.speech]);
+      sessions.delete(identity.userId);
+      const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed");
+    },
+  };
+}

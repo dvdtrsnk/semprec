@@ -28,6 +28,7 @@ import {
 import { createImapIdleLifecycleFactory, createMailLiveSyncLifecycleFactory } from "./mailLiveSyncLifecycles.js";
 import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createVoiceChannel } from "./voiceChannel.js";
+import { createVoiceSessionHandler } from "./voiceSessionHandler.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { createApiQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
@@ -181,7 +182,13 @@ const dispatch = await createDispatcher(pool, {
   customRouteDependencies,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
-const voiceServer = createVoiceChannel(pool);
+const voiceServer = createVoiceChannel(pool, {
+  handler: createVoiceSessionHandler(
+    pool,
+    { port: Number(process.env.AI_GATEWAY_PORT ?? "3002"), token: speechGatewayToken },
+    syncServer,
+  ),
+});
 
 // Issue #91: this process is one of the queue's two composition roots — the one that installs
 // `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` task handler, over this same pool.

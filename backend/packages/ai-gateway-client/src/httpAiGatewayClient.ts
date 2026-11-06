@@ -172,7 +172,7 @@ export interface SttStreamEvents {
 
 export interface SttStream {
   /** One frame of raw PCM s16le, mono, 16 kHz. At most 16 KiB and an even byte length. */
-  sendAudio(pcm: Uint8Array): void;
+  sendAudio(pcm: Uint8Array): boolean;
   /** Signals the end of the audio; the gateway then sends the last finals and closes. */
   end(): void;
   /** Drops the stream at once; the gateway aborts the provider session and settles the open chunk row. */
@@ -253,7 +253,9 @@ export function openSttStream(
       opened = true;
       resolve({
         sendAudio: (pcm) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(pcm, { binary: true });
+          if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + pcm.byteLength > 256 * 1024) return false;
+          ws.send(pcm, { binary: true });
+          return true;
         },
         end: () => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "end" }));

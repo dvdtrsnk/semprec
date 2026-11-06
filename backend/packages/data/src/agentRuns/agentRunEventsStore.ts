@@ -126,13 +126,17 @@ export async function listAgentRunEventsAfter(
   client: Pool | PoolClient,
   agentRunId: string,
   afterEventId: string,
+  rowLimit?: number,
 ): Promise<AgentRunEventRow[]> {
+  if (rowLimit !== undefined && (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 257)) {
+    throw new ValidationError("Invalid agent run event row limit");
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
      WHERE agent_run_id = $1 AND id > $2::bigint
-     ORDER BY id ASC`,
-    [agentRunId, afterEventId],
+     ORDER BY id ASC${rowLimit === undefined ? "" : " LIMIT $3"}`,
+    rowLimit === undefined ? [agentRunId, afterEventId] : [agentRunId, afterEventId, rowLimit],
   );
   return rows.map(mapRow);
 }

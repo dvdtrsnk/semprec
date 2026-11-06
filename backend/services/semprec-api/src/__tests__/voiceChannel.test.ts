@@ -205,6 +205,38 @@ describe("voice channel", () => {
     ended = closed(ws);
     expect(await ended).toBe(1008);
   });
+  it("closes with the typed asynchronous budget failure and cleans up exactly once", async () => {
+    const user = await identity();
+    let sender: VoiceSender | undefined;
+    let closes = 0;
+    await start({
+      handler: {
+        ...handler,
+        onStart(_identity, _frame, value) {
+          sender = value;
+          value.sendControl({ type: "ready" });
+        },
+        onClose() {
+          closes += 1;
+        },
+      },
+    });
+    const ws = await connect(user.session.token);
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    expect(JSON.parse(await ready)).toEqual({ type: "ready" });
+    if (!sender) throw new Error("Missing voice sender");
+    const error = message(ws);
+    const ended = closed(ws);
+    await Promise.resolve().then(() => {
+      sender?.fail("budgetExceeded");
+      sender?.fail("budgetExceeded");
+    });
+    expect(JSON.parse(await error)).toEqual({ type: "error", code: "budgetExceeded" });
+    expect(await ended).toBe(1008);
+    await vi.waitFor(() => expect(closes).toBe(1));
+  });
+
   it("enforces duration and microphone frame direction", async () => {
     await start({ handler, sessionTimeoutMs: 100 });
     const user = await identity();
@@ -558,6 +590,7 @@ describe("voice channel", () => {
     await closedTarget;
     expect(cleanupCount).toBe(0);
     if (!targetSender) throw new Error("Missing sender");
+    expect(targetSender.signal.aborted).toBe(true);
     expect(targetSender.sendControl({ type: "ready" })).toBe(false);
     if (ending !== "shutdown") {
       const duplicate = await connect(target.session.token),
