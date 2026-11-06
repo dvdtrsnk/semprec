@@ -1,5 +1,6 @@
 import { setSelfPersonId } from "../../selfPerson.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import * as relationStore from "../../chokePoint/relationsStore.js";
@@ -490,6 +491,56 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     },
   );
 
+  it("confirms a revised speaker without an Event and adds no participant edge", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      await runInTenant(tenant, async () => {
+        await withTransaction(runtime, (client) => proposeSpeakerMappings(client, { transcriptId, suggestions: [] }));
+        const cards = await runtime.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->'context'->>'speaker' = 'SPEAKER_00'",
+          [proposalsId],
+        );
+        if (!cards.rows[0]) throw new Error("Missing speaker card");
+        const cardId = cards.rows[0].id;
+        await withTransaction(runtime, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+            message: "Choose",
+            ...mapping(aliceId, "SPEAKER_00"),
+          }),
+        );
+        const before = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b)",
+          [eventId],
+        );
+        const confirmed = await withTransaction(runtime, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+        );
+        const after = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b)",
+          [eventId],
+        );
+        expect(after.rows).toEqual(before.rows);
+        expect(confirmed.properties.status).toBe("confirmed");
+        const history = z
+          .array(z.object({ addedRelations: z.unknown().optional() }))
+          .parse(confirmed.properties.history);
+        expect(history.at(-1)?.addedRelations).toBeUndefined();
+        const mappingRows = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
+          [transcriptId, aliceId],
+        );
+        expect(mappingRows.rows).toEqual([{ count: 1 }]);
+      });
+    } finally {
+      await runtime.end();
+    }
+  });
+
   describe("confirm, revise and reject of a speaker card", () => {
     beforeEach(async () => {
       await linkEvent();
@@ -572,6 +623,86 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         expect(repeated.properties).toEqual(confirmed.properties);
         expect(repeated.updatedAt).toEqual(confirmed.updatedAt);
         expect((await readEdges()).edges).toEqual(after.edges);
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("keeps an existing participant's metadata and omits a new-edge history entry", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = getTenantZeroId();
+        const cardId = await onlyCardId();
+        await runInTenant(tenant, async () => {
+          const property = await runtime.query<{ id: string }>(
+            "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
+            [eventsId],
+          );
+          if (!property.rows[0]) throw new Error("Missing Event people property");
+          await createChokePoint(runtime).createRelation({
+            relationPropertyId: property.rows[0].id,
+            callerItemId: eventId,
+            targetItemId: aliceId,
+            metadata: { invitation: "accepted" },
+          });
+          const before = await runtime.query<{ id: string; metadata: unknown }>(
+            "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
+            [eventId, aliceId],
+          );
+          const confirmed = await withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+          );
+          const after = await runtime.query<{ id: string; metadata: unknown }>(
+            "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
+            [eventId, aliceId],
+          );
+          expect(after.rows).toEqual(before.rows);
+          const history = z
+            .array(z.object({ message: z.string(), addedRelations: z.unknown().optional() }))
+            .parse(confirmed.properties.history);
+          expect(history.at(-1)).toMatchObject({ message: "Confirmed by user." });
+          expect(history.at(-1)?.addedRelations).toBeUndefined();
+        });
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("rolls back the speaker edge when its linked Event is trashed", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = getTenantZeroId();
+        const cardId = await onlyCardId();
+        await runInTenant(tenant, async () => {
+          await createChokePoint(runtime).softDeleteItem(eventsId, eventId);
+          const before = await runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
+            [transcriptId, aliceId],
+          );
+          await expect(
+            withTransaction(runtime, (client) =>
+              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+            ),
+          ).rejects.toMatchObject({ status: 400 });
+          const after = await runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
+            [transcriptId, aliceId],
+          );
+          expect(after.rows).toEqual(before.rows);
+          const card = await runtime.query<{ status: string }>(
+            "SELECT properties->>'status' AS status FROM items WHERE database_id = $1 AND id = $2",
+            [proposalsId, cardId],
+          );
+          expect(card.rows).toEqual([{ status: "proposed" }]);
+        });
       } finally {
         await runtime.end();
       }
