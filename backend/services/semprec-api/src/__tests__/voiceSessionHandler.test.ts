@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
 import { z } from "zod";
@@ -186,6 +186,18 @@ describe("voice session through the real gateway and registered worker", () => {
     if (!address || typeof address === "string") throw new Error("Missing voice listener");
     url = `ws://127.0.0.1:${address.port}/api/voice`;
   }, 90_000);
+  beforeEach(() => {
+    frames.length = 0;
+    audioFrames = 0;
+  });
+  afterEach(async () => {
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      const closed = once(socket, "close");
+      socket.terminate();
+      await closed;
+    }
+    socket = undefined;
+  });
   afterAll(async () => {
     const failures: unknown[] = [];
     const cleanup = async (action: () => Promise<unknown>) => {
@@ -339,4 +351,73 @@ describe("voice session through the real gateway and registered worker", () => {
       { timeout: 10_000 },
     );
   }, 70_000);
+
+  it("settles the exact real STT reservation after socket close", async () => {
+    if (!gateway) throw new Error("Missing fixture gateway");
+    const priorAudio = gateway.messages.filter((entry) => entry.type === "audioAccepted").length;
+    socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+    socket.on("message", (data, binary) => {
+      if (!binary) frames.push(JSON.parse(data.toString()) as unknown);
+    });
+    await once(socket, "open");
+    socket.send(JSON.stringify({ type: "start", language: "en" }));
+    await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }));
+    socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    await vi.waitFor(() =>
+      expect(gateway?.messages.filter((entry) => entry.type === "audioAccepted").length).toBe(priorAudio + 1),
+    );
+    const id = await vi.waitFor(async () => {
+      const result = await runInTenant(tenant, () =>
+        pool.query<{ id: string; status: string }>(
+          "SELECT id::text, status FROM ai_gateway_calls WHERE operation='voice_transcribe_stream' ORDER BY id DESC LIMIT 1",
+        ),
+      );
+      expect(result.rows[0]?.status).toBe("reserved");
+      return result.rows[0]!.id;
+    });
+    const closed = once(socket, "close");
+    socket.close();
+    await closed;
+    await vi.waitFor(
+      async () => {
+        const result = await runInTenant(tenant, () =>
+          pool.query<{ status: string; audio_seconds: string | null }>(
+            "SELECT status, audio_seconds::text FROM ai_gateway_calls WHERE id=$1",
+            [id],
+          ),
+        );
+        expect(result.rows[0]?.status).toBe("settled");
+        expect(Number(result.rows[0]?.audio_seconds)).toBeGreaterThan(0);
+      },
+      { timeout: 10_000 },
+    );
+  }, 30_000);
+
+  it("maps an actual STT budget refusal without opening the provider or creating a turn", async () => {
+    if (!gateway) throw new Error("Missing fixture gateway");
+    const priorProvider = gateway.messages.filter((entry) => entry.type === "sttReady").length;
+    const before = await runInTenant(tenant, async () => ({
+      messages: await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      calls: await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM ai_gateway_calls"),
+    }));
+    await setTenantAiBudget(admin, tenant, { dailyCapUsd: 0, monthlyCapUsd: 0 });
+    socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+    socket.on("message", (data, binary) => {
+      if (!binary) frames.push(JSON.parse(data.toString()) as unknown);
+    });
+    await once(socket, "open");
+    socket.send(JSON.stringify({ type: "start", language: "en" }));
+    await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }));
+    const closed = once(socket, "close");
+    socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    await vi.waitFor(() => expect(frames).toContainEqual({ type: "error", code: "budgetExceeded" }));
+    expect((await closed)[0]).toBe(1008);
+    expect(gateway.messages.filter((entry) => entry.type === "sttReady")).toHaveLength(priorProvider);
+    const state = await runInTenant(tenant, async () => ({
+      messages: await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      calls: await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM ai_gateway_calls"),
+    }));
+    expect(state.messages.rows).toEqual(before.messages.rows);
+    expect(state.calls.rows).toEqual(before.calls.rows);
+  }, 30_000);
 });
