@@ -239,7 +239,17 @@ describe("Semp thread live prompt", () => {
         [own.id],
       );
       if (!thread.rows[0]) throw new Error("Missing tick thread");
-      return { threadId: thread.rows[0].id, projectId, own: own.id, other: other.id };
+      const restricted = await withTransaction(runtime, (client) =>
+        createHeartbeat(client, {
+          projectItemId: projectId,
+          name: "Restriction control",
+          rule: { kind: "interval", minutes: 30 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Control" },
+        }),
+      );
+      await runtime.query("INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1)", [restricted.id]);
+      return { threadId: thread.rows[0].id, projectId, own: own.id, other: other.id, restricted: restricted.id };
     });
     const faux = fauxProvider();
     const prompts: string[] = [];
@@ -308,8 +318,14 @@ describe("Semp thread live prompt", () => {
     expect(prompts[2]).not.toContain("Automation:");
     expect(tools[1]).toEqual(expect.arrayContaining(["heartbeat_list", "heartbeat_history", "heartbeat_trigger"]));
     await expect(
-      runInTenant(tenant, () => runtime.query("DELETE FROM project_heartbeats WHERE id = $1", [fixture.own])),
+      runInTenant(tenant, () => runtime.query("DELETE FROM project_heartbeats WHERE id = $1", [fixture.restricted])),
     ).rejects.toMatchObject({ code: "23001" });
+    const retained = await runInTenant(tenant, () =>
+      runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_threads WHERE heartbeat_id = $1", [
+        fixture.restricted,
+      ]),
+    );
+    expect(retained.rows).toEqual([{ count: 1 }]);
     await closeIdleThreadSessions(runtime);
   });
 });
