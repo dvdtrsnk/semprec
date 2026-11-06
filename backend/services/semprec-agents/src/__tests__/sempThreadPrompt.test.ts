@@ -440,7 +440,14 @@ describe("Semp thread live prompt", () => {
       const manifest = await withTransaction(runtime, (client) =>
         generatePermissionManifest(client, projectId, { moduleRegistry: registry }),
       );
-      return { projectId, sourceId: source.id, guidance, saved, grants: manifest.grantedCapabilities };
+      return {
+        projectId,
+        inboxId: inbox.id,
+        sourceId: source.id,
+        guidance,
+        saved,
+        grants: manifest.grantedCapabilities,
+      };
     });
     const prompts: string[] = [];
     const toolLists: string[][] = [];
@@ -486,6 +493,10 @@ describe("Semp thread live prompt", () => {
         expect(prompt).toContain("30 days");
         expect(prompt).toContain("semprec://items/<id>");
         expect(prompt).toContain("Data schema:");
+        expect(prompt).toContain(`"databaseId":"${fixture.inboxId}"`);
+        expect(prompt).toContain('"key":"inbox"');
+        expect(prompt).toContain('"properties":');
+        expect(prompt).toContain('"key":"text"');
       }
       const modelName = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
       const chatTools = toolLists[0] ?? [];
