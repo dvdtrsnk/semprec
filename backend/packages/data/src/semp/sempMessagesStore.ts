@@ -81,6 +81,7 @@ export async function repairInterruptedSempMessages(client: PoolClient): Promise
   const repaired = await client.query<{ thread_id: string }>(
     "UPDATE semp_messages SET status = 'error', error_code = 'interrupted', updated_at = now() WHERE role = 'assistant' AND status = 'running' RETURNING thread_id",
   );
+  if (repaired.rowCount !== repaired.rows.length) throw new Error("Semp repair returned an inconsistent row count");
   for (const threadId of [...new Set(repaired.rows.map((row) => row.thread_id))].sort()) {
     const updated = await client.query(
       "UPDATE semp_threads SET last_activity_at = GREATEST(last_activity_at, now()) WHERE id = $1",
