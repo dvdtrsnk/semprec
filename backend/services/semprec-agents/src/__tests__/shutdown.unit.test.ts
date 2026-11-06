@@ -141,6 +141,34 @@ describe("semprec-agents graceful shutdown", () => {
     expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
   });
 
+  it("keeps a falsy primary and observed sweep failure before the pool timeout", async () => {
+    vi.useFakeTimers();
+    const { calls, deps } = createFakes();
+    const cleanup = new Error("sweep failed");
+    const pool = {
+      end: () => {
+        calls.push("pool.end");
+        return new Promise<void>(() => {});
+      },
+    } as unknown as Pool;
+    const result = createGracefulShutdown({
+      ...deps,
+      pool,
+      observeSempSettlement: () => ({ wait: async () => [false], snapshotAndDispose: () => [] }),
+      closeIdleThreadSessions: async () => {
+        throw cleanup;
+      },
+    })("SIGTERM").catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const failure: unknown = await result;
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(failure.errors.slice(0, 2)).toEqual([false, cleanup]);
+    expect(failure.errors[2]).toBeInstanceOf(Error);
+    expect(failure.cause).toBe(false);
+    expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
+  });
+
   it("rejects an empty cohort when chat quiescence fails", async () => {
     const { calls, deps } = createFakes();
     const runs = createInFlightAgentRuns();

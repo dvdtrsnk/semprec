@@ -299,6 +299,11 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       rejectFailures();
     }
     const poolResult = await endPool(pool, logger, signal, Math.min(POOL_END_TIMEOUT_MS, poolTime), stopAt);
+    if (poolResult.failed && !poolResult.unsettled && remaining() <= 0) {
+      if (sweepError && !failures.length) failures.push(sweepError.error);
+      failures.push(poolResult.error, deadlineFailure());
+      rejectFailures();
+    }
     if (poolResult.failed && poolResult.unsettled && sweepError && !failures.length) failures.push(sweepError.error);
     if (poolResult.failed && (failures.length || poolResult.unsettled)) failures.push(poolResult.error);
 
