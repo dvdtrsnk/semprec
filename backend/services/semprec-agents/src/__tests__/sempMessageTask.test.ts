@@ -23,6 +23,7 @@ import {
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
@@ -131,6 +132,13 @@ describe("queued Semp messages", () => {
     }
     expect(rows[0]?.agent_run_id).toBe(rows[1]?.agent_run_id);
     expect(messageHeaders).toEqual([first.assistantMessageId, second.assistantMessageId]);
+    const titles = await admin.query<{ key: string; max_attempts: number; task_identifier: string }>(
+      "SELECT key, max_attempts, task_identifier FROM graphile_worker.jobs WHERE key = $1",
+      [`sempThreadTitle:${first.threadId}`],
+    );
+    expect(titles.rows).toEqual([
+      { key: `sempThreadTitle:${first.threadId}`, max_attempts: 1, task_identifier: "sempThreadTitle" },
+    ]);
   });
 
   it("rolls back a title job observed in the same transaction as the done transition", async () => {
@@ -707,5 +715,85 @@ describe("queued Semp messages", () => {
     expect(rows.rows[0]?.agent_run_id).not.toBe(rows.rows[1]?.agent_run_id);
     expect(rows.rows[1]?.agent_run_id).toBe(rows.rows[2]?.agent_run_id);
     await closeIdleThreadSessions(pool);
+  });
+
+  it("publishes the committed turn invalidation for the owning tenant", async () => {
+    const other = await createTestTenant(admin);
+    const turn = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "notify", context: [], hasContext: false })),
+    );
+    const listener = await admin.connect();
+    const observed: { tenantId: string; threadId: string }[] = [];
+    listener.on("notification", (notification) => {
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
+      const parsed: unknown = JSON.parse(notification.payload);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !("tenantId" in parsed) ||
+        typeof parsed.tenantId !== "string" ||
+        !("message" in parsed)
+      )
+        return;
+      const message = parsed.message;
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message) ||
+        message.type !== "invalidation" ||
+        !("scope" in message) ||
+        message.scope !== "sempThread" ||
+        !("threadId" in message) ||
+        typeof message.threadId !== "string"
+      )
+        return;
+      observed.push({ tenantId: parsed.tenantId, threadId: message.threadId });
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+      wireRealtimeHooks(pool);
+      const faux = fauxProvider();
+      faux.setResponses([fauxAssistantMessage("notified")]);
+      const gateway: GatewayModel = {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      };
+      runtime = await createAgentsQueueRuntime(pool, registry, {
+        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+      });
+      const deadline = Date.now() + 15_000;
+      while (
+        !observed.some((value) => value.tenantId === tenant && value.threadId === turn.threadId) &&
+        Date.now() < deadline
+      )
+        await sleep(50);
+      expect(observed).toContainEqual({ tenantId: tenant, threadId: turn.threadId });
+      expect(observed.filter((value) => value.tenantId === other)).toEqual([]);
+      const message = await runInTenant(tenant, () =>
+        pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [turn.assistantMessageId]),
+      );
+      expect(message.rows).toEqual([{ status: "done" }]);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanup: unknown[] = [];
+    try {
+      await runtime?.stop();
+      runtime = undefined;
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      listener.release(true);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (cleanup.length)
+      throw new AggregateError(failure ? [failure.error, ...cleanup] : cleanup, "Semp invalidation cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
   });
 });
