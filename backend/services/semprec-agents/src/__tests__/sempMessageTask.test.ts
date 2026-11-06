@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { closeIdleThreadSessions, createBoundedSempHistory } from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -13,6 +13,7 @@ import {
   decideAndEnqueueApprovalRequest,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
+  getDatabaseByModuleId,
   insertAgentRunEvent,
   loadFullModuleRegistry,
   seedSystem,
@@ -25,6 +26,8 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
+import { createAgentRunTask } from "../agentRunTasks.js";
+import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
@@ -201,15 +204,23 @@ describe("queued Semp messages", () => {
     faux.setResponses([
       fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
       fauxAssistantMessage("recovered"),
-      fauxAssistantMessage("must not be used"),
+      fauxAssistantMessage("standalone answer"),
     ]);
+    const headers: { messageId: string | undefined; runId: string | undefined }[] = [];
     const gateway: GatewayModel = {
       model: faux.getModel(),
-      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      streamFn: (model, context, options) => {
+        headers.push({
+          messageId: options?.headers?.["x-semprec-semp-message-id"] ?? undefined,
+          runId: options?.headers?.["x-semprec-agent-run-id"] ?? undefined,
+        });
+        return faux.provider.streamSimple(model, context, options);
+      },
       isBudgetRefusal: () => false,
     };
+    const inFlight = createInFlightAgentRuns();
     runtime = await createAgentsQueueRuntime(pool, registry, {
-      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, inFlight),
     });
     const first = await runInTenant(tenant, () =>
       withTransaction(pool, (client) => sendSempMessage(client, { text: "fail", context: [], hasContext: false })),
@@ -264,6 +275,21 @@ describe("queued Semp messages", () => {
     expect(job.rows).toEqual([]);
     expect(await read(second.assistantMessageId)).toEqual({ status: "done", text: "recovered" });
     expect(faux.getPendingResponseCount()).toBe(1);
+    expect(headers.map((entry) => entry.messageId)).toEqual([first.assistantMessageId, second.assistantMessageId]);
+    const standalone = await runInTenant(tenant, async () => {
+      const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      return createAgentRun(pool, { projectItemId: inbox.ownerProjectItemId, triggeredBy: "user", task: "standalone" });
+    });
+    await runInTenant(tenant, () =>
+      createAgentRunTask(
+        pool,
+        registry,
+        gateway,
+        inFlight,
+      )({ agentRunId: standalone.id }, { job: { id: "standalone" } }),
+    );
+    expect(headers[2]).toEqual({ messageId: undefined, runId: standalone.id });
   });
 
   it("runs turns for different tenants concurrently on the dedicated runner", async () => {
@@ -684,6 +710,81 @@ describe("queued Semp messages", () => {
     expect(prompts[1]).toContain("first answer");
     expect(prompts[1]).toContain("second question");
     await closeIdleThreadSessions(pool);
+  });
+
+  it("clears the current message attribution after a failed session turn", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
+      fauxAssistantMessage("next"),
+    ]);
+    const headers: (string | undefined)[] = [];
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => {
+        headers.push(options?.headers?.["x-semprec-semp-message-id"] ?? undefined);
+        return faux.provider.streamSimple(model, context, options);
+      },
+      isBudgetRefusal: () => false,
+    };
+    const project = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => (await getDatabaseByModuleId(client, "inbox"))?.ownerProjectItemId),
+    );
+    if (!project) throw new Error("Missing Semprec project");
+    const turn = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "failed", context: [], hasContext: false })),
+    );
+    const references: { current: string | null }[] = [];
+    const conversation = new SempConversation(pool, {
+      resolveProjectItemId: async () => project,
+      createAgentSessionForRun: async (run, current) => {
+        if (!current) throw new Error("Missing Semp attribution reference");
+        references.push(current);
+        return createAgentSessionFactoryForRun(pool, registry, gateway, run, current);
+      },
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await expect(
+        runInTenant(tenant, () =>
+          conversation.send(
+            "failed",
+            { kind: "chat", threadId: turn.threadId },
+            { messageId: turn.assistantMessageId },
+          ),
+        ),
+      ).rejects.toThrow();
+      expect(references[0]?.current).toBeNull();
+      const next = await runInTenant(tenant, () =>
+        conversation.send("next", { kind: "chat", threadId: turn.threadId }),
+      );
+      expect(next.ok).toBe(true);
+      expect(references[1]?.current).toBeNull();
+      expect(headers).toEqual([turn.assistantMessageId, undefined]);
+    } catch (error) {
+      failure = { error };
+    }
+    conversation.clear();
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => closeIdleThreadSessions(pool),
+      async () => admin.query("SELECT graphile_worker.remove_job($1)", [`sempMessage:${turn.assistantMessageId}`]),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Attribution test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
   });
 
   it("wakes for a later queued pair and then reuses the reply actually completed", async () => {
