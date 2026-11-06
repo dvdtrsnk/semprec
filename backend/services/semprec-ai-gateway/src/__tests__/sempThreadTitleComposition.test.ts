@@ -16,7 +16,13 @@ import {
   startSempMessageTurn,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+} from "@semprec/data/testSupport";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
@@ -50,6 +56,7 @@ describe("Semp title through the real gateway", () => {
     );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
+    await setTenantAiBudget(admin, tenant);
     await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     await runInTenant(tenant, () => seedSystem(pool));
     server = createServer(
