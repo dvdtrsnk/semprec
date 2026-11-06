@@ -80,7 +80,7 @@ async function resolveRelationProperty(
  * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
- * own `createChokePoint(pool)` for an operation the 30-operation catalog covers. `?include=path`'s breadcrumb chain
+ * own `createChokePoint(pool)` for an operation the 36-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
@@ -233,6 +233,34 @@ export function createItemRoutes(
       },
     },
     {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/unlink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.unlink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/relink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.relink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
       method: "GET",
       path: "/api/items/:id/relations",
       handler: async (ctx) => {
@@ -315,6 +343,32 @@ export function createItemRoutes(
           targetItemId,
         });
         return { status: 200, body: toRelationEnvelope(edge) };
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => ({
+        status: 200,
+        body: await dispatchGenericOperation(service, "page.ensure", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+        }),
+      }),
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => {
+        const params = requestUrl(ctx.req.url).searchParams;
+        const rawLimit = params.get("limit");
+        if (rawLimit !== null && !/^\d+$/.test(rawLimit))
+          throw new ValidationError("Invalid page limit", { field: "limit" });
+        const result = await dispatchGenericOperation(service, "page.get", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+          format: params.get("format") ?? "summary",
+          ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
+        });
+        return { status: 200, body: result };
       },
     },
     {

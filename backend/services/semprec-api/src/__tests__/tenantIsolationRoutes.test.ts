@@ -44,6 +44,7 @@ import {
   handleObservabilityCheckSystemTask,
   handleAgentRunEventsRetentionTask,
   insertAgentRunEvent,
+  insertValueLink,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
   listAgentRunsByHeartbeat,
@@ -935,6 +936,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectNoneOf(answer.text, a.ids, "logout");
     await expectAAccountActive();
   },
+  "list sessions": async () => {
+    const own = await send(b.member, { method: "GET", path: "/api/auth/sessions" });
+    expect(own.status).toBe(200);
+    expect(own.text).toContain(b.member.sessionId);
+    expectNoneOf(own.text, [a.member.sessionId, a.secondSession.sessionId], "list sessions");
+    await expectAAccountActive();
+  },
   "revoke session": async () => {
     await expectForeignLikeRandom(b.member, [a.secondSession.sessionId], ([id]) => ({
       method: "POST",
@@ -1733,6 +1741,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { targetItemId: b.targetItemId },
       }));
     }),
+  "unlink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/unlink`,
+    }));
+  },
+  "relink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/relink`,
+    }));
+  },
   "delete relation": () =>
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
@@ -1750,6 +1770,26 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
+  "ensure page": async () => {
+    const before = await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` });
+    expect(before.status).toBe(200);
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "PUT",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect(await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` })).toEqual(before);
+    const own = await send(b.member, { method: "PUT", path: `/api/items/${b.itemId}/page` });
+    expect(own.status).toBe(200);
+  },
+  "get page": async () => {
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
+  },
   "restore page version": () =>
     leavesAUnchanged(async () => {
       // A foreign item answers exactly as a random one does, and nothing of A's page is written.
@@ -2321,6 +2361,16 @@ const MCP_CASES = {
   },
   "relation.list": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+  },
+  "link.unlink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
+  "link.relink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
+  "page.ensure": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+    await p.excludesA({ itemId: b.itemId }, []);
+  },
+  "page.get": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));
+    await p.excludesA({ itemId: b.itemId, format: "summary" }, []);
   },
   "page.restoreVersion": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
@@ -3404,6 +3454,56 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       expect(body).not.toHaveProperty("blobs");
     } finally {
       await replaceProperties(original);
+    }
+  });
+
+  it("isolates link operations through HTTP and MCP on the runtime role", async () => {
+    const cp = createChokePoint(pool);
+    const setup = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const database = await cp.createDatabase({ name: "Link isolation" });
+        await cp.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+        const source = await cp.createItem({ databaseId: database.id, properties: { note: "source" } });
+        const target = await cp.createItem({ databaseId: database.id, properties: { note: "target" } });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: target.id,
+            propertyKey: "note",
+            ruleKey: "test",
+            sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "note" }],
+          }),
+        );
+        return target.id;
+      });
+    const foreign = await setup(a.tenantId);
+    const own = await setup(b.tenantId);
+    const readForeign = () => send(a.member, { method: "GET", path: `/api/items/${foreign}?include=links` });
+    const before = await readForeign();
+    expect(before.status).toBe(200);
+    for (const action of ["unlink", "relink"]) {
+      const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/links/note/${action}`,
+      }));
+      expect(refused.status).toBe(404);
+      expect((await send(b.member, { method: "POST", path: `/api/items/${own}/links/note/${action}` })).status).toBe(
+        200,
+      );
+      expect(await readForeign()).toEqual(before);
+    }
+    for (const caller of [b.member, mcpRunCredential]) {
+      for (const action of ["unlink", "relink"] as const) {
+        const operation: GenericOperationName = action === "unlink" ? "link.unlink" : "link.relink";
+        const refused = await expectForeignLikeRandom(caller, [foreign], ([itemId]) =>
+          mcpCall(operation, { itemId, propertyKey: "note" }),
+        );
+        expect(refused.status).toBe(200);
+        expect(refused.text).toContain('"error"');
+        const allowed = await send(caller, mcpCall(operation, { itemId: own, propertyKey: "note" }));
+        expect(allowed.status).toBe(200);
+        expect(allowed.text).not.toContain('"error"');
+        expect(await readForeign()).toEqual(before);
+      }
     }
   });
 

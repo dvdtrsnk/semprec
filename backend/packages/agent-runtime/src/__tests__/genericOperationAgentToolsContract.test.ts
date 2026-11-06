@@ -12,6 +12,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  insertValueLink,
   createUser as createPersistedUser,
   createChokePoint,
   createDocStore,
@@ -31,7 +32,10 @@ import {
   runInTenant,
   type GenericOperationName,
 } from "@semprec/shared";
-import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
+import {
+  createGenericOperationAgentTools,
+  listGrantedGenericOperationAgentTools,
+} from "../tools/generic/genericOperationAgentTools.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
@@ -147,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 32-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 36-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -229,6 +233,37 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "link.unlink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "link.relink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
     args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
@@ -283,6 +318,28 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("does not discover or invoke page operations through a persisted project agent", async () => {
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion"] as const) {
+      expect(discovered).not.toContain(name);
+      const args =
+        name === "page.restoreVersion"
+          ? { itemId: projectItemId, at: new Date().toISOString() }
+          : { itemId: projectItemId };
+      const outcome = await tools[name](run.id, args);
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("Unknown operation");
+      expect(outcome.approvalRequestId).toBeUndefined();
+    }
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [projectItemId])).rows).toHaveLength(0);
+    expect((await pool.query("SELECT id FROM approval_requests WHERE agent_run_id = $1", [run.id])).rows).toHaveLength(
+      0,
+    );
+  });
+
   it("validates Areas writes through the actual agent tools", async () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
     if (!database) throw new Error("Areas not seeded");
@@ -305,6 +362,71 @@ describe("generic operation AgentTools contract (issue #220)", () => {
       properties: { name: "Valid", icon: "briefcase", color: "#5856D6" },
     });
     expect(result.error).toBeFalsy();
+  });
+
+  it("refuses deletion of the system area and filters it through actual agent tools", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:system-area-agent", () =>
+        createPersistedUser(pool, {
+          tenantId: tenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      await runInTenant(tenant, async () => {
+        await seedSystem(runtime, createViewTypeRegistry());
+        const cp = createChokePoint(runtime);
+        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!areas || !projects) throw new Error("System databases missing");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
+        const run = await createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "query Areas",
+        });
+        const system = (await cp.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
+        if (!system) throw new Error("System area missing");
+        const userArea = await cp.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+        const query = await tools["database.query"](run.id, {
+          databaseId: areas.id,
+          filter: { type: "is_empty", property: "systemActive" },
+        });
+        expect(query.error).toBe(false);
+        const result: unknown = JSON.parse(query.result);
+        expect(result).toMatchObject({ items: [expect.objectContaining({ id: userArea.id })] });
+        expect(query.result).not.toContain(system.id);
+        const refused = await tools["item.delete"](run.id, { itemId: system.id });
+        expect(refused.error).toBe(true);
+        expect(refused.result).toMatch(/^forbidden:.*system-active/);
+        expect(refused.approvalRequestId).toBeUndefined();
+        expect(await cp.getItem(areas.id, system.id)).toEqual(system);
+        const approvals = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1",
+          [run.id],
+        );
+        expect(approvals.rows[0]?.count).toBe(0);
+      });
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("System area agent fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
   });
 
   it("validates Areas item.patch through the AgentTool under tenant RLS", async () => {
@@ -531,7 +653,11 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
       const outcome = await tools[operation](run.id, testCase.args(fx));
 
-      if (isDestructive) {
+      if (operation === "page.get" || operation === "page.ensure" || operation === "page.restoreVersion") {
+        expect(outcome.error).toBe(true);
+        expect(outcome.approvalRequestId).toBeUndefined();
+        expect(outcome.result).toContain("Unknown operation");
+      } else if (isDestructive) {
         expect(outcome.error).toBe(false);
         expect(outcome.result).toContain("requires human approval");
         const { rows } = await pool.query<{ count: number }>(

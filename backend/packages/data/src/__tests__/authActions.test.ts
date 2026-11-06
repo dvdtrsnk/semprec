@@ -3,7 +3,12 @@ import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
-import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
+import {
+  getActiveSessionByTokenHash,
+  isSessionActive,
+  listActiveSessionsForUser,
+  listSessionsForUser,
+} from "../auth/sessionsStore.js";
 import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
@@ -33,6 +38,36 @@ describe("auth actions (issue #140)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  describe("active session listing", () => {
+    it("filters by owner, expiry and revocation and sorts by last activity", async () => {
+      const user = await makeUser();
+      const other = await makeUser("other@example.com");
+      const signIn = (email: string) =>
+        login(pool, { email, password: "s3cret-password", platform: "web", ip: "127.0.0.1" });
+      const [first, second, revoked, expired, foreign] = await Promise.all([
+        signIn(user.email),
+        signIn(user.email),
+        signIn(user.email),
+        signIn(user.email),
+        signIn(other.email),
+      ]);
+      await pool.query("UPDATE sessions SET last_seen_at = now() - interval '1 hour' WHERE id = $1", [
+        first.session.id,
+      ]);
+      await pool.query("UPDATE sessions SET revoked_at = now() WHERE id = $1", [revoked.session.id]);
+      await pool.query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1", [
+        expired.session.id,
+      ]);
+      expect((await listActiveSessionsForUser(pool, user.id)).map((session) => session.id)).toEqual([
+        second.session.id,
+        first.session.id,
+      ]);
+      expect((await listActiveSessionsForUser(pool, other.id)).map((session) => session.id)).toEqual([
+        foreign.session.id,
+      ]);
+    });
   });
 
   describe("login", () => {

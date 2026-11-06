@@ -14,6 +14,8 @@ export const CAPABILITY_IDS = [
   "core.view.write",
   "core.item.read",
   "core.item.write",
+  "core.page.read",
+  "core.page.write",
 ] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 
@@ -58,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 31 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 36 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -95,8 +97,12 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.set": nonDestructive("core.item.write", "write"),
   "relation.delete": destructive("core.item.write", false),
   "relation.list": nonDestructive("core.item.read", "read"),
+  "link.unlink": nonDestructive("core.item.write", "write"),
+  "link.relink": nonDestructive("core.item.write", "write"),
+  "page.ensure": nonDestructive("core.page.write", "write"),
+  "page.get": nonDestructive("core.page.read", "read"),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
-  "page.restoreVersion": destructive("core.item.write", true),
+  "page.restoreVersion": destructive("core.page.write", true),
 };
 
 export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;

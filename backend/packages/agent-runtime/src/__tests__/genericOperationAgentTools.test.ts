@@ -646,9 +646,10 @@ describe("generic operation AgentTools (issue #220)", () => {
         return gateway;
       });
       try {
-        expect(
-          (await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver)).sort(),
-        ).toEqual([...GENERIC_OPERATION_NAMES].sort());
+        const granted = await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver);
+        const excluded = ["page.get", "page.ensure", "page.restoreVersion"];
+        expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
+        for (const name of excluded) expect(granted).not.toContain(name);
         expect(seen?.has("owned.read")).toBe(false);
         expect(seen?.has("core.item.read")).toBe(true);
       } finally {
@@ -672,13 +673,15 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(granted).toEqual([]);
     });
 
-    it("returns every operation once every generic-operation capability is granted", async () => {
+    it("returns all operations except page operations under the project grant policy", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check tools" });
 
       const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
-      expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
+      const excluded = ["page.get", "page.ensure", "page.restoreVersion"];
+      expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
+      for (const name of excluded) expect(granted).not.toContain(name);
     });
   });
 });

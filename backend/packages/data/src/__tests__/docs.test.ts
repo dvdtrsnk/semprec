@@ -1,11 +1,14 @@
 import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { ConflictError, HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import {
   DEFAULT_COMPACTION_THRESHOLD,
@@ -77,6 +80,101 @@ describe("docs (CRDT layer)", () => {
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     return item;
   }
+
+  describe("explicit page ensure", () => {
+    it("waits for a concurrent trash and refuses both absent and existing documents", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runAsSystem("check page reservation role", () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = await createTestTenant(pool);
+        await runInTenant(tenant, async () => {
+          const cp = createChokePoint(runtime);
+          const store = createDocStore(runtime);
+          const db = await cp.createDatabase({ name: "Page reservation" });
+          for (const existing of [false, true]) {
+            const item = await cp.createItem({ databaseId: db.id, properties: {} });
+            if (existing) await store.ensurePage(item.id);
+            const before = await runtime.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
+            let ready!: (pid: number) => void;
+            let release!: () => void;
+            const started = new Promise<number>((resolve) => {
+              ready = resolve;
+            });
+            const gate = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            const trash = withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("Missing trash PID");
+              await itemDeleteWithClient(client, db.id, item.id, { queueAffinity: createActionQueueAffinity() });
+              ready(pid);
+              await gate;
+            });
+            const trashSettled = Promise.allSettled([trash]);
+            let ensureSettled: Promise<PromiseSettledResult<{ docId: string }>[]> | undefined;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              const pid = await Promise.race([
+                started,
+                trash.then(() => {
+                  throw new Error("Trash finished before barrier");
+                }),
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error("Trash barrier timed out")), 5_000);
+                }),
+              ]);
+              const ensuring = store.ensurePage(item.id);
+              ensureSettled = Promise.allSettled([ensuring]);
+              let blocked = false;
+              for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+                const waiting = await pool.query<{ present: boolean }>(
+                  "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM items%FOR UPDATE%') AS present",
+                  [pid],
+                );
+                blocked = waiting.rows[0]?.present === true;
+                if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+              expect(blocked).toBe(true);
+            } finally {
+              release();
+              if (timer) clearTimeout(timer);
+              await trashSettled;
+              if (ensureSettled !== undefined) await ensureSettled;
+            }
+            const [deleted] = await trashSettled;
+            if (deleted?.status === "rejected") throw deleted.reason;
+            const [ensured] = ensureSettled !== undefined ? await ensureSettled : [];
+            expect(ensured).toMatchObject({ status: "rejected", reason: { status: 404 } });
+            expect((await runtime.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toEqual(
+              before.rows,
+            );
+          }
+        });
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("converges concurrent creates, reuses the row and refuses trashed or wrong-kind items", async () => {
+      const item = await makeItem();
+      const [first, second] = await Promise.all([docStore.ensurePage(item.id), docStore.ensurePage(item.id)]);
+      expect(second).toEqual(first);
+      expect(await docStore.ensurePage(item.id)).toEqual(first);
+      const stored = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
+      expect(stored.rows).toEqual([{ id: first.docId }]);
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      await expect(docStore.ensurePage(item.id)).rejects.toMatchObject({ status: 404 });
+      const canvas = await makeItem();
+      await docStore.getOrCreateDoc(canvas.id, "canvas");
+      await expect(docStore.ensurePage(canvas.id)).rejects.toMatchObject({ status: 409 });
+      expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [canvas.id])).rows).toHaveLength(1);
+    });
+  });
 
   describe("lazy creation", () => {
     it("an item has no doc until the first content-write", async () => {

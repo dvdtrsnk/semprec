@@ -1590,6 +1590,29 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
   });
 
+  it("requires explicit page capabilities independently of item capabilities", async () => {
+    const actor: AuthenticatedActor = { userId: await createUser() };
+    const database = await chokePoint.createDatabase({ name: "Pages" });
+    const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    const itemOnly = new Set<(typeof CAPABILITY_IDS)[number]>(["core.item.read", "core.item.write"]);
+    expect(gateway.listOperations(itemOnly)).not.toContain("page.get");
+    expect(gateway.listOperations(itemOnly)).not.toContain("page.restoreVersion");
+    await expect(
+      gateway.invoke("page.get", actor, itemOnly, { itemId: item.id, format: "summary" }),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      gateway.invoke("page.restoreVersion", actor, itemOnly, { itemId: item.id, at: new Date().toISOString() }),
+    ).rejects.toMatchObject({ status: 404 });
+    const pages = new Set<(typeof CAPABILITY_IDS)[number]>(["core.page.read", "core.page.write"]);
+    expect(gateway.listOperations(pages)).toContain("page.get");
+    expect(gateway.listOperations(pages)).toContain("page.restoreVersion");
+    expect(await gateway.invoke("page.get", actor, pages, { itemId: item.id, format: "summary" })).toMatchObject({
+      docId: null,
+    });
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(0);
+  });
+
   describe("listOperations", () => {
     it("returns only the operations whose capability is granted, never present-but-forbidden", () => {
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);

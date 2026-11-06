@@ -17,6 +17,7 @@ export function toManifestLocale(locale: string): ManifestLocale {
 export interface ResolvedOption {
   key: string;
   label: string;
+  color?: string;
 }
 
 /**
@@ -108,8 +109,8 @@ function rawKeyFallback(override: string | null, key: string | null, id: string)
  * written row lacking a valid string `key` must be dropped here rather than resolved into a
  * catalog lookup key like `...option.undefined`.
  */
-function filterValidOptions(rawOptions: unknown[]): { key: string; label?: string }[] {
-  return rawOptions.filter((o): o is { key: string; label?: string } => {
+function filterValidOptions(rawOptions: unknown[]): { key: string; label?: string; color?: unknown }[] {
+  return rawOptions.filter((o): o is { key: string; label?: string; color?: unknown } => {
     if (typeof o !== "object" || o === null) return false;
     const { key, label } = o as Record<string, unknown>;
     if (typeof key !== "string") return false;
@@ -214,6 +215,7 @@ export function resolveProperty(
     if (Array.isArray(rawOptions)) {
       resolved.options = filterValidOptions(rawOptions).map((option) => ({
         key: option.key,
+        ...(typeof option.color === "string" && /^#[0-9a-f]{6}$/i.test(option.color) ? { color: option.color } : {}),
         label: catalogs
           ? resolveCatalogLabel(
               option.label ?? null,

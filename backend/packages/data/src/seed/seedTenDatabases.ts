@@ -26,14 +26,16 @@ import {
   TRANSCRIPTS_MODULE_ID,
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
+import { ensureUnplannedArea } from "./seedUnplannedArea.js";
+import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — no `label`, since a
 // shipped option's display text is not an override (see SelectOption's doc comment).
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
+function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
+  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
 }
 
 interface PropSpec {
@@ -111,11 +113,14 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
+    { key: "systemActive", name: null, type: "checkbox", owner: "user", locked: true },
     { key: "note", name: "Note", type: "text", owner: "user" },
     { key: "icon", name: null, type: "text", owner: "user" },
     { key: "color", name: null, type: "color", owner: "user" },
     { key: "position", name: null, type: "number", owner: "user" },
   ]);
+
+  await ensureUnplannedArea(client, areas.id);
 
   const projects = await createDb(client, PROJECTS_MODULE_ID);
   await createProps(client, projects.id, [
@@ -127,9 +132,18 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["inProgress", "done", "archived", "longTerm"]), default: "inProgress" },
+      config: {
+        ...selectConfig(["inProgress", "longTerm", "done", "archived"], {
+          inProgress: "#007AFF",
+          longTerm: "#AF52DE",
+          done: "#34C759",
+          archived: "#8E8E93",
+        }),
+        default: "inProgress",
+      },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
+    { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
     // A 4-section equivalent of an AGENT.md; `sections` names the fixed structure a client
     // renders as separate fields within this one longText value, not four separate columns.
@@ -200,17 +214,20 @@ export async function seedTenDatabasesInTransaction(
       name: "Relationship",
       type: "select",
       owner: "user",
-      config: selectConfig([
-        "parent",
-        "therapist",
-        "closeFriend",
-        "girlfriend",
-        "client",
-        "neighbor",
-        "colleague",
-        "craftsman",
-        "doctor",
-      ]),
+      config: selectConfig(
+        ["client", "closeFriend", "parent", "girlfriend", "therapist", "neighbor", "colleague", "craftsman", "doctor"],
+        {
+          client: "#007AFF",
+          closeFriend: "#AF52DE",
+          parent: "#FF9500",
+          girlfriend: "#FF2D55",
+          therapist: "#34C759",
+          neighbor: "#8E8E93",
+          colleague: "#8E8E93",
+          craftsman: "#8E8E93",
+          doctor: "#8E8E93",
+        },
+      ),
     },
     // Canonical values stay plain English camelCase per the canonical-keys skill; the
     // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.
@@ -226,7 +243,12 @@ export async function seedTenDatabasesInTransaction(
       name: "Type",
       type: "select",
       owner: "user",
-      config: selectConfig(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"]),
+      config: selectConfig(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"], {
+        pdf: "#FF3B30",
+        xlsx: "#34C759",
+        docx: "#007AFF",
+        jpg: "#FF9500",
+      }),
     },
     { key: "date", name: "Date", type: "date", owner: "user", config: { default: "today" } },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql).
@@ -236,7 +258,17 @@ export async function seedTenDatabasesInTransaction(
   const events = await createDb(client, EVENTS_MODULE_ID);
   await createProps(client, events.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["event", "standup", "meeting"]) },
+    {
+      key: "type",
+      name: "Type",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["meeting", "standup", "event"], {
+        meeting: "#AF52DE",
+        standup: "#007AFF",
+        event: "#FF3B30",
+      }),
+    },
     { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
     // Calendar time model (wall-clock values in the tenant time zone); no `timeFrom` means all-day.
     { key: "endDate", name: "End date", type: "date", owner: "user" },
@@ -254,7 +286,13 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, healthRecords.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "date", name: "Date", type: "date", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["resolved", "monitoring"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["monitoring", "resolved"], { monitoring: "#FF9500", resolved: "#34C759" }),
+    },
     // Stays text, not a relation to People: also covers pets, which don't and shouldn't
     // exist in the People database.
     { key: "subject", name: "Subject", type: "text", owner: "user" },

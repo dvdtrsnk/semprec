@@ -24,6 +24,7 @@ import {
   createLibraryMetadataFetcher,
   createItemWithClient,
   createDocStore,
+  getDatabaseByModuleId,
   createUser,
   createViewTypeRegistry,
   ensureItemAutomation,
@@ -115,7 +116,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 32-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 36-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -123,8 +124,7 @@ type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: str
  * per-field/per-error-branch behavior for each route already lives in its own handler test file
  * (`itemsHandler.test.ts`, `databasesHandler.test.ts`, `propertiesHandler.test.ts`,
  * `viewsHandler.test.ts`). The `Object.keys(CASES)` assertion below is what keeps this list
- * honest as the catalog evolves: a 31st operation with no case here fails that assertion, not
- * silently passes with 29 stale entries.
+ * honest as the catalog evolves: an operation with no case here fails that assertion.
  */
 const CASES: Record<GenericOperationName, ContractCase> = {
   "database.list": async (fx, headers, baseUrl) => {
@@ -204,6 +204,34 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       body: JSON.stringify({ key: "score", name: "Score", type: "number" }),
     });
     expect(res.status).toBe(201);
+    const color = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        key: "colorChoice",
+        name: "Color choice",
+        type: "select",
+        config: { options: [{ key: "one", color: "#ff3b30" }] },
+      }),
+    });
+    expect(color.status).toBe(201);
+    expect(await color.json()).toMatchObject({ config: { options: [{ key: "one", color: "#FF3B30" }] } });
+    for (const invalid of ["red", "#FFF", "#GGGGGG", 1]) {
+      const rejected = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          key: "badColor",
+          name: "Bad",
+          type: "select",
+          config: { options: [{ key: "one", color: invalid }] },
+        }),
+      });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "config" } },
+      });
+    }
   },
   "property.patch": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/properties/${fx.property.id}`, {
@@ -214,6 +242,38 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { name: string };
     expect(body.name).toBe("New Title");
+    const created = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        key: "patchColor",
+        name: "Patch color",
+        type: "select",
+        config: { options: [{ key: "one" }] },
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody: unknown = await created.json();
+    if (
+      typeof createdBody !== "object" ||
+      createdBody === null ||
+      !("id" in createdBody) ||
+      typeof createdBody.id !== "string"
+    )
+      throw new Error("Missing property id");
+    const propertyId = createdBody.id;
+    const patch = (color: unknown) =>
+      fetch(`${baseUrl}/api/properties/${propertyId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ config: { options: [{ key: "one", color }] } }),
+      });
+    const valid = await patch("#ff3b30");
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toMatchObject({ config: { options: [{ key: "one", color: "#FF3B30" }] } });
+    const invalid = await patch("red");
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "config" } } });
   },
   "property.delete": async (fx, headers, baseUrl) => {
     const scratch = await chokePoint.createProperty({
@@ -390,6 +450,52 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { relations: { targetItemId: string }[] };
     expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
   },
+  "link.unlink": async (fx, headers, baseUrl) => {
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/unlink`, { method: "POST", headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+  },
+  "link.relink": async (fx, headers, baseUrl) => {
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        state: "broken",
+        brokenBy: "user",
+        brokenAt: new Date(),
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/relink`, { method: "POST", headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ valueKind: "inherited" });
+    expect((await chokePoint.getItem(fx.database.id, fx.itemA.id))?.properties.title).toBe(fx.itemB.properties.title);
+  },
+  "page.ensure": async (fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { method: "PUT", headers });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ docId: expect.any(String) });
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    if (typeof body !== "object" || body === null || !("docId" in body) || typeof body.docId !== "string")
+      throw new Error("Missing docId");
+    const summary: unknown = await read.json();
+    expect(summary).toMatchObject({ docId: body.docId });
+  },
+  "page.get": async (fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ docId: null, blocks: [], blockCount: 0, subpageCount: 0 });
+  },
   "page.restoreVersion": async (fx, headers, baseUrl) => {
     // A page whose history opens an hour ago, restored to half an hour ago: the one block it had is still there.
     await createDocStore(pool).putBlock(
@@ -460,6 +566,113 @@ describe("generic operation REST contract (issue #219)", () => {
   afterAll(async () => {
     clearHooksForTests();
     await pool?.end();
+  });
+
+  it("unlinks a file's inherited project over REST and preserves break metadata on repeat", async () => {
+    const files = await chokePoint.createDatabase({ name: "Files" });
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: files.id,
+      targetDatabaseId: projects.id,
+      key: "projects",
+      name: "Projects",
+      cardinality: "many_to_many",
+    });
+    const source = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const file = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    for (const item of [source, file])
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: item.id,
+        targetItemId: project.id,
+      });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: file.id,
+        propertyKey: "projects",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "projects" }],
+      }),
+    );
+    const headers = await authHeader();
+    const unlink = () => fetch(`${baseUrl}/api/items/${file.id}/links/projects/unlink`, { method: "POST", headers });
+    const first = await unlink();
+    expect(first.status).toBe(200);
+    const body: unknown = await first.json();
+    expect(body).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user", brokenAt: expect.any(String) });
+    expect((await chokePoint.listItemRelations(file.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
+      project.id,
+    ]);
+    const again = await unlink();
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(body);
+  });
+
+  it("returns link conflicts over REST without changing the target or link", async () => {
+    const fx = await buildFixtures();
+    const headers = await authHeader();
+    const relink = () => fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/relink`, { method: "POST", headers });
+    const beforeItem = await chokePoint.getItem(fx.database.id, fx.itemA.id);
+    const missing = await relink();
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+
+    const other = await chokePoint.createItem({ databaseId: fx.database.id, properties: { title: "Other" } });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        state: "broken",
+        brokenBy: "user",
+        brokenAt: new Date(),
+        sources: [fx.itemB, other].map((item) => ({
+          kind: "item" as const,
+          sourceItemId: item.id,
+          sourcePropertyKey: "title",
+        })),
+      }),
+    );
+    const beforeLinks = await chokePoint.getValueLinksForItems([fx.itemA.id]);
+    const overCardinality = await relink();
+    expect(overCardinality.status).toBe(409);
+    expect(await overCardinality.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(beforeLinks);
+
+    await chokePoint.softDeleteItem(fx.database.id, fx.itemB.id);
+    await chokePoint.softDeleteItem(fx.database.id, other.id);
+    const linksWithoutSources = await chokePoint.getValueLinksForItems([fx.itemA.id]);
+    const noLiveSource = await relink();
+    expect(noLiveSource.status).toBe(409);
+    expect(await noLiveSource.json()).toMatchObject({ error: { code: "value_link_conflict" } });
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(linksWithoutSources);
+  });
+
+  it("filters the system area from database.query and refuses its deletion", async () => {
+    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!areas) throw new Error("Areas missing");
+    const list = await chokePoint.listItems(areas.id);
+    const system = list.items.find((item) => item.properties.systemActive === true);
+    if (!system) throw new Error("System area missing");
+    const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const deletion = await fetch(`${baseUrl}/api/items/${system.id}`, { method: "DELETE", headers });
+    expect(deletion.status).toBe(403);
+    expect(await deletion.json()).toMatchObject({ error: { details: { field: "systemActive" } } });
+    const query = await fetch(`${baseUrl}/api/databases/${areas.id}/query`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ filter: { type: "is_empty", property: "systemActive" } }),
+    });
+    expect(query.status).toBe(200);
+    const result: unknown = await query.json();
+    expect(result).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(JSON.stringify(result)).not.toContain(system.id);
+    expect(await chokePoint.getItem(areas.id, system.id)).toEqual(system);
   });
 
   it("reports a changed edge for REST relation deletion", async () => {

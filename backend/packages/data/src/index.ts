@@ -26,6 +26,7 @@ export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
 
 export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { Actor } from "./chokePoint/authorization.js";
+export { createValueLinkOps } from "./chokePoint/valueLinkOps.js";
 export { VALUE_LINKS_OWNER_PROCESS } from "./chokePoint/valueLinkWrites.js";
 export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLinksStore.js";
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";

@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 30-operation catalog (issues #252, #1404), extracted from #37's
+ * Strict Zod input schemas for the 36-operation catalog (issues #252, #1404), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -364,6 +364,21 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
+export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
+export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
+
+export const PageGetInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    format: z.literal("summary").default("summary"),
+    limit: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type PageGetInput = z.infer<typeof PageGetInputSchema>;
+
+export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
+export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
+
 /** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
 export const PageRestoreVersionInputSchema = z
   .object({
@@ -373,7 +388,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 31 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 36 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -407,6 +422,10 @@ export interface InputByOperation {
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
   "page.restoreVersion": PageRestoreVersionInput;
+  "link.unlink": ValueLinkInput;
+  "link.relink": ValueLinkInput;
+  "page.get": PageGetInput;
+  "page.ensure": PageEnsureInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

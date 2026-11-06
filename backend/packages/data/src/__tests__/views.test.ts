@@ -903,7 +903,7 @@ describe("views", () => {
       const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
       await registry.loadModule(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
       const resolved = resolveProperty(status, "healthRecords", await registry.getCatalogs("systemDatabases"), "cs");
-      expect(resolved.options).toContainEqual({ key: "monitoring", label: "Sleduje se" });
+      expect(resolved.options).toContainEqual({ key: "monitoring", label: "Sleduje se", color: "#FF9500" });
       const after = await chokePoint.queryView(view.id);
       expect(before.items.map((item) => item.id)).toEqual([matching.id]);
       expect(after.items.map((item) => item.id)).toEqual([matching.id]);

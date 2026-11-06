@@ -1,6 +1,6 @@
 import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
-import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId, getSystemTimezone, today } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -220,7 +220,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 32-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 36-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -357,6 +357,37 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
+  "link.unlink": {
+    tool: (fx) => ({ name: "semprec.link.unlink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "link.relink": {
+    tool: (fx) => ({ name: "semprec.link.relink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "page.ensure": { tool: (fx) => ({ name: "semprec.page.ensure", arguments: { itemId: fx.itemA.id } }) },
+  "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },
   "page.restoreVersion": {
     // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
     tool: (fx) => ({
@@ -431,6 +462,53 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("refuses a canvas as a page through MCP without changing its document", async () => {
+    const fx = await buildFixtures();
+    await createDocStore(pool).putCanvasElement(
+      fx.itemA.id,
+      { id: "shape", type: "shape", xywh: [0, 0, 10, 10], index: "a0" },
+      "user",
+    );
+    const state = () =>
+      pool.query(
+        `SELECT to_jsonb(d) AS doc, to_jsonb(s) AS snapshot,
+          (SELECT jsonb_agg(to_jsonb(u) ORDER BY u.id) FROM doc_updates u WHERE u.doc_id = d.id) AS updates
+         FROM docs d LEFT JOIN doc_snapshots s ON s.doc_id = d.id WHERE d.item_id = $1`,
+        [fx.itemA.id],
+      );
+    const before = await state();
+    expect(before.rows).toHaveLength(1);
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const result = await rpc(baseUrl, await authHeader(), "semprec.page.get", {
+      itemId: fx.itemA.id,
+      format: "summary",
+    });
+    expect(result.error).toMatchObject({ code: -32000, data: { code: "version_conflict" } });
+    expect((await state()).rows).toEqual(before.rows);
+  });
+
+  it("ensures and reads the same page through a human MCP session", async () => {
+    const fx = await buildFixtures();
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const content = (response: JsonRpcResponse): unknown => {
+      expect(response.error).toBeUndefined();
+      const text = response.result?.content[0]?.text;
+      if (!text) throw new Error("Missing MCP output");
+      return JSON.parse(text) as unknown;
+    };
+    const first = z
+      .object({ docId: z.string() })
+      .parse(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id })));
+    expect(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id }))).toEqual(first);
+    expect(
+      content(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
+    ).toMatchObject(first);
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fx.itemA.id])).rows).toHaveLength(1);
+  });
+
   it("validates Areas create and patch through MCP", async () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
     if (!database) throw new Error("Areas not seeded");
@@ -464,6 +542,110 @@ describe("generic operation MCP contract (issue #220)", () => {
       icon: "briefcase",
       color: "#5856D6",
     });
+  });
+
+  it("attributes MCP unlink to the agent and preserves the inherited value", async () => {
+    const files = await chokePoint.createDatabase({ name: "Files" });
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: files.id,
+      targetDatabaseId: projects.id,
+      key: "projects",
+      name: "Projects",
+      cardinality: "many_to_many",
+    });
+    const source = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const file = await chokePoint.createItem({ databaseId: files.id, properties: {} });
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    for (const item of [source, file])
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: item.id,
+        targetItemId: project.id,
+      });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: file.id,
+        propertyKey: "projects",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "projects" }],
+      }),
+    );
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const result = await rpc(baseUrl, await authHeader(), "semprec.link.unlink", {
+      itemId: file.id,
+      propertyKey: "projects",
+    });
+    expect(result.error).toBeUndefined();
+    const text = result.result?.content[0]?.text;
+    if (!text) throw new Error("Missing unlink output");
+    const body: unknown = JSON.parse(text);
+    expect(body).toMatchObject({
+      itemId: file.id,
+      propertyKey: "projects",
+      valueKind: "inheritedBroken",
+      brokenBy: "agent",
+    });
+    expect((await chokePoint.listItemRelations(file.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
+      project.id,
+    ]);
+  });
+
+  it("refuses deletion of the system area and filters it from MCP queries", async () => {
+    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!areas) throw new Error("Areas missing");
+    const list = await chokePoint.listItems(areas.id);
+    const system = list.items.find((item) => item.properties.systemActive === true);
+    if (!system) throw new Error("System area missing");
+    const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const deleted = await rpc(baseUrl, headers, "semprec.item.delete", { itemId: system.id });
+    expect(deleted.error).toMatchObject({
+      code: -32000,
+      data: { code: "forbidden", details: { field: "systemActive" } },
+    });
+    expect(await chokePoint.getItem(areas.id, system.id)).toEqual(system);
+    const queried = await rpc(baseUrl, headers, "semprec.database.query", {
+      databaseId: areas.id,
+      filter: { type: "is_empty", property: "systemActive" },
+    });
+    expect(queried.error).toBeUndefined();
+    const text = queried.result?.content[0]?.text;
+    if (!text) throw new Error("Missing query result");
+    const body: unknown = JSON.parse(text);
+    expect(body).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(text).not.toContain(system.id);
+  });
+
+  it("returns project completion in the MCP patch response and refuses direct writes", async () => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({ databaseId, properties: { name: "Project", status: "inProgress" } });
+    const day = today(await withTransaction(pool, getSystemTimezone));
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const result = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { status: "done" },
+      ifVersion: item.updatedAt,
+    });
+    expect(result.error).toBeUndefined();
+    const text = result.result?.content[0]?.text;
+    if (!text) throw new Error("Missing MCP patch result");
+    const resultBody: unknown = JSON.parse(text);
+    expect(resultBody).toMatchObject({ properties: { status: "done", completedAt: day } });
+    const current = await chokePoint.getItem(databaseId, item.id);
+    if (!current) throw new Error("Missing project");
+    const refused = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { completedAt: "2000-01-01" },
+      ifVersion: current.updatedAt,
+    });
+    expect(refused.error).toBeDefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.completedAt).toBe(day);
   });
 
   it("keeps and restores project deadlines through MCP", async () => {
@@ -570,7 +752,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
-  it("lists relation.set for a human session", async () => {
+  it("lists relation.set and both link operations for a human session", async () => {
     const { server, baseUrl } = await startServer();
     servers.push(server);
     const response = await fetch(`${baseUrl}/mcp`, {
@@ -581,8 +763,38 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
     expect(body).toMatchObject({
-      result: { tools: expect.arrayContaining([expect.objectContaining({ name: "semprec.relation.set" })]) },
+      result: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "semprec.relation.set" }),
+          expect.objectContaining({ name: "semprec.link.unlink" }),
+          expect.objectContaining({ name: "semprec.link.relink" }),
+        ]),
+      },
     });
+  });
+
+  it("refuses link operations without item write capability through MCP", async () => {
+    const projectItemId = await createProjectItem();
+    const fx = await buildFixtures(projectItemId);
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await credentialHeader(projectItemId, ["core.item.read"]);
+    const before = await chokePoint.getItem(fx.database.id, fx.itemA.id);
+    const linksBefore = await chokePoint.getValueLinksForItems([fx.itemA.id]);
+    for (const name of ["semprec.link.unlink", "semprec.link.relink"]) {
+      const response = await rpc(baseUrl, headers, name, { itemId: fx.itemA.id, propertyKey: "title" });
+      expect(response.error).toMatchObject({ code: -32601 });
+    }
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(before);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(linksBefore);
   });
 
   it("executes relation.set and item.create through MCP under tenant RLS", async () => {

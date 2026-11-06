@@ -8,6 +8,7 @@ import {
   collectItemLinks,
   parseMarkdown,
   serializeBlocks,
+  serializeInline,
   stripMarkdown,
   readPageBlocks,
   writeBlock,
@@ -542,5 +543,13 @@ describe("stripMarkdown", () => {
     expect(stripMarkdown("abcdef", 3)).toBe("abc");
     expect(stripMarkdown("a😀b", 2)).toBe("a😀");
     expect(stripMarkdown("abc", 0)).toBe("");
+  });
+});
+
+describe("canonical inline export", () => {
+  it("retains existing inline formatting and escaping", () => {
+    expect(serializeInline([{ insert: "Bold", attributes: { bold: true } }, { insert: " & plain" }])).toBe(
+      "**Bold** & plain",
+    );
   });
 });

@@ -23,13 +23,15 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
   if (!Array.isArray(options)) {
     throw new ValidationError("select/multi_select config.options must be an array", { field: "config" });
   }
-  for (const option of options) {
-    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+  const elements: unknown[] = options;
+  for (const option of elements) {
+    if (!isRecord(option)) {
       throw new ValidationError("each select/multi_select option must be an object of shape { key, label? }", {
         field: "config",
       });
     }
-    const { key, label } = option as { key?: unknown; label?: unknown };
+    const record: Record<string, unknown> = option;
+    const { key, label } = record;
     if (typeof key !== "string" || key.length === 0) {
       throw new ValidationError("each select/multi_select option requires a non-empty string 'key'", {
         field: "config",
@@ -40,7 +42,17 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
         field: "config",
       });
     }
+    if (Object.hasOwn(record, "color")) {
+      if (typeof record.color !== "string" || !/^#[0-9a-f]{6}$/i.test(record.color)) {
+        throw new ValidationError("a select/multi_select option's 'color' must be a hex color", { field: "config" });
+      }
+      record.color = record.color.toUpperCase();
+    }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Validates the optional create-time default against the property's storage type. */

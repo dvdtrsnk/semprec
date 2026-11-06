@@ -13,6 +13,7 @@ import { createRelationPropertyOps } from "./relationPropertyOps.js";
 import { createRelationOps } from "./relationOps.js";
 import { createItemWriteOps } from "./itemWrites.js";
 import { createItemWithRelationsOps } from "./itemCreateWithRelations.js";
+import { createValueLinkOps } from "./valueLinkOps.js";
 import { createItemTrashOps } from "./itemTrash.js";
 import { getValueLinksForItems } from "./valueLinkReads.js";
 import { listItemRelationsWithClient } from "./relationReads.js";
@@ -38,6 +39,7 @@ export function createChokePoint(
     createItemWithRelationsOps(deps),
     createItemReadOps(deps),
     createItemTrashOps(deps),
+    createValueLinkOps(deps),
     createViewOps(deps),
     createViewQueryOps(deps),
     {

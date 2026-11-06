@@ -3,10 +3,13 @@ import {
   createBlob,
   createItemWithClient,
   getDatabaseByModuleId,
+  getSystemTimezone,
+  today,
   insertInboxAttachments,
   listInboxAttachments,
 } from "@semprec/data";
 import { z } from "zod";
+import * as Y from "yjs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -36,6 +39,7 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  mutateYDoc,
   seedSystem,
   setInvalidationHook,
   type InvalidationEvent,
@@ -625,6 +629,203 @@ describe("item routes (issue #241)", () => {
     const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ properties: { phones: "777 123 456" } });
+  });
+
+  it("includes Journal day metadata in page breadcrumbs", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = await authHeader();
+    const day = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16")),
+    );
+    const response = await fetch(`${baseUrl}/api/items/${day.itemId}/page`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      breadcrumbs: [expect.objectContaining({ itemId: day.itemId, journal: { type: "day", period: "2026-10-16" } })],
+    });
+  });
+
+  it("uses each database's title property in inline page breadcrumbs", async () => {
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const parentDb = await chokePoint.createDatabase({ name: "Parent" });
+      await chokePoint.createProperty({ databaseId: parentDb.id, key: "heading", name: "Heading", type: "title" });
+      const parent = await chokePoint.createItem({ databaseId: parentDb.id, properties: { heading: "Parent title" } });
+      const childDb = await chokePoint.createInlineDatabase({ name: "Child", parentItemId: parent.id });
+      await chokePoint.createProperty({ databaseId: childDb.id, key: "caption", name: "Caption", type: "title" });
+      const child = await chokePoint.createItem({ databaseId: childDb.id, properties: { caption: "Child title" } });
+      return { parent, child };
+    });
+    const response = await fetch(`${baseUrl}/api/items/${fixture.child.id}/page`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      breadcrumbs: [
+        { itemId: fixture.parent.id, title: "Parent title" },
+        { itemId: fixture.child.id, title: "Child title" },
+      ],
+    });
+  });
+
+  it("ensures one page across concurrent HTTP calls and refuses trashed or wrong-kind items", async () => {
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await chokePoint.createDatabase({ name: "Ensure pages" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const canvas = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      await createDocStore(pool).getOrCreateDoc(canvas.id, "canvas");
+      return { database, item, canvas };
+    });
+    const path = `${baseUrl}/api/items/${fixture.item.id}/page`;
+    const [first, second] = await Promise.all([
+      fetch(path, { method: "PUT", headers }),
+      fetch(path, { method: "PUT", headers }),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const firstBody = z.object({ docId: z.string() }).parse(await first.json());
+    expect(await second.json()).toEqual(firstBody);
+    const repeat = await fetch(path, { method: "PUT", headers });
+    expect(await repeat.json()).toEqual(firstBody);
+    const summary = await fetch(path, { headers });
+    expect(await summary.json()).toMatchObject(firstBody);
+    const stored = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [fixture.item.id]);
+    expect(stored.rows).toEqual([{ id: firstBody.docId }]);
+    const wrongKind = await fetch(`${baseUrl}/api/items/${fixture.canvas.id}/page`, { method: "PUT", headers });
+    expect(wrongKind.status).toBe(409);
+    const canvasRows = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM docs WHERE item_id = $1", [
+      fixture.canvas.id,
+    ]);
+    expect(canvasRows.rows).toHaveLength(1);
+    expect(canvasRows.rows[0]?.kind).toBe("canvas");
+    await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(fixture.database.id, fixture.item.id));
+    expect((await fetch(path, { method: "PUT", headers })).status).toBe(404);
+    expect((await fetch(path, { method: "PUT" })).status).toBe(401);
+  });
+
+  it("refuses a canvas as a page over HTTP without changing its document", async () => {
+    const headers = await authHeader();
+    const item = await runInTenant(getTenantZeroId(), async () => {
+      const database = await chokePoint.createDatabase({ name: "Canvas" });
+      return chokePoint.createItem({ databaseId: database.id, properties: {} });
+    });
+    const store = createDocStore(pool);
+    await runInTenant(getTenantZeroId(), () =>
+      store.putCanvasElement(item.id, { id: "shape", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user"),
+    );
+    const state = () =>
+      pool.query(
+        `SELECT to_jsonb(d) AS doc, to_jsonb(s) AS snapshot,
+          (SELECT jsonb_agg(to_jsonb(u) ORDER BY u.id) FROM doc_updates u WHERE u.doc_id = d.id) AS updates
+         FROM docs d LEFT JOIN doc_snapshots s ON s.doc_id = d.id WHERE d.item_id = $1`,
+        [item.id],
+      );
+    const before = await state();
+    expect(before.rows).toHaveLength(1);
+    const response = await fetch(`${baseUrl}/api/items/${item.id}/page`, { headers });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "version_conflict" } });
+    expect((await state()).rows).toEqual(before.rows);
+  });
+
+  it("reads page summaries over HTTP without creating a document and counts beyond the limit", async () => {
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await chokePoint.createDatabase({ name: "Pages" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      return { database, item };
+    });
+    const path = `${baseUrl}/api/items/${fixture.item.id}/page`;
+    const empty = await fetch(path, { headers });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toMatchObject({ docId: null, blockCount: 0, subpageCount: 0, breadcrumbs: null });
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fixture.item.id])).rows).toHaveLength(0);
+    const store = createDocStore(pool);
+    const row = await runInTenant(getTenantZeroId(), () => store.getOrCreateDoc(fixture.item.id, "page"));
+    await runInTenant(getTenantZeroId(), () =>
+      mutateYDoc(pool, row.id, "user", (doc) => {
+        const blocks = doc.getMap<Y.Map<unknown>>("blocks");
+        const order = doc.getArray<string>("order");
+        for (let i = 0; i < 14; i++) {
+          const id = `block-${i}`;
+          const block = new Y.Map<unknown>();
+          block.set("sys:id", id);
+          block.set("sys:flavour", i < 2 ? "page" : "text");
+          if (i < 2) block.set("pageId", `page-${i}`);
+          else {
+            const text = new Y.Text();
+            text.insert(0, `Text ${i}`);
+            block.set("text", text);
+          }
+          blocks.set(id, block);
+          order.push([id]);
+        }
+      }),
+    );
+    const limited = await fetch(`${path}?limit=5`, { headers });
+    expect(limited.status).toBe(200);
+    expect(await limited.json()).toMatchObject({
+      docId: row.id,
+      blockCount: 14,
+      subpageCount: 2,
+      blocks: [{ pageId: "page-0" }, { pageId: "page-1" }, {}, {}, {}],
+    });
+    const markdown = await fetch(`${path}?format=markdown`, { headers });
+    expect(markdown.status).toBe(400);
+    expect(await markdown.json()).toMatchObject({ error: { details: { field: "format" } } });
+    expect((await fetch(path)).status).toBe(401);
+  });
+
+  it("refuses deletion of the unplanned system area through REST", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!database) throw new Error("Areas missing");
+      const list = await chokePoint.listItems(database.id);
+      const item = list.items.find((row) => row.properties.systemActive === true);
+      if (!item) throw new Error("System area missing");
+      return { database, item };
+    });
+    const response = await fetch(`${baseUrl}/api/items/${fixture.item.id}`, { method: "DELETE", headers });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { details: { field: "systemActive" } } });
+    expect(
+      await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)),
+    ).toEqual(fixture.item);
+  });
+
+  it("returns project completion dates and refuses direct writes through REST", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!database) throw new Error("Projects missing");
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { name: "Project", status: "inProgress" },
+      });
+      const day = today(await withTransaction(pool, getSystemTimezone));
+      return { database, item, day };
+    });
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.database.id, fixture.item.id),
+      );
+      if (!current) throw new Error("Project missing");
+      return fetch(`${baseUrl}/api/items/${current.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+      });
+    };
+    const done = await patch({ status: "done" });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toMatchObject({ properties: { status: "done", completedAt: fixture.day } });
+    const refused = await patch({ completedAt: "2000-01-01" });
+    expect(refused.status).toBe(403);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))?.properties
+        .completedAt,
+    ).toBe(fixture.day);
   });
 
   it("hides a kept project deadline in REST reads and the search index", async () => {

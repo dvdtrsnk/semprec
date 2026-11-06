@@ -68,3 +68,16 @@ describe("property config defaults", () => {
     expect(() => assertValidPropertyConfig("relation", undefined)).not.toThrow();
   });
 });
+
+describe("select option colors", () => {
+  it.each(["select", "multi_select"] as const)("normalizes %s colors on write", (type) => {
+    const config = { options: [{ key: "red", color: "#ff3b30" }, { key: "plain" }] };
+    assertValidPropertyConfig(type, config);
+    expect(config.options).toEqual([{ key: "red", color: "#FF3B30" }, { key: "plain" }]);
+  });
+  it.each(["red", "#FFF", "#GGGGGG", 1, null, undefined])("rejects invalid color %j", (color) => {
+    expect(() => assertValidPropertyConfig("select", { options: [{ key: "x", color }] })).toThrow(
+      expect.objectContaining({ code: "validation_failed", details: { field: "config" } }),
+    );
+  });
+});

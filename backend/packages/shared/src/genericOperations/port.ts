@@ -5,6 +5,7 @@ import type {
   Database,
   Item,
   ItemPage,
+  ItemLink,
   Page,
   PageRestoreOutput,
   Property,
@@ -14,7 +15,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 32 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 36 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -53,6 +54,28 @@ export interface OutputByOperation {
   "relation.delete": RelationEdge;
   "relation.list": RelationListEntry[];
   "page.restoreVersion": PageRestoreOutput;
+  "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
+  "link.relink": { itemId: string; propertyKey: string } & ItemLink;
+  "page.get": PageSummary;
+  "page.ensure": { docId: string };
+}
+
+export interface PageSummary {
+  docId: string | null;
+  kind: "page";
+  title: string;
+  blocks: Array<{ id: string; type: string; indent: number; done: boolean; text: string; pageId?: string }>;
+  blockCount: number;
+  subpageCount: number;
+  headings: Array<{ id: string; type: string; text: string }>;
+  lastEditedAt: string | null;
+  lastEditedBy: "user" | "ai_agent" | "system" | null;
+  breadcrumbs: Array<{
+    itemId: string;
+    title: string;
+    databaseKey: string | null;
+    journal?: { type: string; period: string };
+  }> | null;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;
@@ -195,6 +218,19 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.list"],
   ): Promise<OutputByOperation["relation.list"]>;
+  unlinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.unlink"],
+  ): Promise<OutputByOperation["link.unlink"]>;
+  relinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.relink"],
+  ): Promise<OutputByOperation["link.relink"]>;
+  ensurePage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.ensure"],
+  ): Promise<OutputByOperation["page.ensure"]>;
+  getPage(actor: AuthenticatedActor, input: InputByOperation["page.get"]): Promise<OutputByOperation["page.get"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

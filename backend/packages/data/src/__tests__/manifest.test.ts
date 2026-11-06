@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
@@ -44,6 +48,34 @@ describe("permission manifest and drift check", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("excludes page capabilities from project grants even when an owned module declares them", async () => {
+    const projectDb = await chokePoint.createDatabase({ name: "Projects" });
+    const project = await chokePoint.createItem({ databaseId: projectDb.id, properties: {} });
+    await chokePoint.createDatabase({
+      name: "Owned",
+      key: "pageGrantProbe",
+      system: true,
+      ownerProjectItemId: project.id,
+    });
+    const fixtureDir = await mkdtemp(join(tmpdir(), "page-grant-module-"));
+    const fixturePath = join(fixtureDir, "manifest.mjs");
+    await writeFile(
+      fixturePath,
+      `export const manifest = ${JSON.stringify({ id: "pageGrantProbe", version: "1.0.0", name: "Page grant probe", removable: true, systemProject: false, databases: [{ key: "pageGrantProbe", name: "Probe" }], capabilities: ["core.page.read", "core.page.write", "probe.read"], agentTools: [] })};`,
+    );
+    const registry = new ModuleRegistry(() => new Set(["schemaCore", "pageGrantProbe"]));
+    await registry.loadModule(new URL("../chokePoint/schemaCoreModuleManifest.js", import.meta.url).href);
+    await registry.loadModule(pathToFileURL(fixturePath).href);
+    const result = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, project.id, { moduleRegistry: registry }),
+    );
+    expect(result.grantedCapabilities).toContain("core.item.read");
+    expect(result.grantedCapabilities).toContain("core.item.write");
+    expect(result.grantedCapabilities).toContain("probe.read");
+    expect(result.grantedCapabilities).not.toContain("core.page.read");
+    expect(result.grantedCapabilities).not.toContain("core.page.write");
   });
 
   it("generates a manifest scoped to one project's owned databases", async () => {

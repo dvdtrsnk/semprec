@@ -170,6 +170,13 @@ describe("Areas registered write hooks", () => {
           { property: "name", direction: "asc" },
         ],
       });
-      expect(page.items.map((item) => item.properties.name)).toEqual(["First", "Alpha", "Zulu", "Unpositioned"]);
+      expect(page.items.map((item) => item.properties.name)).toEqual([
+        "First",
+        "Alpha",
+        "Zulu",
+        "(neplánováno)",
+        "Unpositioned",
+      ]);
+      expect(page.items[3]?.properties).toMatchObject({ name: "(neplánováno)", active: true, systemActive: true });
     }));
 });

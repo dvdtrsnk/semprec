@@ -46,10 +46,11 @@ export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeat
  * `heartbeat.trigger` (issue #136) joins them on the same terms — project-scoped availability
  * only, no `capability` gate and no approval requirement beyond that.
  *
- * `capabilities` registers the eight generic-operation capability ids from #252's
- * `CAPABILITY_IDS` (issue #220) — the same eight `OPERATION_METADATA.requiresCapability` values
- * every one of the 30 generic operations is keyed against, so a project's granted subset of
- * these is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
+ * `capabilities` registers the generic-operation capability ids from
+ * `CAPABILITY_IDS` (issue #220) — the same `OPERATION_METADATA.requiresCapability` values
+ * generic operations are keyed against. The permission manifest excludes page capabilities
+ * from automatic project-agent grants; human MCP registration retains the full list.
+ * A project's granted subset is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
  * discovery and invocation by.
  */
 export const manifest: ModuleManifest = {

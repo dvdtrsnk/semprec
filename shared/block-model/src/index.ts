@@ -39,6 +39,7 @@ export {
   collectItemLinks,
   parseMarkdown,
   serializeBlocks,
+  serializeInline,
   stripMarkdown,
   type ItemLinks,
   type ParseOptions,
