@@ -269,7 +269,6 @@ describe("queued Semp messages", () => {
         sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
       });
       let runId = "";
-      let diagnosticReported = false;
       await vi.waitFor(
         async () => {
           const result = await runInTenant(tenant, () =>
@@ -278,32 +277,6 @@ describe("queued Semp messages", () => {
               [turn.assistantMessageId],
             ),
           );
-          if (result.rows[0]?.status === "error" && !diagnosticReported) {
-            diagnosticReported = true;
-            const diagnostic = await runInTenant(tenant, async () => {
-              const runs = await pool.query<{
-                status: string;
-                error_code: string | null;
-                fetch_error: boolean;
-                model_error: boolean;
-                scope_error: boolean;
-              }>(
-                `SELECT status, error_code, position('fetch' in lower(coalesce(result,''))) > 0 AS fetch_error,
-                 position('model' in lower(coalesce(result,''))) > 0 AS model_error,
-                 position('tenant' in lower(coalesce(result,''))) > 0 AS scope_error FROM agent_runs WHERE thread_id = $1`,
-                [turn.threadId],
-              );
-              const calls = await pool.query<{ status: string }>(
-                "SELECT status FROM ai_gateway_calls ORDER BY created_at",
-              );
-              return {
-                runs: runs.rows,
-                calls: calls.rows,
-                observations: messages.filter((entry) => entry.type === "observation"),
-              };
-            });
-            process.stderr.write(`reference diagnostic ${JSON.stringify(diagnostic)}\n`);
-          }
           expect(result.rows[0]?.status).toBe("done");
           runId = result.rows[0]?.agent_run_id ?? "";
           expect(runId).not.toBe("");
