@@ -18,6 +18,10 @@ afterEach(async () => {
 });
 
 describe("createGatewayModel (issue #647)", () => {
+  it("declares both text and image input to pi", () => {
+    expect(createGatewayModel(COMPLETE_ENV).model.input).toEqual(["text", "image"]);
+  });
+
   it.each(["AI_GATEWAY_BASE_URL", "AI_GATEWAY_INTERNAL_TOKEN", "AGENT_MODEL"])(
     "refuses to build without %s",
     (name) => {

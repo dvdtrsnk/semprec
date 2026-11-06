@@ -61,7 +61,7 @@ export function createGatewayModel(env: NodeJS.ProcessEnv): GatewayModel {
     provider: GATEWAY_PROVIDER_ID,
     baseUrl,
     reasoning: false,
-    input: ["text"],
+    input: ["text", "image"],
     // Pricing and limits are the gateway's business (it records `ai_gateway_calls` cost itself);
     // 0 is pi's "unknown" for both limits, so nothing here clamps a request.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
