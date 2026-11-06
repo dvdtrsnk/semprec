@@ -497,6 +497,35 @@ describe("generic operation MCP contract (issue #220)", () => {
     });
   });
 
+  it("attributes MCP unlink to the agent and preserves the inherited value", async () => {
+    const fx = await buildFixtures();
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const result = await rpc(baseUrl, await authHeader(), "semprec.link.unlink", {
+      itemId: fx.itemA.id,
+      propertyKey: "title",
+    });
+    expect(result.error).toBeUndefined();
+    const text = result.result?.content[0]?.text;
+    if (!text) throw new Error("Missing unlink output");
+    const body: unknown = JSON.parse(text);
+    expect(body).toMatchObject({
+      itemId: fx.itemA.id,
+      propertyKey: "title",
+      valueKind: "inheritedBroken",
+      brokenBy: "agent",
+    });
+    expect((await chokePoint.getItem(fx.database.id, fx.itemA.id))?.properties.title).toBe(fx.itemA.properties.title);
+  });
+
   it("refuses deletion of the system area and filters it from MCP queries", async () => {
     const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
     if (!areas) throw new Error("Areas missing");

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -51,6 +52,29 @@ describe("unplanned system area", () => {
       expect(list.items).toHaveLength(1);
       expect(list.items[0]?.properties).toMatchObject({ name: "Renamed", systemActive: true });
     });
+  });
+
+  it("keeps other tenants' system areas invisible and unchanged", async () => {
+    const other = await createTestTenant(admin);
+    const foreign = await runInTenant(other, async () => {
+      await seedSystem(data);
+      const database = await withTransaction(data, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!database) throw new Error("Areas missing");
+      const item = (await cp.listItems(database.id)).items[0];
+      if (!item) throw new Error("Area missing");
+      return { database, item };
+    });
+    await runInTenant(tenant, async () => {
+      const own = (await cp.listItems(areasId)).items[0];
+      if (!own) throw new Error("Own area missing");
+      expect(await cp.findItem(own.id)).toEqual(own);
+      expect(await cp.findItem(foreign.item.id)).toBeNull();
+      expect(await cp.findItem(randomUUID())).toBeNull();
+      await expect(cp.softDeleteItem(areasId, foreign.item.id)).rejects.toMatchObject({ status: 404 });
+      await expect(cp.softDeleteItem(areasId, randomUUID())).rejects.toMatchObject({ status: 404 });
+      expect(await cp.getItem(areasId, own.id)).toEqual(own);
+    });
+    expect(await runInTenant(other, () => cp.getItem(foreign.database.id, foreign.item.id))).toEqual(foreign.item);
   });
 
   it("upgrades a suspended tenant once under concurrent registered cutovers", async () => {

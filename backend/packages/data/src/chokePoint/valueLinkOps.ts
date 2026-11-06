@@ -143,7 +143,11 @@ export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
       }
       const entry = (await getValueLinksForItems(client, [item.id])).get(item.id)?.[input.propertyKey];
       if (!entry) conflict();
-      if (changed) announce(client, item, userId);
+      if (changed) {
+        const current = await itemsStore.getItemById(client, item.databaseId, item.id);
+        if (!current) throw new Error("Reserved item disappeared during link update");
+        announce(client, current, userId);
+      }
       return { ...input, ...entry };
     });
   }

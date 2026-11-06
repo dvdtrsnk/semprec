@@ -104,6 +104,41 @@ describe("explicit value link operations", () => {
     });
   });
 
+  it("rolls back reactivation when a relation write rejects its target", async () => {
+    await runInTenant(tenant, async () => {
+      const sources = await cp.createDatabase({ name: "Sources" });
+      const files = await cp.createDatabase({ name: "Files" });
+      const projects = await cp.createDatabase({ name: "Projects" });
+      await cp.createProperty({ databaseId: sources.id, key: "value", name: "Value", type: "text" });
+      await cp.createRelationProperty({
+        sourceDatabaseId: files.id,
+        key: "project",
+        name: "Project",
+        targetDatabaseId: projects.id,
+        cardinality: "one_to_one",
+      });
+      const source = await cp.createItem({ databaseId: sources.id, properties: { value: randomUUID() } });
+      const target = await cp.createItem({ databaseId: files.id, properties: {} });
+      await withTransaction(data, (client) =>
+        insertValueLink(client, {
+          itemId: target.id,
+          propertyKey: "project",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "value" }],
+        }),
+      );
+      const before = await cp.getValueLinksForItems([target.id]);
+      await expect(cp.relinkValue({ itemId: target.id, propertyKey: "project" })).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(await cp.getValueLinksForItems([target.id])).toEqual(before);
+      expect(await cp.listItemRelations(target.id)).toEqual([]);
+    });
+  });
+
   it("refuses missing links, missing live sources and over-cardinality without changing state", async () => {
     await runInTenant(tenant, async () => {
       const db = await cp.createDatabase({ name: "Link test" });
