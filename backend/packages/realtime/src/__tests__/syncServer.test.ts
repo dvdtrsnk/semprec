@@ -1903,7 +1903,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       if (typeof args[0] === "string" && args[0].includes("JOIN semp_messages")) scopedReads++;
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     let failed = false;
     let failure: unknown;
     try {
@@ -2167,7 +2168,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     let failed = false;
     let failure: unknown;
     try {
@@ -2248,7 +2250,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     let publication: Promise<void> | undefined;
     let failed = false;
     let failure: unknown;
@@ -2349,7 +2352,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     let publication: Promise<void> | undefined;
     let failed = false;
     let failure: unknown;
@@ -2437,7 +2441,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     let failed = false;
     let failure: unknown;
     let disposing: Promise<void> | undefined;
