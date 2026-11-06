@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import type { Readable } from "node:stream";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
@@ -17,8 +16,122 @@ interface BlobRootQueryable {
   query<R>(text: string, values?: unknown[]): Promise<{ rows: R[] }>;
 }
 
-function isMissingFileError(err: unknown): boolean {
+function isMissingFileError(err: unknown): err is Error {
   return err instanceof Error && "code" in err && err.code === "ENOENT";
+}
+
+const CLEANUP_LIMIT_MS = 5_000;
+const CLOSED_POLL_MS = 10;
+
+interface CleanupBudget {
+  deadline?: number;
+  lastMissing?: Error;
+}
+
+function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const remove = () => {
+      stream.off("readable", readable);
+      stream.off("error", error);
+      stream.off("close", closed);
+      signal?.removeEventListener("abort", aborted);
+    };
+    const readable = () => {
+      remove();
+      resolve();
+    };
+    const error = (value: unknown) => {
+      remove();
+      reject(value);
+    };
+    const closed = () => error(new Error("Blob stream closed before becoming readable"));
+    const aborted = () => {
+      const value = Object.assign(new Error("The operation was aborted", { cause: signal?.reason }), {
+        name: "AbortError",
+        code: "ABORT_ERR",
+      });
+      error(value);
+    };
+    stream.once("readable", readable);
+    stream.once("error", error);
+    stream.once("close", closed);
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) aborted();
+    else if (stream.closed) closed();
+  });
+}
+
+/** Observe closure of a stream retained by this helper before allowing fallback or failure. */
+async function closeOwnedStream(
+  stream: Readable,
+  primary: unknown,
+  budget: CleanupBudget,
+  openingErrors: readonly unknown[] = [],
+  detachOpeningObserver: () => void = () => {},
+): Promise<void> {
+  const deadline = (budget.deadline ??= performance.now() + CLEANUP_LIMIT_MS);
+  const failures: unknown[] = openingErrors.filter((error) => error !== primary);
+  let firstAsyncError: unknown;
+  let hasAsyncError = false;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let finish!: (closed: boolean) => void;
+  const observed = new Promise<boolean>((resolve) => {
+    finish = resolve;
+  });
+  const remove = () => {
+    stream.off("close", onClose);
+    stream.off("error", onError);
+  };
+  const complete = (closed: boolean) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    if (closed) remove();
+    finish(closed);
+  };
+  const onClose = () => {
+    if (settled) {
+      remove();
+      return;
+    }
+    complete(performance.now() < deadline);
+    remove();
+  };
+  const onError = (error: unknown) => {
+    if (error !== primary && !hasAsyncError) {
+      hasAsyncError = true;
+      firstAsyncError = error;
+    }
+  };
+  const check = () => {
+    const now = performance.now();
+    if (now >= deadline) {
+      complete(false);
+      return;
+    }
+    if (stream.closed) {
+      complete(true);
+      return;
+    }
+    timer = setTimeout(check, Math.min(CLOSED_POLL_MS, Math.max(0, deadline - now)));
+  };
+  stream.on("close", onClose);
+  stream.on("error", onError);
+  detachOpeningObserver();
+  if (!stream.closed) {
+    try {
+      stream.destroy();
+    } catch (error) {
+      if (error !== primary) failures.push(error);
+    }
+  }
+  if (!settled) check();
+  const closed = await observed;
+  if (hasAsyncError && !failures.some((error) => error === firstAsyncError)) failures.push(firstAsyncError);
+  if (!closed) failures.push(new Error("Blob stream cleanup closure was not observed within its deadline"));
+  if (failures.length)
+    throw new AggregateError([primary, ...failures], "Blob stream cleanup failed", { cause: primary });
 }
 
 /** Opens `storageKey` in one root, or `null` when its file does not exist. Waits for the first `readable` event so a missing file is known before any header is written; any other read error propagates. */
@@ -27,28 +140,35 @@ async function openIn(
   storageKey: string,
   range: OpenBlobFromRootsInput["range"],
   signal: AbortSignal | undefined,
+  budget: CleanupBudget,
 ): Promise<Readable | null> {
   signal?.throwIfAborted();
   const stream = storage.readStream(storageKey, range);
+  const openingErrors: unknown[] = [];
+  const openingError = (error: unknown) => {
+    if (openingErrors.length < 2 && !openingErrors.some((entry) => entry === error)) openingErrors.push(error);
+  };
+  stream.on("error", openingError);
   try {
-    await once(stream, "readable", { signal });
+    await waitForReadable(stream, signal);
+    if (openingErrors.length) throw openingErrors[0];
     signal?.throwIfAborted();
   } catch (err) {
-    let cleanupFailed = false;
-    let cleanupFailure: unknown;
-    try {
-      stream.destroy();
-    } catch (cleanupError) {
-      cleanupFailed = true;
-      cleanupFailure = cleanupError;
-    }
-    if (cleanupFailed)
-      throw new AggregateError([err, cleanupFailure], "Blob open and stream cleanup failed", { cause: err });
+    await closeOwnedStream(stream, err, budget, openingErrors, () => stream.off("error", openingError));
     if (isMissingFileError(err)) {
       signal?.throwIfAborted();
+      budget.lastMissing = err;
+      if (budget.deadline !== undefined && performance.now() >= budget.deadline)
+        throw new AggregateError(
+          [err, new Error("Blob stream cleanup deadline expired before fallback")],
+          "Blob cleanup deadline expired before fallback",
+          { cause: err },
+        );
       return null;
     }
     throw err;
+  } finally {
+    stream.off("error", openingError);
   }
   return stream;
 }
@@ -62,10 +182,17 @@ async function openIn(
  */
 export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<Readable | null> {
   input.signal?.throwIfAborted();
-  let stream = await openIn(input.primary, input.storageKey, input.range, input.signal);
+  const budget: CleanupBudget = {};
+  let stream = await openIn(input.primary, input.storageKey, input.range, input.signal, budget);
   if (!stream) {
     input.signal?.throwIfAborted();
-    stream = await openIn(input.alternate, input.storageKey, input.range, input.signal);
+    if (budget.deadline !== undefined && performance.now() >= budget.deadline)
+      throw new AggregateError(
+        [budget.lastMissing, new Error("Blob stream cleanup deadline expired before fallback")],
+        "Blob cleanup deadline expired before fallback",
+        { cause: budget.lastMissing },
+      );
+    stream = await openIn(input.alternate, input.storageKey, input.range, input.signal, budget);
   }
   if (!stream) {
     input.signal?.throwIfAborted();
@@ -75,16 +202,7 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
     input.signal?.throwIfAborted();
     return stream;
   } catch (err) {
-    let cleanupFailed = false;
-    let cleanupFailure: unknown;
-    try {
-      stream.destroy();
-    } catch (cleanupError) {
-      cleanupFailed = true;
-      cleanupFailure = cleanupError;
-    }
-    if (cleanupFailed)
-      throw new AggregateError([err, cleanupFailure], "Blob transfer and stream cleanup failed", { cause: err });
+    await closeOwnedStream(stream, err, budget);
     throw err;
   }
 }

@@ -54,6 +54,23 @@ describe("bounded voice delta buffer", () => {
     expect(() => buffer.admit(chunk("2", 1, 0, 1, "===="), 4)).toThrow(VoiceDeltaBufferError);
   });
 
+  it("ignores consumed ordinals before checking a newer active assembly", () => {
+    const buffer = new VoiceRunDeltaBuffer("1");
+    buffer.admit(delta("1", 1, { text: "first" }), 0);
+    expect(buffer.shift()?.delta).toEqual({ text: "first" });
+    buffer.admit(chunk("1", 2, 0, 2, "eyJ4"), 1);
+    const deadline = buffer.deadline;
+    buffer.admit(delta("1", 1, { text: "first" }), 2);
+    buffer.admit(delta("1", 1, { text: "different" }), 3);
+    buffer.admit(chunk("1", 1, 0, 2, "eyJ4"), 4);
+    buffer.admit(chunk("1", 1, 0, 2, "eyJ5"), 5);
+    expect(buffer.deadline).toBe(deadline);
+    expect(buffer.peek()).toBeUndefined();
+    buffer.admit(chunk("1", 2, 1, 2, "IjoxfQ=="), 6);
+    expect(buffer.shift()?.delta).toEqual({ x: 1 });
+    expect(buffer.shift()).toBeUndefined();
+  });
+
   it("bounds logical count, serialized bytes, fragment metadata and absolute expiration", () => {
     const buffer = new VoiceRunDeltaBuffer("1");
     for (let i = 1; i <= 256; i++) buffer.admit(delta("1", i, "x"), 0);

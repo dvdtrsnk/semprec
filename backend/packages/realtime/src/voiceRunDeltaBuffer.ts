@@ -101,14 +101,6 @@ export class VoiceRunDeltaBuffer {
       this.anchors.set(anchor, state);
     }
     if (state.suppressed) return;
-    if (
-      this.assembly &&
-      (this.assembly.message.afterEventId !== anchor || this.assembly.message.deltaSequence !== message.deltaSequence)
-    ) {
-      this.drop(this.assembly.message.afterEventId, true);
-      this.drop(anchor, true);
-      return;
-    }
     if (message.deltaSequence < state.next) {
       const pending = this.ready.find(
         (entry) => entry.message.afterEventId === anchor && entry.message.deltaSequence === message.deltaSequence,
@@ -125,6 +117,14 @@ export class VoiceRunDeltaBuffer {
       } else if (pending.chunks || JSON.stringify(pending.message.delta) !== JSON.stringify(message.delta)) {
         throw new VoiceDeltaBufferError("unavailable");
       }
+      return;
+    }
+    if (
+      this.assembly &&
+      (this.assembly.message.afterEventId !== anchor || this.assembly.message.deltaSequence !== message.deltaSequence)
+    ) {
+      this.drop(this.assembly.message.afterEventId, true);
+      this.drop(anchor, true);
       return;
     }
     if (message.deltaSequence > state.next) return this.drop(anchor, true);

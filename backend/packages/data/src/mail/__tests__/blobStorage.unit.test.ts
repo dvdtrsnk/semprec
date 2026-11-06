@@ -88,6 +88,10 @@ it("preserves the primary initial-read error and a separate stream cleanup error
   });
   vi.spyOn(primary, "readStream").mockReturnValue(stream);
   const destroy = vi.spyOn(stream, "destroy").mockImplementation(() => {
+    queueMicrotask(() => {
+      destroy.mockRestore();
+      stream.destroy();
+    });
     throw cleanup;
   });
   const other = vi.spyOn(alternate, "readStream");
@@ -103,6 +107,273 @@ it("preserves the primary initial-read error and a separate stream cleanup error
     vi.restoreAllMocks();
   }
 });
+
+it("waits for a delayed primary ENOENT cleanup before opening the alternate", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const missing = Object.assign(new Error("controlled missing file"), { code: "ENOENT" });
+  let release: (() => void) | undefined;
+  const stream = new Readable({
+    read() {
+      this.emit("error", missing);
+    },
+    destroy(_error, callback) {
+      release = () => {
+        release = undefined;
+        callback(null);
+      };
+    },
+  });
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream").mockImplementation(() => Readable.from(["alternate"]));
+  const opened = openBlobFromRoots({ primary, alternate, storageKey: "key" });
+  let settled = false;
+  const observed = opened.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  let result: Readable | null = null;
+  try {
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(settled).toBe(false);
+    expect(second).not.toHaveBeenCalled();
+    release?.();
+    result = await opened;
+    expect(stream.closed).toBe(true);
+    expect(second).toHaveBeenCalledOnce();
+    expect(result).not.toBeNull();
+    if (result) {
+      const closed = new Promise<void>((resolve) => result!.once("close", resolve));
+      result.destroy();
+      await closed;
+    }
+  } finally {
+    release?.();
+    await observed;
+    const outcome = await Promise.allSettled([opened]);
+    const returned = outcome[0]?.status === "fulfilled" ? outcome[0].value : null;
+    if (returned && !returned.closed) {
+      const closed = new Promise<void>((resolve) => returned.once("close", resolve));
+      returned.destroy();
+      await closed;
+    }
+    vi.restoreAllMocks();
+  }
+});
+
+it("waits for delayed abort cleanup and observes emitClose false using public closed", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  let release: (() => void) | undefined;
+  const stream = new Readable({
+    emitClose: false,
+    read() {},
+    destroy(_error, callback) {
+      release = () => {
+        release = undefined;
+        callback(null);
+      };
+    },
+  });
+  const control = new AbortController();
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  const opened = openBlobFromRoots({ primary, alternate, storageKey: "key", signal: control.signal });
+  let settled = false;
+  const observed = opened.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  try {
+    control.abort();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(settled).toBe(false);
+    expect(second).not.toHaveBeenCalled();
+    release?.();
+    await expect(opened).rejects.toMatchObject({ name: "AbortError" });
+    expect(stream.closed).toBe(true);
+    expect(stream.listenerCount("error")).toBe(0);
+    expect(stream.listenerCount("close")).toBe(0);
+  } finally {
+    release?.();
+    await observed;
+    vi.restoreAllMocks();
+  }
+});
+
+it("does not admit the alternate when cancellation occurs during ENOENT cleanup", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const missing = Object.assign(new Error("controlled missing file"), { code: "ENOENT" });
+  const reason = new Error("cancelled during cleanup");
+  let release: (() => void) | undefined;
+  const stream = new Readable({
+    read() {
+      this.emit("error", missing);
+    },
+    destroy(_error, callback) {
+      release = () => {
+        release = undefined;
+        callback(null);
+      };
+    },
+  });
+  const control = new AbortController();
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  const opened = openBlobFromRoots({ primary, alternate, storageKey: "key", signal: control.signal });
+  const observed = opened.then(
+    () => {},
+    () => {},
+  );
+  try {
+    await vi.waitFor(() => expect(release).toBeDefined());
+    control.abort(reason);
+    expect(second).not.toHaveBeenCalled();
+    release?.();
+    await expect(opened).rejects.toBe(reason);
+    expect(stream.closed).toBe(true);
+    expect(second).not.toHaveBeenCalled();
+  } finally {
+    release?.();
+    await observed;
+    vi.restoreAllMocks();
+  }
+});
+
+it("handles already closed and destroyed-but-not-yet-closed streams", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const closedStream = new Readable({ read() {} });
+  const closed = new Promise<void>((resolve) => closedStream.once("close", resolve));
+  closedStream.destroy();
+  await closed;
+  const first = vi.spyOn(primary, "readStream").mockReturnValue(closedStream);
+  const second = vi.spyOn(alternate, "readStream");
+  try {
+    await expect(openBlobFromRoots({ primary, alternate, storageKey: "key" })).rejects.toThrow(
+      "closed before becoming readable",
+    );
+    expect(second).not.toHaveBeenCalled();
+    let release: (() => void) | undefined;
+    const pending = new Readable({
+      read() {},
+      destroy(_error, callback) {
+        release = () => {
+          release = undefined;
+          callback(null);
+        };
+      },
+    });
+    pending.destroy();
+    first.mockReturnValue(pending);
+    const control = new AbortController();
+    const opened = openBlobFromRoots({ primary, alternate, storageKey: "key", signal: control.signal });
+    const observed = opened.then(
+      () => {},
+      () => {},
+    );
+    try {
+      control.abort();
+      await vi.waitFor(() => expect(release).toBeDefined());
+      expect(pending.closed).toBe(false);
+      release?.();
+      await expect(opened).rejects.toMatchObject({ name: "AbortError" });
+      expect(pending.closed).toBe(true);
+    } finally {
+      release?.();
+      await observed;
+    }
+    expect(second).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it("preserves primary and asynchronous cleanup errors in order after close", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const original = new Error("controlled primary");
+  const cleanup = new Error("controlled asynchronous cleanup");
+  const stream = new Readable({
+    read() {
+      this.emit("error", original);
+    },
+    destroy(_error, callback) {
+      callback(cleanup);
+    },
+  });
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  try {
+    await expect(openBlobFromRoots({ primary, alternate, storageKey: "key" })).rejects.toMatchObject({
+      cause: original,
+      errors: [original, cleanup],
+    });
+    expect(stream.closed).toBe(true);
+    expect(second).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it("reports an unobserved cleanup deadline and safely observes the eventual late close", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const original = Object.assign(new Error("controlled missing file"), { code: "ENOENT" });
+  const late = new Error("controlled late cleanup error");
+  let release: (() => void) | undefined;
+  const stream = new Readable({
+    read() {
+      this.emit("error", original);
+    },
+    destroy(_error, callback) {
+      release = () => {
+        release = undefined;
+        callback(late);
+      };
+    },
+  });
+  const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  const opened = openBlobFromRoots({ primary, alternate, storageKey: "key" });
+  const observed = opened.then(
+    () => {},
+    () => {},
+  );
+  try {
+    let failure: unknown;
+    try {
+      await opened;
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected cleanup deadline failure");
+    expect(failure.errors[0]).toBe(original);
+    expect(failure.errors[1]).toMatchObject({
+      message: "Blob stream cleanup closure was not observed within its deadline",
+    });
+    expect(second).not.toHaveBeenCalled();
+    expect(stream.closed).toBe(false);
+  } finally {
+    release?.();
+    await observed;
+    await closed;
+    expect(stream.listenerCount("error")).toBe(0);
+    expect(stream.listenerCount("close")).toBe(0);
+    vi.restoreAllMocks();
+  }
+}, 15_000);
 
 it("refuses an already aborted open without opening either root", async () => {
   const primary = new LocalFsBlobStorageWriter("/unused-primary");
