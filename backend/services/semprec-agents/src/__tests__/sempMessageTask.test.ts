@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { z } from "zod";
 import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -58,6 +57,39 @@ let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 
+type RefFixtureMessage =
+  { type: "ready"; port: number } | { type: "observation"; sequence: number; owner: boolean; foreign: boolean };
+
+function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (!("type" in value)) return null;
+  if (
+    value.type === "ready" &&
+    Object.keys(value).length === 2 &&
+    "port" in value &&
+    typeof value.port === "number" &&
+    Number.isInteger(value.port) &&
+    value.port >= 1 &&
+    value.port <= 65535
+  )
+    return { type: "ready", port: value.port };
+  if (
+    value.type === "observation" &&
+    Object.keys(value).length === 4 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "owner" in value &&
+    typeof value.owner === "boolean" &&
+    "foreign" in value &&
+    typeof value.foreign === "boolean"
+  )
+    return { type: "observation", sequence: value.sequence, owner: value.owner, foreign: value.foreign };
+  return null;
+}
+
 describe("queued Semp messages", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -104,16 +136,7 @@ describe("queued Semp messages", () => {
     const blockRoot = resolve(backend, "../shared/block-model");
     const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/refExpansionGateway.js");
     const fixtureSource = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/refExpansionGateway.ts");
-    const messageSchema = z.discriminatedUnion("type", [
-      z.strictObject({ type: z.literal("ready"), port: z.number().int().min(1).max(65535) }),
-      z.strictObject({
-        type: z.literal("observation"),
-        sequence: z.number().int().min(1).max(20),
-        owner: z.boolean(),
-        foreign: z.boolean(),
-      }),
-    ]);
-    const messages: z.infer<typeof messageSchema>[] = [];
+    const messages: RefFixtureMessage[] = [];
     let invalidOutput = false;
     let outputBytes = 0;
     let child: ChildProcess | undefined;
@@ -153,7 +176,8 @@ describe("queued Semp messages", () => {
       const blockHash = createHash("sha256")
         .update(await readFile(blockEntry))
         .digest("hex");
-      const databaseUrl = z.object({ connectionString: z.string() }).parse(pool.options).connectionString;
+      const databaseUrl = pool.options.connectionString;
+      if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
       child = spawn(process.execPath, [fixture], {
         cwd: backend,
         detached: true,
@@ -183,9 +207,9 @@ describe("queued Semp messages", () => {
           if (outputBytes > 100_000) invalidOutput = true;
         });
       owned.on("message", (value: unknown) => {
-        const parsed = messageSchema.safeParse(value);
-        if (!parsed.success || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
-        else messages.push(parsed.data);
+        const parsed = parseRefFixtureMessage(value);
+        if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+        else messages.push(parsed);
       });
       await vi.waitFor(
         () => {
