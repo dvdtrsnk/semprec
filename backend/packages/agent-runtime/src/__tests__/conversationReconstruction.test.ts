@@ -144,7 +144,13 @@ describe("reconstructConversationHistory", () => {
         timestamp: 0,
         message: { kind: "message", text: "x" },
       }));
-      await runInTenant(tenant, () => persistCompaction(runtime, checkpoint.runId, entries));
+      await runInTenant(tenant, () =>
+        persistCompaction(runtime, checkpoint.runId, entries, {
+          threadId: checkpoint.threadId,
+          triggeredBy: "user",
+          parentRunId: null,
+        }),
+      );
       await expect(
         runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, checkpoint.threadId)),
       ).rejects.toThrow("Semp conversation history exceeds replay limits");
