@@ -10,6 +10,7 @@ import {
   createAgentRun,
   createHeartbeat,
   createUser,
+  enqueueSempMessage,
   getDatabaseByModuleId,
   generatePermissionManifest,
   finishAgentRun,
@@ -285,6 +286,7 @@ describe("Semp thread live prompt", () => {
           { stopReason: "toolUse" },
         ),
       () => fauxAssistantMessage("tool results checked"),
+      () => fauxAssistantMessage("system continuation answered"),
       (context) => {
         prompts.push(JSON.stringify(context.messages));
         tools.push((context.tools ?? []).map((tool) => tool.name));
@@ -368,6 +370,32 @@ describe("Semp thread live prompt", () => {
       ]),
     );
     expect(jobs.rows).toEqual([{ key: `heartbeat-fire:manual:${fixture.own}` }]);
+    // The later system-continuation producer is outside this batch; these rows form a valid stored input to the real task.
+    const continuation = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const source = await client.query<{ id: string }>(
+          "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'system', $2) RETURNING id",
+          [fixture.threadId, "Continue the automation"],
+        );
+        const sourceId = source.rows[0]?.id;
+        if (!sourceId) throw new Error("Missing system source message");
+        const reply = await client.query<{ id: string }>(
+          "INSERT INTO semp_messages (thread_id, role, reply_to_message_id, status) VALUES ($1, 'assistant', $2, 'queued') RETURNING id",
+          [fixture.threadId, sourceId],
+        );
+        const assistantMessageId = reply.rows[0]?.id;
+        if (!assistantMessageId) throw new Error("Missing system continuation reply");
+        await enqueueSempMessage(client, { threadId: fixture.threadId, assistantMessageId });
+        return { threadId: fixture.threadId, assistantMessageId };
+      }),
+    );
+    await runInTenant(tenant, () => task(continuation, { job: { id: "system-continuation" } }));
+    const systemReply = await runInTenant(tenant, () =>
+      runtime.query<{ text: string; status: string }>("SELECT text, status FROM semp_messages WHERE id = $1", [
+        continuation.assistantMessageId,
+      ]),
+    );
+    expect(systemReply.rows).toEqual([{ text: "system continuation answered", status: "done" }]);
     const chat = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) =>
         sendSempMessage(client, { text: "normal chat", context: [], hasContext: false }),
