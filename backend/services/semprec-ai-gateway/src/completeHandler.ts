@@ -29,6 +29,7 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["transcript_event_pick", false],
   ["transcript_summary", false],
   ["transcript_speaker_suggestion", false],
+  ["semp_thread_title", false],
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

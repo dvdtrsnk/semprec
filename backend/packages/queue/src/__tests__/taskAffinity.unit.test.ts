@@ -42,6 +42,12 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(TASK_TENANCY[CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]).toBe("system");
   });
 
+  it("declares the tenant-scoped Semp thread title task in the API set", () => {
+    expect(CORE_TASK_NAMES.SEMP_THREAD_TITLE).toBe("sempThreadTitle");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.SEMP_THREAD_TITLE]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.SEMP_THREAD_TITLE]).toBe("tenant");
+  });
+
   it("declares queueFailedJobsPrune in the exhaustive API set", () => {
     expect(CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE).toBe("queueFailedJobsPrune");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]).toBe("api");
@@ -55,7 +61,13 @@ describe("CORE_TASK_AFFINITY", () => {
 });
 
 describe("AGENT_TASK_NAMES", () => {
-  it("exports exactly heartbeatFireAgent, agentRun, and delegatedAgentRun", () => {
-    expect(Object.values(AGENT_TASK_NAMES).sort()).toEqual(["agentRun", "delegatedAgentRun", "heartbeatFireAgent"]);
+  it("exports the agent task catalog including tenant-scoped Semp messages", () => {
+    expect(Object.values(AGENT_TASK_NAMES).sort()).toEqual([
+      "agentRun",
+      "delegatedAgentRun",
+      "heartbeatFireAgent",
+      "sempMessage",
+    ]);
+    expect(TASK_TENANCY[AGENT_TASK_NAMES.SEMP_MESSAGE]).toBe("tenant");
   });
 });

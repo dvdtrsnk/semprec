@@ -148,6 +148,7 @@ describe("Files transcription trigger (issue #180)", () => {
         z.number(),
         z.string(),
         z.string(),
+        z.number().int(),
       ]);
       const calls = observed
         .map((entry) => argsSchema.safeParse(entry))
@@ -156,6 +157,7 @@ describe("Files transcription trigger (issue #180)", () => {
       const enqueueCalls = calls.filter((args) => keys.includes(args[5]));
       expect(enqueueCalls).toHaveLength(2);
       for (const args of enqueueCalls) {
+        expect(args[7]).toBe(0);
         const envelope: unknown = JSON.parse(args[1]);
         expect(envelope).toMatchObject({ tenantId: tenant, payload: { fileItemId: audio } });
       }

@@ -166,6 +166,7 @@ export async function getAgentRunEventById(
 export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
   filter: SessionAgentRunsFilter,
+  bounds?: { maxRows: number; maxBytes: number },
 ): Promise<AgentRunEventRow[]> {
   // A thread's main conversation is keyed by `thread_id` (agent_runs_thread_wake_idx); the project-item
   // form never picks those runs up, so a thread's runs and a non-thread session of the same project
@@ -177,6 +178,49 @@ export async function listSessionAgentRunEventsFromLastCompaction(
        AND NOT (thread_id IS NOT NULL AND triggered_by = 'user' AND parent_run_id IS NULL)`;
   const params =
     "threadId" in filter ? [filter.threadId] : [filter.projectItemId, filter.triggeredBy, filter.parentRunId];
+  if (bounds) {
+    if (
+      !("threadId" in filter) ||
+      !Number.isSafeInteger(bounds.maxRows) ||
+      bounds.maxRows < 1 ||
+      !Number.isSafeInteger(bounds.maxBytes) ||
+      bounds.maxBytes < 1
+    )
+      throw new Error("Invalid history bounds");
+    const result = await client.query<{
+      overflow: boolean;
+      id: string | null;
+      agent_run_id: string | null;
+      kind: string | null;
+      payload: unknown;
+      at: Date | null;
+    }>(
+      `WITH session_runs AS MATERIALIZED (
+         SELECT id, wake_seq FROM agent_runs WHERE ${sessionRunsWhere}
+       ), latest_compaction AS (
+         SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
+       ), candidates AS MATERIALIZED (
+         SELECT e.id, e.agent_run_id, e.kind, e.at, r.wake_seq, octet_length(e.payload::text) AS bytes
+         FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
+         WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
+         ORDER BY r.wake_seq, e.id LIMIT $2
+       ), budget AS (
+         SELECT count(*) > $3 OR COALESCE(sum(bytes), 0) > $4 AS overflow FROM candidates
+       )
+       SELECT budget.overflow, c.id, c.agent_run_id, c.kind, CASE WHEN budget.overflow THEN NULL ELSE e.payload END AS payload, c.at
+       FROM budget LEFT JOIN candidates c ON NOT budget.overflow
+       LEFT JOIN agent_run_events e ON e.id = c.id AND e.agent_run_id = c.agent_run_id
+       ORDER BY c.wake_seq, c.id`,
+      [filter.threadId, bounds.maxRows + 1, bounds.maxRows, bounds.maxBytes],
+    );
+    if (result.rows[0]?.overflow) throw new Error("Semp conversation history exceeds replay limits");
+    return result.rows.flatMap((row) => {
+      if (row.id === null) return [];
+      if (row.agent_run_id === null || row.kind === null || row.at === null)
+        throw new Error("Malformed conversation history row");
+      return [mapRow({ id: row.id, agent_run_id: row.agent_run_id, kind: row.kind, payload: row.payload, at: row.at })];
+    });
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `WITH session_runs AS (
        SELECT id, wake_seq FROM agent_runs

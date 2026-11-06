@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTransaction } from "./db/pool.js";
 import { resolveMailModuleIds } from "./mail/mailModuleIds.js";
-import { withTraceContext } from "@semprec/shared";
+import { withTraceContext, type AiGatewayClientPort } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   handleHeartbeatSweepTask,
@@ -57,6 +57,7 @@ import { handleObservabilityCheckSystemTask } from "./observability/observabilit
 import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
 import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
+import { handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
@@ -135,6 +136,7 @@ export function createCoreTaskList(
     files: resolveBlobStorageDir("FILES_STORAGE_DIR"),
     mailAttachments: resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
   },
+  titleGateway?: AiGatewayClientPort,
 ): TaskList {
   const handlers: TaskList = {
     [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: async (payload) => handleLinkPropagation(pool, payload),
@@ -270,6 +272,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: async () => {
       await handleSempProblemsPruneTask(pool);
+    },
+    [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: async (payload) => {
+      if (titleGateway) await handleSempThreadTitle(pool, requireString(payload, "threadId"), titleGateway);
     },
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);

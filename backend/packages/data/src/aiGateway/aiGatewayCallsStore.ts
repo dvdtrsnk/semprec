@@ -22,6 +22,7 @@ export interface AiGatewayCallRow {
   audioSeconds: number | null;
   costUsd: number;
   agentRunId: string | null;
+  sempMessageId: string | null;
   /** Set only by #215's `POST /internal/complete` route; null for every other caller. */
   projectItemId: string | null;
   operation: string | null;
@@ -59,6 +60,7 @@ type AiGatewayCallDbRow = {
   audio_seconds: string | null;
   cost_usd: string;
   agent_run_id: string | null;
+  semp_message_id: string | null;
   project_item_id: string | null;
   operation: string | null;
   status: string;
@@ -75,6 +77,7 @@ function mapRow(row: AiGatewayCallDbRow): AiGatewayCallRow {
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
     costUsd: Number(row.cost_usd),
     agentRunId: row.agent_run_id,
+    sempMessageId: row.semp_message_id,
     projectItemId: row.project_item_id,
     operation: row.operation,
     status: assertKnownValue(AI_GATEWAY_CALL_STATUSES, row.status, "ai_gateway_calls status"),
@@ -89,7 +92,7 @@ export async function recordTokenGatewayCall(
   const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
      VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8)
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id`,
     [
       input.provider,
       input.model,
@@ -112,7 +115,7 @@ export async function recordAudioGatewayCall(
   const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
      VALUES ($1, $2, NULL, NULL, $3, $4, NULL, NULL, NULL)
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id`,
     [input.provider, input.model, input.audioSeconds, input.costUsd],
   );
   return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
@@ -124,6 +127,7 @@ export interface ReserveGatewayCallInput {
   /** The caller's upper-bound estimate; counted against the budget until the row is settled or failed. */
   estimatedCostUsd: number;
   agentRunId?: string | null;
+  sempMessageId?: string | null;
   projectItemId?: string | null;
   operation?: string | null;
 }
@@ -170,15 +174,16 @@ export async function reserveGatewayCall(
   input: ReserveGatewayCallInput,
 ): Promise<AiGatewayCallRow> {
   const { rows } = await client.query<AiGatewayCallDbRow>(
-    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status)
-     SELECT $1, $2, NULL, NULL, NULL, $3, $4::uuid, $5::uuid, $6, 'reserved'
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id)
+     SELECT $1, $2, NULL, NULL, NULL, $3, $4::uuid, $5::uuid, $6, 'reserved', $8::uuid
      WHERE EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active')
        AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM agent_runs WHERE id = $4::uuid))
+       AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM semp_messages WHERE id = $8::uuid))
        AND ($5::uuid IS NULL OR EXISTS (
          SELECT 1 FROM items i JOIN databases d ON d.id = i.database_id
          WHERE i.id = $5::uuid AND d.system AND d.owner_module_id = $7
        ))
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id`,
     [
       input.provider,
       input.model,
@@ -187,6 +192,7 @@ export async function reserveGatewayCall(
       input.projectItemId ?? null,
       input.operation ?? null,
       PROJECTS_MODULE_ID,
+      input.sempMessageId ?? null,
     ],
   );
   const row = rows[0];
@@ -206,7 +212,7 @@ export async function settleTokenGatewayCall(
   const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', input_tokens = $2, output_tokens = $3, cost_usd = $4
      WHERE id = $1 AND status = 'reserved'
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id`,
     [id, input.inputTokens, input.outputTokens, input.costUsd],
   );
   if (!result.rowCount) return null;
@@ -225,7 +231,7 @@ export async function settleAudioGatewayCall(
   const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', audio_seconds = $2, cost_usd = $3
      WHERE id = $1 AND status = 'reserved'
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status, semp_message_id`,
     [id, input.audioSeconds, input.costUsd],
   );
   if (!result.rowCount) return null;

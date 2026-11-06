@@ -13,6 +13,7 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
 import { createMailSyncAdapters } from "./mailSyncAdapters.js";
+import { createAiGatewayClientForApi } from "./projectAgentGuidanceComposition.js";
 
 export interface ApiQueueRuntimeOptions {
   /** Overrides `CORE_CRONTAB` — tests use a faster cadence to observe a sweep without waiting on the real one. */
@@ -65,6 +66,9 @@ export async function createApiQueueRuntime(
     moduleRegistry,
     undefined, // pushSenders
     replayApprovedGenericOperation,
+    undefined, // filesBlobStorage
+    undefined, // tenantBlobStorageDirs
+    createAiGatewayClientForApi(),
   );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
 

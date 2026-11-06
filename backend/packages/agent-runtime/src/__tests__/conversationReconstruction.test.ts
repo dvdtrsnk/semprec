@@ -9,9 +9,19 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createAgentRun, createUser as createStoredUser, insertAgentRunEvent, withTransaction } from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
-import { persistCompaction, reconstructConversationHistory } from "../conversationReconstruction.js";
+import {
+  createAgentRun,
+  createSempChatThread,
+  createUser as createStoredUser,
+  insertAgentRunEvent,
+  withTransaction,
+} from "@semprec/data";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  persistCompaction,
+  reconstructBoundedThreadHistory,
+  reconstructConversationHistory,
+} from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type { AgentMessage, ConversationEntry } from "../types.js";
 
@@ -75,6 +85,209 @@ describe("reconstructConversationHistory", () => {
     );
     expect(result).toBeNull();
   });
+
+  it("bounds stored rows and expanded checkpoints with tenant-scoped complete replay", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:replay-role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      const foreign = await createTestTenant(pool);
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, { threadId, triggeredBy: "user", unit: "session", task: "bounded" });
+          for (let i = 0; i < 2000; i++)
+            await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: `entry ${i}` });
+          return { threadId, runId: run.id };
+        }),
+      );
+      const complete = await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, fixture.threadId));
+      expect(complete?.entries).toHaveLength(2000);
+      expect(complete?.entries[0]?.message).toMatchObject({ kind: "message", text: "entry 0" });
+      expect(complete?.entries.at(-1)?.message).toMatchObject({ kind: "message", text: "entry 1999" });
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, fixture.threadId))).toBeNull();
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, randomUUID()))).toBeNull();
+      await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, fixture.runId, "message", { kind: "message", text: "overflow" }),
+      );
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, fixture.threadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
+      const count = await runInTenant(tenant, () =>
+        runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM agent_run_events WHERE agent_run_id = $1",
+          [fixture.runId],
+        ),
+      );
+      expect(count.rows).toEqual([{ count: 2001 }]);
+      const checkpoint = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "checkpoint",
+          });
+          return { threadId, runId: run.id };
+        }),
+      );
+      const entries: ConversationEntry[] = Array.from({ length: 2001 }, (_, seq) => ({
+        id: String(seq),
+        parentId: seq === 0 ? null : String(seq - 1),
+        seq,
+        timestamp: 0,
+        message: { kind: "message", text: "x" },
+      }));
+      await runInTenant(tenant, () =>
+        persistCompaction(runtime, checkpoint.runId, entries, {
+          threadId: checkpoint.threadId,
+          triggeredBy: "user",
+          parentRunId: null,
+        }),
+      );
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, checkpoint.threadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
+      expect(
+        await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, checkpoint.threadId)),
+      ).toBeNull();
+
+      const paired = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "checkpoint pair",
+          });
+          await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "superseded" });
+          return { threadId, runId: run.id };
+        }),
+      );
+      await runInTenant(tenant, () =>
+        persistCompaction(
+          runtime,
+          paired.runId,
+          [
+            { id: "summary", parentId: null, seq: 0, timestamp: 0, message: { kind: "message", text: "summary" } },
+            {
+              id: "tool",
+              parentId: "summary",
+              seq: 1,
+              timestamp: 0,
+              message: { kind: "tool_use", toolCallId: "pair", name: "search" },
+            },
+          ],
+          { threadId: paired.threadId, triggeredBy: "user", parentRunId: null },
+        ),
+      );
+      await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, paired.runId, "tool_result", {
+          kind: "tool_result",
+          toolCallId: "pair",
+          result: "ok",
+        }),
+      );
+      const replay = await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, paired.threadId));
+      expect(replay?.entries.map((entry) => entry.message.kind)).toEqual(["message", "tool_use", "tool_result"]);
+      expect(replay?.entries[0]?.message).toMatchObject({ text: "summary" });
+      expect(replay?.entries[1]?.message).toMatchObject({ toolCallId: "pair" });
+      expect(replay?.entries[2]?.message).toMatchObject({ toolCallId: "pair" });
+      expect(replay?.entries[2]?.parentId).toBe("tool");
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, paired.threadId))).toBeNull();
+
+      const bytes = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, { threadId, triggeredBy: "user", unit: "session", task: "bytes" });
+          const baseline = await client.query<{ size: number }>(
+            "SELECT octet_length(jsonb_build_object('kind', 'message', 'text', '')::text)::int AS size",
+          );
+          if (!baseline.rows[0]) throw new Error("Missing JSON payload size");
+          const text = "x".repeat(262144 - baseline.rows[0].size);
+          await insertAgentRunEvent(client, run.id, "message", { kind: "message", text });
+          const overThreadId = await createSempChatThread(client);
+          const overRun = await createAgentRun(client, {
+            threadId: overThreadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "one byte over",
+          });
+          await insertAgentRunEvent(client, overRun.id, "message", { kind: "message", text: `${text}x` });
+          return { threadId, runId: run.id, overThreadId, overRunId: overRun.id };
+        }),
+      );
+      const size = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1",
+          [bytes.runId],
+        ),
+      );
+      expect(size.rows).toEqual([{ size: 262144 }]);
+      expect(
+        (await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, bytes.threadId)))?.entries,
+      ).toHaveLength(1);
+      const overSize = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1",
+          [bytes.overRunId],
+        ),
+      );
+      expect(overSize.rows).toEqual([{ size: 262145 }]);
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, bytes.overThreadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, bytes.threadId))).toBeNull();
+
+      const oversizedCheckpoint = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "large checkpoint",
+          });
+          return { threadId, runId: run.id };
+        }),
+      );
+      await runInTenant(tenant, () =>
+        persistCompaction(
+          runtime,
+          oversizedCheckpoint.runId,
+          [
+            {
+              id: "large",
+              parentId: null,
+              seq: 0,
+              timestamp: 0,
+              message: { kind: "message", text: "x".repeat(262144) },
+            },
+          ],
+          { threadId: oversizedCheckpoint.threadId, triggeredBy: "user", parentRunId: null },
+        ),
+      );
+      const checkpointSize = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+          [oversizedCheckpoint.runId],
+        ),
+      );
+      expect(checkpointSize.rows[0]!.size).toBeGreaterThan(262144);
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, oversizedCheckpoint.threadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
+    } finally {
+      await runtime.end();
+    }
+  }, 60_000);
 
   it("walks every prior user/session agent_runs row's events, in order, into one linear Entry[] chain", async () => {
     const runA = await createAgentRun(pool, {

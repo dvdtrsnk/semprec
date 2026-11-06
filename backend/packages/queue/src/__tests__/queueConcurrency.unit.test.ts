@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { QUEUE_CONCURRENCY_DEFAULT, resolveQueueConcurrency } from "../index.js";
+import { QUEUE_CONCURRENCY_DEFAULT, resolveQueueConcurrency, resolveSempChatQueueConcurrency } from "../index.js";
 
 describe("resolveQueueConcurrency", () => {
   it("falls back to the default when QUEUE_CONCURRENCY is unset", () => {
@@ -17,6 +17,23 @@ describe("resolveQueueConcurrency", () => {
   it.each(["0", "-1", "abc", "2.5"])("throws naming the variable for %s", (raw) => {
     expect(() => resolveQueueConcurrency({ QUEUE_CONCURRENCY: raw })).toThrow(
       `QUEUE_CONCURRENCY is not a positive integer: ${raw}`,
+    );
+  });
+});
+
+describe("resolveSempChatQueueConcurrency", () => {
+  it("defaults to two for unset or empty values", () => {
+    expect(resolveSempChatQueueConcurrency({})).toBe(2);
+    expect(resolveSempChatQueueConcurrency({ SEMP_CHAT_QUEUE_CONCURRENCY: "" })).toBe(2);
+  });
+
+  it("accepts a positive integer", () => {
+    expect(resolveSempChatQueueConcurrency({ SEMP_CHAT_QUEUE_CONCURRENCY: "3" })).toBe(3);
+  });
+
+  it.each(["0", "-1", "abc", "2.5"])("rejects %s", (raw) => {
+    expect(() => resolveSempChatQueueConcurrency({ SEMP_CHAT_QUEUE_CONCURRENCY: raw })).toThrow(
+      `SEMP_CHAT_QUEUE_CONCURRENCY is not a positive integer: ${raw}`,
     );
   });
 });

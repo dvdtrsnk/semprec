@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
+import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
@@ -17,7 +19,13 @@ import {
   type TaskList,
   type TaskTenancy,
 } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  currentTenantScope,
+  runAsSystem,
+  runInTenant,
+  type AiGatewayClientPort,
+  type AiGatewayCompletionInput,
+} from "@semprec/shared";
 import {
   DEFAULT_COMPACTION_THRESHOLD,
   JOURNAL_MODULE_ID,
@@ -25,6 +33,7 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
   assertTaskListMatchesAffinity,
   beginTenantDeletion,
+  claimSempMessage,
   createAgentRun,
   createApiCoreTaskList,
   createChokePoint,
@@ -36,6 +45,7 @@ import {
   decideAndEnqueueApprovalRequest,
   ensureItemAutomation,
   finishAgentRun,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   getOrCreateJournalItem,
   insertAgentRunEvent,
@@ -48,6 +58,8 @@ import {
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
+  sendSempMessage,
+  startSempMessageTurn,
   upsertWebPushSubscription,
   withTransaction,
   writeNotification,
@@ -166,6 +178,14 @@ const previousEnv = new Map<string, string | undefined>();
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
+const titlePortCalls: { tenantId: string | null; input: AiGatewayCompletionInput }[] = [];
+const titlePort: AiGatewayClientPort = {
+  async complete(input) {
+    const scope = currentTenantScope();
+    titlePortCalls.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, input });
+    return { content: { title: "Tenant title" }, usage: { inputTokens: 1, outputTokens: 1 } };
+  },
+};
 
 const moduleRegistry = await loadFullModuleRegistry();
 
@@ -544,6 +564,55 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
 let journalDaysSeeded = 0;
 
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      titlePortCalls.length = 0;
+      return runInTenant(tenant.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const turn = await sendSempMessage(client, { text: "Tenant question", context: [], hasContext: false });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          const run = await createAgentRun(client, {
+            triggeredBy: "user",
+            unit: "session",
+            task: "Tenant question",
+            threadId: turn.threadId,
+          });
+          const event = await insertAgentRunEvent(client, run.id, "message", {
+            kind: "message",
+            text: "Tenant answer",
+          });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: "Tenant answer",
+              lastEventId: event.id,
+            }),
+          ).toBe(true);
+          return { threadId: turn.threadId };
+        }),
+      );
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows(tenant, "SELECT title FROM semp_threads WHERE id = $1", [requirePayloadString(payload, "threadId")]),
+      ).toEqual([{ title: "Tenant title" }]);
+      expect(titlePortCalls).toHaveLength(1);
+      expect(titlePortCalls[0]).toMatchObject({
+        tenantId: tenant.tenantId,
+        input: {
+          operation: "semp_thread_title",
+          projectItemId: null,
+          messages: [
+            { role: "user", content: "Tenant question" },
+            { role: "assistant", content: "Tenant answer" },
+          ],
+        },
+      });
+      titlePortCalls.length = 0;
+    },
+  },
   // The production catalog has no configured link rules: this exercises registered refusal,
   // not successful propagation (covered by the configured-rule data tests).
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: {
@@ -1341,6 +1410,12 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     await ensureQueueSchema(adminPool);
     await grantQueueSchemaPrivileges(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:title-registry-role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenantTables = await loadTenantTables();
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
@@ -1371,6 +1446,9 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       moduleRegistry,
       undefined,
       replayApprovedGenericOperation,
+      undefined,
+      undefined,
+      titlePort,
     );
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
@@ -1565,6 +1643,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
+        if (name === CORE_TASK_NAMES.SEMP_THREAD_TITLE) {
+          expect(titlePortCalls).toEqual([]);
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+          titlePortCalls.length = 0;
+        }
         if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
@@ -1574,6 +1660,63 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },
     );
+  });
+
+  it("publishes the title registry case's committed invalidation for its tenant", async () => {
+    const titleCase = cases[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
+    if (!titleCase || !isTenantCase(titleCase)) throw new Error("Missing title tenant case");
+    const payload = await titleCase.seed(tenantA);
+    await discardQueuedJobs();
+    const listener = await adminPool.connect();
+    const observed: { tenantId: string; threadId: string }[] = [];
+    listener.on("notification", (notification) => {
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
+      const parsed: unknown = JSON.parse(notification.payload);
+      const envelope = z
+        .object({
+          tenantId: z.string(),
+          message: z.object({ type: z.literal("invalidation"), scope: z.literal("sempThread"), threadId: z.string() }),
+        })
+        .safeParse(parsed);
+      if (envelope.success)
+        observed.push({ tenantId: envelope.data.tenantId, threadId: envelope.data.message.threadId });
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+      wireRealtimeHooks(pool);
+      const jobKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
+      await titleCase.expectDone(tenantA, payload);
+      const threadId = requirePayloadString(payload, "threadId");
+      const repeatedKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(repeatedKey)).toEqual({ attempts: null, lastError: null });
+      expect(titlePortCalls).toEqual([]);
+      expect(await rows(tenantA, "SELECT title FROM semp_threads WHERE id = $1", [threadId])).toEqual([
+        { title: "Tenant title" },
+      ]);
+      const deadline = Date.now() + 5_000;
+      while (
+        !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
+        Date.now() < deadline
+      )
+        await sleep(25);
+      expect(observed).toContainEqual({ tenantId: tenantA.tenantId, threadId });
+      expect(observed.filter((event) => event.tenantId === tenantB.tenantId)).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      listener.release(true);
+    } catch (error) {
+      if (failure) {
+        // Keep the assertion failure primary while retaining the cleanup failure.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure.error, error], "Title invalidation cleanup failed", { cause: failure.error });
+      }
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   describe("system tasks", () => {

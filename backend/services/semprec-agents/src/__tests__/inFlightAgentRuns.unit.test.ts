@@ -1,6 +1,68 @@
 import { describe, expect, it } from "vitest";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 
+describe("Semp settlement observation", () => {
+  it("retains active and late failures until consumed and isolates shutdown abort", async () => {
+    const runs = createInFlightAgentRuns();
+    const general = new AbortController();
+    const semp = new AbortController();
+    runs.register("tenant", general);
+    runs.register("tenant", semp, true);
+    let rejectFirst!: (reason: unknown) => void;
+    const first = runs.trackSemp(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+    void first.catch(() => {});
+    await Promise.resolve();
+    const settle = runs.observeSempSettlement();
+    const late = runs.trackSemp(async () => {
+      // The shutdown contract retains non-Error and falsy rejection reasons.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw null;
+    });
+    void late.catch(() => {});
+    expect(runs.abortSemp()).toBe(1);
+    expect(semp.signal.reason).toBe("shutdown");
+    expect(general.signal.aborted).toBe(false);
+    const later = new AbortController();
+    runs.register("tenant", later, true);
+    expect(later.signal.reason).toBe("shutdown");
+    rejectFirst(false);
+    const failures = await settle.wait();
+    expect(failures).toHaveLength(2);
+    expect(failures).toContain(null);
+    expect(failures).toContain(false);
+  });
+
+  it("snapshots observed failures without treating active work as settled", async () => {
+    const runs = createInFlightAgentRuns();
+    const observation = runs.observeSempSettlement();
+    const failed = runs.trackSemp(async () => {
+      // The shutdown contract retains non-Error and falsy rejection reasons.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw false;
+    });
+    await failed.catch(() => {});
+    let rejectLate!: (reason: unknown) => void;
+    const late = runs.trackSemp(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectLate = reject;
+        }),
+    );
+    void late.catch(() => {});
+    await Promise.resolve();
+    expect(observation.snapshotAndDispose()).toEqual([false]);
+    expect(observation.snapshotAndDispose()).toEqual([]);
+    rejectLate(null);
+    await late.catch(() => {});
+    await expect(observation.wait()).rejects.toThrow("observation was disposed");
+  });
+});
+
 const TENANT_A = "00000000-0000-4000-8000-00000000000a";
 const TENANT_B = "00000000-0000-4000-8000-00000000000b";
 

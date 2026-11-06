@@ -24,6 +24,7 @@ import {
   mergeModuleTaskListForAffinity,
   provisionTenant,
   resolveTaskAffinitySets,
+  sendSempMessage,
   withTransaction,
 } from "@semprec/data";
 import {
@@ -37,6 +38,7 @@ import { createAgentsActionRegistry } from "../actionRegistryComposition.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
 import type { GatewayModel } from "../modelComposition.js";
+import { createSempMessageTask } from "../sempMessageTask.js";
 
 /**
  * Two-tenant proof that every task of the `agents` affinity set keeps its data, notifications and
@@ -309,6 +311,25 @@ function agentRunCase(reply: string): TenantTaskCase {
 }
 
 const cases: Record<string, TaskCase> = {
+  [AGENT_TASK_NAMES.SEMP_MESSAGE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const turn = await runInTenant(tenant.tenantId, () =>
+        withTransaction(pool, (client) => sendSempMessage(client, { text: "hello", context: [], hasContext: false })),
+      );
+      await removeJob(`sempMessage:${turn.assistantMessageId}`);
+      faux.setResponses([fauxAssistantMessage("Semp reply")]);
+      return { threadId: turn.threadId, assistantMessageId: turn.assistantMessageId };
+    },
+    async expectDone(tenant, payload) {
+      const result = await runInTenant(tenant.tenantId, () =>
+        pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [
+          requirePayloadString(payload, "assistantMessageId"),
+        ]),
+      );
+      expect(result.rows).toEqual([{ status: "done", text: "Semp reply" }]);
+    },
+  },
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -373,6 +394,7 @@ describe("background task isolation across two tenants: agents runtime (issue #1
       moduleRegistry,
       createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
       createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
+      createSempMessageTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
     );
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
     affinitySet = (await resolveTaskAffinitySets(moduleRegistry)).agents;

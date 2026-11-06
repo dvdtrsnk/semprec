@@ -127,8 +127,12 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
  * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
  * over again.
  */
-async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Promise<ConversationEntry[]> {
-  const events = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+async function walkStoredEntries(
+  pool: Pool,
+  filter: SessionAgentRunsFilter,
+  bounds?: { maxRows: number; maxBytes: number },
+): Promise<ConversationEntry[]> {
+  const events = await listSessionAgentRunEventsFromLastCompaction(pool, filter, bounds);
   if (events.length === 0) return [];
 
   let entries: ConversationEntry[] = [];
@@ -157,6 +161,24 @@ async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Pr
   }
 
   return entries;
+}
+
+export async function reconstructBoundedThreadHistory(
+  pool: Pool,
+  threadId: string,
+): Promise<ReconstructedHistory | null> {
+  const bounds = { maxRows: 2000, maxBytes: 262144 };
+  const entries = await walkStoredEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, bounds);
+  const expandedBytes = entries.reduce(
+    (total, entry) => total + Buffer.byteLength(JSON.stringify(entry.message), "utf8"),
+    0,
+  );
+  if (entries.length > bounds.maxRows || expandedBytes > bounds.maxBytes) {
+    throw new Error("Semp conversation history exceeds replay limits");
+  }
+  if (!entries.length) return null;
+  validateProtocolInvariants(entries);
+  return { entries, compacted: false };
 }
 
 export interface ReconstructedHistory {

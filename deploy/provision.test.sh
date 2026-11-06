@@ -164,6 +164,7 @@ grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.con
 grep -qx 'SyslogIdentifier=semprec-api' "$TEST_ROOT/systemd/system/semprec-api.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-api.service"
 grep -qx 'SyslogIdentifier=semprec-agents' "$TEST_ROOT/systemd/system/semprec-agents.service"
+grep -qx 'TimeoutStopSec=120' "$TEST_ROOT/systemd/system/semprec-agents.service"
 grep -qx 'SyslogIdentifier=semprec-transcribe' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 grep -qx 'SyslogIdentifier=semprec-ai-gateway' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-agents.service"
