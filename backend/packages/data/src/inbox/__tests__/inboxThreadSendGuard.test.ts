@@ -491,6 +491,8 @@ describe("Inbox thread association reservations", () => {
     } catch (error) {
       if (failure)
         throw new AggregateError([failure.error, error], "Proposal contention cleanup failed", {
+          // Preserve the assertion failure as primary and the holder failure in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
           cause: failure.error,
         });
       throw error;
