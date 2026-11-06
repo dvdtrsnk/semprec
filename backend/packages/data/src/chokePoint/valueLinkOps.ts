@@ -14,7 +14,7 @@ import { updateItemWithClient } from "./itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "./relationOps.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 
-interface LinkInput {
+export interface LinkInput {
   itemId: string;
   propertyKey: string;
 }
