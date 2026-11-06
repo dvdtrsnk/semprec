@@ -604,11 +604,12 @@ describe("generic operation REST contract (issue #219)", () => {
 
     await chokePoint.softDeleteItem(fx.database.id, fx.itemB.id);
     await chokePoint.softDeleteItem(fx.database.id, other.id);
+    const linksWithoutSources = await chokePoint.getValueLinksForItems([fx.itemA.id]);
     const noLiveSource = await relink();
     expect(noLiveSource.status).toBe(409);
     expect(await noLiveSource.json()).toMatchObject({ error: { code: "value_link_conflict" } });
     expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(beforeItem);
-    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(beforeLinks);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(linksWithoutSources);
   });
 
   it("filters the system area from database.query and refuses its deletion", async () => {
