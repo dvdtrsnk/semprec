@@ -202,6 +202,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
         return;
       observed.push({ tenantId: value.tenantId, threadId: message.threadId });
     });
+    let failure: { error: unknown } | undefined;
     try {
       await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
       wireRealtimeHooks(runtimePool);
@@ -283,10 +284,25 @@ describe("semprec-agents startup repair (issue #642)", () => {
         { status: "error", error_code: "interrupted" },
       ]);
       expect((await locks()).rows).toEqual(before);
-    } finally {
-      listener.release(true);
-      await runtimePool.end();
+    } catch (error) {
+      failure = { error };
     }
+    const cleanup: unknown[] = [];
+    try {
+      listener.release(true);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      await runtimePool.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (cleanup.length)
+      throw new AggregateError(failure ? [failure.error, ...cleanup] : cleanup, "Repair test cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
   });
 
   it("processes the next queued message after repairing an interrupted Semp turn", async () => {
