@@ -167,11 +167,19 @@ describe("Semp reference turn reads", () => {
       const databases = await withTransaction(runtime, async (client) => ({
         tasks: await getDatabaseByModuleId(client, "tasks"),
         projects: await getDatabaseByModuleId(client, "projects"),
+        people: await getDatabaseByModuleId(client, "people"),
+        companies: await getDatabaseByModuleId(client, "companies"),
       }));
-      if (!databases.tasks || !databases.projects) throw new Error("Missing task or project database");
+      if (!databases.tasks || !databases.projects || !databases.people || !databases.companies)
+        throw new Error("Missing reference fixture database");
       const cp = createChokePoint(runtime);
       const task = await cp.createItem({ databaseId: databases.tasks.id, properties: { name: "Named task" } });
       const project = await cp.createItem({ databaseId: databases.projects.id, properties: { name: "Named project" } });
+      const person = await cp.createItem({ databaseId: databases.people.id, properties: { name: "Named person" } });
+      const company = await cp.createItem({
+        databaseId: databases.companies.id,
+        properties: { name: "Named company" },
+      });
       await withTransaction(runtime, async (client) => {
         const property = (await listPropertiesByDatabase(client, databases.tasks!.id)).find(
           (entry) => entry.key === "project",
@@ -182,6 +190,19 @@ describe("Semp reference turn reads", () => {
           callerItemId: task.id,
           targetItemId: project.id,
         });
+        const projectProperties = await listPropertiesByDatabase(client, databases.projects!.id);
+        for (const [key, targetItemId] of [
+          ["people", person.id],
+          ["company", company.id],
+        ] as const) {
+          const relation = projectProperties.find((entry) => entry.key === key);
+          if (!relation) throw new Error(`Missing project ${key} relation`);
+          await createRelationWithClient(client, {
+            relationPropertyId: relation.id,
+            callerItemId: project.id,
+            targetItemId,
+          });
+        }
       });
       const ref = { kind: "item" as const, itemId: task.id, databaseId: databases.tasks.id };
       const snapshot = () =>
@@ -195,6 +216,21 @@ describe("Semp reference turn reads", () => {
         details: {
           properties: { name: "Named task" },
           relations: { project: { names: ["Named project"], truncated: false } },
+        },
+      });
+      const projectRead = await withTransaction(runtime, (client) =>
+        readSempRefContext(client, {
+          kind: "item",
+          databaseId: databases.projects!.id,
+          itemId: project.id,
+        }),
+      );
+      expect(projectRead).toMatchObject({
+        details: {
+          relations: {
+            people: { names: ["Named person"], truncated: false },
+            company: { names: ["Named company"], truncated: false },
+          },
         },
       });
       await expect(
@@ -246,12 +282,12 @@ describe("Semp reference turn reads", () => {
       await expect(read(missingDescription.id)).resolves.toMatchObject({
         label: "",
         state: "active",
-        details: { description: null },
+        details: { description: null, status: "pending" },
       });
       await expect(read(described.id)).resolves.toMatchObject({
         label: description.key,
         state: "active",
-        details: { description },
+        details: { description, status: "pending" },
       });
       await expect(read(privateRequest.id)).resolves.toBeNull();
       await expect(read(randomUUID())).resolves.toBeNull();
