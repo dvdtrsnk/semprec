@@ -1748,7 +1748,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return result;
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     const received: string[] = [];
     try {
       const input = {
@@ -1803,7 +1803,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return result;
     };
-    const abortSpy = vi.spyOn(runtimePool, "query").mockImplementation(abortObserver as unknown as () => void);
+    const abortSpy = vi.spyOn(runtimePool, "query").mockImplementation(abortObserver);
     const controller = new AbortController();
     const afterAbort: string[] = [];
     try {
@@ -1935,7 +1935,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return original(...args);
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer);
     const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
     try {
       const registration = tenantServer.subscribeVoice({

@@ -129,13 +129,14 @@ provider.on("upgrade", (req, socket, head) => {
     ws.once("close", () => providerSockets.delete(ws));
     ws.on("error", () => {});
     ws.on("message", (data, binary) => {
-      if (binary || Buffer.byteLength(data.toString()) > 128 * 1024) {
+      const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+      if (binary || bytes.length > 128 * 1024) {
         ws.terminate();
         return;
       }
       let value: unknown;
       try {
-        value = JSON.parse(data.toString());
+        value = JSON.parse(bytes.toString("utf8"));
       } catch {
         ws.terminate();
         return;

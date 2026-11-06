@@ -323,7 +323,8 @@ export function createVoiceSessionHandler(
       session.stream?.close();
       const results = await Promise.allSettled([session.streamClosed, session.work, session.speech]);
       sessions.delete(identity.userId);
-      const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      const failures: unknown[] = [];
+      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
       if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed");
     },
   };

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { WebSocket } from "ws";
+import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -44,6 +44,11 @@ const childMessage = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("modelCall"), sequence: z.number().int().min(1).max(100) }),
 ]);
 type ChildMessage = z.infer<typeof childMessage>;
+function messageText(data: RawData): string {
+  return (Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString(
+    "utf8",
+  );
+}
 type OwnedChild = {
   child: ChildProcess;
   exit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>;
@@ -276,7 +281,7 @@ describe("voice session through the real gateway and registered worker", () => {
         audioFrames++;
         return;
       }
-      const value: unknown = JSON.parse(data.toString());
+      const value: unknown = JSON.parse(messageText(data));
       frames.push(value);
     });
     await once(socket, "open");
@@ -374,7 +379,7 @@ describe("voice session through the real gateway and registered worker", () => {
     const priorAudio = gateway.messages.filter((entry) => entry.type === "audioAccepted").length;
     socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
     socket.on("message", (data, binary) => {
-      if (!binary) frames.push(JSON.parse(data.toString()) as unknown);
+      if (!binary) frames.push(JSON.parse(messageText(data)) as unknown);
     });
     await once(socket, "open");
     socket.send(JSON.stringify({ type: "start", language: "en" }));
@@ -420,7 +425,7 @@ describe("voice session through the real gateway and registered worker", () => {
     await setTenantAiBudget(admin, tenant, { dailyCapUsd: 0, monthlyCapUsd: 0 });
     socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
     socket.on("message", (data, binary) => {
-      if (!binary) frames.push(JSON.parse(data.toString()) as unknown);
+      if (!binary) frames.push(JSON.parse(messageText(data)) as unknown);
     });
     await once(socket, "open");
     socket.send(JSON.stringify({ type: "start", language: "en" }));
