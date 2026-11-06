@@ -1954,6 +1954,128 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       );
   });
 
+  it("reports overloaded when an admitted chunk exceeds the retained fragment bound", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: Array<{ error: unknown; cause: string | undefined }> = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error, cause) {
+        failures.push({ error, cause });
+      },
+    });
+    let failed = false;
+    let failure: unknown;
+    try {
+      const message = {
+        type: "agent_run_delta",
+        agentRunId: run.id,
+        sempMessageId: target.sempMessageId,
+        afterEventId: first.id,
+        deltaSequence: 1,
+        delta: "A".repeat(7001),
+        chunk: { id: randomUUID(), index: 0, total: 2, encoding: "base64json" },
+      };
+      // A synthetic bounded transport fault crosses the real tenant-stamped LISTEN path.
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query(
+            "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
+            ["semprec_agent_stream", JSON.stringify(message)],
+          ),
+        ),
+      );
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]?.cause).toBe("overloaded");
+      expect(frames).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const cleanup = await Promise.allSettled([dispose()]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice overload test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("reports unavailable for an admitted malformed chunk and preserves a callback failure", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: Array<{ error: unknown; cause: string | undefined }> = [];
+    const callbackError = new Error("synthetic callback failure");
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error, cause) {
+        failures.push({ error, cause });
+        throw callbackError;
+      },
+    });
+    let failed = false;
+    let failure: unknown;
+    try {
+      const message = {
+        type: "agent_run_delta",
+        agentRunId: run.id,
+        sempMessageId: target.sempMessageId,
+        afterEventId: first.id,
+        deltaSequence: 1,
+        delta: "e30=",
+        chunk: { id: "not-a-uuid", index: 0, total: 1, encoding: "base64json" },
+      };
+      // This syntactically valid inner shape reaches the voice buffer, where the chunk id is refused.
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query(
+            "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
+            ["semprec_agent_stream", JSON.stringify(message)],
+          ),
+        ),
+      );
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]?.cause).toBe("unavailable");
+      expect(frames).toEqual([]);
+      const result: unknown = await dispose().catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw new Error("Missing combined voice failure");
+      expect(result.errors).toEqual([failures[0]?.error, callbackError]);
+      expect(result.cause).toBe(failures[0]?.error);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    if (failed) {
+      const cleanup = await Promise.allSettled([dispose()]);
+      const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      throw new AggregateError([failure, ...cleanupErrors], "Voice malformed-chunk test or cleanup failed", {
+        cause: failure,
+      });
+    }
+  });
+
   it("ignores a valid stale anchor and refuses an out-of-interval stale anchor", async () => {
     const otherRun = await createRunIn(tenantA, userA);
     const alien = await silentEventIn(tenantA, otherRun.id);
