@@ -15,7 +15,7 @@ function supportedSignature(bytes: Buffer): boolean {
   );
 }
 
-/** Read and decode one authorized image; failures leave no persistent derivative. */
+/** Decode one authorized image; failures leave no persistent derivative. */
 export async function decodeRefImage(input: Buffer, signal?: AbortSignal): Promise<AgentImage | null> {
   try {
     if (input.length > MAX_IMAGE_INPUT_BYTES || signal?.aborted) return null;
