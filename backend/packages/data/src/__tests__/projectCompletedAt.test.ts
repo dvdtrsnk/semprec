@@ -7,7 +7,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { getSystemTimezone } from "../systemSettings.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { today } from "../calendarTime.js";
 
@@ -75,6 +75,33 @@ describe("Projects completion date", () => {
         cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { completedAt: day } }),
       ).rejects.toMatchObject({ status: 403 });
       expect((await cp.getItem(databaseId, item.id))?.properties.completedAt).toBeNull();
+    });
+  });
+
+  it("uses a tenant day that differs from UTC for implicit completion", async () => {
+    await runInTenant(tenant, async () => {
+      const dateIn = (zone: string) => {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone: zone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(new Date());
+        return ["year", "month", "day"].map((type) => parts.find((part) => part.type === type)?.value).join("-");
+      };
+      const utcDay = dateIn("UTC");
+      const zone = ["Pacific/Kiritimati", "America/Adak"].find((candidate) => dateIn(candidate) !== utcDay);
+      if (!zone) throw new Error("Expected one tenant zone on a different day from UTC");
+      const settings = await withTransaction(data, async (client) => ({
+        databaseId: await getSystemSettingsDatabaseId(client),
+        itemId: await getSystemSettingsItemId(client),
+      }));
+      await cp.updateItem({ ...settings, propertiesPatch: { timezone: zone } });
+      const expected = dateIn(zone);
+      const item = await cp.createItem({ databaseId, properties: { name: "Zoned project", status: "inProgress" } });
+      const done = await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "done" } });
+      expect(done.properties.completedAt).toBe(expected);
+      expect(done.properties.completedAt).not.toBe(utcDay);
     });
   });
 });
