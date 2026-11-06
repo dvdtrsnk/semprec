@@ -8,6 +8,7 @@ import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
+import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem } from "../../chokePoint/relationsStore.js";
@@ -361,5 +362,70 @@ describe("Inbox thread association reservations", () => {
       ]),
     );
     expect(messages.rows).toEqual([{ count: 4 }]);
+  });
+
+  it("ignores a trashed card and refuses unrelated, foreign, deleted and unknown hints without writes", async () => {
+    const createCard = (tenantId: string) =>
+      runInTenant(tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const inbox = await getDatabaseByModuleId(client, "inbox");
+          const proposals = await getDatabaseByModuleId(client, "processingProposals");
+          if (!inbox || !proposals) throw new Error("Missing Inbox databases");
+          const property = await getPropertyByKey(client, proposals.id, "sourceInbox");
+          if (!property) throw new Error("Missing sourceInbox property");
+          const source = await createItemWithClient(client, {
+            databaseId: inbox.id,
+            properties: { date: "2026-01-01", time: "14:00", text: "trashed card" },
+          });
+          const card = await createItemWithClient(
+            client,
+            {
+              databaseId: proposals.id,
+              properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "confirmed" },
+            },
+            { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+          );
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: card.id, targetItemId: source.id },
+            { ownerProcess: "processingProposals" },
+          );
+          return { sourceId: source.id, cardId: card.id, databaseId: proposals.id };
+        }),
+      );
+    const own = await createCard(tenant);
+    const unrelated = await createCard(tenant);
+    const foreign = await createCard(other);
+    await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, own.databaseId, own.cardId, { queueAffinity: "api" }),
+      ),
+    );
+    const send = (proposalId?: string) =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            subject: { inboxItemId: own.sourceId, ...(proposalId ? { proposalId } : {}) },
+            text: "question",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+    const accepted = await send();
+    const counts = () =>
+      runInTenant(tenant, () =>
+        pool.query<{ messages: number; jobs: number }>(
+          `SELECT (SELECT count(*)::int FROM semp_messages WHERE thread_id = $1) AS messages,
+                  (SELECT count(*)::int FROM graphile_worker.jobs WHERE key LIKE 'sempMessage:%') AS jobs`,
+          [accepted.threadId],
+        ),
+      );
+    const before = (await counts()).rows;
+    for (const id of [own.cardId, unrelated.cardId, foreign.cardId, randomUUID()]) {
+      await expect(send(id)).rejects.toMatchObject({ code: "validation_failed" });
+      expect((await counts()).rows).toEqual(before);
+    }
+    expect(before[0]?.messages).toBe(2);
   });
 });
