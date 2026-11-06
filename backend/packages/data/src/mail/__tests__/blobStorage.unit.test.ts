@@ -314,6 +314,16 @@ it("handles already closed and destroyed-but-not-yet-closed streams", async () =
       "closed before becoming readable",
     );
     expect(second).not.toHaveBeenCalled();
+    const original = new Error("previously observed stream error");
+    const failedStream = new Readable({ read() {} });
+    const failureClosed = new Promise<void>((resolve) => failedStream.once("close", resolve));
+    const observeFailure = () => {};
+    failedStream.on("error", observeFailure);
+    failedStream.destroy(original);
+    await failureClosed;
+    failedStream.off("error", observeFailure);
+    first.mockReturnValue(failedStream);
+    await expect(openBlobFromRoots({ primary, alternate, storageKey: "key" })).rejects.toBe(original);
     let release: (() => void) | undefined;
     const pending = new Readable({
       read() {},

@@ -44,7 +44,7 @@ async function waitForReadable(stream: Readable, signal: AbortSignal | undefined
       remove();
       resolve({ ok: false, error: value });
     };
-    const closed = () => error(new Error("Blob stream closed before becoming readable"));
+    const closed = () => error(stream.errored ?? new Error("Blob stream closed before becoming readable"));
     const aborted = () => {
       const value = Object.assign(new Error("The operation was aborted", { cause: signal?.reason }), {
         name: "AbortError",
