@@ -1,8 +1,16 @@
 import { setSelfPersonId } from "../../selfPerson.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
+import * as relationStore from "../../chokePoint/relationsStore.js";
 import "../../domainWriteHooks.js";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -413,10 +421,159 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
   });
 
+  it.each(["rejected", "trashed"] as const)(
+    "does not recreate a %s speaker card and creates a different key",
+    async (state) => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = getTenantZeroId();
+        await runInTenant(tenant, async () => {
+          const eventProperty = await runtime.query<{ id: string }>(
+            "SELECT id FROM properties WHERE database_id = $1 AND key = 'event'",
+            [transcriptsId],
+          );
+          if (!eventProperty.rows[0]) throw new Error("Missing transcript event property");
+          await createChokePoint(runtime).createRelation({
+            relationPropertyId: eventProperty.rows[0].id,
+            callerItemId: transcriptId,
+            targetItemId: eventId,
+          });
+          await withTransaction(runtime, (client) =>
+            writeComputed(client, transcriptsId, transcriptId, "segments", SEGMENTS.slice(0, 1)),
+          );
+          await withTransaction(runtime, (client) =>
+            proposeSpeakerMappings(client, {
+              transcriptId,
+              suggestions: [{ speaker: "SPEAKER_00", personId: aliceId, reason: "Named." }],
+            }),
+          );
+          const rows = await runtime.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND properties->'context'->>'speaker' = 'SPEAKER_00'",
+            [proposalsId],
+          );
+          if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Missing first speaker card");
+          const first = rows.rows[0].id;
+          if (state === "rejected")
+            await withTransaction(runtime, (client) =>
+              rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first),
+            );
+          else await createChokePoint(runtime).softDeleteItem(proposalsId, first);
+          await withTransaction(runtime, (client) =>
+            writeComputed(client, transcriptsId, transcriptId, "segments", SEGMENTS),
+          );
+          await withTransaction(runtime, (client) =>
+            proposeSpeakerMappings(client, {
+              transcriptId,
+              suggestions: [
+                { speaker: "SPEAKER_00", personId: aliceId, reason: "Named." },
+                { speaker: "SPEAKER_01", personId: bobId, reason: "Named." },
+              ],
+            }),
+          );
+          const cards = await runtime.query<{ id: string; speaker: string; deleted_at: Date | null }>(
+            "SELECT id, properties->'context'->>'speaker' AS speaker, deleted_at FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' ORDER BY speaker",
+            [proposalsId],
+          );
+          expect(cards.rows.filter((card) => card.speaker === "SPEAKER_00")).toHaveLength(1);
+          expect(cards.rows.find((card) => card.speaker === "SPEAKER_00")?.id).toBe(first);
+          expect(cards.rows.filter((card) => card.speaker === "SPEAKER_01" && card.deleted_at === null)).toHaveLength(
+            1,
+          );
+        });
+      } finally {
+        await runtime.end();
+      }
+    },
+  );
+
   describe("confirm, revise and reject of a speaker card", () => {
     beforeEach(async () => {
       await linkEvent();
       await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
+    });
+
+    it("adds a nonparticipant atomically and records only the inserted Event edge", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = getTenantZeroId();
+        const foreign = await createTestTenant(pool);
+        const cardId = await onlyCardId();
+        const readEdges = async () =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              const property = await client.query<{ id: string }>(
+                "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
+                [eventsId],
+              );
+              if (!property.rows[0]) throw new Error("Missing Event people property");
+              const definition = await relationStore.getRelationDefinitionByPropertyId(client, property.rows[0].id);
+              if (!definition) throw new Error("Missing Event people relation");
+              return {
+                propertyId: property.rows[0].id,
+                edges: await relationStore.listRelationsForItem(client, definition.id, eventId),
+              };
+            }),
+          );
+        const person = await runInTenant(tenant, () =>
+          createChokePoint(runtime).createItem({ databaseId: peopleId, properties: { name: "New participant" } }),
+        );
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+              message: "Choose person",
+              ...mapping(person.id, "SPEAKER_01"),
+            }),
+          ),
+        );
+        const before = await readEdges();
+        await expect(
+          runInTenant(foreign, () =>
+            withTransaction(runtime, (client) =>
+              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+            ),
+          ),
+        ).rejects.toMatchObject({ status: 404 });
+        const confirmed = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+          ),
+        );
+        const after = await readEdges();
+        const extra = after.edges.filter((edge) => edge.itemA === person.id || edge.itemB === person.id);
+        expect(extra).toHaveLength(1);
+        expect(after.edges).toHaveLength(before.edges.length + 1);
+        expect(confirmed.properties.history).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              addedRelations: [
+                {
+                  edgeId: extra[0]!.id,
+                  relationPropertyId: after.propertyId,
+                  callerItemId: eventId,
+                  targetItemId: person.id,
+                },
+              ],
+            }),
+          ]),
+        );
+        const repeated = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+          ),
+        );
+        expect(repeated).toEqual(confirmed);
+        expect((await readEdges()).edges).toEqual(after.edges);
+      } finally {
+        await runtime.end();
+      }
     });
 
     it("confirm writes the user-owned mapping with its speaker key, and a retry writes nothing more", async () => {
