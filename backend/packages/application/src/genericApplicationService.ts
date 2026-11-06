@@ -488,7 +488,13 @@ export function createGenericApplicationService(
       const breadcrumbs = await Promise.all(
         path.map(async (entry) => {
           const database = await chokePoint.getDatabase(entry.databaseId);
-          const title = typeof entry.properties.name === "string" ? entry.properties.name : "";
+          const properties = await chokePoint.listProperties(entry.databaseId);
+          const titleKey = properties
+            .filter((property) => property.type === "title")
+            .map((property) => property.key)
+            .sort()[0];
+          const titleValue = entry.properties[titleKey ?? "name"];
+          const title = typeof titleValue === "string" ? titleValue : "";
           const journal =
             database?.ownerModuleId === "journal" &&
             typeof entry.properties.type === "string" &&

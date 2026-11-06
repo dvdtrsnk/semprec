@@ -644,6 +644,27 @@ describe("item routes (issue #241)", () => {
     });
   });
 
+  it("uses each database's title property in inline page breadcrumbs", async () => {
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const parentDb = await chokePoint.createDatabase({ name: "Parent" });
+      await chokePoint.createProperty({ databaseId: parentDb.id, key: "heading", name: "Heading", type: "title" });
+      const parent = await chokePoint.createItem({ databaseId: parentDb.id, properties: { heading: "Parent title" } });
+      const childDb = await chokePoint.createInlineDatabase({ name: "Child", parentItemId: parent.id });
+      await chokePoint.createProperty({ databaseId: childDb.id, key: "caption", name: "Caption", type: "title" });
+      const child = await chokePoint.createItem({ databaseId: childDb.id, properties: { caption: "Child title" } });
+      return { parent, child };
+    });
+    const response = await fetch(`${baseUrl}/api/items/${fixture.child.id}/page`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      breadcrumbs: [
+        { itemId: fixture.parent.id, title: "Parent title" },
+        { itemId: fixture.child.id, title: "Child title" },
+      ],
+    });
+  });
+
   it("ensures one page across concurrent HTTP calls and refuses trashed or wrong-kind items", async () => {
     const headers = await authHeader();
     const fixture = await runInTenant(getTenantZeroId(), async () => {
