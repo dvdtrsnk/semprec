@@ -44,9 +44,9 @@ export async function guardInboxThreadSend(
         await client.query("ROLLBACK TO SAVEPOINT semp_proposal_lock");
         await client.query("RELEASE SAVEPOINT semp_proposal_lock");
       } catch (cleanupError) {
-        // Preserve the admission error as cause and the cleanup error as the second member.
-        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([error, cleanupError], "Proposal reservation and savepoint cleanup failed", {
+          // Preserve the admission error as cause and the cleanup error as the second member.
+          // eslint-disable-next-line preserve-caught-error
           cause: error,
         });
       }

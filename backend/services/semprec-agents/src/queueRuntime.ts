@@ -98,9 +98,9 @@ export async function createAgentsQueueRuntime(
     try {
       await runner.stop();
     } catch (cleanupError) {
-      // The startup error remains primary; cleanupError is retained in the aggregate.
-      // eslint-disable-next-line preserve-caught-error
       throw new AggregateError([error, cleanupError], "Chat worker startup and general worker cleanup failed", {
+        // The startup error remains primary; cleanupError is retained in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         cause: error,
       });
     }
