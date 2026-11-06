@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
 import { SpeechSynthesisCapacityError, synthesizeSpeech } from "../httpAiGatewayClient.js";
+import * as publicClient from "../index.js";
 
 const TENANT_ID = "6f1e2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
 
@@ -39,6 +40,14 @@ afterEach(async () => {
 });
 
 describe("synthesizeSpeech", () => {
+  it("exports exactly the client runtime surface including the capacity subtype", () => {
+    expect(Object.keys(publicClient).sort()).toEqual([
+      "SpeechSynthesisCapacityError",
+      "createHttpAiGatewayClient",
+      "openSttStream",
+      "synthesizeSpeech",
+    ]);
+  });
   it("posts the text and voice with the token and tenant, and yields the audio chunks", async () => {
     const port = await serve((_req, res) => {
       res.writeHead(200, { "content-type": "audio/L16; rate=24000; channels=1" });
