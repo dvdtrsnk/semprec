@@ -29,10 +29,33 @@ describe("Semp settlement observation", () => {
     runs.register("tenant", later, true);
     expect(later.signal.reason).toBe("shutdown");
     rejectFirst(false);
-    const failures = await settle();
+    const failures = await settle.wait();
     expect(failures).toHaveLength(2);
     expect(failures).toContain(null);
     expect(failures).toContain(false);
+  });
+
+  it("snapshots observed failures without treating active work as settled", async () => {
+    const runs = createInFlightAgentRuns();
+    const observation = runs.observeSempSettlement();
+    const failed = runs.trackSemp(async () => {
+      throw false;
+    });
+    await failed.catch(() => {});
+    let rejectLate!: (reason: unknown) => void;
+    const late = runs.trackSemp(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectLate = reject;
+        }),
+    );
+    void late.catch(() => {});
+    await Promise.resolve();
+    expect(observation.snapshotAndDispose()).toEqual([false]);
+    expect(observation.snapshotAndDispose()).toEqual([]);
+    rejectLate(null);
+    await late.catch(() => {});
+    await expect(observation.wait()).rejects.toThrow("observation was disposed");
   });
 });
 

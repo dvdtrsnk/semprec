@@ -1,3 +1,8 @@
+export interface SempSettlementObservation {
+  wait(): Promise<unknown[]>;
+  snapshotAndDispose(): unknown[];
+}
+
 export interface InFlightAgentRuns {
   /** Tracks `controller` under `tenantId`; the returned function stops tracking it. */
   register(tenantId: string, controller: AbortController, semp?: boolean): () => void;
@@ -5,7 +10,7 @@ export interface InFlightAgentRuns {
   abortTenant(tenantId: string): number;
   abortSemp(): number;
   trackSemp<T>(work: () => Promise<T>): Promise<T>;
-  observeSempSettlement(): () => Promise<unknown[]>;
+  observeSempSettlement(): SempSettlementObservation;
 }
 
 /** The agent runs executing in this process, by tenant, so a deactivated tenant's can be aborted. */
@@ -14,7 +19,7 @@ export function createInFlightAgentRuns(): InFlightAgentRuns {
   const sempControllers = new Set<AbortController>();
   let sempAborted = false;
   const active = new Set<Promise<void>>();
-  let failures: unknown[] | undefined;
+  let observer: { failures: unknown[]; disposed: boolean } | undefined;
 
   return {
     trackSemp(work) {
@@ -22,7 +27,7 @@ export function createInFlightAgentRuns(): InFlightAgentRuns {
       const observed = result.then(
         () => {},
         (error: unknown) => {
-          failures?.push(error);
+          observer?.failures.push(error);
         },
       );
       active.add(observed);
@@ -32,13 +37,25 @@ export function createInFlightAgentRuns(): InFlightAgentRuns {
       return result;
     },
     observeSempSettlement() {
-      if (failures) throw new Error("Semp settlement is already being observed");
-      failures = [];
-      return async () => {
-        while (active.size > 0) await Promise.all([...active]);
-        const result = failures ?? [];
-        failures = undefined;
-        return result;
+      if (observer) throw new Error("Semp settlement is already being observed");
+      const current: { failures: unknown[]; disposed: boolean } = { failures: [], disposed: false };
+      observer = current;
+      const dispose = () => {
+        if (current.disposed) return [];
+        current.disposed = true;
+        if (observer === current) observer = undefined;
+        return current.failures.slice();
+      };
+      return {
+        async wait() {
+          while (active.size > 0) {
+            await Promise.all([...active]);
+            if (current.disposed) throw new Error("Semp settlement observation was disposed");
+          }
+          if (current.disposed) throw new Error("Semp settlement observation was disposed");
+          return dispose();
+        },
+        snapshotAndDispose: dispose,
       };
     },
     register(tenantId, controller, semp = false) {

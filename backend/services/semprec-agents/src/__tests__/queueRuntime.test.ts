@@ -401,8 +401,15 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("agentsFixtureModule.js", "fixture-agents-queue-runtime");
     runtime = await createAgentsQueueRuntime(pool, registry);
 
-    await runtime.stop();
-    await expect(runtime.stop()).resolves.toBeUndefined();
+    const attempt = runtime.stopForShutdown();
+    expect(runtime.stopForShutdown()).toBe(attempt);
+    const first = runtime.stop();
+    expect(runtime.stop()).toBe(first);
+    expect(await Promise.all([attempt.general, attempt.chat])).toEqual([
+      { status: "fulfilled", value: undefined },
+      { status: "fulfilled", value: undefined },
+    ]);
+    await expect(first).resolves.toBeUndefined();
 
     await expect(pool.query("SELECT 1")).resolves.toBeDefined();
   });

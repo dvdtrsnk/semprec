@@ -21,6 +21,12 @@ import { AGENTS_STOP_WINDOW_MS } from "./shutdown.js";
 export interface AgentsQueueRuntime {
   /** Idempotent: awaits both runners exactly once. The caller owns `pool`. */
   stop(): Promise<void>;
+  stopForShutdown(): AgentRunnerStopAttempt;
+}
+
+export interface AgentRunnerStopAttempt {
+  general: Promise<PromiseSettledResult<void>>;
+  chat: Promise<PromiseSettledResult<void>>;
 }
 
 /**
@@ -99,11 +105,31 @@ export async function createAgentsQueueRuntime(
     throw error;
   }
 
+  let attempt: AgentRunnerStopAttempt | undefined;
   let stopped: Promise<void> | null = null;
+  const stopOnce = (): AgentRunnerStopAttempt => {
+    attempt ??= {
+      general: Promise.resolve()
+        .then(() => runner.stop())
+        .then(
+          () => ({ status: "fulfilled" as const, value: undefined }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+      chat: Promise.resolve()
+        .then(() => chatRunner.stop())
+        .then(
+          () => ({ status: "fulfilled" as const, value: undefined }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+    };
+    return attempt;
+  };
   return {
+    stopForShutdown: stopOnce,
     stop(): Promise<void> {
       stopped ??= (async () => {
-        const results = await Promise.allSettled([runner.stop(), chatRunner.stop()]);
+        const current = stopOnce();
+        const results = await Promise.all([current.general, current.chat]);
         const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
         if (errors.length) throw new AggregateError(errors, "Agent queue workers failed to stop", { cause: errors[0] });
       })();

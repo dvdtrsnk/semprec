@@ -89,10 +89,14 @@ describe("semprec-agents startup repair (issue #642)", () => {
         pool: runtimePool,
         logger,
         abortSempTurns: () => {},
-        observeSempSettlement: () => async () => [],
+        observeSempSettlement: () => ({ wait: async () => [], snapshotAndDispose: () => [] }),
         queueRuntime: {
-          stop: async () => {
+          stopForShutdown: () => {
             order.push("queue");
+            return {
+              general: Promise.resolve({ status: "fulfilled" as const, value: undefined }),
+              chat: Promise.resolve({ status: "fulfilled" as const, value: undefined }),
+            };
           },
         },
         tenantDeactivationListener: {

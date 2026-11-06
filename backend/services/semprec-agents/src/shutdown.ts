@@ -1,6 +1,8 @@
 import type { Pool } from "pg";
 import type { Logger } from "@semprec/shared";
 import { logger } from "./logger.js";
+import type { AgentRunnerStopAttempt } from "./queueRuntime.js";
+import type { SempSettlementObservation } from "./inFlightAgentRuns.js";
 
 export const POOL_END_TIMEOUT_MS = 5_000;
 export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
@@ -15,7 +17,7 @@ function errorCategory(error: unknown): string {
 }
 
 export interface QueueRuntimeHandle {
-  stop(): Promise<void>;
+  stopForShutdown(): AgentRunnerStopAttempt;
 }
 
 export interface TenantDeactivationListenerHandle {
@@ -30,7 +32,7 @@ export interface CreateGracefulShutdownOptions {
   /** Closes every idle thread session as `done`; runs after the queue stopped, while the pool is open. */
   closeIdleThreadSessions: (pool: Pool) => Promise<{ closedRunIds: string[] }>;
   abortSempTurns: () => void;
-  observeSempSettlement: () => () => Promise<unknown[]>;
+  observeSempSettlement: () => SempSettlementObservation;
 }
 
 /** Ends `pool`, bounded by `POOL_END_TIMEOUT_MS` so a hung or unreachable database can never stall shutdown indefinitely. */
@@ -132,27 +134,61 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
-    const settleSemp = observeSempSettlement();
-    const deadline = setTimeout(abortSempTurns, SEMP_TURN_GRACE_MS);
+    const observation = observeSempSettlement();
+    const abortErrors: unknown[] = [];
+    const abort = () => {
+      try {
+        abortSempTurns();
+      } catch (error) {
+        abortErrors.push(error);
+      }
+    };
+    const deadline = setTimeout(abort, SEMP_TURN_GRACE_MS);
     let bound: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      bound = setTimeout(
-        () => reject(new Error("Semp shutdown did not settle within the stop window")),
-        AGENTS_STOP_WINDOW_MS,
-      );
+    const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
+      bound = setTimeout(() => resolve({ kind: "timeout" }), AGENTS_STOP_WINDOW_MS);
     });
-    let failures: unknown[];
+    let abandoned = false;
+    let general: PromiseSettledResult<void> | undefined;
+    let chat: PromiseSettledResult<void> | undefined;
+    let stopFailure: { reason: unknown } | undefined;
+    let outcome:
+      { kind: "timeout" } | { kind: "unquiesced" } | { kind: "settled"; failures: unknown[] } | { kind: "abandoned" };
     try {
       logger.info({ signal }, "semprec-agents shutting down");
-      failures = await Promise.race([
+      outcome = await Promise.race([
         (async () => {
           await closeListener(tenantDeactivationListener, logger, signal);
+          let attempt: AgentRunnerStopAttempt;
           try {
-            await queueRuntime.stop();
-          } catch (err) {
-            logger.error({ errorCategory: errorCategory(err), signal }, "queueRuntime.stop() failed");
+            attempt = queueRuntime.stopForShutdown();
+          } catch (reason) {
+            stopFailure = { reason };
+            abort();
+            return { kind: "unquiesced" as const };
           }
-          return settleSemp();
+          const generalResult = attempt.general.then(
+            (result) => {
+              general = result;
+            },
+            (reason: unknown) => {
+              general = { status: "rejected", reason };
+            },
+          );
+          const chatResult = attempt.chat.then(
+            (result) => {
+              chat = result;
+              if (result.status === "rejected") abort();
+            },
+            (reason: unknown) => {
+              chat = { status: "rejected", reason };
+              abort();
+            },
+          );
+          await Promise.all([generalResult, chatResult]);
+          if (abandoned) return { kind: "abandoned" as const };
+          if (chat?.status !== "fulfilled") return { kind: "unquiesced" as const };
+          return { kind: "settled" as const, failures: await observation.wait() };
         })(),
         timeout,
       ]);
@@ -160,6 +196,33 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       clearTimeout(deadline);
       clearTimeout(bound);
     }
+
+    if (outcome.kind !== "settled") {
+      abandoned = true;
+      abort();
+      const observed = observation.snapshotAndDispose();
+      const reasons: unknown[] = [];
+      if (chat?.status === "rejected") reasons.push(chat.reason);
+      else if (stopFailure) reasons.push(stopFailure.reason);
+      else
+        reasons.push(
+          new Error(
+            chat?.status === "fulfilled"
+              ? "Semp shutdown did not settle within the stop window"
+              : "Semp shutdown did not establish chat-runner quiescence within the stop window",
+          ),
+        );
+      if (general?.status === "rejected") reasons.push(general.reason);
+      if (outcome.kind === "timeout" && (chat?.status === "rejected" || stopFailure)) {
+        reasons.push(new Error("Semp shutdown did not settle within the stop window"));
+      }
+      reasons.push(...observed, ...abortErrors);
+      if (reasons.length === 1) throw reasons[0];
+      throw new AggregateError(reasons, "Semp shutdown could not establish quiescence", { cause: reasons[0] });
+    }
+    if (general?.status === "rejected")
+      logger.error({ errorCategory: errorCategory(general.reason), signal }, "queueRuntime.stop() failed");
+    const failures = [...outcome.failures, ...abortErrors];
 
     // After the queue stopped, so no turn is still being written; before the pool ends. A failure
     // is logged and the next startup repair closes the same sessions, so it never blocks the pool end.

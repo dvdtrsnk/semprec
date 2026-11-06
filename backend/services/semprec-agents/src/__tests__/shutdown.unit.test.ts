@@ -25,8 +25,12 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
     },
   };
   const queueRuntime = {
-    stop: async () => {
+    stopForShutdown: () => {
       calls.push("queueRuntime.stop");
+      return {
+        general: Promise.resolve({ status: "fulfilled" as const, value: undefined }),
+        chat: Promise.resolve({ status: "fulfilled" as const, value: undefined }),
+      };
     },
   };
   const pool = {
@@ -54,7 +58,7 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
       logger,
       closeIdleThreadSessions,
       abortSempTurns: () => {},
-      observeSempSettlement: () => async () => [],
+      observeSempSettlement: () => ({ wait: async () => [], snapshotAndDispose: () => [] }),
     },
   };
 }
@@ -62,6 +66,99 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
 describe("semprec-agents graceful shutdown", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("rejects an empty cohort when chat quiescence fails", async () => {
+    const { calls, deps } = createFakes();
+    const runs = createInFlightAgentRuns();
+    const shutdown = createGracefulShutdown({
+      ...deps,
+      queueRuntime: {
+        stopForShutdown: () => ({
+          general: Promise.resolve({ status: "fulfilled", value: undefined }),
+          chat: Promise.resolve({ status: "rejected", reason: null }),
+        }),
+      },
+      observeSempSettlement: () => runs.observeSempSettlement(),
+      abortSempTurns: () => {
+        runs.abortSemp();
+      },
+    })("SIGTERM");
+    const result: unknown = await shutdown.then(
+      () => "unexpected success",
+      (reason: unknown) => reason,
+    );
+    expect(result).toBeNull();
+    expect(calls).not.toContain("closeIdleThreadSessions");
+    expect(calls).not.toContain("pool.end");
+    const late = new AbortController();
+    runs.register("tenant", late, true);
+    expect(late.signal.reason).toBe("shutdown");
+  });
+
+  it("retains chat, general and observed late Semp failures including falsy reasons", async () => {
+    const { calls, deps } = createFakes();
+    const runs = createInFlightAgentRuns();
+    let finishGeneral!: (result: PromiseSettledResult<void>) => void;
+    const general = new Promise<PromiseSettledResult<void>>((resolve) => {
+      finishGeneral = resolve;
+    });
+    const shutdown = createGracefulShutdown({
+      ...deps,
+      queueRuntime: {
+        stopForShutdown: () => ({ general, chat: Promise.resolve({ status: "rejected", reason: null }) }),
+      },
+      observeSempSettlement: () => runs.observeSempSettlement(),
+      abortSempTurns: () => {
+        runs.abortSemp();
+      },
+    })("SIGTERM");
+    await vi.waitFor(() => {
+      const controller = new AbortController();
+      const unregister = runs.register("late", controller, true);
+      unregister();
+      expect(controller.signal.reason).toBe("shutdown");
+    });
+    const late = runs.trackSemp(async () => {
+      throw undefined;
+    });
+    await late.catch(() => {});
+    finishGeneral({ status: "rejected", reason: false });
+    const result: unknown = await shutdown.catch((reason: unknown) => reason);
+    expect(result).toBeInstanceOf(AggregateError);
+    if (!(result instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(result.errors).toEqual([null, false, undefined]);
+    expect(result.cause).toBeNull();
+    expect(calls).not.toContain("closeIdleThreadSessions");
+    expect(calls).not.toContain("pool.end");
+  });
+
+  it("reports pending chat stop at the existing bound without sweeping or closing the pool", async () => {
+    vi.useFakeTimers();
+    const { calls, deps } = createFakes();
+    const runs = createInFlightAgentRuns();
+    const shutdown = createGracefulShutdown({
+      ...deps,
+      queueRuntime: {
+        stopForShutdown: () => ({
+          general: Promise.resolve({ status: "rejected", reason: false }),
+          chat: new Promise<PromiseSettledResult<void>>(() => {}),
+        }),
+      },
+      observeSempSettlement: () => runs.observeSempSettlement(),
+      abortSempTurns: () => {
+        runs.abortSemp();
+      },
+    })("SIGTERM");
+    const result = shutdown.catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(AGENTS_STOP_WINDOW_MS);
+    const failure: unknown = await result;
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(failure.errors[0]).toBeInstanceOf(Error);
+    expect(failure.errors[1]).toBe(false);
+    expect(calls).not.toContain("closeIdleThreadSessions");
+    expect(calls).not.toContain("pool.end");
   });
 
   it("waits for an actual Semp rejection after queue stop and preserves cleanup failure order", async () => {
@@ -176,9 +273,12 @@ describe("semprec-agents graceful shutdown", () => {
       },
     } as unknown as Pool;
     const queueRuntime = {
-      stop: () => {
+      stopForShutdown: () => {
         calls.push("queueRuntime.stop");
-        return Promise.reject(failure);
+        return {
+          general: Promise.resolve({ status: "rejected" as const, reason: failure }),
+          chat: Promise.resolve({ status: "fulfilled" as const, value: undefined }),
+        };
       },
     };
     await createGracefulShutdown({ ...deps, pool, queueRuntime })("SIGTERM");

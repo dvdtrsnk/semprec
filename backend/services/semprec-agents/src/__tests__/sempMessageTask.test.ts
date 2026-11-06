@@ -444,9 +444,15 @@ describe("queued Semp messages", () => {
       let runnerStopped = false;
       const currentRuntime = actualRuntime;
       const queueRuntime = {
-        stop: async () => {
-          await currentRuntime.stop();
-          runnerStopped = true;
+        stopForShutdown: () => {
+          const attempt = currentRuntime.stopForShutdown();
+          return {
+            general: attempt.general,
+            chat: attempt.chat.then((result) => {
+              if (result.status === "fulfilled") runnerStopped = true;
+              return result;
+            }),
+          };
         },
       };
       const shutdown = createGracefulShutdown({
