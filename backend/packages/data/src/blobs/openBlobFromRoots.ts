@@ -74,7 +74,9 @@ async function closeOwnedStream(
   let firstAsyncError: unknown;
   let hasAsyncError = false;
   let settled = false;
+  let closureObserved = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let continuation: ReturnType<typeof setImmediate> | undefined;
   let finish!: (closed: boolean) => void;
   const observed = new Promise<boolean>((resolve) => {
     finish = resolve;
@@ -87,6 +89,7 @@ async function closeOwnedStream(
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    if (continuation) clearImmediate(continuation);
     if (closed) remove();
     finish(closed);
   };
@@ -95,7 +98,7 @@ async function closeOwnedStream(
       remove();
       return;
     }
-    complete(performance.now() < deadline);
+    complete(closureObserved || performance.now() < deadline);
     remove();
   };
   const onError = (error: unknown) => {
@@ -111,7 +114,10 @@ async function closeOwnedStream(
       return;
     }
     if (stream.closed) {
-      complete(true);
+      closureObserved = true;
+      // Node may publish an already-recorded destroy error before its close notification.
+      // Keep the error observer through that event-loop turn, including emitClose:false.
+      continuation = setImmediate(() => complete(true));
       return;
     }
     timer = setTimeout(check, Math.min(CLOSED_POLL_MS, Math.max(0, deadline - now)));
