@@ -89,7 +89,7 @@ export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
         throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
       const link = await valueLinksStore.lockValueLink(client, item.id, input.propertyKey);
       if (!link) conflict();
-      let changed = false;
+      let changed: boolean;
       if (kind === "unlink") {
         changed =
           (await breakValueLinks(client, { itemId: item.id, propertyKeys: [input.propertyKey], writerKind: writer }))

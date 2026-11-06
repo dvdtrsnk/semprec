@@ -42,6 +42,13 @@ describe("read-only page summary", () => {
       });
       expect((await data.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(0);
       const row = await store.getOrCreateDoc(item.id, "page");
+      expect(await store.getPageSummary(item.id, "en")).toMatchObject({
+        docId: row.id,
+        title: "Notes",
+        blocks: [],
+        lastEditedAt: row.createdAt,
+        lastEditedBy: null,
+      });
       await mutateDoc(data, row.id, "user", (doc) => {
         doc.getMap("meta").set("title", "Title");
         for (let i = 0; i < 14; i++) {

@@ -677,22 +677,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
-  {
-    name: "unlink value",
+  ...(["unlink", "relink"] as const).map((action): RouteMatrixEntry => ({
+    name: `${action} value`,
     method: "POST",
-    path: `/api/items/${EXAMPLE_ID}/links/exampleKey/unlink`,
+    path: `/api/items/${EXAMPLE_ID}/links/exampleKey/${action}`,
     surface: "api",
     public: false,
     tenancy: "tenant",
-  },
-  {
-    name: "relink value",
-    method: "POST",
-    path: `/api/items/${EXAMPLE_ID}/links/exampleKey/relink`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
+  })),
   {
     name: "set relation",
     method: "PUT",

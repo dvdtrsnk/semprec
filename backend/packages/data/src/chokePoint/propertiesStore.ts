@@ -23,7 +23,8 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
   if (!Array.isArray(options)) {
     throw new ValidationError("select/multi_select config.options must be an array", { field: "config" });
   }
-  for (const option of options) {
+  const elements: unknown[] = options;
+  for (const option of elements) {
     if (typeof option !== "object" || option === null || Array.isArray(option)) {
       throw new ValidationError("each select/multi_select option must be an object of shape { key, label? }", {
         field: "config",
