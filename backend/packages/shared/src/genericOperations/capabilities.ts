@@ -97,11 +97,11 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.set": nonDestructive("core.item.write", "write"),
   "relation.delete": destructive("core.item.write", false),
   "relation.list": nonDestructive("core.item.read", "read"),
-  // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
   "link.unlink": nonDestructive("core.item.write", "write"),
   "link.relink": nonDestructive("core.item.write", "write"),
   "page.ensure": nonDestructive("core.page.write", "write"),
   "page.get": nonDestructive("core.page.read", "read"),
+  // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
   "page.restoreVersion": destructive("core.page.write", true),
 };
 
