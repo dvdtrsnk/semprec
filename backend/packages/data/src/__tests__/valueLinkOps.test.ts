@@ -265,7 +265,9 @@ describe("explicit value link operations", () => {
       const areas = (await cp.listDatabases()).find((db) => db.ownerModuleId === "areas");
       if (!areas) throw new Error("Foreign Areas missing");
       const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Foreign" } });
-      return { areas, item };
+      const before = await cp.getItem(areas.id, item.id);
+      expect(before).not.toBeNull();
+      return { areas, item, before };
     });
     const fixture = await runInTenant(tenant, async () => {
       await seedSystem(data);
@@ -308,7 +310,9 @@ describe("explicit value link operations", () => {
     expect(
       (await runInTenant(tenant, () => cp.getItem(fixture.projects.id, fixture.project.id)))?.properties.name,
     ).toBe("Source");
-    expect(await runInTenant(foreignTenant, () => cp.getItem(foreign.areas.id, foreign.item.id))).toEqual(foreign.item);
+    expect(await runInTenant(foreignTenant, () => cp.getItem(foreign.areas.id, foreign.item.id))).toEqual(
+      foreign.before,
+    );
   });
 
   it("refuses missing links, missing live sources and over-cardinality without changing state", async () => {
