@@ -13,12 +13,16 @@ type RefKind = SempMessageRef["kind"];
 
 const PURGED: SempRefResolution = { label: null, databaseKey: null, state: "purged" };
 
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 /** Enriches recognized refs on one history page without changing stored contexts. */
 export async function resolveSempHistoryContexts(client: PoolClient, contexts: readonly unknown[]): Promise<unknown[]> {
-  const output = contexts.map((context) => (Array.isArray(context) ? [...context] : context));
+  const output = contexts.map((context) => (isUnknownArray(context) ? [...context] : context));
   const grouped = new Map<RefKind, Entry[]>();
   for (const [page, context] of contexts.entries()) {
-    if (!Array.isArray(context)) continue;
+    if (!isUnknownArray(context)) continue;
     for (const [index, value] of context.entries()) {
       const unlabeled = sempMessageRefSchema.safeParse(value);
       const labeled = unlabeled.success ? null : labeledSempMessageRefSchema.safeParse(value);
@@ -111,7 +115,7 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
     for (const [index, entry] of entries.entries()) {
       const page = output[entry.page];
       const resolved = values[index];
-      if (!Array.isArray(page) || !resolved) throw new Error("Invalid reference resolution position");
+      if (!isUnknownArray(page) || !resolved) throw new Error("Invalid reference resolution position");
       page[entry.index] = { ...entry.ref, resolved };
     }
   }
