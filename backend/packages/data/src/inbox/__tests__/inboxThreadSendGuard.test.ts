@@ -428,10 +428,11 @@ describe("Inbox thread association reservations", () => {
       expect((await counts()).rows).toEqual(before);
     }
     expect(before[0]?.messages).toBe(2);
-    await runInTenant(tenant, () =>
+    const decidedId = await runInTenant(tenant, () =>
       withTransaction(pool, async (client) => {
         const property = await getPropertyByKey(client, own.databaseId, "sourceInbox");
         if (!property) throw new Error("Missing sourceInbox property");
+        let rejectedId: string | undefined;
         for (const status of ["pending", "rejected"]) {
           const card = await createItemWithClient(
             client,
@@ -446,9 +447,55 @@ describe("Inbox thread association reservations", () => {
             { relationPropertyId: property.id, callerItemId: card.id, targetItemId: own.sourceId },
             { ownerProcess: "processingProposals" },
           );
+          if (status === "rejected") rejectedId = card.id;
         }
+        if (!rejectedId) throw new Error("Missing decided proposal");
+        return rejectedId;
       }),
     );
+    let release!: () => void;
+    let reserved!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      reserved = resolve;
+    });
+    const holder = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        await updateItemWithClient(
+          client,
+          { databaseId: own.databaseId, itemId: decidedId, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        );
+        reserved();
+        await gate;
+      }),
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        ready,
+        holder.then(() => {
+          throw new Error("Proposal reservation ended early");
+        }),
+      ]);
+      await expect(send()).rejects.toMatchObject({ code: "version_conflict" });
+      expect((await counts()).rows).toEqual(before);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    try {
+      await holder;
+    } catch (error) {
+      if (failure)
+        throw new AggregateError([failure.error, error], "Proposal contention cleanup failed", {
+          cause: failure.error,
+        });
+      throw error;
+    }
+    if (failure) throw failure.error;
     await expect(send()).rejects.toMatchObject({ code: "proposal_locked" });
     expect((await counts()).rows).toEqual(before);
   });
