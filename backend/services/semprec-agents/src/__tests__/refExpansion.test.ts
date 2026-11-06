@@ -242,7 +242,7 @@ describe("tenant-scoped reference blob expansion", () => {
     ];
     await runInTenant(tenant, async () => {
       const snapshot = () =>
-        runtime.query(
+        runtime.query<{ items: number; edges: number; updates: number; events: number; approvals: number }>(
           "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM doc_updates) AS updates, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM approval_requests) AS approvals",
         );
       const before = await snapshot();
@@ -353,7 +353,7 @@ describe("tenant-scoped reference blob expansion", () => {
     const refs = [fixture.capture, fixture.card];
     const snapshot = () =>
       runInTenant(tenant, () =>
-        runtime.query(
+        runtime.query<{ items: number; edges: number; fixture_items: unknown; fixture_edges: unknown }>(
           `SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges,
          (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($1::uuid[])) AS fixture_items,
          (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM item_relations r WHERE r.item_a = ANY($1::uuid[]) OR r.item_b = ANY($1::uuid[])) AS fixture_edges`,
@@ -419,7 +419,15 @@ describe("tenant-scoped reference blob expansion", () => {
     const snapshot = () =>
       runInTenant(tenant, () =>
         withTransaction(runtime, (client) =>
-          client.query(
+          client.query<{
+            items: unknown;
+            edges: number;
+            docs: number;
+            messages: number;
+            runs: number;
+            events: number;
+            jobs: number;
+          }>(
             `SELECT (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($1::uuid[])) AS items,
              (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM doc_updates) AS docs,
              (SELECT count(*)::int FROM semp_messages) AS messages, (SELECT count(*)::int FROM agent_runs) AS runs,
@@ -825,7 +833,17 @@ describe("tenant-scoped reference blob expansion", () => {
     }));
     await runInTenant(tenant, async () => {
       const snapshot = () =>
-        runtime.query(
+        runtime.query<{
+          items: number;
+          edges: number;
+          blobs: number;
+          attachments: number;
+          search: number;
+          attachment_rows: unknown;
+          blob_rows: unknown;
+          message_rows: unknown;
+          search_rows: unknown;
+        }>(
           `SELECT (SELECT count(*)::int FROM items) AS items,
             (SELECT count(*)::int FROM item_relations) AS edges,
             (SELECT count(*)::int FROM blobs) AS blobs,

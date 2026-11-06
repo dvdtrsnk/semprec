@@ -207,7 +207,7 @@ describe("Semp reference turn reads", () => {
       });
       const ref = { kind: "item" as const, itemId: task.id, databaseId: databases.tasks.id };
       const snapshot = () =>
-        runtime.query(
+        runtime.query<{ items: number; edges: number }>(
           "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
         );
       const before = await snapshot();
@@ -272,7 +272,7 @@ describe("Semp reference turn reads", () => {
     const privateRequest = await create(foreign, true);
     await runInTenant(tenant, async () => {
       const snapshot = () =>
-        runtime.query(
+        runtime.query<{ approvals: number; runs: number }>(
           "SELECT (SELECT count(*)::int FROM approval_requests) AS approvals, (SELECT count(*)::int FROM agent_runs) AS runs",
         );
       const before = await snapshot();
@@ -353,7 +353,7 @@ describe("Semp reference turn reads", () => {
       );
       const capture = { kind: "item" as const, databaseId: dbs.inbox.id, itemId: source.id };
       const card = { kind: "item" as const, databaseId: dbs.proposals.id, itemId: cards.rows[0].id };
-      const before = await runtime.query(
+      const before = await runtime.query<{ items: number; edges: number }>(
         "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
       );
       const sourceRead = await withTransaction(runtime, (client) => readSempRefContext(client, capture));
@@ -385,7 +385,7 @@ describe("Semp reference turn reads", () => {
       ).resolves.toBeNull();
       expect(
         (
-          await runtime.query(
+          await runtime.query<{ items: number; edges: number }>(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
           )
         ).rows,
@@ -487,7 +487,7 @@ describe("Semp reference turn reads", () => {
       const ref = { kind: "mailAttachment" as const, attachmentId: fixture.attachmentId };
       const emailRef = { kind: "item" as const, itemId: fixture.older, databaseId: fixture.databaseId };
       await runInTenant(tenant, async () => {
-        const before = await runtime.query(
+        const before = await runtime.query<{ attachments: number; blobs: number; items: number; edges: number }>(
           "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
         );
         const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
@@ -506,7 +506,7 @@ describe("Semp reference turn reads", () => {
         ).resolves.toBeNull();
         expect(
           (
-            await runtime.query(
+            await runtime.query<{ attachments: number; blobs: number; items: number; edges: number }>(
               "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
             )
           ).rows,
@@ -600,7 +600,7 @@ describe("Semp reference turn reads", () => {
       });
       const snapshot = () =>
         runInTenant(tenant, () =>
-          runtime.query(
+          runtime.query<{ items: number; edges: number; messages: number; search: number }>(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM mail_message_meta) AS messages, (SELECT count(*)::int FROM item_search_index) AS search",
           ),
         );
@@ -670,7 +670,9 @@ describe("Semp reference turn reads", () => {
       await expect(
         withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, agentRunId: randomUUID() })),
       ).resolves.toBeNull();
-      expect((await runtime.query("SELECT count(*)::int AS count FROM agent_run_events")).rows).toEqual(before.rows);
+      expect(
+        (await runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM agent_run_events")).rows,
+      ).toEqual(before.rows);
     });
     await expect(
       runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
