@@ -195,3 +195,36 @@ The current built-in registry has no linkRules declaration; report these results
 as fixture-configured integration evidence, not proof of an active production
 rule. Existing runtime-role, tenant and no-effect requirements remain. R1 report
 and reviewed ledger stay immutable; one same-context R2 remains after repairs.
+
+## Verify051: existing contracts and direct docs catalog packaging
+
+Original full verify on051 remains FAIL: six tests in five files,7135 passed,
+one skipped. The unchanged MCP inherited-environment assertion is retained,
+without source/environment modification or automatic acceptance exception.
+
+Authorize four existing compatibility harnesses only: genericOperationAgentTools
+keeps exhaustive coverage of every still-granted operation and explicitly excludes
+exactly page.get, page.ensure and page.restoreVersion under the approved default
+project policy; do not mirror runtime metadata as a self-fulfilling oracle.
+Area write-query tests retain the same active/sort inputs and assert the seeded
+system area plus the original user-item order; do not hide it through production
+filter changes. Areas property-cutover tests preserve the one existing system
+area and prove the cutover creates no additional item. Views retains exact Czech
+label, monitoring filter, stored-view/property and item invariance assertions,
+adding only the independently specified monitoring color #FF9500.
+
+The successful build copied matching docs catalogs one directory too deep while
+leaving stale direct runtime catalogs without page.notes.title. The compiled
+pageSummary loader resolves the direct path. In data/package.json replace ONLY
+the docs recursive-copy segment with the existing mkdir/flat JSON copy pattern,
+refreshing direct dist/docs/i18n files even when destination already exists.
+Do not change other asset copies, compilation/dependency versions or loaders.
+Prove on the repaired candidate with one data build and direct cs/en parity;
+any repeat-refresh control uses exact owned scratch catalogs and the same copy
+segment, not another broad build or modifications to tracked sources.
+
+Parent directly inspects the finite delta after worker self-review. No third
+review, full verify rerun, E2E, acceptance or integration is authorized here.
+Original review verdicts, preflight NOT RUN, actual verify FAIL and queued-job
+rollback UNPROVEN remain. Source Context redundancy was compacted without
+changing Task/AC behavior, source AC or six aggregate AC; no limit/checker changed.
