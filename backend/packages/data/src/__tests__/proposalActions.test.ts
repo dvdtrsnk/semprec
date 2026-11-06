@@ -19,6 +19,7 @@ import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
   appendHistoryEntry,
@@ -2480,6 +2481,41 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const [result] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
       expect(typeof earlier.properties.pinnedOrder).toBe("number");
       expect(result?.properties.pinnedOrder).toBe(Number(earlier.properties.pinnedOrder) + 1);
+    });
+
+    it("forms and confirms project completion without predicting its system date", async () => {
+      const project = await createIn("projects", { name: "Project", status: "inProgress", pinned: false });
+      const projectsDb = await databaseIdFor("projects");
+      const step: Step = {
+        ref: "project",
+        op: "update",
+        itemId: project,
+        role: "primary",
+        properties: { status: "done" },
+      };
+      const form = (properties: Record<string, unknown>) =>
+        withTransaction(pool, (client) =>
+          prepareComputedUpdates(
+            client,
+            { entityKind: "database", target: projectsDb, properties, operations: [{ ...step, properties }] },
+            null,
+          ),
+        );
+      const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      await expect(form({ completedAt: "2000-01-01" })).rejects.toMatchObject({ status: 400 });
+      expect((await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project])))[0]).toEqual(before);
+      const formed = await form({ status: "done" });
+      const formedStep = formed.operations?.[0];
+      if (!formedStep) throw new Error("Missing formed project step");
+      expect(formedStep.before?.properties).not.toHaveProperty("completedAt");
+      expect(formedStep.after?.properties).not.toHaveProperty("completedAt");
+      const card = await cardWithSteps("projects", [formedStep]);
+      await confirm(card);
+      const [updated] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(updated?.properties).toMatchObject({
+        status: "done",
+        completedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      });
     });
 
     it("requires coverage for automatic project unpinning and order clearing", async () => {
