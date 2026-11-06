@@ -186,7 +186,9 @@ export async function generatePermissionManifest(
   const grantedModuleCapabilities = moduleRegistry
     ? new Set(await moduleRegistry.getCapabilities())
     : new Set<string>();
-  const grantedCapabilities: string[] = CAPABILITY_IDS.filter((id) => grantedModuleCapabilities.has(id));
+  const grantedCapabilities: string[] = CAPABILITY_IDS.filter(
+    (id) => id !== "core.page.read" && id !== "core.page.write" && grantedModuleCapabilities.has(id),
+  );
   if (moduleRegistry) {
     const visible = new Set(await visibleDatabaseIds(client));
     const core = new Set<string>(CAPABILITY_IDS);

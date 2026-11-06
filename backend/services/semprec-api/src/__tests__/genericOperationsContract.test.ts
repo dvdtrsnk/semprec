@@ -481,6 +481,22 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(await res.json()).toMatchObject({ valueKind: "inherited" });
     expect((await chokePoint.getItem(fx.database.id, fx.itemA.id))?.properties.title).toBe(fx.itemB.properties.title);
   },
+  "page.ensure": async (fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { method: "PUT", headers });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ docId: expect.any(String) });
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    if (typeof body !== "object" || body === null || !("docId" in body) || typeof body.docId !== "string")
+      throw new Error("Missing docId");
+    const summary: unknown = await read.json();
+    expect(summary).toMatchObject({ docId: body.docId });
+  },
+  "page.get": async (fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ docId: null, blocks: [], blockCount: 0, subpageCount: 0 });
+  },
   "page.restoreVersion": async (fx, headers, baseUrl) => {
     // A page whose history opens an hour ago, restored to half an hour ago: the one block it had is still there.
     await createDocStore(pool).putBlock(

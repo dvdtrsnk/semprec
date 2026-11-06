@@ -346,6 +346,32 @@ export function createItemRoutes(
       },
     },
     {
+      method: "PUT",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => ({
+        status: 200,
+        body: await dispatchGenericOperation(service, "page.ensure", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+        }),
+      }),
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => {
+        const params = requestUrl(ctx.req.url).searchParams;
+        const rawLimit = params.get("limit");
+        if (rawLimit !== null && !/^\d+$/.test(rawLimit))
+          throw new ValidationError("Invalid page limit", { field: "limit" });
+        const result = await dispatchGenericOperation(service, "page.get", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+          format: params.get("format") ?? "summary",
+          ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
+        });
+        return { status: 200, body: result };
+      },
+    },
+    {
       method: "POST",
       path: "/api/items/:id/page/restore",
       handler: async (ctx) => {

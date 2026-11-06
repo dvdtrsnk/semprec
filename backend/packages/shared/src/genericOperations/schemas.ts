@@ -364,6 +364,18 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
+export const PageEnsureInputSchema = z.object({ itemId: z.string() }).strict();
+export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
+
+export const PageGetInputSchema = z
+  .object({
+    itemId: z.string(),
+    format: z.literal("summary").default("summary"),
+    limit: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type PageGetInput = z.infer<typeof PageGetInputSchema>;
+
 export const ValueLinkInputSchema = z.object({ itemId: z.string(), propertyKey: z.string() }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
@@ -376,7 +388,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 31 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 36 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -412,6 +424,8 @@ export interface InputByOperation {
   "page.restoreVersion": PageRestoreVersionInput;
   "link.unlink": ValueLinkInput;
   "link.relink": ValueLinkInput;
+  "page.get": PageGetInput;
+  "page.ensure": PageEnsureInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

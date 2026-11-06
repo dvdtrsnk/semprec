@@ -48,6 +48,8 @@ const EXPECTED_ROWS: Record<
   "relation.set": { schema: schemas.RelationSetInputSchema, method: "setRelation" },
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
+  "page.ensure": { schema: schemas.PageEnsureInputSchema, method: "ensurePage" },
+  "page.get": { schema: schemas.PageGetInputSchema, method: "getPage" },
   "link.unlink": { schema: schemas.ValueLinkInputSchema, method: "unlinkValue" },
   "link.relink": { schema: schemas.ValueLinkInputSchema, method: "relinkValue" },
   "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
@@ -235,8 +237,15 @@ const EXPECTED_METADATA: Record<
     riskClass: "write",
     reversible: true,
   },
+  "page.ensure": {
+    requiresCapability: "core.page.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "page.get": { requiresCapability: "core.page.read", requiresApproval: false, riskClass: "read", reversible: true },
   "page.restoreVersion": {
-    requiresCapability: "core.item.write",
+    requiresCapability: "core.page.write",
     requiresApproval: true,
     riskClass: "destructive",
     reversible: true,
@@ -244,14 +253,14 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 34 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(34);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(34);
+  it("has exactly 36 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(36);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(36);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 34 catalog rows and no others", () => {
+  it("has exactly the 36 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

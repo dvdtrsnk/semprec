@@ -726,6 +726,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "ensure page",
+    method: "PUT",
+    path: `/api/items/${EXAMPLE_ID}/page`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "get page",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/page`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "restore page version",
     method: "POST",
     path: `/api/items/${EXAMPLE_ID}/page/restore`,

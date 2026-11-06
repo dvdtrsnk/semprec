@@ -386,6 +386,8 @@ const CASES: Record<GenericOperationName, Case> = {
       );
     },
   },
+  "page.ensure": { tool: (fx) => ({ name: "semprec.page.ensure", arguments: { itemId: fx.itemA.id } }) },
+  "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },
   "page.restoreVersion": {
     // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
     tool: (fx) => ({

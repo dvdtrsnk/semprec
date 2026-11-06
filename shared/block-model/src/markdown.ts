@@ -234,7 +234,7 @@ function italicOpenToken(span: Span, before: string | undefined, after: string |
   return inWord ? "*" : "_";
 }
 
-function serializeInline(runs: readonly TextRun[]): string {
+export function serializeInline(runs: readonly TextRun[]): string {
   const pieces = toPieces(runs);
   const spans = buildSpans(pieces);
   markHtmlSpans(spans, pieces);

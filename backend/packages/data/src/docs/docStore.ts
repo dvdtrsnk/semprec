@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import type { PageRestoreOutput } from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
@@ -10,6 +11,7 @@ import type { BlockInput, BlockData } from "./blocks.js";
 import * as canvas from "./canvas.js";
 import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
 import { openDocVersionAt } from "./docHistory.js";
+import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
@@ -73,6 +75,21 @@ export function createDocStore(pool: Pool) {
 
     async getDoc(itemId: string): Promise<DocRow | null> {
       return withTransaction(pool, (client) => docsStore.getDocByItemId(client, itemId));
+    },
+
+    async getPageSummary(itemId: string, locale: string, limit?: number) {
+      return withTransaction(pool, (client) => readPageSummary(client, itemId, locale, limit));
+    },
+
+    async ensurePage(itemId: string): Promise<{ docId: string }> {
+      return withTransaction(pool, async (client) => {
+        const [visible] = await getItemsByIds(client, [itemId]);
+        if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        const item = await lockItemById(client, visible.databaseId, itemId);
+        if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
+        return { docId: doc.id };
+      });
     },
 
     // ---- page content (blocks) ----

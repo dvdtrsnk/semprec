@@ -22,6 +22,7 @@ import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../systemSettings.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
@@ -44,6 +45,36 @@ describe("permission manifest and drift check", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("excludes page capabilities from project grants even when an owned module declares them", async () => {
+    const projectDb = await chokePoint.createDatabase({ name: "Projects" });
+    const project = await chokePoint.createItem({ databaseId: projectDb.id, properties: {} });
+    await chokePoint.createDatabase({ name: "Owned", key: "pageGrantProbe", ownerProjectItemId: project.id });
+    const registry = await loadFullModuleRegistry();
+    const declarations = await registry.getModuleCapabilityDeclarations();
+    const spy = vi
+      .spyOn(registry, "getModuleCapabilityDeclarations")
+      .mockResolvedValue([
+        ...declarations,
+        {
+          moduleId: "probe",
+          databaseKeys: ["pageGrantProbe"],
+          capabilities: ["core.page.read", "core.page.write", "probe.read"],
+        },
+      ]);
+    try {
+      const result = await withTransaction(pool, (client) =>
+        generatePermissionManifest(client, project.id, { moduleRegistry: registry }),
+      );
+      expect(result.grantedCapabilities).toContain("core.item.read");
+      expect(result.grantedCapabilities).toContain("core.item.write");
+      expect(result.grantedCapabilities).toContain("probe.read");
+      expect(result.grantedCapabilities).not.toContain("core.page.read");
+      expect(result.grantedCapabilities).not.toContain("core.page.write");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("generates a manifest scoped to one project's owned databases", async () => {

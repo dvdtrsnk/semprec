@@ -477,6 +477,34 @@ export function createGenericApplicationService(
       return chokePoint.relinkValue(input, actor.userId);
     },
 
+    async getPage(actor, input) {
+      const item = await requireItem(input.itemId);
+      const summary = await docStore.getPageSummary(
+        item.id,
+        (await chokePoint.findUserLocale(actor.userId)) ?? "en",
+        input.limit,
+      );
+      const path = await chokePoint.getItemPath(item.id);
+      const breadcrumbs = await Promise.all(
+        path.map(async (entry) => {
+          const database = await chokePoint.getDatabase(entry.databaseId);
+          const title = typeof entry.properties.name === "string" ? entry.properties.name : "";
+          const journal =
+            database?.ownerModuleId === "journal" &&
+            typeof entry.properties.type === "string" &&
+            typeof entry.properties.period === "string"
+              ? { type: entry.properties.type, period: entry.properties.period }
+              : undefined;
+          return { itemId: entry.id, title, databaseKey: database?.key ?? null, ...(journal ? { journal } : {}) };
+        }),
+      );
+      return { ...summary, breadcrumbs: breadcrumbs.length > 1 || breadcrumbs[0]?.journal ? breadcrumbs : null };
+    },
+
+    async ensurePage(_actor, input) {
+      return docStore.ensurePage(input.itemId);
+    },
+
     // ---- pages ----
     /** The docs module refuses an unknown or non-page item (404), a future `at` (400) and an `at` outside the retained window (410). */
     async restorePageVersion(_actor, input) {

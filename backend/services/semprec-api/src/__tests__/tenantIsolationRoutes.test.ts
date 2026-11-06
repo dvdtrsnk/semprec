@@ -1769,6 +1769,12 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
+  "ensure page": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({ method: "PUT", path: `/api/items/${id}/page` }));
+  },
+  "get page": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({ method: "GET", path: `/api/items/${id}/page` }));
+  },
   "restore page version": () =>
     leavesAUnchanged(async () => {
       // A foreign item answers exactly as a random one does, and nothing of A's page is written.
@@ -2343,6 +2349,8 @@ const MCP_CASES = {
   },
   "link.unlink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
   "link.relink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
+  "page.ensure": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId })),
+  "page.get": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" })),
   "page.restoreVersion": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
       itemId,

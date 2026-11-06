@@ -14,6 +14,8 @@ export const CAPABILITY_IDS = [
   "core.view.write",
   "core.item.read",
   "core.item.write",
+  "core.page.read",
+  "core.page.write",
 ] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 
@@ -98,7 +100,9 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
   "link.unlink": nonDestructive("core.item.write", "write"),
   "link.relink": nonDestructive("core.item.write", "write"),
-  "page.restoreVersion": destructive("core.item.write", true),
+  "page.ensure": nonDestructive("core.page.write", "write"),
+  "page.get": nonDestructive("core.page.read", "read"),
+  "page.restoreVersion": destructive("core.page.write", true),
 };
 
 export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;

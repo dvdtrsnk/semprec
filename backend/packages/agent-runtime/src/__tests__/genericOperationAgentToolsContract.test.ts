@@ -32,7 +32,10 @@ import {
   runInTenant,
   type GenericOperationName,
 } from "@semprec/shared";
-import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
+import {
+  createGenericOperationAgentTools,
+  listGrantedGenericOperationAgentTools,
+} from "../tools/generic/genericOperationAgentTools.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
@@ -259,6 +262,8 @@ const CASES: Record<GenericOperationName, Case> = {
       );
     },
   },
+  "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
     args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
@@ -311,6 +316,28 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("does not discover or invoke page operations through a persisted project agent", async () => {
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion"] as const) {
+      expect(discovered).not.toContain(name);
+      const args =
+        name === "page.restoreVersion"
+          ? { itemId: projectItemId, at: new Date().toISOString() }
+          : { itemId: projectItemId };
+      const outcome = await tools[name](run.id, args);
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("Unknown operation");
+      expect(outcome.approvalRequestId).toBeUndefined();
+    }
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [projectItemId])).rows).toHaveLength(0);
+    expect((await pool.query("SELECT id FROM approval_requests WHERE agent_run_id = $1", [run.id])).rows).toHaveLength(
+      0,
+    );
   });
 
   it("validates Areas writes through the actual agent tools", async () => {
@@ -626,7 +653,11 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
       const outcome = await tools[operation](run.id, testCase.args(fx));
 
-      if (isDestructive) {
+      if (operation === "page.get" || operation === "page.ensure" || operation === "page.restoreVersion") {
+        expect(outcome.error).toBe(true);
+        expect(outcome.approvalRequestId).toBeUndefined();
+        expect(outcome.result).toContain("Unknown operation");
+      } else if (isDestructive) {
         expect(outcome.error).toBe(false);
         expect(outcome.result).toContain("requires human approval");
         const { rows } = await pool.query<{ count: number }>(

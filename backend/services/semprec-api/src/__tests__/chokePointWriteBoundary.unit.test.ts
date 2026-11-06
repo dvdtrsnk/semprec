@@ -108,6 +108,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
   "delete relation": "services/semprec-api/src/itemsHandler.ts",
   "list relations": "services/semprec-api/src/itemsHandler.ts",
+  "ensure page": "services/semprec-api/src/itemsHandler.ts",
+  "get page": "services/semprec-api/src/itemsHandler.ts",
   "restore page version": "services/semprec-api/src/itemsHandler.ts",
   "query view": "services/semprec-api/src/viewsHandler.ts",
   "recording upload": "services/semprec-api/src/recordingsHandler.ts",

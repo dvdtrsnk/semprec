@@ -78,6 +78,22 @@ describe("docs (CRDT layer)", () => {
     return item;
   }
 
+  describe("explicit page ensure", () => {
+    it("converges concurrent creates, reuses the row and refuses trashed or wrong-kind items", async () => {
+      const item = await makeItem();
+      const [first, second] = await Promise.all([docStore.ensurePage(item.id), docStore.ensurePage(item.id)]);
+      expect(second).toEqual(first);
+      expect(await docStore.ensurePage(item.id)).toEqual(first);
+      expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(1);
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      await expect(docStore.ensurePage(item.id)).rejects.toMatchObject({ status: 404 });
+      const canvas = await makeItem();
+      await docStore.getOrCreateDoc(canvas.id, "canvas");
+      await expect(docStore.ensurePage(canvas.id)).rejects.toMatchObject({ status: 409 });
+      expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [canvas.id])).rows).toHaveLength(1);
+    });
+  });
+
   describe("lazy creation", () => {
     it("an item has no doc until the first content-write", async () => {
       const item = await makeItem();
