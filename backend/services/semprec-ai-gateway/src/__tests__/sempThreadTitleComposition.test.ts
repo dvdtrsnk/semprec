@@ -314,9 +314,9 @@ describe("Semp title through the real gateway", () => {
       await setTenantAiBudget(admin, tenant);
     } catch (error) {
       if (failure) {
-        // Preserve the assertion failure and retain the budget restoration failure.
-        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure.error, error], "Title budget fixture cleanup failed", {
+          // Preserve the assertion failure and retain the budget restoration failure.
+          // eslint-disable-next-line preserve-caught-error
           cause: failure.error,
         });
       }
