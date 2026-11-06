@@ -1,8 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import {
   openSttStream,
   synthesizeSpeech,
+  SpeechSynthesisCapacityError,
   type HttpAiGatewayClientConfig,
   type SttStream,
 } from "@semprec/ai-gateway-client";
@@ -23,10 +25,7 @@ interface Session {
   queued: number;
   speech: Promise<void>;
   speechController: AbortController | undefined;
-  interrupted: boolean;
-  pendingText: string;
-  heardText: string;
-  sentences: string[];
+  textState: VoiceTextState;
   speaking: boolean;
   dispose: (() => void) | undefined;
 }
@@ -34,6 +33,90 @@ interface Session {
 const MAX_QUEUED_TURNS = 16;
 const MAX_SENTENCES = 32;
 const MAX_TEXT = 4000;
+
+class VoiceTextOverloadError extends Error {}
+class VoiceTextMismatchError extends Error {}
+
+/** Bounded, ephemeral sentence and streamed-prefix state for one voice session. */
+export class VoiceTextState {
+  private hash = createHash("sha256");
+  private units = 0;
+  private pending = "";
+  private readonly sentences: string[] = [];
+  private suppressed = false;
+
+  get hasSentences(): boolean {
+    return this.sentences.length > 0;
+  }
+  takeSentence(): string | undefined {
+    return this.sentences.shift();
+  }
+  beginTurn(): void {
+    this.suppressed = false;
+    this.pending = "";
+    this.sentences.length = 0;
+    this.resetPrefix();
+  }
+  interrupt(): void {
+    this.suppressed = true;
+    this.pending = "";
+    this.sentences.length = 0;
+    this.resetPrefix();
+  }
+  pushDelta(text: string): void {
+    if (this.suppressed) return;
+    const units = this.units + text.length;
+    if (!Number.isSafeInteger(units)) throw new VoiceTextOverloadError("Voice text length exceeded");
+    this.hash.update(Buffer.from(text, "utf16le"));
+    this.units = units;
+    this.feed(text, false);
+  }
+  finishMessage(text: string | undefined): void {
+    if (this.suppressed) {
+      this.resetPrefix();
+      return;
+    }
+    if (text === undefined) {
+      if (this.units !== 0) throw new VoiceTextMismatchError("Voice message text mismatch");
+      this.resetPrefix();
+      return;
+    }
+    if (
+      text.length < this.units ||
+      !createHash("sha256")
+        .update(Buffer.from(text.slice(0, this.units), "utf16le"))
+        .digest()
+        .equals(this.hash.copy().digest())
+    )
+      throw new VoiceTextMismatchError("Voice message text mismatch");
+    this.feed(text.slice(this.units), true);
+    this.resetPrefix();
+  }
+  private resetPrefix(): void {
+    this.hash = createHash("sha256");
+    this.units = 0;
+  }
+  private feed(text: string, flush: boolean): void {
+    let offset = 0;
+    while (offset < text.length) {
+      const remaining = text.slice(offset);
+      const match = /[.!?](?:\s|$)/u.exec(remaining);
+      const length = match ? match.index + match[0].length : remaining.length;
+      if (this.pending.length + length > MAX_TEXT) throw new VoiceTextOverloadError("Voice sentence exceeds limit");
+      this.pending += remaining.slice(0, length);
+      offset += length;
+      if (match) this.enqueuePending();
+    }
+    if (flush && this.pending) this.enqueuePending();
+  }
+  private enqueuePending(): void {
+    const sentence = this.pending;
+    this.pending = "";
+    if (!sentence.trim()) return;
+    if (this.sentences.length >= MAX_SENTENCES) throw new VoiceTextOverloadError("Voice sentence queue exceeds limit");
+    this.sentences.push(sentence);
+  }
+}
 
 export function createVoiceSessionHandler(
   pool: Pool,
@@ -44,13 +127,15 @@ export function createVoiceSessionHandler(
   function fail(session: Session, error: unknown): void {
     if (session.sender.signal.aborted) return;
     session.sender.fail(
-      error instanceof AiGatewayFailedError && error.reason === "budget_exceeded" ? "budgetExceeded" : "unavailable",
+      error instanceof SpeechSynthesisCapacityError
+        ? "overloaded"
+        : error instanceof AiGatewayFailedError && error.reason === "budget_exceeded"
+          ? "budgetExceeded"
+          : "unavailable",
     );
   }
   function stopSpeech(session: Session): void {
-    session.interrupted = true;
-    session.sentences.length = 0;
-    session.pendingText = "";
+    session.textState.interrupt();
     session.speechController?.abort();
     if (session.speaking) {
       session.speaking = false;
@@ -58,14 +143,13 @@ export function createVoiceSessionHandler(
     }
   }
   function pump(session: Session): void {
-    if (session.speechController || session.interrupted || session.sender.signal.aborted || !session.sentences.length)
-      return;
+    if (session.speechController || session.sender.signal.aborted || !session.textState.hasSentences) return;
     const controller = new AbortController();
     session.speechController = controller;
     const signal = AbortSignal.any([controller.signal, session.sender.signal]);
     session.speech = runInTenant(session.identity.tenantId, async () => {
-      while (session.sentences.length && !signal.aborted) {
-        const text = session.sentences.shift();
+      while (session.textState.hasSentences && !signal.aborted) {
+        const text = session.textState.takeSentence();
         if (!text) continue;
         const audio = await synthesizeSpeech(gateway, { text, voice: DEFAULT_MESSAGE_SPEECH_VOICE, signal });
         if (signal.aborted) break;
@@ -98,25 +182,8 @@ export function createVoiceSessionHandler(
           session.speaking = false;
           session.sender.sendControl({ type: "speaking", state: "stopped" });
         }
-        if (session.sentences.length && !session.interrupted && !session.sender.signal.aborted) pump(session);
+        if (session.textState.hasSentences && !session.sender.signal.aborted) pump(session);
       });
-  }
-  function appendText(session: Session, value: string, flush: boolean): boolean {
-    if (session.interrupted) return true;
-    session.pendingText += value;
-    if (session.pendingText.length > MAX_TEXT) return false;
-    for (;;) {
-      const match = /[.!?](?:\s|$)/u.exec(session.pendingText);
-      if (!match && !flush) break;
-      const end = match ? match.index + match[0].length : session.pendingText.length;
-      const sentence = session.pendingText.slice(0, end);
-      session.pendingText = session.pendingText.slice(end);
-      if (sentence.trim()) session.sentences.push(sentence);
-      if (session.sentences.length > MAX_SENTENCES) return false;
-      if (!session.pendingText) break;
-    }
-    pump(session);
-    return true;
   }
   async function turn(session: Session, text: string): Promise<void> {
     const signal = session.sender.signal;
@@ -143,9 +210,7 @@ export function createVoiceSessionHandler(
     }
     signal.throwIfAborted();
     if (!delivery?.runId || !delivery.firstEventId) throw new Error("Voice turn unavailable");
-    session.interrupted = false;
-    session.pendingText = "";
-    session.heardText = "";
+    session.textState.beginTurn();
     let lastEventId = delivery.firstEventId;
     let failed = false;
     let watchFailure: unknown;
@@ -163,17 +228,28 @@ export function createVoiceSessionHandler(
           "delta" in delta &&
           typeof delta.delta === "string"
         ) {
-          session.heardText += delta.delta;
-          if (session.heardText.length > MAX_TEXT) return false;
-          return appendText(session, delta.delta, false);
+          try {
+            session.textState.pushDelta(delta.delta);
+            pump(session);
+            return true;
+          } catch (error) {
+            session.sender.fail(error instanceof VoiceTextOverloadError ? "overloaded" : "unavailable");
+            return false;
+          }
         }
       }
       if (frame.type === "event" && frame.event.kind === "message") {
         const value = frame.event.payload;
-        if (typeof value === "object" && value !== null && "text" in value && typeof value.text === "string") {
-          const remaining = value.text.startsWith(session.heardText) ? value.text.slice(session.heardText.length) : "";
-          if (!appendText(session, remaining, true)) return false;
-          session.heardText = "";
+        const text =
+          typeof value === "object" && value !== null && "text" in value && typeof value.text === "string"
+            ? value.text
+            : undefined;
+        try {
+          session.textState.finishMessage(text);
+          pump(session);
+        } catch (error) {
+          session.sender.fail(error instanceof VoiceTextOverloadError ? "overloaded" : "unavailable");
+          return false;
         }
       }
       if (frame.type === "event") lastEventId = frame.event.id;
@@ -208,7 +284,7 @@ export function createVoiceSessionHandler(
         }
         await delay(100, undefined, { signal });
       }
-      if (!appendText(session, "", true)) throw new Error("Voice speech backlog exceeded");
+      session.textState.finishMessage(undefined);
       await session.speech;
     } finally {
       session.dispose?.();
@@ -239,10 +315,7 @@ export function createVoiceSessionHandler(
         queued: 0,
         speech: Promise.resolve(),
         speechController: undefined,
-        interrupted: false,
-        pendingText: "",
-        heardText: "",
-        sentences: [],
+        textState: new VoiceTextState(),
         speaking: false,
         dispose: undefined,
       };

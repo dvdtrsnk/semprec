@@ -301,6 +301,31 @@ export interface SynthesizeSpeechOptions {
   signal?: AbortSignal;
 }
 
+/** The gateway refused a synthesis because its bounded stream capacity was exhausted. */
+export class SpeechSynthesisCapacityError extends AiGatewayFailedError {
+  constructor() {
+    super("http");
+    this.name = "SpeechSynthesisCapacityError";
+    this.message = "Speech synthesis capacity exhausted";
+  }
+}
+
+async function isSpeechCapacityRejection(res: Response): Promise<boolean> {
+  if (res.status !== 503) return false;
+  try {
+    const body = await readJsonBodyWithSizeCap(res, 4096);
+    return (
+      typeof body === "object" &&
+      body !== null &&
+      !Array.isArray(body) &&
+      "code" in body &&
+      body.code === "tts_capacity_exhausted"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Calls `semprec-ai-gateway`'s `POST /internal/tts/stream` (#1399) over loopback with the same
  * bearer token and ambient tenant header as {@link createHttpAiGatewayClient} and resolves once
@@ -337,9 +362,13 @@ export async function synthesizeSpeech(
     throw failure();
   }
   if (!res.ok) {
-    const budget = await isBudgetRejection(res);
-    cancel.abort();
-    throw new AiGatewayFailedError(budget ? "budget_exceeded" : "http");
+    try {
+      if (await isBudgetRejection(res)) throw new AiGatewayFailedError("budget_exceeded");
+      if (await isSpeechCapacityRejection(res)) throw new SpeechSynthesisCapacityError();
+      throw new AiGatewayFailedError("http");
+    } finally {
+      cancel.abort();
+    }
   }
   const reader = res.body?.getReader();
   if (!reader) {

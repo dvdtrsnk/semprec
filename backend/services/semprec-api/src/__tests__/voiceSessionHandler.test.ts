@@ -11,6 +11,7 @@ import type { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { SpeechSynthesisCapacityError, synthesizeSpeech } from "@semprec/ai-gateway-client";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -30,7 +31,69 @@ import {
 import { createDispatcher } from "../app.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createVoiceChannel, type VoiceChannel } from "../voiceChannel.js";
-import { createVoiceSessionHandler } from "../voiceSessionHandler.js";
+import { createVoiceSessionHandler, VoiceTextState } from "../voiceSessionHandler.js";
+
+describe("voice text state (component only)", () => {
+  it("drains a long answer and splits an admissible multi-sentence delta before applying the sentence bound", () => {
+    const state = new VoiceTextState();
+    const first = `${"a".repeat(2100)}. `;
+    const second = `${"b".repeat(2100)}.`;
+    state.beginTurn();
+    state.pushDelta(first + second);
+    expect(state.takeSentence()).toBe(first);
+    expect(state.takeSentence()).toBe(second);
+    state.finishMessage(first + second);
+    expect(state.takeSentence()).toBeUndefined();
+    state.pushDelta(first);
+    expect(state.takeSentence()).toBe(first);
+    state.pushDelta(second);
+    expect(state.takeSentence()).toBe(second);
+    state.finishMessage(first + second);
+    expect(state.hasSentences).toBe(false);
+  });
+  it("enforces per-sentence and undrained queue bounds without truncation", () => {
+    const exact = new VoiceTextState();
+    exact.pushDelta("x".repeat(4000));
+    exact.finishMessage("x".repeat(4000));
+    expect(exact.takeSentence()).toHaveLength(4000);
+    expect(() => new VoiceTextState().pushDelta("x".repeat(4001))).toThrow("sentence exceeds");
+    const queue = new VoiceTextState();
+    expect(() => queue.pushDelta("A. ".repeat(33))).toThrow("queue exceeds");
+    expect(Array.from({ length: 32 }, () => queue.takeSentence())).toEqual(Array(32).fill("A. "));
+    expect(queue.takeSentence()).toBeUndefined();
+  });
+  it("compares UTF-16 prefixes, including split surrogate pairs, and resets each durable message", () => {
+    const state = new VoiceTextState();
+    state.pushDelta("Hi \ud83d");
+    state.pushDelta("\ude00");
+    state.finishMessage("Hi 😀. More.");
+    expect(state.takeSentence()).toBe("Hi 😀. ");
+    expect(state.takeSentence()).toBe("More.");
+    state.finishMessage("New sentence.");
+    expect(state.takeSentence()).toBe("New sentence.");
+    state.finishMessage(undefined);
+    state.pushDelta("abc");
+    expect(() => state.finishMessage("ab")).toThrow("mismatch");
+    const mismatch = new VoiceTextState();
+    mismatch.pushDelta("abc");
+    expect(() => mismatch.finishMessage("abd.")).toThrow("mismatch");
+    const missing = new VoiceTextState();
+    missing.pushDelta("abc");
+    expect(() => missing.finishMessage(undefined)).toThrow("mismatch");
+  });
+  it("keeps barge-in suppression across message resets until the next turn", () => {
+    const state = new VoiceTextState();
+    state.pushDelta("Old sentence.");
+    state.interrupt();
+    state.pushDelta("Ignored delta.");
+    state.finishMessage("Different completion.");
+    state.finishMessage(undefined);
+    expect(state.hasSentences).toBe(false);
+    state.beginTurn();
+    state.finishMessage("Fresh sentence.");
+    expect(state.takeSentence()).toBe("Fresh sentence.");
+  });
+});
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const blockRoot = resolve(backend, "../shared/block-model");
@@ -441,6 +504,94 @@ describe("voice session through the real gateway and registered worker", () => {
     }));
     expect(state.messages.rows).toEqual(before.messages.rows);
     expect(state.calls.rows).toEqual(before.calls.rows);
+  }, 30_000);
+
+  it("classifies real gateway TTS saturation without an extra provider call or reservation", async () => {
+    if (!gateway) throw new Error("Missing fixture gateway");
+    const ready = gateway.messages.find((entry) => entry.type === "ready");
+    if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
+    const gatewayPort = ready.port;
+    const priorCalls = gateway.messages.filter((entry) => entry.type === "speechCall").length;
+    const previous = await runInTenant(tenant, () =>
+      pool.query<{ id: string }>("SELECT id::text FROM ai_gateway_calls WHERE operation='voice_synthesize'"),
+    );
+    const controllers: AbortController[] = [];
+    const streams: AsyncIterable<Uint8Array>[] = [];
+    let drained = false;
+    let failed = false;
+    let failure: unknown;
+    const cleanup: unknown[] = [];
+    send(gateway, "holdSpeech");
+    try {
+      for (let i = 0; i < 4; i++) {
+        const controller = new AbortController();
+        controllers.push(controller);
+        streams.push(
+          await runInTenant(tenant, () =>
+            synthesizeSpeech(
+              { port: gatewayPort, token: "batch32-test-token" },
+              { text: `Fixture ${i}.`, voice: "alloy", signal: controller.signal },
+            ),
+          ),
+        );
+      }
+      await vi.waitFor(() =>
+        expect(gateway?.messages.filter((entry) => entry.type === "speechCall").length).toBe(priorCalls + 4),
+      );
+      const held = await runInTenant(tenant, () =>
+        pool.query<{ id: string; status: string }>(
+          "SELECT id::text, status FROM ai_gateway_calls WHERE operation='voice_synthesize' ORDER BY id",
+        ),
+      );
+      const ids = held.rows.filter((row) => !previous.rows.some((old) => old.id === row.id)).map((row) => row.id);
+      expect(ids).toHaveLength(4);
+      expect(held.rows.filter((row) => ids.includes(row.id)).every((row) => row.status === "reserved")).toBe(true);
+      const error = await runInTenant(tenant, () =>
+        synthesizeSpeech({ port: gatewayPort, token: "batch32-test-token" }, { text: "Overflow.", voice: "alloy" }),
+      ).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(SpeechSynthesisCapacityError);
+      expect(gateway.messages.filter((entry) => entry.type === "speechCall")).toHaveLength(priorCalls + 4);
+      const after = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>(
+          "SELECT id::text FROM ai_gateway_calls WHERE operation='voice_synthesize' ORDER BY id",
+        ),
+      );
+      expect(after.rows).toHaveLength(previous.rows.length + 4);
+      send(gateway, "releaseSpeech");
+      let bytes = 0;
+      for (const stream of streams) for await (const chunk of stream) bytes += chunk.length;
+      drained = true;
+      expect(bytes).toBeGreaterThan(0);
+      await vi.waitFor(async () => {
+        const result = await runInTenant(tenant, () =>
+          pool.query<{ status: string }>("SELECT status FROM ai_gateway_calls WHERE id=ANY($1::bigint[])", [ids]),
+        );
+        expect(result.rows).toHaveLength(4);
+        expect(result.rows.every((row) => row.status === "settled")).toBe(true);
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    } finally {
+      try {
+        if (gateway.child.connected) send(gateway, "releaseSpeech");
+      } catch (error) {
+        cleanup.push(error);
+      }
+      for (const controller of controllers) controller.abort();
+      if (!drained) {
+        const results = await Promise.allSettled(
+          streams.map(async (stream) => {
+            for await (const chunk of stream) void chunk;
+          }),
+        );
+        for (const result of results) if (result.status === "rejected") cleanup.push(result.reason);
+      }
+    }
+    if (failed && cleanup.length)
+      throw new AggregateError([failure, ...cleanup], "TTS capacity test and cleanup failed", { cause: failure });
+    if (failed) throw failure instanceof Error ? failure : new Error("TTS capacity test failed", { cause: failure });
+    if (cleanup.length) throw new AggregateError(cleanup, "TTS capacity cleanup failed", { cause: cleanup[0] });
   }, 30_000);
 
   it("keeps HTTP source untrusted and enforces the additive stored source constraint", async () => {
