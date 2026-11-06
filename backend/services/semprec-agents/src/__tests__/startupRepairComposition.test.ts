@@ -354,6 +354,97 @@ describe("semprec-agents startup repair (issue #642)", () => {
     if (failure) throw failure.error;
   });
 
+  it("rolls back a tenant's run repair when its Semp repair fails while another tenant commits", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `test_repair_rollback_${suffix}`;
+    const triggerName = `test_repair_rollback_${suffix}`;
+    let triggerInstalled = false;
+    let failure: { error: unknown } | undefined;
+    try {
+      const role = await runAsSystem("test:repair-rollback-role", () =>
+        runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const firstTenant = await createTestTenant(pool);
+      const secondTenant = await createTestTenant(pool);
+      for (const tenantId of [firstTenant, secondTenant])
+        await createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      const makeTurn = (tenantId: string) =>
+        runInTenant(tenantId, () =>
+          withTransaction(runtimePool, async (client) => {
+            const turn = await sendSempMessage(client, { text: "repair rollback", context: [], hasContext: false });
+            expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+            const run = await createAgentRun(client, {
+              triggeredBy: "user",
+              unit: "session",
+              task: "repair rollback",
+              threadId: turn.threadId,
+            });
+            const event = await insertAgentRunEvent(client, run.id, "turn_start", { kind: "turn_start" });
+            await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+            return { ...turn, runId: run.id };
+          }),
+        );
+      const first = await makeTurn(firstTenant);
+      const second = await makeTurn(secondTenant);
+      await pool.query(
+        `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${first.assistantMessageId}'::uuid AND NEW.status = 'error' THEN RAISE EXCEPTION 'repair fixture failure'; END IF; RETURN NEW; END $$`,
+      );
+      await pool.query(
+        `CREATE TRIGGER ${triggerName} BEFORE UPDATE ON semp_messages FOR EACH ROW EXECUTE FUNCTION ${functionName}()`,
+      );
+      triggerInstalled = true;
+      await expect(repairInterruptedRuns(runtimePool)).rejects.toBeInstanceOf(AggregateError);
+      const state = (tenantId: string, id: string) =>
+        runInTenant(tenantId, () =>
+          runtimePool.query<{ message_status: string; error_code: string | null; run_status: string }>(
+            `SELECT m.status AS message_status, m.error_code, r.status AS run_status
+               FROM semp_messages m JOIN agent_runs r ON r.tenant_id = m.tenant_id AND r.id = m.agent_run_id
+              WHERE m.id = $1`,
+            [id],
+          ),
+        );
+      expect((await state(firstTenant, first.assistantMessageId)).rows).toEqual([
+        { message_status: "running", error_code: null, run_status: "running" },
+      ]);
+      expect((await state(secondTenant, second.assistantMessageId)).rows).toEqual([
+        { message_status: "error", error_code: "interrupted", run_status: "error" },
+      ]);
+      expect((await state(secondTenant, first.assistantMessageId)).rows).toEqual([]);
+      expect((await state(secondTenant, randomUUID())).rows).toEqual([]);
+      const notifications = await runInTenant(firstTenant, () =>
+        runtimePool.query<{ count: number }>("SELECT count(*)::int AS count FROM notifications WHERE source_id = $1", [
+          first.runId,
+        ]),
+      );
+      expect(notifications.rows).toEqual([{ count: 0 }]);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanup: unknown[] = [];
+    for (const action of [
+      async () => {
+        if (triggerInstalled) await pool.query(`DROP TRIGGER ${triggerName} ON semp_messages`);
+      },
+      async () => pool.query(`DROP FUNCTION IF EXISTS ${functionName}()`),
+      async () => runtimePool.end(),
+    ]) {
+      try {
+        await action();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(failure ? [failure.error, ...cleanup] : cleanup, "Repair rollback test cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+  });
+
   it("processes the next queued message after repairing an interrupted Semp turn", async () => {
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
