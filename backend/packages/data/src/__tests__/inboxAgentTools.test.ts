@@ -235,7 +235,9 @@ describe("Inbox proposal tool owner", () => {
       expect(JSON.parse(result.result)).toMatchObject({
         captureText: "",
         envelope: own.envelope,
+        userEditedKeys: [],
         status: "proposed",
+        history: expect.arrayContaining([expect.objectContaining({ author: "user", message: "Revise" })]),
         attachments: own.attachmentIds.map((attachmentId) => ({ attachmentId, name: null })),
       });
       const missing = await tool(own.runId, { proposalId: randomUUID() });
