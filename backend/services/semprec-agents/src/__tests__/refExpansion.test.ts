@@ -10,13 +10,23 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
 import {
   createChokePoint,
+  createItemWithClient,
   getDatabaseByModuleId,
   ingestUploadedBlob,
+  listPropertiesByDatabase,
   LocalFsBlobStorageWriter,
+  resolveMailModuleIds,
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  ensureFolderItem,
+  getTestPool,
+  ingestEmailMessage,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { expandSempRefs } from "../refExpansion.js";
 
 function pdfFixture(): Buffer {
@@ -121,6 +131,98 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(result.images[0]?.mimeType).toBe("image/jpeg");
     expect(result.context).toHaveLength(3);
     expect(JSON.stringify(result.context)).not.toContain(result.images[0]?.data ?? "missing");
+  });
+
+  it("expands real mail text bytes ephemerally and refuses foreign, random and invalid UTF-8 references", async () => {
+    const createMail = (owner: string, attachments: Array<{ filename: string; bytes: Buffer }>) =>
+      runInTenant(owner, () =>
+        withTransaction(runtime, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const emailProperties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const folderProperties = await listPropertiesByDatabase(client, ids.foldersDatabaseId);
+          const attachment = emailProperties.find((property) => property.key === "attachments");
+          const folder = emailProperties.find((property) => property.key === "folder");
+          const mailbox = folderProperties.find((property) => property.key === "mailbox");
+          if (!attachment || !folder || !mailbox) throw new Error("Missing mail fixture relations");
+          const mailboxItem = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mail" },
+          });
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId: mailboxItem.id,
+            mailboxRelationPropertyId: mailbox.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const email = await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: folder.id,
+            attachmentsRelationPropertyId: attachment.id,
+            folderItemId: folderId,
+            mailboxItemId: mailboxItem.id,
+            messageId: `<${randomUUID()}@example.test>`,
+            subject: "Fixture",
+            envelope: {},
+            attachments: attachments.map(({ filename, bytes }) => ({
+              filename,
+              contentType: "text/plain",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from([bytes]),
+            })),
+            storage: mailAttachments,
+            storageKeyPrefix: "semp-ref-fixture",
+          });
+          const result = await client.query<{ id: string; filename: string; content_type: string; mime_type: string }>(
+            `SELECT attachment.id, attachment.filename, attachment.content_type, blob.mime_type
+           FROM mail_attachments attachment JOIN blobs blob ON blob.tenant_id = attachment.tenant_id AND blob.id = attachment.blob_id
+           WHERE attachment.message_item_id = $1 ORDER BY attachment.filename`,
+            [email.itemId],
+          );
+          return result.rows;
+        }),
+      );
+    const own = await createMail(tenant, [
+      { filename: "plain.txt", bytes: Buffer.from("Mail text fixture sentinel") },
+      { filename: "invalid.txt", bytes: Buffer.from([0xff, 0xfe]) },
+    ]);
+    const privateRows = await createMail(foreign, [
+      { filename: "private.txt", bytes: Buffer.from("Foreign fixture sentinel") },
+    ]);
+    expect(own.map(({ filename, content_type, mime_type }) => ({ filename, content_type, mime_type }))).toEqual([
+      { filename: "invalid.txt", content_type: "text/plain", mime_type: "text/plain" },
+      { filename: "plain.txt", content_type: "text/plain", mime_type: "text/plain" },
+    ]);
+    const plain = own.find((row) => row.filename === "plain.txt");
+    const invalid = own.find((row) => row.filename === "invalid.txt");
+    const privateRow = privateRows[0];
+    if (!plain || !invalid || !privateRow) throw new Error("Missing ingested fixture attachments");
+    const refs = [plain.id, invalid.id, privateRow.id, randomUUID()].map((attachmentId) => ({
+      kind: "mailAttachment" as const,
+      attachmentId,
+    }));
+    await runInTenant(tenant, async () => {
+      const snapshot = () =>
+        runtime.query(
+          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM item_search_index) AS search",
+        );
+      const before = await snapshot();
+      const result = await expandSempRefs(runtime, refs, { files, mailAttachments }, new AbortController().signal);
+      expect(result.text).toContain("Mail text fixture sentinel");
+      expect(result.text).toContain('"mimeType":"text/plain"');
+      expect(result.text).toContain("Attachment text unavailable.");
+      expect(result.text).not.toContain("Foreign fixture sentinel");
+      expect(result.context.map((entry) => entry.label)).toEqual(["plain.txt", "invalid.txt", "", ""]);
+      expect(result.context).toEqual(
+        refs.map((ref, index) => ({ ...ref, label: ["plain.txt", "invalid.txt", "", ""][index] })),
+      );
+      expect(JSON.stringify(result.context)).not.toContain("Mail text fixture sentinel");
+      expect((await snapshot()).rows).toEqual(before.rows);
+    });
   });
 
   it("keeps metadata and finite notes for corrupt, oversized and unsupported inputs, and refuses foreign and random refs", async () => {
