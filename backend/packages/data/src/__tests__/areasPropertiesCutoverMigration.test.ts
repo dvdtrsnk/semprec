@@ -57,7 +57,7 @@ describe("Areas property cutover", () => {
     await pool.end();
     await admin.end();
   });
-  it("seeds user-owned nullable-name properties with empty config, without creating areas", async () =>
+  it("seeds properties without adding areas or changing the existing system area", async () =>
     runInTenant(tenant, async () => {
       const rows = await properties();
       for (const [key, type] of [
@@ -67,8 +67,18 @@ describe("Areas property cutover", () => {
       ]) {
         expect(rows.find((p) => p.key === key)).toMatchObject({ type, owner: "user", name: null, config: {} });
       }
-      const items = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [databaseId]);
-      expect(items.rows).toEqual([]);
+      const items = await pool.query<{ id: string; properties: unknown }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 ORDER BY id",
+        [databaseId],
+      );
+      expect(items.rows).toHaveLength(1);
+      expect(items.rows[0]).toMatchObject({ properties: { name: "(neplánováno)", active: true, systemActive: true } });
+      await runAreasPropertiesCutoverMigration(pool);
+      const after = await pool.query<{ id: string; properties: unknown }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 ORDER BY id",
+        [databaseId],
+      );
+      expect(after.rows).toEqual(items.rows);
     }));
   it("upgrades a populated locked schema once, preserving existing fields and lock state", async () =>
     runInTenant(tenant, async () => {
