@@ -8,6 +8,7 @@ export interface OpenBlobFromRootsInput {
   primary: BlobStorageWriter;
   alternate: BlobStorageWriter;
   storageKey: string;
+  signal?: AbortSignal;
   /** Inclusive byte range, forwarded to whichever root serves the file. */
   range?: { start: number; end: number };
 }
@@ -25,13 +26,23 @@ async function openIn(
   storage: BlobStorageWriter,
   storageKey: string,
   range: OpenBlobFromRootsInput["range"],
+  signal: AbortSignal | undefined,
 ): Promise<Readable | null> {
+  signal?.throwIfAborted();
   const stream = storage.readStream(storageKey, range);
   try {
-    await once(stream, "readable");
+    await once(stream, "readable", { signal });
+    signal?.throwIfAborted();
   } catch (err) {
-    stream.destroy();
-    if (isMissingFileError(err)) return null;
+    try {
+      stream.destroy();
+    } catch (cleanupError) {
+      throw new AggregateError([err, cleanupError], "Blob open and stream cleanup failed", { cause: err });
+    }
+    if (isMissingFileError(err)) {
+      signal?.throwIfAborted();
+      return null;
+    }
     throw err;
   }
   return stream;
@@ -45,9 +56,27 @@ async function openIn(
  * root has the file.
  */
 export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<Readable | null> {
-  const first = await openIn(input.primary, input.storageKey, input.range);
-  if (first) return first;
-  return openIn(input.alternate, input.storageKey, input.range);
+  input.signal?.throwIfAborted();
+  let stream = await openIn(input.primary, input.storageKey, input.range, input.signal);
+  if (!stream) {
+    input.signal?.throwIfAborted();
+    stream = await openIn(input.alternate, input.storageKey, input.range, input.signal);
+  }
+  if (!stream) {
+    input.signal?.throwIfAborted();
+    return null;
+  }
+  try {
+    input.signal?.throwIfAborted();
+    return stream;
+  } catch (err) {
+    try {
+      stream.destroy();
+    } catch (cleanupError) {
+      throw new AggregateError([err, cleanupError], "Blob transfer and stream cleanup failed", { cause: err });
+    }
+    throw err;
+  }
 }
 
 /**

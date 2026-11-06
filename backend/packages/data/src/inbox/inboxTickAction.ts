@@ -34,6 +34,7 @@ export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./p
 import { assertValidEnvelopeRelations, assertWritableProposalPropertyKeys } from "./proposalEnvelopeValidation.js";
 import {
   proposalEnvelopeSchema,
+  pageContentV2Schema,
   type ComputedProposalEntityKind,
   type ProposalStep,
   type ProposalEnvelope,
@@ -48,6 +49,9 @@ export {
   type UnknownKindProposalEnvelope,
 } from "./proposalEnvelope.js";
 import { isDeepStrictEqual } from "node:util";
+import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { readPageSummary } from "../docs/pageSummary.js";
+import { parseJournalPeriodKey } from "../journal/journalPeriods.js";
 import type { Pool, PoolClient } from "pg";
 import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@semprec/shared";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
@@ -390,6 +394,49 @@ export async function assertValidProposalEnvelope(
     throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, {
       field: "target",
     });
+  }
+  if (Object.hasOwn(envelope.properties, "markdown")) {
+    const parsed = pageContentV2Schema.safeParse(envelope.properties);
+    if (!parsed.success) throw new ValidationError("Invalid Markdown page proposal", { field: "properties" });
+    try {
+      parseMarkdown(parsed.data.markdown, { allowPage: false });
+    } catch (error) {
+      if (error instanceof BlockInputError)
+        throw new ValidationError("Invalid Markdown page proposal", { field: "properties" });
+      throw error;
+    }
+    const database = await databasesStore.getDatabase(client, targetPage.databaseId);
+    let host = database?.ownerModuleId === "projects" || database?.ownerModuleId === "areas";
+    if (
+      database?.ownerModuleId === "journal" &&
+      targetPage.properties.type === "day" &&
+      typeof targetPage.properties.period === "string"
+    ) {
+      try {
+        parseJournalPeriodKey("day", targetPage.properties.period);
+        host = true;
+      } catch (error) {
+        if (!(error instanceof ValidationError)) throw error;
+      }
+    }
+    if (database?.system && database.key === "pages" && database.ownerModuleId === "pages") {
+      const properties = await propertiesStore.listPropertiesByDatabase(client, database.id);
+      const parent = properties.find((property) => property.key === "parentItemId");
+      host =
+        parent?.type === "text" &&
+        parent.owner === "system" &&
+        parent.ownerProcess === "pages" &&
+        typeof targetPage.properties.parentItemId === "string" &&
+        UUID_RE.test(targetPage.properties.parentItemId);
+    }
+    if (!host) throw new ValidationError("Proposal target is not a page host", { field: "target" });
+    if (typeof parsed.data.placement === "object") {
+      const afterHeading = parsed.data.placement.afterHeading;
+      const summary = await readPageSummary(client, targetPage.id, "en");
+      if (!summary.headings.some((heading) => heading.id === afterHeading))
+        throw new ValidationError("Proposal heading is unavailable", { field: "properties" });
+    }
+    return null;
   }
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
     throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", {

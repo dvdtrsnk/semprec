@@ -78,7 +78,11 @@ function parseCompactionPayload(payload: unknown, agentRunId: string): Conversat
       `agent_run_events 'compaction' row for run ${agentRunId} has a payload that is not a valid ConversationEntry[]`,
     );
   }
-  return payload;
+  return payload.map((entry) => {
+    const replayEntry = { ...entry };
+    delete replayEntry.images;
+    return replayEntry;
+  });
 }
 
 /**

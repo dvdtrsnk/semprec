@@ -69,6 +69,7 @@ export async function expandSempRefs(
                 primary: roots[primary],
                 alternate: roots[primary === "files" ? "mailAttachments" : "files"],
                 storageKey: blob.storageKey,
+                signal,
               });
               if (!stream) section += "\nAttachment unavailable.";
               else {

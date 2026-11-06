@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { writeBlock } from "@semprec/block-model";
+import { mutateDoc } from "../docs/docPersistence.js";
+import { createDocStore } from "../docs/docStore.js";
+import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5745,4 +5749,97 @@ describe("aiProposalPatch and readAiProposal (issue #1471)", () => {
 
 afterAll(async () => {
   await pool?.end();
+});
+
+describe("Markdown page proposal validation", () => {
+  it("accepts current real hosts and validates headings without creating documents or exposing other tenants", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const owner = await createTestTenant(pool);
+      const foreign = await createTestTenant(pool);
+      await runInTenant(owner, () => seedSystem(runtime));
+      await runInTenant(foreign, () => seedSystem(runtime));
+      const setup = (tenant: string) =>
+        runInTenant(tenant, async () => {
+          const dbs = await withTransaction(runtime, async (client) => ({
+            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+            areas: await databasesStore.getDatabaseByModuleId(client, "areas"),
+            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
+            journal: await databasesStore.getDatabaseByModuleId(client, "journal"),
+          }));
+          if (!dbs.projects || !dbs.areas || !dbs.tasks || !dbs.journal) throw new Error("Missing system database");
+          const cp = createChokePoint(runtime);
+          const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
+          const area = await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } });
+          const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
+          const day = await withTransaction(runtime, (client) =>
+            getOrCreateJournalItem(client, dbs.journal!.id, "day", new Date("2026-11-06T12:00:00Z"), "UTC"),
+          );
+          const week = await withTransaction(runtime, (client) =>
+            getOrCreateJournalItem(client, dbs.journal!.id, "week", new Date("2026-11-06T12:00:00Z"), "UTC"),
+          );
+          return { project, area, task, day, week };
+        });
+      const own = await setup(owner);
+      const other = await setup(foreign);
+      const validate = (target: string, properties: Record<string, unknown>) =>
+        runInTenant(owner, () =>
+          withTransaction(runtime, (client) =>
+            assertValidProposalEnvelope(client, { entityKind: "pageContent", target, properties }),
+          ),
+        );
+      const before = await runInTenant(owner, () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
+      );
+      for (const target of [own.project.id, own.area.id, own.day.id])
+        await expect(validate(target, { markdown: "Hello", placement: "end" })).resolves.toBeNull();
+      const after = await runInTenant(owner, () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
+      );
+      expect(after.rows).toEqual(before.rows);
+      for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
+        await expect(validate(target, { markdown: "Hello", placement: "end" })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "target" },
+        });
+      for (const properties of [
+        { markdown: " ", placement: "end" },
+        { markdown: "[Page](semprec://page/abc)", placement: "end" },
+        { markdown: "Hello", placement: "sideways" },
+        { markdown: "Hello", placement: "end", heading: "a\nb" },
+        { markdown: "Hello", placement: { afterHeading: "missing" } },
+      ])
+        await expect(validate(own.project.id, properties)).rejects.toMatchObject({
+          status: 400,
+          details: { field: "properties" },
+        });
+      const store = createDocStore(runtime);
+      const doc = await runInTenant(owner, () => store.getOrCreateDoc(own.project.id, "page"));
+      await runInTenant(owner, () =>
+        mutateDoc(runtime, doc.id, "user", (ydoc) => {
+          writeBlock(ydoc, { id: "heading", type: "h2", text: "Heading" });
+          writeBlock(ydoc, { id: "text", type: "text", text: "Paragraph" });
+        }),
+      );
+      await expect(
+        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "heading" } }),
+      ).resolves.toBeNull();
+      await expect(
+        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "text" } }),
+      ).rejects.toMatchObject({ status: 400 });
+      await runInTenant(owner, () => createChokePoint(runtime).softDeleteItem(own.project.databaseId, own.project.id));
+      await expect(validate(own.project.id, { markdown: "Hello", placement: "start" })).rejects.toMatchObject({
+        status: 400,
+        details: { field: "target" },
+      });
+    } finally {
+      await runtime.end();
+    }
+  });
 });

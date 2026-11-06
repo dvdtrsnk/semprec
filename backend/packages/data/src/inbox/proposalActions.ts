@@ -425,6 +425,11 @@ export async function confirmProposalWithClient(
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
   if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
+  if (envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown")) {
+    if (proposal.properties.kind === "transcript")
+      throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
+    throw new ConflictError("Markdown page proposals cannot yet be confirmed");
+  }
   const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
