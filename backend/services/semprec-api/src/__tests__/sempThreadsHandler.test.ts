@@ -531,6 +531,15 @@ describe("durable Semp thread history", () => {
     ).toEqual(jobsBefore);
     const history = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, { headers });
     expect(history.status).toBe(200);
+    const historyBody = z
+      .object({ rows: z.array(z.object({ role: z.string(), text: z.string().nullable() })) })
+      .parse(await history.json());
+    expect(historyBody.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", text: "first" }),
+        expect.objectContaining({ role: "user", text: "second" }),
+      ]),
+    );
     const laterSource = await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
         createItemWithClient(client, {
