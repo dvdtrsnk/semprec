@@ -287,6 +287,8 @@ describe("Semp history reference resolution", () => {
       await rm(directory, { recursive: true });
     } catch (cleanupError) {
       if (failed)
+        // Preserve the original test failure as cause; cleanup failure is retained in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure, cleanupError], "History purge test and cleanup failed", { cause: failure });
       throw cleanupError;
     }
@@ -566,6 +568,8 @@ describe("Semp history reference resolution", () => {
       await rm(directory, { recursive: true });
     } catch (cleanupError) {
       if (failed)
+        // Preserve the original test failure as cause; cleanup failure is retained in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure, cleanupError], "History batch test and cleanup failed", { cause: failure });
       throw cleanupError;
     }
