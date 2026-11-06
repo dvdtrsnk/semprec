@@ -1581,3 +1581,114 @@ it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
   },
   120_000,
 );
+
+it("adds Semp error and accounting columns over populated synthetic legacy rows through the registered runner", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  const name = `batch31_semp_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch31-migrations-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const additions = ["0139_semp_messages_error_code.sql", "0140_ai_gateway_calls_semp_message_id.sql"];
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < additions[0]!)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(scratch, dir);
+    const tenants = await scratch.query<{ id: string }>("SELECT id FROM tenants");
+    const tenant = tenants.rows[0]?.id;
+    if (!tenant || tenants.rows.length !== 1) throw new Error("Expected one synthetic legacy tenant");
+    const thread = await scratch.query<{ id: string }>(
+      "INSERT INTO semp_threads (tenant_id, kind) VALUES ($1, 'chat') RETURNING id",
+      [tenant],
+    );
+    const threadId = thread.rows[0]?.id;
+    if (!threadId) throw new Error("Expected synthetic legacy thread");
+    await scratch.query(
+      "INSERT INTO semp_messages (tenant_id, thread_id, role, text) VALUES ($1, $2, 'user', 'legacy text')",
+      [tenant, threadId],
+    );
+    await scratch.query(
+      "INSERT INTO ai_gateway_calls (tenant_id, provider, model, cost_usd) VALUES ($1, 'legacy', 'legacy', 0)",
+      [tenant],
+    );
+    const beforeMessages = (
+      await scratch.query("SELECT to_jsonb(m) AS row, ctid::text AS tuple, xmin::text AS version FROM semp_messages m")
+    ).rows;
+    const beforeCalls = (
+      await scratch.query(
+        "SELECT to_jsonb(c) AS row, ctid::text AS tuple, xmin::text AS version FROM ai_gateway_calls c",
+      )
+    ).rows;
+    for (const file of additions) await copyFile(path.join(migrations, file), path.join(dir, file));
+    await runMigrations(scratch, dir);
+    const afterMessages = (
+      await scratch.query(
+        "SELECT to_jsonb(m) - 'error_code' AS row, ctid::text AS tuple, xmin::text AS version FROM semp_messages m WHERE error_code IS NULL",
+      )
+    ).rows;
+    const afterCalls = (
+      await scratch.query(
+        "SELECT to_jsonb(c) - 'semp_message_id' AS row, ctid::text AS tuple, xmin::text AS version FROM ai_gateway_calls c WHERE semp_message_id IS NULL",
+      )
+    ).rows;
+    expect(afterMessages).toEqual(beforeMessages);
+    expect(afterCalls).toEqual(beforeCalls);
+    await scratch.query(
+      "INSERT INTO semp_messages (tenant_id, thread_id, role, text) VALUES ($1, $2, 'user', 'legacy-shaped write')",
+      [tenant, threadId],
+    );
+    await scratch.query(
+      "INSERT INTO ai_gateway_calls (tenant_id, provider, model, cost_usd) VALUES ($1, 'legacy', 'legacy', 0)",
+      [tenant],
+    );
+    await runMigrations(scratch, dir);
+    expect(
+      (await scratch.query("SELECT count(*)::int AS count FROM semp_messages WHERE error_code IS NULL")).rows,
+    ).toEqual([{ count: 2 }]);
+    expect(
+      (await scratch.query("SELECT count(*)::int AS count FROM ai_gateway_calls WHERE semp_message_id IS NULL")).rows,
+    ).toEqual([{ count: 2 }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (!created) return;
+      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      const exists = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
+      if (exists.rowCount !== 0) throw new Error("Scratch database still exists after DROP");
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Semp migration cleanup failed",
+      { cause: failure?.error },
+    );
+  if (failure) throw failure.error;
+}, 120_000);
