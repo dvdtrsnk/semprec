@@ -297,9 +297,10 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(properties?.find((entry) => entry.id === valid.id)?.options).toEqual([
       expect.objectContaining({ key: "one", color: "#FF3B30" }),
     ]);
-    expect(properties?.find((entry) => entry.id === legacy.id)?.options).toEqual([
-      expect.not.objectContaining({ color: expect.anything() }),
-    ]);
+    const legacyOptions = properties?.find((entry) => entry.id === legacy.id)?.options;
+    expect(legacyOptions).toHaveLength(1);
+    expect(legacyOptions?.[0]).toMatchObject({ key: "one" });
+    expect(legacyOptions?.[0]).not.toHaveProperty("color");
   });
 
   it("returns the Czech Projects completion property through the properties route", async () => {

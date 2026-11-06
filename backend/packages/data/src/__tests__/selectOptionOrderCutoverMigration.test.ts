@@ -102,4 +102,20 @@ describe("select option order tenant cutover", () => {
     const { rows } = await runInTenant(second, () => data.query("SELECT id FROM properties"));
     expect(rows).toHaveLength(0);
   });
+
+  it("skips a missing property in an existing database without rewriting other catalogs", async () => {
+    for (const tenant of [first, second]) await runInTenant(tenant, () => seedSystem(data, createViewTypeRegistry()));
+    const removed = await property(second, "events", "type");
+    const before = await property(second, "projects", "status");
+    const foreign = await property(first, "events", "type");
+    const deleted = await admin.query("DELETE FROM properties WHERE tenant_id = $1 AND id = $2", [second, removed.id]);
+    expect(deleted.rowCount).toBe(1);
+    await runInTenant(second, () => runSelectOptionOrderCutoverMigration(data));
+    expect(await property(second, "projects", "status")).toEqual(before);
+    expect(await property(first, "events", "type")).toEqual(foreign);
+    const missing = await runInTenant(second, () =>
+      data.query("SELECT id FROM properties WHERE id = $1", [removed.id]),
+    );
+    expect(missing.rows).toEqual([]);
+  });
 });

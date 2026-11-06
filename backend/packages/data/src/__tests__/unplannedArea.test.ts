@@ -9,6 +9,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { ensureUnplannedArea } from "../seed/seedUnplannedArea.js";
+import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 
 let admin: Pool;
 let data: Pool;
@@ -55,18 +56,78 @@ describe("unplanned system area", () => {
     });
   });
 
+  it("does nothing for a tenant without an Areas database", async () => {
+    const emptyTenant = await createTestTenant(admin);
+    const ownerBefore = await runInTenant(tenant, () => cp.listItems(areasId));
+    const snapshot = () =>
+      runInTenant(emptyTenant, async () => ({
+        databases: (await data.query("SELECT id FROM databases ORDER BY id")).rows,
+        properties: (await data.query("SELECT id FROM properties ORDER BY id")).rows,
+        items: (await data.query("SELECT id FROM items ORDER BY id")).rows,
+      }));
+    const before = await snapshot();
+    await runInTenant(emptyTenant, () => runAreasUnplannedCutoverMigration(data));
+    expect(await snapshot()).toEqual(before);
+    expect(await runInTenant(tenant, () => cp.listItems(areasId))).toEqual(ownerBefore);
+  });
+
   it("creates one area when two direct owner calls run concurrently", async () => {
     const before = await runInTenant(tenant, () => cp.listItems(areasId));
     const area = before.items[0];
     if (!area) throw new Error("Area missing");
     const deleted = await admin.query("DELETE FROM items WHERE tenant_id = $1 AND id = $2", [tenant, area.id]);
     expect(deleted.rowCount).toBe(1);
-    await runInTenant(tenant, () =>
-      Promise.all([
-        withTransaction(data, (client) => ensureUnplannedArea(client, areasId)),
-        withTransaction(data, (client) => ensureUnplannedArea(client, areasId)),
-      ]),
+    let ready!: (pid: number) => void;
+    let release!: () => void;
+    const started = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = runInTenant(tenant, () =>
+      withTransaction(data, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing owner PID");
+        await ensureUnplannedArea(client, areasId);
+        ready(pid);
+        await gate;
+      }),
     );
+    const firstSettled = Promise.allSettled([first]);
+    let secondSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const pid = await Promise.race([
+        started,
+        first.then(() => {
+          throw new Error("First owner finished before barrier");
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Owner barrier timed out")), 5_000);
+        }),
+      ]);
+      const second = runInTenant(tenant, () => withTransaction(data, (client) => ensureUnplannedArea(client, areasId)));
+      secondSettled = Promise.allSettled([second]);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+        const waiting = await admin.query<{ present: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%pg_advisory_xact_lock%') AS present",
+          [pid],
+        );
+        blocked = waiting.rows[0]?.present === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      release();
+      if (timer) clearTimeout(timer);
+      await firstSettled;
+      if (secondSettled) await secondSettled;
+    }
+    for (const result of [...(await firstSettled), ...(secondSettled ? await secondSettled : [])]) {
+      if (result.status === "rejected") throw result.reason;
+    }
     const after = await runInTenant(tenant, () => cp.listItems(areasId));
     expect(after.items).toHaveLength(1);
     expect(after.items[0]?.properties).toMatchObject({ name: "(neplánováno)", active: true, systemActive: true });

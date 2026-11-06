@@ -462,6 +462,32 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("refuses a canvas as a page through MCP without changing its document", async () => {
+    const fx = await buildFixtures();
+    await createDocStore(pool).putCanvasElement(
+      fx.itemA.id,
+      { id: "shape", type: "shape", xywh: [0, 0, 10, 10], index: "a0" },
+      "user",
+    );
+    const state = () =>
+      pool.query(
+        `SELECT to_jsonb(d) AS doc, to_jsonb(s) AS snapshot,
+          (SELECT jsonb_agg(to_jsonb(u) ORDER BY u.id) FROM doc_updates u WHERE u.doc_id = d.id) AS updates
+         FROM docs d LEFT JOIN doc_snapshots s ON s.doc_id = d.id WHERE d.item_id = $1`,
+        [fx.itemA.id],
+      );
+    const before = await state();
+    expect(before.rows).toHaveLength(1);
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const result = await rpc(baseUrl, await authHeader(), "semprec.page.get", {
+      itemId: fx.itemA.id,
+      format: "summary",
+    });
+    expect(result.error).toMatchObject({ code: -32000, data: { code: "version_conflict" } });
+    expect((await state()).rows).toEqual(before.rows);
+  });
+
   it("ensures and reads the same page through a human MCP session", async () => {
     const fx = await buildFixtures();
     const { server, baseUrl } = await startServer();

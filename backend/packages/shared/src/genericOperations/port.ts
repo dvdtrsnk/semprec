@@ -62,7 +62,7 @@ export interface OutputByOperation {
 
 export interface PageSummary {
   docId: string | null;
-  kind: "page" | "canvas";
+  kind: "page";
   title: string;
   blocks: Array<{ id: string; type: string; indent: number; done: boolean; text: string; pageId?: string }>;
   blockCount: number;

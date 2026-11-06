@@ -700,6 +700,31 @@ describe("item routes (issue #241)", () => {
     expect((await fetch(path, { method: "PUT" })).status).toBe(401);
   });
 
+  it("refuses a canvas as a page over HTTP without changing its document", async () => {
+    const headers = await authHeader();
+    const item = await runInTenant(getTenantZeroId(), async () => {
+      const database = await chokePoint.createDatabase({ name: "Canvas" });
+      return chokePoint.createItem({ databaseId: database.id, properties: {} });
+    });
+    const store = createDocStore(pool);
+    await runInTenant(getTenantZeroId(), () =>
+      store.putCanvasElement(item.id, { id: "shape", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user"),
+    );
+    const state = () =>
+      pool.query(
+        `SELECT to_jsonb(d) AS doc, to_jsonb(s) AS snapshot,
+          (SELECT jsonb_agg(to_jsonb(u) ORDER BY u.id) FROM doc_updates u WHERE u.doc_id = d.id) AS updates
+         FROM docs d LEFT JOIN doc_snapshots s ON s.doc_id = d.id WHERE d.item_id = $1`,
+        [item.id],
+      );
+    const before = await state();
+    expect(before.rows).toHaveLength(1);
+    const response = await fetch(`${baseUrl}/api/items/${item.id}/page`, { headers });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "version_conflict" } });
+    expect((await state()).rows).toEqual(before.rows);
+  });
+
   it("reads page summaries over HTTP without creating a document and counts beyond the limit", async () => {
     const headers = await authHeader();
     const fixture = await runInTenant(getTenantZeroId(), async () => {
@@ -710,7 +735,7 @@ describe("item routes (issue #241)", () => {
     const path = `${baseUrl}/api/items/${fixture.item.id}/page`;
     const empty = await fetch(path, { headers });
     expect(empty.status).toBe(200);
-    expect(await empty.json()).toMatchObject({ docId: null, blockCount: 0, subpageCount: 0 });
+    expect(await empty.json()).toMatchObject({ docId: null, blockCount: 0, subpageCount: 0, breadcrumbs: null });
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fixture.item.id])).rows).toHaveLength(0);
     const store = createDocStore(pool);
     const row = await runInTenant(getTenantZeroId(), () => store.getOrCreateDoc(fixture.item.id, "page"));

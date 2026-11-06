@@ -9,6 +9,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
@@ -148,13 +149,27 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
   it("colors each listed catalog for an existing tenant and preserves unlisted options", async () => {
     for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
     const catalogs = [
-      ["files", "type"],
-      ["healthRecords", "status"],
-      ["people", "relationship"],
-      ["events", "type"],
-      ["projects", "status"],
-      ["books", "status"],
-      ["movies", "status"],
+      ["files", "type", { pdf: "#FF3B30", xlsx: "#34C759", docx: "#007AFF", jpg: "#FF9500" }],
+      ["healthRecords", "status", { monitoring: "#FF9500", resolved: "#34C759" }],
+      [
+        "people",
+        "relationship",
+        {
+          client: "#007AFF",
+          closeFriend: "#AF52DE",
+          parent: "#FF9500",
+          girlfriend: "#FF2D55",
+          therapist: "#34C759",
+          neighbor: "#8E8E93",
+          colleague: "#8E8E93",
+          craftsman: "#8E8E93",
+          doctor: "#8E8E93",
+        },
+      ],
+      ["events", "type", { meeting: "#AF52DE", standup: "#007AFF", event: "#FF3B30" }],
+      ["projects", "status", { inProgress: "#007AFF", longTerm: "#AF52DE", done: "#34C759", archived: "#8E8E93" }],
+      ["books", "status", { toRead: "#8E8E93", reading: "#007AFF", read: "#34C759" }],
+      ["movies", "status", { planned: "#8E8E93", watching: "#007AFF", watched: "#34C759" }],
     ] as const;
     const read = (tenant: string, moduleId: string, key: string) =>
       runInTenant(tenant, async () => {
@@ -183,14 +198,54 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     }
     await runCutovers(dataPool);
     const versions = new Map<string, string>();
-    for (const [moduleId, key] of catalogs) {
+    for (const [moduleId, key, expectedColors] of catalogs) {
       const fresh = await read(zero, moduleId, key);
       const migrated = await read(b, moduleId, key);
       expect(migrated.config.options).toEqual([...fresh.config.options, { key: "custom", marker: "preserved" }]);
+      for (const [optionKey, color] of Object.entries(expectedColors)) {
+        expect(migrated.config.options.find((option) => option.key === optionKey)).toMatchObject({ color });
+      }
       versions.set(moduleId, migrated.version);
     }
     await runCutovers(dataPool);
     for (const [moduleId, key] of catalogs) expect((await read(b, moduleId, key)).version).toBe(versions.get(moduleId));
+  });
+
+  it("skips missing databases and missing listed options without writes", async () => {
+    const empty = await createTestTenant(adminPool);
+    const emptyBefore = await runInTenant(empty, () => dataPool.query("SELECT id FROM properties"));
+    await runInTenant(empty, () => runSelectOptionColorsCutoverMigration(dataPool));
+    expect((await runInTenant(empty, () => dataPool.query("SELECT id FROM properties"))).rows).toEqual(
+      emptyBefore.rows,
+    );
+    await runInTenant(b, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const rows = await runInTenant(b, () =>
+      dataPool.query<{ id: string; config: unknown }>(
+        "SELECT p.id, p.config FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = 'projects' AND p.key = 'status'",
+      ),
+    );
+    const prop = z
+      .object({
+        id: z.string(),
+        config: z.object({ options: z.array(z.object({ key: z.string() }).passthrough()) }).passthrough(),
+      })
+      .parse(rows.rows[0]);
+    const options = prop.config.options.filter((option) => option.key !== "longTerm");
+    const changed = await adminPool.query(
+      "UPDATE properties SET config = jsonb_set(config, '{options}', $3::jsonb) WHERE tenant_id = $1 AND id = $2",
+      [b, prop.id, JSON.stringify(options)],
+    );
+    expect(changed.rowCount).toBe(1);
+    const read = () =>
+      runInTenant(b, () =>
+        dataPool.query<{ config: unknown; version: string }>(
+          "SELECT config, xmin::text AS version FROM properties WHERE id = $1",
+          [prop.id],
+        ),
+      );
+    const before = await read();
+    await runInTenant(b, () => runSelectOptionColorsCutoverMigration(dataPool));
+    expect((await read()).rows).toEqual(before.rows);
   });
 
   it("colors old select catalogs without overwriting existing colors and does not rewrite on replay", async () => {

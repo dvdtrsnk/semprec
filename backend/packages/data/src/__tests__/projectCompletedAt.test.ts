@@ -115,6 +115,26 @@ describe("Projects completion date", () => {
       expect(archived.properties.completedAt).toBe(day);
       const active = await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "inProgress" } });
       expect(active.properties.completedAt).toBeNull();
+      const directArchive = await cp.updateItem({
+        databaseId,
+        itemId: item.id,
+        propertiesPatch: { status: "archived" },
+      });
+      expect(directArchive.properties.completedAt).toBe(day);
+      const longTerm = await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "longTerm" } });
+      expect(longTerm.properties.completedAt).toBeNull();
+      const legacy = await cp.createItem({ databaseId, properties: { name: "Legacy", status: "done" } });
+      const stripped = await admin.query(
+        "UPDATE items SET properties = properties - 'completedAt' WHERE tenant_id = $1 AND id = $2",
+        [tenant, legacy.id],
+      );
+      expect(stripped.rowCount).toBe(1);
+      const legacyArchived = await cp.updateItem({
+        databaseId,
+        itemId: legacy.id,
+        propertiesPatch: { status: "archived" },
+      });
+      expect(legacyArchived.properties).not.toHaveProperty("completedAt");
       await expect(
         cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { completedAt: day } }),
       ).rejects.toMatchObject({ status: 403 });

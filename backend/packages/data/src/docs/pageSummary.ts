@@ -3,9 +3,12 @@ import type { PoolClient } from "pg";
 import { readPageBlocks, serializeInline } from "@semprec/block-model";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { getDocByItemId, readPageStatesForItems } from "./docsStore.js";
+import { ConflictError } from "../errors.js";
 
 export async function readPageSummary(client: PoolClient, itemId: string, locale: string, limit?: number) {
   const row = await getDocByItemId(client, itemId);
+  if (row && row.kind !== "page")
+    throw new ConflictError(`Item ${itemId} already has a '${row.kind}' doc; cannot read it as a page`, { itemId });
   const doc = new Y.Doc();
   try {
     if (row?.kind === "page") {
@@ -37,7 +40,7 @@ export async function readPageSummary(client: PoolClient, itemId: string, locale
     );
     return {
       docId: row?.id ?? null,
-      kind: row?.kind ?? ("page" as const),
+      kind: "page" as const,
       title,
       blocks: limit === undefined ? blocks : blocks.slice(0, limit),
       blockCount: blocks.length,
