@@ -116,7 +116,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 32-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 36-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -124,8 +124,7 @@ type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: str
  * per-field/per-error-branch behavior for each route already lives in its own handler test file
  * (`itemsHandler.test.ts`, `databasesHandler.test.ts`, `propertiesHandler.test.ts`,
  * `viewsHandler.test.ts`). The `Object.keys(CASES)` assertion below is what keeps this list
- * honest as the catalog evolves: a 31st operation with no case here fails that assertion, not
- * silently passes with 29 stale entries.
+ * honest as the catalog evolves: an operation with no case here fails that assertion.
  */
 const CASES: Record<GenericOperationName, ContractCase> = {
   "database.list": async (fx, headers, baseUrl) => {

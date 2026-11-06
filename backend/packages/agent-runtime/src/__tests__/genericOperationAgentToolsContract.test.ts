@@ -151,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 32-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 36-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
