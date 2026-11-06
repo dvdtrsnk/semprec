@@ -1177,7 +1177,10 @@ describe("queued Semp messages", () => {
       await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
       wireRealtimeHooks(pool);
       const faux = fauxProvider();
-      faux.setResponses([fauxAssistantMessage("notified")]);
+      faux.setResponses([
+        fauxAssistantMessage("notified"),
+        fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
+      ]);
       const gateway: GatewayModel = {
         model: faux.getModel(),
         streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
@@ -1198,6 +1201,27 @@ describe("queued Semp messages", () => {
         pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [turn.assistantMessageId]),
       );
       expect(message.rows).toEqual([{ status: "done" }]);
+      const firstEvents = observed.filter((value) => value.tenantId === tenant && value.threadId === turn.threadId);
+      expect(firstEvents).toHaveLength(1);
+      const failedTurn = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { threadId: turn.threadId, text: "fail", context: [], hasContext: false }),
+        ),
+      );
+      const failedDeadline = Date.now() + 15_000;
+      while (
+        observed.filter((value) => value.tenantId === tenant && value.threadId === turn.threadId).length < 2 &&
+        Date.now() < failedDeadline
+      )
+        await sleep(50);
+      const failed = await runInTenant(tenant, () =>
+        pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+          failedTurn.assistantMessageId,
+        ]),
+      );
+      expect(failed.rows).toEqual([{ status: "error" }]);
+      expect(observed.filter((value) => value.tenantId === tenant && value.threadId === turn.threadId)).toHaveLength(2);
+      expect(observed.filter((value) => value.tenantId === other)).toEqual([]);
     } catch (error) {
       failure = { error };
     }
