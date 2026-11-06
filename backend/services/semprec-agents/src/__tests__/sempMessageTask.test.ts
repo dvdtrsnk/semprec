@@ -225,8 +225,8 @@ describe("queued Semp messages", () => {
       await runInTenant(foreign, () => seedSystem(pool));
       const ids = await runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
-          const database = await getDatabaseByModuleId(client, "tasks");
-          if (!database) throw new Error("Missing tasks database");
+          const database = await getDatabaseByModuleId(client, "areas");
+          if (!database) throw new Error("Missing areas database");
           const item = await createItemWithClient(client, {
             databaseId: database.id,
             properties: { name: "Reference", note: "REF_OWNER_SENTINEL_32" },
@@ -236,8 +236,8 @@ describe("queued Semp messages", () => {
       );
       const foreignIds = await runInTenant(foreign, () =>
         withTransaction(pool, async (client) => {
-          const database = await getDatabaseByModuleId(client, "tasks");
-          if (!database) throw new Error("Missing foreign tasks database");
+          const database = await getDatabaseByModuleId(client, "areas");
+          if (!database) throw new Error("Missing foreign areas database");
           const item = await createItemWithClient(client, {
             databaseId: database.id,
             properties: { name: "REF_FOREIGN_SENTINEL_32" },
