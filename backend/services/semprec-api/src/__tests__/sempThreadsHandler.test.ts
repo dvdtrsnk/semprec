@@ -14,6 +14,7 @@ import {
   createItemWithClient,
   createPendingApprovalRequest,
   createRelationWithClient,
+  enqueueSempMessage,
   createSempChatThread,
   claimSempMessage,
   createUser,
@@ -387,9 +388,18 @@ describe("durable Semp thread history", () => {
         )
       ).rows,
       job: (
-        await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
-          `sempMessage:${second.assistantMessageId}`,
-        ])
+        await pool.query<{
+          id: string;
+          revision: number;
+          key: string;
+          queue_name: string;
+          task_identifier: string;
+          max_attempts: number;
+          priority: number;
+        }>(
+          "SELECT id::text, revision, key, queue_name, task_identifier, max_attempts, priority FROM graphile_worker.jobs WHERE key = $1",
+          [`sempMessage:${second.assistantMessageId}`],
+        )
       ).rows,
     }));
     expect(stored.approval).toEqual([{ status: "pending" }]);
@@ -397,7 +407,27 @@ describe("durable Semp thread history", () => {
       { role: "user", status: null, text: "approve yes" },
       { role: "assistant", status: "queued", text: null },
     ]);
-    expect(stored.job).toEqual([{ key: `sempMessage:${second.assistantMessageId}` }]);
+    expect(stored.job).toEqual([
+      expect.objectContaining({
+        key: `sempMessage:${second.assistantMessageId}`,
+        queue_name: `semp-chat:${tenant}`,
+        task_identifier: "sempMessage",
+        max_attempts: 1,
+        priority: -1,
+      }),
+    ]);
+    await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        enqueueSempMessage(client, { threadId: second.threadId, assistantMessageId: second.assistantMessageId }),
+      ),
+    );
+    const duplicate = await runInTenant(tenant, () =>
+      pool.query<{ id: string; revision: number }>(
+        "SELECT id::text, revision FROM graphile_worker.jobs WHERE key = $1",
+        [`sempMessage:${second.assistantMessageId}`],
+      ),
+    );
+    expect(duplicate.rows).toEqual([{ id: stored.job[0]?.id, revision: stored.job[0]?.revision }]);
     const opaqueContext = [{ kind: "futureRef", value: "opaque" }];
     const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
