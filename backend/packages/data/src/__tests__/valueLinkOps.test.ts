@@ -209,7 +209,7 @@ describe("explicit value link operations", () => {
       const files = await cp.createDatabase({ name: "Files" });
       const projects = await cp.createDatabase({ name: "Projects" });
       await cp.createProperty({ databaseId: sources.id, key: "value", name: "Value", type: "text" });
-      await cp.createRelationProperty({
+      const { property } = await cp.createRelationProperty({
         sourceDatabaseId: files.id,
         key: "project",
         name: "Project",
@@ -218,6 +218,8 @@ describe("explicit value link operations", () => {
       });
       const source = await cp.createItem({ databaseId: sources.id, properties: { value: randomUUID() } });
       const target = await cp.createItem({ databaseId: files.id, properties: {} });
+      const existing = await cp.createItem({ databaseId: projects.id, properties: {} });
+      await cp.createRelation({ relationPropertyId: property.id, callerItemId: target.id, targetItemId: existing.id });
       await withTransaction(data, (client) =>
         insertValueLink(client, {
           itemId: target.id,
@@ -230,6 +232,8 @@ describe("explicit value link operations", () => {
         }),
       );
       const before = await cp.getValueLinksForItems([target.id]);
+      const relationsBefore = await cp.listItemRelations(target.id);
+      expect(relationsBefore).toHaveLength(1);
       const jobsBefore = await admin.query<{ key: string | null }>(
         "SELECT key FROM graphile_worker.jobs WHERE key LIKE $1 ORDER BY key",
         [`valueLinksPropagate:${tenant}:%`],
@@ -254,7 +258,7 @@ describe("explicit value link operations", () => {
         setInvalidationHook(() => {});
       }
       expect(await cp.getValueLinksForItems([target.id])).toEqual(before);
-      expect(await cp.listItemRelations(target.id)).toEqual([]);
+      expect(await cp.listItemRelations(target.id)).toEqual(relationsBefore);
     });
   });
 
