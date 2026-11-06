@@ -587,7 +587,7 @@ describe("generic operation MCP contract (issue #220)", () => {
       valueKind: "inheritedBroken",
       brokenBy: "agent",
     });
-    expect((await chokePoint.listItemRelations(file.id, property.id)).map((edge) => edge.targetItemId)).toEqual([
+    expect((await chokePoint.listItemRelations(file.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
       project.id,
     ]);
   });

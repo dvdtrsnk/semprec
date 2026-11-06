@@ -123,9 +123,9 @@ describe("unplanned system area", () => {
       release();
       if (timer) clearTimeout(timer);
       await firstSettled;
-      if (secondSettled) await secondSettled;
+      if (secondSettled !== undefined) await secondSettled;
     }
-    for (const result of [...(await firstSettled), ...(secondSettled ? await secondSettled : [])]) {
+    for (const result of [...(await firstSettled), ...(secondSettled !== undefined ? await secondSettled : [])]) {
       if (result.status === "rejected") throw result.reason;
     }
     const after = await runInTenant(tenant, () => cp.listItems(areasId));

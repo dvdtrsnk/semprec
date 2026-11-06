@@ -3493,7 +3493,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     }
     for (const caller of [b.member, mcpRunCredential]) {
       for (const action of ["unlink", "relink"] as const) {
-        const operation = `link.${action}`;
+        const operation: GenericOperationName = action === "unlink" ? "link.unlink" : "link.relink";
         const refused = await expectForeignLikeRandom(caller, [foreign], ([itemId]) =>
           mcpCall(operation, { itemId, propertyKey: "note" }),
         );

@@ -25,7 +25,7 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
   }
   const elements: unknown[] = options;
   for (const option of elements) {
-    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+    if (!isRecord(option)) {
       throw new ValidationError("each select/multi_select option must be an object of shape { key, label? }", {
         field: "config",
       });
@@ -49,6 +49,10 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
       record.color = record.color.toUpperCase();
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Validates the optional create-time default against the property's storage type. */

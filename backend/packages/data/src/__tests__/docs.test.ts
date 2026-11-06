@@ -138,11 +138,11 @@ describe("docs (CRDT layer)", () => {
               release();
               if (timer) clearTimeout(timer);
               await trashSettled;
-              if (ensureSettled) await ensureSettled;
+              if (ensureSettled !== undefined) await ensureSettled;
             }
             const [deleted] = await trashSettled;
             if (deleted?.status === "rejected") throw deleted.reason;
-            const [ensured] = ensureSettled ? await ensureSettled : [];
+            const [ensured] = ensureSettled !== undefined ? await ensureSettled : [];
             expect(ensured).toMatchObject({ status: "rejected", reason: { status: 404 } });
             expect((await runtime.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toEqual(
               before.rows,

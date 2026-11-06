@@ -601,7 +601,7 @@ describe("generic operation REST contract (issue #219)", () => {
     expect(first.status).toBe(200);
     const body: unknown = await first.json();
     expect(body).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user", brokenAt: expect.any(String) });
-    expect((await chokePoint.listItemRelations(file.id, property.id)).map((edge) => edge.targetItemId)).toEqual([
+    expect((await chokePoint.listItemRelations(file.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
       project.id,
     ]);
     const again = await unlink();
