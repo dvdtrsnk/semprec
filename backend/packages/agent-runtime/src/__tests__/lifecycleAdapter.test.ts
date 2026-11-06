@@ -267,9 +267,14 @@ describe("runAgentSession", () => {
       });
       async function* delayed(): AsyncGenerator<AgentMessage> {
         await gate;
+        yield { kind: "turn_start" };
         yield { kind: "message_update", text: "first" };
+        yield { kind: "message_update", text: "second" };
+        yield { kind: "message", text: "finished" };
+        yield { kind: "message_update", text: "after" };
       }
       async function* immediate(): AsyncGenerator<AgentMessage> {
+        yield { kind: "turn_start" };
         yield { kind: "message_update", text: "next" };
       }
       const pending = runInTenant(getTenantZeroId(), () =>
@@ -282,10 +287,46 @@ describe("runAgentSession", () => {
         runAgentTurn(runtime, run.id, immediate(), undefined, undefined, undefined, mutableId),
       );
       await runInTenant(getTenantZeroId(), () => runAgentTurn(runtime, run.id, immediate()));
-      await vi.waitFor(() => expect(messages).toHaveLength(3));
+      await vi.waitFor(() => expect(messages).toHaveLength(5));
+      const events = await runInTenant(getTenantZeroId(), () =>
+        runtime.query<{ id: string; kind: string }>(
+          "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+          [run.id],
+        ),
+      );
       expect(messages).toEqual([
-        expect.objectContaining({ message: expect.objectContaining({ agentRunId: run.id, sempMessageId: first }) }),
-        expect.objectContaining({ message: expect.objectContaining({ agentRunId: run.id, sempMessageId: second }) }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[0]?.id,
+            deltaSequence: 1,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[0]?.id,
+            deltaSequence: 2,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[1]?.id,
+            deltaSequence: 1,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: second,
+            afterEventId: events.rows[2]?.id,
+            deltaSequence: 1,
+          }),
+        }),
         expect.objectContaining({ message: expect.not.objectContaining({ sempMessageId: expect.anything() }) }),
       ]);
     } finally {

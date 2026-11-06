@@ -209,6 +209,30 @@ describe("agentRunEventsStore", () => {
         runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, cursor, limit, scope));
       expect((await list(scopeA)).map((event) => event.id)).toEqual([first.id, end.id]);
       expect((await list(scopeA, first.id)).map((event) => event.id)).toEqual([end.id]);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            listAgentRunEventsAfter(runtime, run.id, "0", 257, { ...scopeA, throughEventId: first.id }),
+          )
+        ).map((event) => event.id),
+      ).toEqual([first.id]);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            listAgentRunEventsAfter(runtime, run.id, first.id, 257, { ...scopeA, throughEventId: end.id }),
+          )
+        ).map((event) => event.id),
+      ).toEqual([end.id]);
+      expect(
+        await runInTenant(foreign, () =>
+          listAgentRunEventsAfter(runtime, run.id, "0", 257, { ...scopeA, throughEventId: end.id }),
+        ),
+      ).toEqual([]);
+      for (const throughEventId of ["0", "01", "-1", "9223372036854775808"]) {
+        await expect(
+          runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0", 257, { ...scopeA, throughEventId })),
+        ).rejects.toBeInstanceOf(ValidationError);
+      }
       expect((await list(scopeB, "0", 1)).map((event) => event.id)).toEqual([next.id]);
       expect((await list(scopeB)).map((event) => event.id)).toEqual([next.id, last.id]);
       expect(await runInTenant(tenant, () => getAgentRunEventById(runtime, run.id, last.id, scopeA))).toBeNull();

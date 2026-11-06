@@ -1833,6 +1833,65 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     }
   });
 
+  it("orders a next-cycle delta behind a held real durable event read", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (!held && typeof args[0] === "string" && args[0].includes("AND e.id <= $5::bigint")) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return original(...args);
+    };
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    try {
+      const event = await announcedEventIn(tenantA, run.id);
+      await waiting;
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "next cycle" }, target.sempMessageId, event.id, 1),
+      );
+      expect(frames).toEqual([]);
+      release();
+      await vi.waitFor(() => expect(frames).toHaveLength(2));
+      expect(frames[0]).toMatchObject({ type: "event", event: { id: event.id } });
+      expect(frames[1]).toMatchObject({
+        type: "delta",
+        message: { afterEventId: event.id, delta: { text: "next cycle" } },
+      });
+    } finally {
+      release();
+      await dispose();
+      spy.mockRestore();
+    }
+  });
+
   it("filters tagged voice deltas by message while keeping socket frames unchanged", async () => {
     const run = await createRunIn(tenantA, userA);
     const first = await silentEventIn(tenantA, run.id);
