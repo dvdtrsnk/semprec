@@ -77,6 +77,7 @@ describe("Semp reference observation", () => {
     );
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failure: unknown;
+    let failed = false;
     try {
       await Promise.race([
         ready,
@@ -89,6 +90,7 @@ describe("Semp reference observation", () => {
       ]);
       await purge(second.id);
     } catch (error) {
+      failed = true;
       failure = error;
     } finally {
       if (timer) clearTimeout(timer);
@@ -96,12 +98,14 @@ describe("Semp reference observation", () => {
     }
     const settled = await Promise.allSettled([operation]);
     const result = settled[0];
-    if (failure !== undefined) {
+    if (failed) {
       if (result?.status === "rejected")
         throw new AggregateError([failure, result.reason], "Observation and send failed");
-      throw failure;
+      throw failure instanceof Error ? failure : new Error("Observation failed", { cause: failure });
     }
-    if (!result || result.status === "rejected") throw result?.reason ?? new Error("Missing send result");
+    if (!result) throw new Error("Missing send result");
+    if (result.status === "rejected")
+      throw result.reason instanceof Error ? result.reason : new Error("Send failed", { cause: result.reason });
     const row = await runInTenant(tenant, () =>
       runtime.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [result.value.messageId]),
     );

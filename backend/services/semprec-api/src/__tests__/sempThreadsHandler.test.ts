@@ -504,6 +504,7 @@ describe("durable Semp thread history", () => {
   it("accepts an ingested mail attachment and refuses an unknown attachment without effects", async () => {
     const directory = await mkdtemp(join(tmpdir(), "semprec-ref-mail-"));
     let failure: unknown;
+    let failed = false;
     try {
       const tenant = await createTestTenant(admin);
       const email = `${randomUUID()}@example.test`;
@@ -603,16 +604,16 @@ describe("durable Semp thread history", () => {
       });
       expect(await counts()).toEqual(before);
     } catch (error) {
+      failed = true;
       failure = error;
-      throw error;
-    } finally {
-      try {
-        await rm(directory, { recursive: true, force: true });
-      } catch (error) {
-        if (failure !== undefined) throw new AggregateError([failure, error], "Mail fixture and cleanup failed");
-        throw error;
-      }
     }
+    try {
+      await rm(directory, { recursive: true, force: true });
+    } catch (error) {
+      if (failed) throw new AggregateError([failure, error], "Mail fixture and cleanup failed", { cause: failure });
+      throw error;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("Mail fixture failed", { cause: failure });
   });
 
   it("queues chat messages while leaving an existing approval pending regardless of text", async () => {
