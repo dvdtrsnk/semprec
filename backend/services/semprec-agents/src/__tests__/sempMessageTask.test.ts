@@ -11,6 +11,7 @@ import {
   createPendingApprovalRequest,
   createUser,
   decideAndEnqueueApprovalRequest,
+  enqueueSempMessage,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
   getDatabaseByModuleId,
@@ -80,6 +81,17 @@ describe("queued Semp messages", () => {
       errors.push(error);
     }
     if (errors.length) throw new AggregateError(errors, "Semp test cleanup failed", { cause: errors[0] });
+  });
+
+  it("refuses Semp enqueue outside a tenant scope without creating a job", async () => {
+    const payload = { threadId: randomUUID(), assistantMessageId: randomUUID() };
+    const key = `sempMessage:${payload.assistantMessageId}`;
+    const jobs = () => admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key]);
+    expect((await jobs()).rows).toEqual([]);
+    await expect(
+      runAsSystem("test:semp-enqueue", () => withTransaction(pool, (client) => enqueueSempMessage(client, payload))),
+    ).rejects.toThrow("Semp message enqueue requires a tenant scope");
+    expect((await jobs()).rows).toEqual([]);
   });
 
   it("runs two queued turns in their stored order through the real agents runtime", async () => {
