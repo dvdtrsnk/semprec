@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -395,7 +396,8 @@ describe("POST /internal/pi/messages", () => {
       const stableHeaders = (response: Response) => [...response.headers.entries()].filter(([name]) => name !== "date");
       expect(stableHeaders(foreign)).toEqual(stableHeaders(unknown));
       expect(await foreign.text()).toBe(unknownBody);
-      expect(JSON.parse(unknownBody)).toMatchObject({ code: "attribution_refused" });
+      const parsed: unknown = JSON.parse(unknownBody);
+      expect(z.object({ code: z.literal("attribution_refused") }).parse(parsed).code).toBe("attribution_refused");
       expect(await gatewayCalls()).toHaveLength(0);
       expect(streamCalls).toHaveLength(0);
       const own = await call(ownId);

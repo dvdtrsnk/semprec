@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -377,6 +377,12 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:foreign-key-role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
 
   afterAll(async () => {
