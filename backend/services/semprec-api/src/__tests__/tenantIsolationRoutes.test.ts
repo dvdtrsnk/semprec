@@ -3457,7 +3457,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     }
   });
 
-  it("isolates link operations through HTTP on the runtime role", async () => {
+  it("isolates link operations through HTTP and MCP on the runtime role", async () => {
     const cp = createChokePoint(pool);
     const setup = (tenantId: string) =>
       runInTenant(tenantId, async () => {
@@ -3490,6 +3490,20 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
         200,
       );
       expect(await readForeign()).toEqual(before);
+    }
+    for (const caller of [b.member, mcpRunCredential]) {
+      for (const action of ["unlink", "relink"] as const) {
+        const operation = `link.${action}`;
+        const refused = await expectForeignLikeRandom(caller, [foreign], ([itemId]) =>
+          mcpCall(operation, { itemId, propertyKey: "note" }),
+        );
+        expect(refused.status).toBe(200);
+        expect(refused.text).toContain('"error"');
+        const allowed = await send(caller, mcpCall(operation, { itemId: own, propertyKey: "note" }));
+        expect(allowed.status).toBe(200);
+        expect(allowed.text).not.toContain('"error"');
+        expect(await readForeign()).toEqual(before);
+      }
     }
   });
 
