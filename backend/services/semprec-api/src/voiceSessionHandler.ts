@@ -146,19 +146,11 @@ export function createVoiceSessionHandler(
     session.interrupted = false;
     session.pendingText = "";
     session.heardText = "";
-    let finish!: () => void;
-    let reject!: (error: unknown) => void;
-    const ended = new Promise<void>((resolve, rejectPromise) => {
-      finish = resolve;
-      reject = rejectPromise;
-    });
-    void ended.catch(() => {});
-    let finished = false;
-    const aborted = () => reject(signal.reason);
-    signal.addEventListener("abort", aborted, { once: true });
+    let lastEventId = delivery.firstEventId;
+    let failed = false;
+    let watchFailure: unknown;
     const onFrame = (frame: VoiceRunFrame): boolean => {
       if (signal.aborted) return false;
-      if (finished) return true;
       if (frame.type === "delta" && !("chunk" in frame.message)) {
         const delta = frame.message.delta;
         if (
@@ -181,13 +173,10 @@ export function createVoiceSessionHandler(
         if (typeof value === "object" && value !== null && "text" in value && typeof value.text === "string") {
           const remaining = value.text.startsWith(session.heardText) ? value.text.slice(session.heardText.length) : "";
           if (!appendText(session, remaining, true)) return false;
+          session.heardText = "";
         }
       }
-      if (frame.type === "event" && frame.event.kind === "turn_end") {
-        if (!appendText(session, "", true)) return false;
-        finished = true;
-        finish();
-      }
+      if (frame.type === "event") lastEventId = frame.event.id;
       return true;
     };
     try {
@@ -198,13 +187,28 @@ export function createVoiceSessionHandler(
         afterEventId: delivery.firstEventId,
         signal,
         onFrame,
-        onFailure: reject,
+        onFailure(error) {
+          failed = true;
+          watchFailure = error;
+        },
       });
-      if (signal.aborted) throw signal.reason;
-      await ended;
+      for (;;) {
+        signal.throwIfAborted();
+        if (failed) throw watchFailure;
+        delivery = await runInTenant(session.identity.tenantId, () =>
+          getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
+        );
+        signal.throwIfAborted();
+        if (!delivery || delivery.status === "error") throw new Error("Voice turn unavailable");
+        if (delivery.status === "done") {
+          if (!delivery.lastEventId || delivery.runId === null) throw new Error("Voice turn unavailable");
+          if (BigInt(lastEventId) >= BigInt(delivery.lastEventId)) break;
+        }
+        await delay(100, undefined, { signal });
+      }
+      if (!appendText(session, "", true)) throw new Error("Voice speech backlog exceeded");
       await session.speech;
     } finally {
-      signal.removeEventListener("abort", aborted);
       session.dispose?.();
       session.dispose = undefined;
     }

@@ -13,8 +13,13 @@ const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 
 
 /** Reads the queued assistant for one thread turn under the current tenant. */
 export async function getSempVoiceDelivery(client: Pool | PoolClient, threadId: string, assistantMessageId: string) {
-  const { rows } = await client.query<{ status: string; agent_run_id: string | null; event_from_id: string | null }>(
-    `SELECT status, agent_run_id, event_from_id FROM semp_messages
+  const { rows } = await client.query<{
+    status: string;
+    agent_run_id: string | null;
+    event_from_id: string | null;
+    event_to_id: string | null;
+  }>(
+    `SELECT status, agent_run_id, event_from_id, event_to_id FROM semp_messages
      WHERE thread_id = $1 AND id = $2 AND role = 'assistant'`,
     [threadId, assistantMessageId],
   );
@@ -24,6 +29,7 @@ export async function getSempVoiceDelivery(client: Pool | PoolClient, threadId: 
     status: assertKnownValue(["queued", "running", "done", "error"] as const, row.status, "message status"),
     runId: row.agent_run_id,
     firstEventId: row.event_from_id,
+    lastEventId: row.event_to_id,
   };
 }
 
