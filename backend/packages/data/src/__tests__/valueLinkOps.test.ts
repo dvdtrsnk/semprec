@@ -94,6 +94,49 @@ describe("explicit value link operations", () => {
     });
   });
 
+  it("isolates link changes between tenants on the runtime role", async () => {
+    const otherTenant = await createTestTenant(admin);
+    const setup = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const db = await cp.createDatabase({ name: "Isolated links" });
+        await cp.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+        const source = await cp.createItem({ databaseId: db.id, properties: { name: "source" } });
+        const target = await cp.createItem({ databaseId: db.id, properties: { name: "target" } });
+        await withTransaction(data, (client) =>
+          insertValueLink(client, {
+            itemId: target.id,
+            propertyKey: "name",
+            ruleKey: "test",
+            sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "name" }],
+          }),
+        );
+        return { db, target };
+      });
+    const first = await setup(tenant);
+    const second = await setup(otherTenant);
+    const state = () =>
+      runInTenant(tenant, async () => ({
+        item: await cp.getItem(first.db.id, first.target.id),
+        links: await cp.getValueLinksForItems([first.target.id]),
+      }));
+    const before = await state();
+    await runInTenant(otherTenant, async () => {
+      for (const id of [first.target.id, randomUUID()]) {
+        await expect(cp.unlinkValue({ itemId: id, propertyKey: "name" }, "user")).rejects.toMatchObject({
+          status: 404,
+        });
+        await expect(cp.relinkValue({ itemId: id, propertyKey: "name" })).rejects.toMatchObject({ status: 404 });
+      }
+      expect(await cp.unlinkValue({ itemId: second.target.id, propertyKey: "name" }, "user")).toMatchObject({
+        valueKind: "inheritedBroken",
+      });
+      expect(await cp.relinkValue({ itemId: second.target.id, propertyKey: "name" })).toMatchObject({
+        valueKind: "inherited",
+      });
+    });
+    expect(await state()).toEqual(before);
+  });
+
   it("relinks the union of current source relations and replaces only differing target edges", async () => {
     await runInTenant(tenant, async () => {
       const projects = await cp.createDatabase({ name: "Projects" });
