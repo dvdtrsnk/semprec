@@ -85,7 +85,7 @@ describe("Inbox proposal tool owner", () => {
       let attachmentIds: string[] = [];
       if (attach) {
         const storage = new LocalFsBlobStorageWriter(root);
-        const blobs = [];
+        const blobs: Array<{ blobId: string; source: "files" }> = [];
         for (const bytes of ["first attachment", "second attachment"]) {
           const uploaded = await ingestUploadedBlob(runtime, {
             mimeType: "application/octet-stream",
