@@ -718,6 +718,8 @@ describe("queued Semp messages", () => {
   });
 
   it("publishes the committed turn invalidation for the owning tenant", async () => {
+    await runtime?.stop();
+    runtime = undefined;
     const other = await createTestTenant(admin);
     const turn = await runInTenant(tenant, () =>
       withTransaction(pool, (client) => sendSempMessage(client, { text: "notify", context: [], hasContext: false })),
