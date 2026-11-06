@@ -167,6 +167,13 @@ describe("tenant-scoped reference blob expansion", () => {
       { ...missing, label: "Old missing" },
     ]);
     for (const ref of result.context) expect(labeledSempMessageRefSchema.safeParse(ref).success).toBe(true);
+    const sections = result.text.split("\n\n");
+    expect(sections).toHaveLength(refs.length);
+    expect(sections[0]).toContain("item: Current label");
+    expect(sections[1]).toContain("item: no longer exists or is unavailable.");
+    expect(sections[2]).toContain("item: no longer exists or is unavailable.");
+    expect(sections[3]).toContain("item: Current label");
+    expect(sections[4]).toContain("item: no longer exists or is unavailable.");
     expect(result.text).toContain("no longer exists or is unavailable");
     expect(result.text).not.toContain("Foreign label");
   });
