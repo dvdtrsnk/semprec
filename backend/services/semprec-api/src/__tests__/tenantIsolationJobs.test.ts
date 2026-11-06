@@ -1689,6 +1689,12 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
       await titleCase.expectDone(tenantA, payload);
       const threadId = requirePayloadString(payload, "threadId");
+      const repeatedKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(repeatedKey)).toEqual({ attempts: null, lastError: null });
+      expect(titlePortCalls).toEqual([]);
+      expect(await rows(tenantA, "SELECT title FROM semp_threads WHERE id = $1", [threadId])).toEqual([
+        { title: "Tenant title" },
+      ]);
       const deadline = Date.now() + 5_000;
       while (
         !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
