@@ -1585,6 +1585,7 @@ it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
 it("adds Semp error and accounting columns over populated synthetic legacy rows through the registered runner", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
+  // CREATE and DROP interpolate only this fixed ASCII prefix and randomUUID hex identifier.
   const name = `batch31_semp_${randomUUID().replaceAll("-", "")}`;
   const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch31-migrations-"));

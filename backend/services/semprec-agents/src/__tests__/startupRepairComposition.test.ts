@@ -390,6 +390,9 @@ describe("semprec-agents startup repair (issue #642)", () => {
         );
       const first = await makeTurn(firstTenant);
       const second = await makeTurn(secondTenant);
+      // DDL identifiers contain only a fixed ASCII prefix and randomUUID hex; the embedded value is validated UUID text.
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(first.assistantMessageId))
+        throw new Error("Invalid fixture message UUID");
       await pool.query(
         `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${first.assistantMessageId}'::uuid AND NEW.status = 'error' THEN RAISE EXCEPTION 'repair fixture failure'; END IF; RETURN NEW; END $$`,
       );

@@ -157,6 +157,88 @@ describe("reconstructConversationHistory", () => {
       expect(
         await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, checkpoint.threadId)),
       ).toBeNull();
+
+      const bytes = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, { threadId, triggeredBy: "user", unit: "session", task: "bytes" });
+          const baseline = await client.query<{ size: number }>(
+            "SELECT octet_length(jsonb_build_object('kind', 'message', 'text', '')::text)::int AS size",
+          );
+          if (!baseline.rows[0]) throw new Error("Missing JSON payload size");
+          const text = "x".repeat(262144 - baseline.rows[0].size);
+          await insertAgentRunEvent(client, run.id, "message", { kind: "message", text });
+          const overThreadId = await createSempChatThread(client);
+          const overRun = await createAgentRun(client, {
+            threadId: overThreadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "one byte over",
+          });
+          await insertAgentRunEvent(client, overRun.id, "message", { kind: "message", text: `${text}x` });
+          return { threadId, runId: run.id, overThreadId, overRunId: overRun.id };
+        }),
+      );
+      const size = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1",
+          [bytes.runId],
+        ),
+      );
+      expect(size.rows).toEqual([{ size: 262144 }]);
+      expect(
+        (await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, bytes.threadId)))?.entries,
+      ).toHaveLength(1);
+      const overSize = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1",
+          [bytes.overRunId],
+        ),
+      );
+      expect(overSize.rows).toEqual([{ size: 262145 }]);
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, bytes.overThreadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, bytes.threadId))).toBeNull();
+
+      const oversizedCheckpoint = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "large checkpoint",
+          });
+          return { threadId, runId: run.id };
+        }),
+      );
+      await runInTenant(tenant, () =>
+        persistCompaction(
+          runtime,
+          oversizedCheckpoint.runId,
+          [
+            {
+              id: "large",
+              parentId: null,
+              seq: 0,
+              timestamp: 0,
+              message: { kind: "message", text: "x".repeat(262144) },
+            },
+          ],
+          { threadId: oversizedCheckpoint.threadId, triggeredBy: "user", parentRunId: null },
+        ),
+      );
+      const checkpointSize = await runInTenant(tenant, () =>
+        runtime.query<{ size: number }>(
+          "SELECT octet_length(payload::text)::int AS size FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+          [oversizedCheckpoint.runId],
+        ),
+      );
+      expect(checkpointSize.rows[0]!.size).toBeGreaterThan(262144);
+      await expect(
+        runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, oversizedCheckpoint.threadId)),
+      ).rejects.toThrow("Semp conversation history exceeds replay limits");
     } finally {
       await runtime.end();
     }

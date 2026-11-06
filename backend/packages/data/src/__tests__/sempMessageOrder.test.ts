@@ -115,6 +115,14 @@ describe("Semp thread message ordering", () => {
     );
     let approval: Promise<void> | undefined;
     let tick: Promise<void> | undefined;
+    let reportApprovalPid!: (pid: number) => void;
+    let reportTickPid!: (pid: number) => void;
+    const approvalPid = new Promise<number>((resolve) => {
+      reportApprovalPid = resolve;
+    });
+    const tickPid = new Promise<number>((resolve) => {
+      reportTickPid = resolve;
+    });
     let first: Awaited<typeof sending> | undefined;
     let failure: { error: unknown } | undefined;
     try {
@@ -126,6 +134,9 @@ describe("Semp thread message ordering", () => {
       ]);
       approval = runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
+          const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!identity.rows[0]) throw new Error("Missing approval backend identity");
+          reportApprovalPid(identity.rows[0].pid);
           const result = await decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: fixture.requestId,
             decision: "rejected",
@@ -139,6 +150,9 @@ describe("Semp thread message ordering", () => {
       void approval.catch(() => {});
       tick = runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
+          const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!identity.rows[0]) throw new Error("Missing tick backend identity");
+          reportTickPid(identity.rows[0].pid);
           expect(
             await finishTickRunWithMessage(client, {
               thread: fixture.thread,
@@ -151,7 +165,19 @@ describe("Semp thread message ordering", () => {
         completion.push("tick");
       });
       void tick.catch(() => {});
-      await sleep(100);
+      const pids = await Promise.all([approvalPid, tickPid]);
+      const deadline = Date.now() + 5_000;
+      let waiting = 0;
+      while (Date.now() < deadline) {
+        const rows = await admin.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM pg_stat_activity WHERE pid = ANY($1::int[]) AND wait_event_type = 'Lock'",
+          [pids],
+        );
+        waiting = rows.rows[0]?.count ?? 0;
+        if (waiting === 2) break;
+        await sleep(25);
+      }
+      expect(waiting).toBe(2);
       expect(completion).toEqual([]);
       release();
       first = await sending;
@@ -243,6 +269,64 @@ describe("Semp thread message ordering", () => {
     );
     expect(after).toEqual({ messages: 7, job: 0 });
   }, 60_000);
+
+  it("refuses stronger transaction isolation before writing a message or job", async () => {
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const counts = () =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => ({
+          messages: (await client.query("SELECT id FROM semp_messages WHERE thread_id = $1", [threadId])).rowCount,
+          jobs: (await client.query("SELECT key FROM graphile_worker.jobs WHERE key LIKE 'sempMessage:%'")).rowCount,
+        })),
+      );
+    const before = await counts();
+    for (const isolation of ["repeatable_read", "serializable"] as const) {
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(
+            pool,
+            (client) =>
+              sendSempMessage(client, {
+                threadId,
+                text: "refused",
+                context: [],
+                hasContext: false,
+              }),
+            { isolation },
+          ),
+        ),
+      ).rejects.toThrow("Semp message insertion requires read committed isolation");
+      expect(await counts()).toEqual(before);
+    }
+    for (const id of [threadId, randomUUID()]) {
+      await expect(
+        runInTenant(other, () =>
+          withTransaction(pool, (client) =>
+            sendSempMessage(client, {
+              threadId: id,
+              text: "foreign",
+              context: [],
+              hasContext: false,
+            }),
+          ),
+        ),
+      ).rejects.toThrow();
+      expect(await counts()).toEqual(before);
+    }
+    await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, {
+          threadId,
+          text: "accepted",
+          context: [],
+          hasContext: false,
+        }),
+      ),
+    );
+    const after = await counts();
+    expect(after.messages).toBe(before.messages! + 2);
+    expect(after.jobs).toBe(before.jobs! + 1);
+  });
 
   it("orders a transaction that started earlier after the newer reservation commits", async () => {
     const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));

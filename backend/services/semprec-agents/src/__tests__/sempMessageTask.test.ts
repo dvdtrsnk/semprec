@@ -663,6 +663,9 @@ describe("queued Semp messages", () => {
       );
       await started;
       // Fault injection is scoped to this one synthetic message in this suite's owned database.
+      // DDL identifiers contain only a fixed ASCII prefix and randomUUID hex; the embedded value is validated UUID text.
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(turn.assistantMessageId))
+        throw new Error("Invalid fixture message UUID");
       await admin.query(
         `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${turn.assistantMessageId}'::uuid AND NEW.status IN ('done', 'error') THEN RAISE EXCEPTION 'terminal fixture failure'; END IF; RETURN NEW; END $$`,
       );
@@ -794,6 +797,8 @@ describe("queued Semp messages", () => {
       );
       const runId = rows.rows[0]?.agent_run_id;
       if (!runId) throw new Error("Missing active Semp run");
+      // DDL identifiers contain only a fixed ASCII prefix and randomUUID hex; the embedded value is validated UUID text.
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(runId)) throw new Error("Invalid fixture run UUID");
       await admin.query(
         `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.agent_run_id = '${runId}'::uuid AND NEW.kind = 'run_status' AND NEW.payload->>'status' = 'error' THEN RAISE EXCEPTION 'run recovery fixture failure'; END IF; RETURN NEW; END $$`,
       );
