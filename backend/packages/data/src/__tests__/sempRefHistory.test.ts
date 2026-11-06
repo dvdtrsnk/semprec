@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   createAgentRun,
@@ -24,6 +25,8 @@ import {
 } from "../index.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { createCoreTaskList } from "../worker.js";
+import { createActionRegistry } from "../scheduler/actions.js";
 
 describe("Semp history reference resolution", () => {
   let admin: Pool;
@@ -146,6 +149,146 @@ describe("Semp history reference resolution", () => {
         { ...ref, label: "Historic", resolved: { label: null, databaseKey: null, state: "purged" } },
       ]),
     );
+  });
+
+  it("resolves purged history after the registered tenant-fanout purge job", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    const cp = createChokePoint(runtime);
+    const database = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    const foreignDatabase = await runInTenant(foreign, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!database || !foreignDatabase) throw new Error("Missing tasks database");
+    const create = (owner: string, databaseId: string, name: string) =>
+      runInTenant(owner, () => cp.createItem({ databaseId, properties: { name } }));
+    const target = await create(tenant, database.id, "Expired target");
+    const recent = await create(tenant, database.id, "Recent target");
+    const live = await create(tenant, database.id, "Live target");
+    const foreignRecent = await create(foreign, foreignDatabase.id, "Foreign recent");
+    const foreignLive = await create(foreign, foreignDatabase.id, "Foreign live");
+    await runInTenant(tenant, () => cp.softDeleteItem(database.id, target.id));
+    await runInTenant(tenant, () => cp.softDeleteItem(database.id, recent.id));
+    await runInTenant(foreign, () => cp.softDeleteItem(foreignDatabase.id, foreignRecent.id));
+    const aged = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) =>
+        // The production owner stamps now and cannot construct 31-day-old trash without waiting.
+        client.query<{ id: string; eligible: boolean }>(
+          `UPDATE items SET deleted_at = now() - interval '31 days'
+           WHERE id = $1 AND database_id = $2 AND tenant_id = app_current_tenant() AND deleted_at IS NOT NULL
+           RETURNING id, deleted_at <= now() - interval '30 days' AS eligible`,
+          [target.id, database.id],
+        ),
+      ),
+    );
+    expect(aged.rowCount).toBe(1);
+    expect(aged.rows).toEqual([{ id: target.id, eligible: true }]);
+    const ref = { kind: "item" as const, itemId: target.id, databaseId: database.id };
+    const context = [{ ...ref, label: "Historic target" }, ref];
+    const sent = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => sendSempMessage(client, { text: "Question", context, hasContext: true })),
+    );
+    const directory = await mkdtemp(join(tmpdir(), "semp-history-purge-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const filesDir = join(directory, "files");
+      const mailDir = join(directory, "mail");
+      const files = new LocalFsBlobStorageWriter(filesDir);
+      const mail = new LocalFsBlobStorageWriter(mailDir);
+      const tasks = createCoreTaskList(
+        runtime,
+        createActionRegistry(),
+        undefined,
+        undefined,
+        mail,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        files,
+        { files: filesDir, mailAttachments: mailDir },
+      );
+      const task = tasks[CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP];
+      if (!task) throw new Error("Missing registered purge task");
+      const jobKey = `history-purge:${randomUUID()}`;
+      const pending = await admin.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
+        [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP],
+      );
+      expect(pending.rows).toEqual([{ count: 0 }]);
+      await runAsSystem("test registered history purge", () =>
+        enqueueJob(admin, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}, { jobKey }),
+      );
+      const queued = await admin.query<{ id: string; key: string; task_identifier: string }>(
+        "SELECT id, key, task_identifier FROM graphile_worker.jobs WHERE key = $1",
+        [jobKey],
+      );
+      expect(queued.rows).toHaveLength(1);
+      expect(queued.rows[0]).toMatchObject({ key: jobKey, task_identifier: CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP });
+      await runOnce({ pgPool: admin, taskList: { [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: task } });
+      const completed = await admin.query<{ id: string }>("SELECT id FROM graphile_worker.jobs WHERE id = $1", [
+        queued.rows[0]?.id,
+      ]);
+      expect(completed.rows).toEqual([]);
+      const ownRows = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ id: string; deleted: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS deleted FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+            [[target.id, recent.id, live.id]],
+          ),
+        ),
+      );
+      expect(ownRows.rows).toEqual(
+        expect.arrayContaining([
+          { id: recent.id, deleted: true },
+          { id: live.id, deleted: false },
+        ]),
+      );
+      expect(ownRows.rows).toHaveLength(2);
+      const foreignRows = await runInTenant(foreign, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ id: string; deleted: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS deleted FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+            [[foreignRecent.id, foreignLive.id]],
+          ),
+        ),
+      );
+      expect(foreignRows.rows).toEqual(
+        expect.arrayContaining([
+          { id: foreignRecent.id, deleted: true },
+          { id: foreignLive.id, deleted: false },
+        ]),
+      );
+      expect(foreignRows.rows).toHaveLength(2);
+      const observed = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => ({
+          page: await listSempThreadMessages(client, sent.threadId, 50, null),
+          stored: await client.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [
+            sent.messageId,
+          ]),
+        })),
+      );
+      expect(observed.page.rows.find((row) => row.id === sent.messageId)?.context).toEqual(
+        context.map((entry) => ({ ...entry, resolved: { label: null, databaseKey: null, state: "purged" } })),
+      );
+      expect(observed.stored.rows).toEqual([{ context }]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true });
+    } catch (cleanupError) {
+      if (failed)
+        throw new AggregateError([failure, cleanupError], "History purge test and cleanup failed", { cause: failure });
+      throw cleanupError;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("History purge test failed", { cause: failure });
   });
 
   it("uses one item resolver statement for a 50-message page", async () => {
