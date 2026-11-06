@@ -84,7 +84,7 @@ describe("queued Semp messages", () => {
     const gateway: GatewayModel = {
       model: faux.getModel(),
       streamFn: (model, context, options) => {
-        messageHeaders.push(options?.headers?.["x-semprec-semp-message-id"]);
+        messageHeaders.push(options?.headers?.["x-semprec-semp-message-id"] ?? undefined);
         return faux.provider.streamSimple(model, context, options);
       },
       isBudgetRefusal: () => false,
@@ -654,7 +654,7 @@ describe("queued Semp messages", () => {
           decision: "rejected",
           decidedByUserId: userId,
         });
-        expect(result.outcome).toBe("decided");
+        expect(result?.outcome).toBe("decided");
       }),
     );
     const system = await runInTenant(tenant, () =>

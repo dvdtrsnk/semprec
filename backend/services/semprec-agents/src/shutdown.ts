@@ -223,6 +223,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     if (general?.status === "rejected")
       logger.error({ errorCategory: errorCategory(general.reason), signal }, "queueRuntime.stop() failed");
     const failures = [...outcome.failures, ...abortErrors];
+    if (failures.length && general?.status === "rejected") failures.push(general.reason);
 
     // After the queue stopped, so no turn is still being written; before the pool ends. A failure
     // is logged and the next startup repair closes the same sessions, so it never blocks the pool end.

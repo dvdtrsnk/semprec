@@ -133,6 +133,29 @@ describe("semprec-agents graceful shutdown", () => {
     expect(calls).not.toContain("pool.end");
   });
 
+  it("retains a general stop failure alongside a Semp failure and cleanup failure", async () => {
+    const { deps } = createFakes();
+    const cleanup = new Error("idle cleanup failed");
+    const shutdown = createGracefulShutdown({
+      ...deps,
+      queueRuntime: {
+        stopForShutdown: () => ({
+          general: Promise.resolve({ status: "rejected", reason: null }),
+          chat: Promise.resolve({ status: "fulfilled", value: undefined }),
+        }),
+      },
+      observeSempSettlement: () => ({ wait: async () => [false], snapshotAndDispose: () => [] }),
+      closeIdleThreadSessions: async () => {
+        throw cleanup;
+      },
+    })("SIGTERM");
+    const failure: unknown = await shutdown.catch((reason: unknown) => reason);
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(failure.errors).toEqual([false, null, cleanup]);
+    expect(failure.cause).toBe(false);
+  });
+
   it("reports pending chat stop at the existing bound without sweeping or closing the pool", async () => {
     vi.useFakeTimers();
     const { calls, deps } = createFakes();

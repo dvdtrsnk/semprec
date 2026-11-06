@@ -131,7 +131,7 @@ describe("Semp thread message ordering", () => {
             decision: "rejected",
             decidedByUserId: userId,
           });
-          expect(result.outcome).toBe("decided");
+          expect(result?.outcome).toBe("decided");
         }),
       ).then(() => {
         completion.push("approval");
