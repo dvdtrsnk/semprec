@@ -22,6 +22,12 @@ describe("Projects completion date", () => {
   beforeAll(async () => {
     admin = getTestPool();
     data = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("check project completion role", () =>
+      data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(data);
   });
   beforeEach(async () => {
