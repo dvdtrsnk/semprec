@@ -41,6 +41,7 @@ function endPool(
   logger: Logger,
   signal: string,
   timeoutMs: number,
+  stopAt: number,
 ): Promise<{ failed: false } | { failed: true; error: unknown; unsettled: boolean }> {
   return new Promise((resolve) => {
     let settled = false;
@@ -56,14 +57,20 @@ function endPool(
       });
     }, timeoutMs);
 
+    const expiredBeforeStart = new Error("Shutdown stop window elapsed before pool.end()");
     Promise.resolve()
-      .then(() => pool.end())
+      .then(() => {
+        if (performance.now() >= stopAt) throw expiredBeforeStart;
+        return pool.end();
+      })
       .then(
         () => {
           if (settled) return;
           settled = true;
           clearTimeout(boundTimer);
-          resolve({ failed: false });
+          if (performance.now() >= stopAt)
+            resolve({ failed: true, error: new Error("pool.end() settled after the stop window"), unsettled: true });
+          else resolve({ failed: false });
         },
         (err: unknown) => {
           if (settled) {
@@ -76,7 +83,7 @@ function endPool(
           settled = true;
           clearTimeout(boundTimer);
           logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
-          resolve({ failed: true, error: err, unsettled: false });
+          resolve({ failed: true, error: err, unsettled: err === expiredBeforeStart });
         },
       );
   });
@@ -291,7 +298,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       failures.push(deadlineFailure());
       rejectFailures();
     }
-    const poolResult = await endPool(pool, logger, signal, Math.min(POOL_END_TIMEOUT_MS, poolTime));
+    const poolResult = await endPool(pool, logger, signal, Math.min(POOL_END_TIMEOUT_MS, poolTime), stopAt);
     if (poolResult.failed && poolResult.unsettled && sweepError && !failures.length) failures.push(sweepError.error);
     if (poolResult.failed && (failures.length || poolResult.unsettled)) failures.push(poolResult.error);
 

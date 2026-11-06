@@ -328,6 +328,86 @@ describe("Semp thread message ordering", () => {
     expect(after.jobs).toBe(before.jobs! + 1);
   });
 
+  it("serializes two competing sends on the same thread", async () => {
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    let release!: () => void;
+    let ready!: () => void;
+    let reportPid!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const pid = new Promise<number>((resolve) => {
+      reportPid = resolve;
+    });
+    const first = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const turn = await sendSempMessage(client, { threadId, text: "first", context: [], hasContext: false });
+        ready();
+        await gate;
+        return turn;
+      }),
+    );
+    let second: Promise<Awaited<typeof first>> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        held,
+        first.then(() => {
+          throw new Error("First send ended before reservation");
+        }),
+      ]);
+      second = runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!identity.rows[0]) throw new Error("Missing sender backend identity");
+          reportPid(identity.rows[0].pid);
+          return sendSempMessage(client, { threadId, text: "second", context: [], hasContext: false });
+        }),
+      );
+      void second.catch(() => {});
+      const senderPid = await pid;
+      const deadline = Date.now() + 5_000;
+      let waiting = false;
+      while (Date.now() < deadline) {
+        const result = await admin.query<{ wait_event_type: string | null }>(
+          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+          [senderPid],
+        );
+        if (result.rows[0]?.wait_event_type === "Lock") {
+          waiting = true;
+          break;
+        }
+        await sleep(25);
+      }
+      expect(waiting).toBe(true);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const results = await Promise.allSettled([first, ...(second ? [second] : [])]);
+    const extra = results.flatMap((result) =>
+      result.status === "rejected" && result.reason !== failure?.error ? [result.reason] : [],
+    );
+    if (extra.length)
+      throw new AggregateError(failure ? [failure.error, ...extra] : extra, "Concurrent sends failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    if (!second) throw new Error("Missing competing send");
+    const turns = [await first, await second];
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; stamp: string }>(
+        `SELECT id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS stamp FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id`,
+        [threadId],
+      ),
+    );
+    expect(rows.rows.map((row) => row.id)).toEqual(turns.flatMap((turn) => [turn.messageId, turn.assistantMessageId]));
+    expect(new Set(rows.rows.map((row) => row.stamp)).size).toBe(4);
+  });
+
   it("orders a transaction that started earlier after the newer reservation commits", async () => {
     const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
     let release!: () => void;

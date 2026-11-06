@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
+import {
+  closeIdleThreadSessions,
+  createBoundedSempHistory,
+  persistCompaction,
+  SempConversation,
+} from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -1140,6 +1145,114 @@ describe("queued Semp messages", () => {
     expect(rows.rows.map((row) => row.status)).toEqual(["done", "done", "done"]);
     expect(rows.rows[0]?.agent_run_id).not.toBe(rows.rows[1]?.agent_run_id);
     expect(rows.rows[1]?.agent_run_id).toBe(rows.rows[2]?.agent_run_id);
+    await closeIdleThreadSessions(pool);
+  });
+
+  it("reconstructs a fitting checkpoint and paired tool tail on a later task wake", async () => {
+    const faux = fauxProvider();
+    const prompts: string[] = [];
+    faux.setResponses([
+      fauxAssistantMessage("first reply"),
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("later reply");
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { text: "first wake", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      createSempMessageTask(
+        pool,
+        registry,
+        gateway,
+        createInFlightAgentRuns(),
+      )(
+        { threadId: first.threadId, assistantMessageId: first.assistantMessageId },
+        { job: { id: "checkpoint-first" } },
+      ),
+    );
+    await closeIdleThreadSessions(pool);
+    const previous = await runInTenant(tenant, () =>
+      pool.query<{ agent_run_id: string }>("SELECT agent_run_id FROM semp_messages WHERE id = $1", [
+        first.assistantMessageId,
+      ]),
+    );
+    const runId = previous.rows[0]?.agent_run_id;
+    if (!runId) throw new Error("Missing first session run");
+    await runInTenant(tenant, () =>
+      persistCompaction(
+        pool,
+        runId,
+        [
+          {
+            id: "summary",
+            parentId: null,
+            seq: 0,
+            timestamp: 0,
+            message: { kind: "user_message", text: "checkpoint summary", context: [] },
+          },
+          {
+            id: "assistant",
+            parentId: "summary",
+            seq: 1,
+            timestamp: 0,
+            message: {
+              kind: "message",
+              role: "assistant",
+              content: [{ type: "toolCall", id: "pair", name: "search", arguments: {} }],
+              stopReason: "toolUse",
+            },
+          },
+          {
+            id: "tool",
+            parentId: "assistant",
+            seq: 2,
+            timestamp: 0,
+            message: { kind: "tool_use", toolCallId: "pair", name: "search" },
+          },
+        ],
+        { threadId: first.threadId, triggeredBy: "user", parentRunId: null },
+      ),
+    );
+    await runInTenant(tenant, () =>
+      insertAgentRunEvent(pool, runId, "tool_result", {
+        kind: "tool_result",
+        toolCallId: "pair",
+        name: "search",
+        isError: false,
+        result: { content: [{ type: "text", text: "tail result" }] },
+      }),
+    );
+    const second = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: first.threadId, text: "later wake", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      createSempMessageTask(
+        pool,
+        registry,
+        gateway,
+        createInFlightAgentRuns(),
+      )(
+        { threadId: second.threadId, assistantMessageId: second.assistantMessageId },
+        { job: { id: "checkpoint-second" } },
+      ),
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("checkpoint summary");
+    expect(prompts[0]).toContain('"toolCallId":"pair"');
+    expect(prompts[0]).toContain("tail result");
+    expect(prompts[0]).toContain("later wake");
+    expect(prompts[0]).not.toContain("first wake");
     await closeIdleThreadSessions(pool);
   });
 

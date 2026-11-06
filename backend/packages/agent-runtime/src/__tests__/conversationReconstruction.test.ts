@@ -158,6 +158,51 @@ describe("reconstructConversationHistory", () => {
         await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, checkpoint.threadId)),
       ).toBeNull();
 
+      const paired = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "checkpoint pair",
+          });
+          await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "superseded" });
+          return { threadId, runId: run.id };
+        }),
+      );
+      await runInTenant(tenant, () =>
+        persistCompaction(
+          runtime,
+          paired.runId,
+          [
+            { id: "summary", parentId: null, seq: 0, timestamp: 0, message: { kind: "message", text: "summary" } },
+            {
+              id: "tool",
+              parentId: "summary",
+              seq: 1,
+              timestamp: 0,
+              message: { kind: "tool_use", toolCallId: "pair", name: "search" },
+            },
+          ],
+          { threadId: paired.threadId, triggeredBy: "user", parentRunId: null },
+        ),
+      );
+      await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, paired.runId, "tool_result", {
+          kind: "tool_result",
+          toolCallId: "pair",
+          result: "ok",
+        }),
+      );
+      const replay = await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, paired.threadId));
+      expect(replay?.entries.map((entry) => entry.message.kind)).toEqual(["message", "tool_use", "tool_result"]);
+      expect(replay?.entries[0]?.message).toMatchObject({ text: "summary" });
+      expect(replay?.entries[1]?.message).toMatchObject({ toolCallId: "pair" });
+      expect(replay?.entries[2]?.message).toMatchObject({ toolCallId: "pair" });
+      expect(replay?.entries[2]?.parentId).toBe("tool");
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, paired.threadId))).toBeNull();
+
       const bytes = await runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
           const threadId = await createSempChatThread(client);
