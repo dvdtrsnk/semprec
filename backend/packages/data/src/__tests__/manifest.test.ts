@@ -50,7 +50,7 @@ describe("permission manifest and drift check", () => {
   it("excludes page capabilities from project grants even when an owned module declares them", async () => {
     const projectDb = await chokePoint.createDatabase({ name: "Projects" });
     const project = await chokePoint.createItem({ databaseId: projectDb.id, properties: {} });
-    await chokePoint.createDatabase({ name: "Owned", key: "pageGrantProbe", ownerProjectItemId: project.id });
+    await chokePoint.createDatabase({ name: "Owned", key: "pageGrantProbe", system: true, ownerProjectItemId: project.id });
     const registry = await loadFullModuleRegistry();
     const declarations = await registry.getModuleCapabilityDeclarations();
     const spy = vi
