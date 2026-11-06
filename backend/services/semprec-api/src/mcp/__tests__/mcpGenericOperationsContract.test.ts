@@ -707,7 +707,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
-  it("lists relation.set for a human session", async () => {
+  it("lists relation.set and both link operations for a human session", async () => {
     const { server, baseUrl } = await startServer();
     servers.push(server);
     const response = await fetch(`${baseUrl}/mcp`, {
@@ -718,8 +718,38 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
     expect(body).toMatchObject({
-      result: { tools: expect.arrayContaining([expect.objectContaining({ name: "semprec.relation.set" })]) },
+      result: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "semprec.relation.set" }),
+          expect.objectContaining({ name: "semprec.link.unlink" }),
+          expect.objectContaining({ name: "semprec.link.relink" }),
+        ]),
+      },
     });
+  });
+
+  it("refuses link operations without item write capability through MCP", async () => {
+    const projectItemId = await createProjectItem();
+    const fx = await buildFixtures(projectItemId);
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await credentialHeader(projectItemId, ["core.item.read"]);
+    const before = await chokePoint.getItem(fx.database.id, fx.itemA.id);
+    const linksBefore = await chokePoint.getValueLinksForItems([fx.itemA.id]);
+    for (const name of ["semprec.link.unlink", "semprec.link.relink"]) {
+      const response = await rpc(baseUrl, headers, name, { itemId: fx.itemA.id, propertyKey: "title" });
+      expect(response.error).toMatchObject({ code: -32601 });
+    }
+    expect(await chokePoint.getItem(fx.database.id, fx.itemA.id)).toEqual(before);
+    expect(await chokePoint.getValueLinksForItems([fx.itemA.id])).toEqual(linksBefore);
   });
 
   it("executes relation.set and item.create through MCP under tenant RLS", async () => {
