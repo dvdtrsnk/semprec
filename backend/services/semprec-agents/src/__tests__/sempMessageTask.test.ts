@@ -74,9 +74,13 @@ describe("queued Semp messages", () => {
   it("runs two queued turns in their stored order through the real agents runtime", async () => {
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+    const messageHeaders: (string | undefined)[] = [];
     const gateway: GatewayModel = {
       model: faux.getModel(),
-      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      streamFn: (model, context, options) => {
+        messageHeaders.push(options?.headers?.["x-semprec-semp-message-id"]);
+        return faux.provider.streamSimple(model, context, options);
+      },
       isBudgetRefusal: () => false,
     };
     runtime = await createAgentsQueueRuntime(pool, registry, {
@@ -120,6 +124,8 @@ describe("queued Semp messages", () => {
       expect(row.event_from_id).toEqual(expect.any(String));
       expect(row.event_to_id).toEqual(expect.any(String));
     }
+    expect(rows[0]?.agent_run_id).toBe(rows[1]?.agent_run_id);
+    expect(messageHeaders).toEqual([first.assistantMessageId, second.assistantMessageId]);
   });
 
   it("rolls back a title job observed in the same transaction as the done transition", async () => {

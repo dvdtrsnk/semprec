@@ -10,6 +10,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import {
   createAgentRun,
   createChokePoint,
+  createHeartbeat,
   createItemWithClient,
   createPendingApprovalRequest,
   createRelationWithClient,
@@ -510,5 +511,71 @@ describe("durable Semp thread history", () => {
     ).toEqual(jobsBefore);
     const history = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, { headers });
     expect(history.status).toBe(200);
+  });
+
+  it("accepts text-only tick questions and refuses context and foreign threads", async () => {
+    const tenant = await createTestTenant(admin);
+    const other = await createTestTenant(admin);
+    const makeSession = async (tenantId: string) => {
+      const email = `${randomUUID()}@example.test`;
+      await createUser(admin, { tenantId, email, passwordHash: await hashPassword("thread-test-password") });
+      return login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    };
+    const ownerSession = await makeSession(tenant);
+    const otherSession = await makeSession(other);
+    await runInTenant(tenant, () => seedSystem(pool));
+    const threadId = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId,
+          name: "Tick question",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+        });
+        // The existing tick writer is private to data; seed its valid FK-constrained row here.
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
+        if (!thread.rows[0]) throw new Error("Missing tick thread");
+        return thread.rows[0].id;
+      }),
+    );
+    const headers = (token: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+    const post = (id: string, token: string, body: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads/${id}/messages`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify(body),
+      });
+    expect((await post(threadId, ownerSession.token, { text: "question", context: [] })).status).toBe(400);
+    const accepted = await post(threadId, ownerSession.token, { text: "question" });
+    expect(accepted.status).toBe(202);
+    const ids = z
+      .object({ messageId: z.string().uuid(), assistantMessageId: z.string().uuid() })
+      .parse(await accepted.json());
+    const before = await runInTenant(tenant, () =>
+      pool.query("SELECT id, role, status, text FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id", [
+        threadId,
+      ]),
+    );
+    expect(before.rows).toHaveLength(2);
+    const foreign = await post(threadId, otherSession.token, { text: "foreign" });
+    const random = await post(randomUUID(), otherSession.token, { text: "foreign" });
+    expect(foreign.status).toBe(404);
+    expect(random.status).toBe(404);
+    expect(await foreign.text()).toBe(await random.text());
+    const after = await runInTenant(tenant, () =>
+      pool.query("SELECT id, role, status, text FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id", [
+        threadId,
+      ]),
+    );
+    expect(after.rows).toEqual(before.rows);
+    const job = await runInTenant(tenant, () =>
+      pool.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempMessage:${ids.assistantMessageId}`]),
+    );
+    expect(job.rows).toEqual([{ key: `sempMessage:${ids.assistantMessageId}` }]);
   });
 });
