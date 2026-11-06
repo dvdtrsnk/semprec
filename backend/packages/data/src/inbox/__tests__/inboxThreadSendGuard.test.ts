@@ -427,5 +427,28 @@ describe("Inbox thread association reservations", () => {
       expect((await counts()).rows).toEqual(before);
     }
     expect(before[0]?.messages).toBe(2);
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const property = await getPropertyByKey(client, own.databaseId, "sourceInbox");
+        if (!property) throw new Error("Missing sourceInbox property");
+        for (const status of ["pending", "rejected"]) {
+          const card = await createItemWithClient(
+            client,
+            {
+              databaseId: own.databaseId,
+              properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status },
+            },
+            { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+          );
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: card.id, targetItemId: own.sourceId },
+            { ownerProcess: "processingProposals" },
+          );
+        }
+      }),
+    );
+    await expect(send()).rejects.toMatchObject({ code: "proposal_locked" });
+    expect((await counts()).rows).toEqual(before);
   });
 });
