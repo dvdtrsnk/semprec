@@ -161,12 +161,30 @@ describe("tenant-scoped reference blob expansion", () => {
       await docs.putBlock(page.id, { id: first, flavour: "paragraph", fields: { text: "Block sentinel" } }, "user");
       await docs.putBlock(page.id, { id: sibling, flavour: "paragraph", fields: { text: "Sibling sentinel" } }, "user");
       await docs.putBlock(page.id, { id: parent, flavour: "page", children: [first, sibling] }, "user");
-      await withTransaction(runtime, (client) =>
-        writeComputed(client, databases.transcripts!.id, transcript.id, "segments", [
-          { speaker: "SPEAKER_00", text: "Segment sentinel", startsAt: 0, endsAt: 1 },
-        ]),
-      );
       await withTransaction(runtime, async (client) => {
+        await writeComputed(
+          client,
+          databases.transcripts!.id,
+          transcript.id,
+          "segments",
+          Array.from({ length: 9 }, (_, index) => ({
+            speaker: "SPEAKER_00",
+            text: `Segment ${index} sentinel`,
+            startsAt: index,
+            endsAt: index + 1,
+          })),
+        );
+        await writeComputed(client, databases.transcripts!.id, transcript.id, "summary", "Transcript summary sentinel");
+        const speaker = (await listPropertiesByDatabase(client, databases.transcripts!.id)).find(
+          (entry) => entry.key === "speakers",
+        );
+        if (!speaker) throw new Error("Missing transcript speakers relation");
+        await createRelationWithClient(client, {
+          relationPropertyId: speaker.id,
+          callerItemId: transcript.id,
+          targetItemId: person.id,
+          metadata: { speaker: "SPEAKER_00" },
+        });
         const taskProperties = await listPropertiesByDatabase(client, databases.tasks!.id);
         const projectProperties = await listPropertiesByDatabase(client, databases.projects!.id);
         const links = [
@@ -217,7 +235,8 @@ describe("tenant-scoped reference blob expansion", () => {
       { kind: "item" as const, itemId: page.id, databaseId: databases.tasks.id },
       { kind: "item" as const, itemId: project.id, databaseId: databases.projects.id },
       { kind: "block" as const, itemId: page.id, blockId: first, label: "Saved block" },
-      { kind: "transcriptSegment" as const, itemId: transcript.id, startsAt: 0, endsAt: 1 },
+      { kind: "transcriptSegment" as const, itemId: transcript.id, startsAt: 4, endsAt: 5 },
+      { kind: "item" as const, itemId: transcript.id, databaseId: databases.transcripts.id },
       { kind: "agentRun" as const, agentRunId: run.id },
       { kind: "approvalRequest" as const, approvalRequestId: approval.id },
     ];
@@ -233,6 +252,7 @@ describe("tenant-scoped reference blob expansion", () => {
         "Project relation sentinel",
         "Saved block",
         "Transcript sentinel",
+        "Transcript sentinel",
         "Run sentinel",
         "approval.itemDelete",
       ]);
@@ -243,18 +263,28 @@ describe("tenant-scoped reference blob expansion", () => {
         "Company relation sentinel",
         "Block sentinel",
         "Sibling sentinel",
-        "Segment sentinel",
+        "Segment 4 sentinel",
+        "Transcript summary sentinel",
         "Run sentinel",
         "Tool sentinel",
         "Approval sentinel",
       ])
         expect(result.text).toContain(sentinel);
+      const sections = result.text.split("\n\n");
+      expect(sections).toHaveLength(7);
+      for (const index of [1, 2, 3, 4, 5, 6, 7]) expect(sections[3]).toContain(`Segment ${index} sentinel`);
+      expect(sections[3]).toContain("Person relation sentinel");
+      expect(sections[3]).not.toContain("Segment 0 sentinel");
+      expect(sections[3]).not.toContain("Segment 8 sentinel");
+      expect(sections[4]).toContain("Transcript summary sentinel");
+      expect(sections[4]).toContain("Segment 0 sentinel");
+      expect(sections[4]).toContain("Segment 8 sentinel");
       expect(result.images).toEqual([]);
       expect(JSON.stringify(result.context)).not.toContain("Sibling sentinel");
       expect((await snapshot()).rows).toEqual(before.rows);
     });
     const refused = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
-    expect(refused.context.map((entry) => entry.label)).toEqual(["", "", "Saved block", "", "", ""]);
+    expect(refused.context.map((entry) => entry.label)).toEqual(["", "", "Saved block", "", "", "", ""]);
     expect(refused.text).not.toContain("Page sentinel");
     expect(refused.text).not.toContain("Person relation sentinel");
     expect(refused.text).not.toContain("Company relation sentinel");
