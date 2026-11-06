@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import {
@@ -7,14 +8,18 @@ import {
   createReconstructConversationHistory,
   repairInterruptedRuns,
 } from "@semprec/agent-runtime";
-import { fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import {
   claimSempMessage,
   createAgentRun,
   createUser,
+  getDatabaseByModuleId,
   hashPassword,
   insertAgentRunEvent,
+  loadFullModuleRegistry,
+  seedSystem,
   sendSempMessage,
+  startSempMessageTurn,
   withTransaction,
 } from "@semprec/data";
 import {
@@ -29,6 +34,9 @@ import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createGracefulShutdown } from "../shutdown.js";
+import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
+import { createSempMessageTask } from "../sempMessageTask.js";
+import type { GatewayModel } from "../modelComposition.js";
 
 let pool: Pool;
 let runtime: AgentsQueueRuntime | undefined;
@@ -250,6 +258,119 @@ describe("semprec-agents startup repair (issue #642)", () => {
     } finally {
       await runtimePool.end();
     }
+  });
+
+  it("processes the next queued message after repairing an interrupted Semp turn", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      const role = await runAsSystem("test:recovery-role", () =>
+        runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      await runInTenant(tenant, () => seedSystem(runtimePool));
+      const crashed = await runInTenant(tenant, () =>
+        withTransaction(runtimePool, async (client) => {
+          const inbox = await getDatabaseByModuleId(client, "inbox");
+          if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+          const turn = await sendSempMessage(client, { text: "interrupted question", context: [], hasContext: false });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          const run = await createAgentRun(client, {
+            projectItemId: inbox.ownerProjectItemId,
+            threadId: turn.threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "interrupted question",
+          });
+          const event = await insertAgentRunEvent(client, run.id, "user_message", {
+            kind: "user_message",
+            text: "interrupted question",
+            context: [],
+          });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+          return turn;
+        }),
+      );
+      await repairInterruptedRuns(runtimePool);
+      const repaired = await runInTenant(tenant, () =>
+        runtimePool.query<{ status: string; error_code: string | null }>(
+          "SELECT status, error_code FROM semp_messages WHERE id = $1",
+          [crashed.assistantMessageId],
+        ),
+      );
+      expect(repaired.rows).toEqual([{ status: "error", error_code: "interrupted" }]);
+      const faux = fauxProvider();
+      faux.setResponses([fauxAssistantMessage("reply after repair")]);
+      const gateway: GatewayModel = {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      };
+      const registry = await loadFullModuleRegistry();
+      runtime = await createAgentsQueueRuntime(runtimePool, registry, {
+        sempMessageTask: createSempMessageTask(runtimePool, registry, gateway, createInFlightAgentRuns()),
+      });
+      const next = await runInTenant(tenant, () =>
+        withTransaction(runtimePool, (client) =>
+          sendSempMessage(client, {
+            threadId: crashed.threadId,
+            text: "next question",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+      const deadline = Date.now() + 15_000;
+      let reply = await runInTenant(tenant, () =>
+        runtimePool.query<{ status: string; text: string | null }>(
+          "SELECT status, text FROM semp_messages WHERE id = $1",
+          [next.assistantMessageId],
+        ),
+      );
+      while (reply.rows[0]?.status !== "done" && Date.now() < deadline) {
+        await sleep(50);
+        reply = await runInTenant(tenant, () =>
+          runtimePool.query<{ status: string; text: string | null }>(
+            "SELECT status, text FROM semp_messages WHERE id = $1",
+            [next.assistantMessageId],
+          ),
+        );
+      }
+      expect(reply.rows).toEqual([{ status: "done", text: "reply after repair" }]);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            runtimePool.query("SELECT status, error_code FROM semp_messages WHERE id = $1", [
+              crashed.assistantMessageId,
+            ]),
+          )
+        ).rows,
+      ).toEqual(repaired.rows);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    try {
+      await runtime?.stop();
+      runtime = undefined;
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await runtimePool.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Recovery test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
   });
 
   it("converts the actually repaired stored history into pi messages", async () => {

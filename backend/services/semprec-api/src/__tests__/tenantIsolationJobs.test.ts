@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
+import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
@@ -1658,6 +1660,54 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },
     );
+  });
+
+  it("publishes the title registry case's committed invalidation for its tenant", async () => {
+    const titleCase = cases[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
+    if (!titleCase || !isTenantCase(titleCase)) throw new Error("Missing title tenant case");
+    const payload = await titleCase.seed(tenantA);
+    await discardQueuedJobs();
+    const listener = await adminPool.connect();
+    const observed: { tenantId: string; threadId: string }[] = [];
+    listener.on("notification", (notification) => {
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
+      const parsed: unknown = JSON.parse(notification.payload);
+      const envelope = z
+        .object({
+          tenantId: z.string(),
+          message: z.object({ type: z.literal("invalidation"), scope: z.literal("sempThread"), threadId: z.string() }),
+        })
+        .safeParse(parsed);
+      if (envelope.success)
+        observed.push({ tenantId: envelope.data.tenantId, threadId: envelope.data.message.threadId });
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+      wireRealtimeHooks(pool);
+      const jobKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
+      await titleCase.expectDone(tenantA, payload);
+      const threadId = requirePayloadString(payload, "threadId");
+      const deadline = Date.now() + 5_000;
+      while (
+        !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
+        Date.now() < deadline
+      )
+        await sleep(25);
+      expect(observed).toContainEqual({ tenantId: tenantA.tenantId, threadId });
+      expect(observed.filter((event) => event.tenantId === tenantB.tenantId)).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      listener.release(true);
+    } catch (error) {
+      if (failure)
+        throw new AggregateError([failure.error, error], "Title invalidation cleanup failed", { cause: failure.error });
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   describe("system tasks", () => {

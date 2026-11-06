@@ -48,7 +48,7 @@ const provider: StructuredCompletionProvider = {
     calls.push(request);
     await providerGate?.();
     if (providerFailure) throw new ProviderCallError("provider unavailable");
-    return { content: { title: '  "A useful title"  ' }, inputTokens: 31, outputTokens: 8 };
+    return { content: { title: '  "Useful title"  ' }, inputTokens: 31, outputTokens: 8 };
   },
 };
 
@@ -90,7 +90,12 @@ describe("Semp title through the real gateway", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
     await setTenantAiBudget(admin, tenant);
-    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      locale: "en",
+    });
     await runInTenant(tenant, () => seedSystem(pool));
     server = createServer(
       createDispatcher(
@@ -166,9 +171,11 @@ describe("Semp title through the real gateway", () => {
         )
       ).rows,
     }));
-    expect(result.title).toEqual([{ title: "A useful title" }]);
+    expect(result.title).toEqual([{ title: "Useful title" }]);
     expect(result.accounting).toEqual([{ operation: "semp_thread_title", input_tokens: 31, output_tokens: 8 }]);
     expect(calls).toHaveLength(1);
+    expect(calls[0]?.system).toContain("locale: en");
+    expect(calls[0]?.system).toContain("user's language");
     expect(calls[0]?.messages).toEqual([
       { role: "user", content: "My first question" },
       { role: "assistant", content: "First answer" },
