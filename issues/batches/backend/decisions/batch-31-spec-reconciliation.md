@@ -17,3 +17,12 @@ Per-member Touches explicitly include the actual API handler mappings, exact run
 ## Unchanged execution controls
 
 One writer; one complete read-only R1 and one same-context focused R2, then parent finite disposition. Full final verify requires a separately pinned parent plan. Previous batch FAIL/NOT RUN, production gates and candidate-local exceptions do not become this batch PASS. Any new lock/recovery/ownership protocol or actual Task/owner contradiction must be traced and grouped for parent adjudication before introducing it; this document does not pre-approve one. Preserve all six original aggregate acceptance criteria and every source Task/AC except the explicit status/tick corrections above.
+
+## Grouped owner seams after intake
+
+- Gh1620 follows [[docs/adr/2026-11-06-inbox-thread-sends-reserve-current-proposals.md]] for current source/card association and nonblocking proposal reservations. SourceInbox edge writers participate through the existing domain-hook owner, covering absent/new associations without trusting nullable thread hints.
+- Gh1727 reuses the existing in-flight helper by export, and follows [[docs/adr/2026-11-06-semp-wake-replays-bounded-complete-history.md]] for bounded complete stored reconstruction. Pi0.85.1 publishes low-level names, but its current types differ from the historical adapter; no publication/compaction stub is treated as working integration.
+- Gh1732 adds the missing nullable error_code migration and follows [[docs/adr/2026-11-06-semp-recovery-does-not-infer-worker-death.md]]. The former immediate-release latency requirement remains explicitly OPEN/NOT RUN. No lease/heartbeat/PID inference or unsafe unlock is substituted.
+- Gh1731 preserves the existing required heartbeat reference and RESTRICT FK. Its impossible deleted-heartbeat fixture is replaced by actual FK refusal plus honest defensive-branch limits, without a lifecycle migration.
+
+All six original outer acceptance criteria remain unchanged. These exact source changes require fresh approvals and regenerated embedded snapshots; they authorize no source staging during the metadata hold.
