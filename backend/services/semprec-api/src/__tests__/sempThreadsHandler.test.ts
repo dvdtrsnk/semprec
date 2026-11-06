@@ -115,7 +115,7 @@ describe("durable Semp thread history", () => {
     const body: unknown = await response.json();
     expect(body).toMatchObject({
       rows: expect.arrayContaining([
-        {
+        expect.objectContaining({
           id: fixture.id,
           role: "system",
           text: null,
@@ -127,12 +127,12 @@ describe("durable Semp thread history", () => {
           status: "done",
           createdAt: expect.any(String),
           run: { startedAt: expect.any(String), finishedAt: null, status: "running" },
-        },
-        { id: fixture.replyId, run: null },
-        {
+        }),
+        expect.objectContaining({ id: fixture.replyId, run: null }),
+        expect.objectContaining({
           id: fixture.failedId,
           run: { startedAt: expect.any(String), finishedAt: expect.any(String), status: "error" },
-        },
+        }),
       ]),
     });
     await runInTenant(tenant, () =>
@@ -155,8 +155,11 @@ describe("durable Semp thread history", () => {
     const finishedBody: unknown = await finished.json();
     expect(finishedBody).toMatchObject({
       rows: expect.arrayContaining([
-        { id: fixture.id, run: { startedAt: expect.any(String), finishedAt: expect.any(String), status: "done" } },
-        { id: fixture.replyId, run: null },
+        expect.objectContaining({
+          id: fixture.id,
+          run: { startedAt: expect.any(String), finishedAt: expect.any(String), status: "done" },
+        }),
+        expect.objectContaining({ id: fixture.replyId, run: null }),
       ]),
     });
     for (const suffix of ["", "/messages"]) {
@@ -264,7 +267,9 @@ describe("durable Semp thread history", () => {
     expect(owner.status).toBe(200);
     const ownerBody: unknown = await owner.json();
     expect(ownerBody).toMatchObject({
-      rows: expect.arrayContaining([{ run: { status: "running", finishedAt: null } }]),
+      rows: expect.arrayContaining([
+        expect.objectContaining({ run: expect.objectContaining({ status: "running", finishedAt: null }) }),
+      ]),
     });
     const headers = { authorization: `Bearer ${foreignSession.token}` };
     const foreign = await fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, { headers });

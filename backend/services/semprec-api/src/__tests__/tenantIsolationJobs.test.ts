@@ -17,7 +17,13 @@ import {
   type TaskList,
   type TaskTenancy,
 } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  currentTenantScope,
+  runAsSystem,
+  runInTenant,
+  type AiGatewayClientPort,
+  type AiGatewayCompletionInput,
+} from "@semprec/shared";
 import {
   DEFAULT_COMPACTION_THRESHOLD,
   JOURNAL_MODULE_ID,
@@ -25,6 +31,7 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
   assertTaskListMatchesAffinity,
   beginTenantDeletion,
+  claimSempMessage,
   createAgentRun,
   createApiCoreTaskList,
   createChokePoint,
@@ -36,6 +43,7 @@ import {
   decideAndEnqueueApprovalRequest,
   ensureItemAutomation,
   finishAgentRun,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   getOrCreateJournalItem,
   insertAgentRunEvent,
@@ -48,6 +56,8 @@ import {
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
+  sendSempMessage,
+  startSempMessageTurn,
   upsertWebPushSubscription,
   withTransaction,
   writeNotification,
@@ -166,6 +176,14 @@ const previousEnv = new Map<string, string | undefined>();
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
+const titlePortCalls: { tenantId: string | null; input: AiGatewayCompletionInput }[] = [];
+const titlePort: AiGatewayClientPort = {
+  async complete(input) {
+    const scope = currentTenantScope();
+    titlePortCalls.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, input });
+    return { content: { title: "Tenant title" }, usage: { inputTokens: 1, outputTokens: 1 } };
+  },
+};
 
 const moduleRegistry = await loadFullModuleRegistry();
 
@@ -544,6 +562,55 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
 let journalDaysSeeded = 0;
 
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      titlePortCalls.length = 0;
+      return runInTenant(tenant.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const turn = await sendSempMessage(client, { text: "Tenant question", context: [], hasContext: false });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          const run = await createAgentRun(client, {
+            triggeredBy: "user",
+            unit: "session",
+            task: "Tenant question",
+            threadId: turn.threadId,
+          });
+          const event = await insertAgentRunEvent(client, run.id, "message", {
+            kind: "message",
+            text: "Tenant answer",
+          });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: "Tenant answer",
+              lastEventId: event.id,
+            }),
+          ).toBe(true);
+          return { threadId: turn.threadId };
+        }),
+      );
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows(tenant, "SELECT title FROM semp_threads WHERE id = $1", [requirePayloadString(payload, "threadId")]),
+      ).toEqual([{ title: "Tenant title" }]);
+      expect(titlePortCalls).toHaveLength(1);
+      expect(titlePortCalls[0]).toMatchObject({
+        tenantId: tenant.tenantId,
+        input: {
+          operation: "semp_thread_title",
+          projectItemId: null,
+          messages: [
+            { role: "user", content: "Tenant question" },
+            { role: "assistant", content: "Tenant answer" },
+          ],
+        },
+      });
+      titlePortCalls.length = 0;
+    },
+  },
   // The production catalog has no configured link rules: this exercises registered refusal,
   // not successful propagation (covered by the configured-rule data tests).
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: {
@@ -1341,6 +1408,12 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     await ensureQueueSchema(adminPool);
     await grantQueueSchemaPrivileges(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:title-registry-role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenantTables = await loadTenantTables();
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
@@ -1371,6 +1444,9 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       moduleRegistry,
       undefined,
       replayApprovedGenericOperation,
+      undefined,
+      undefined,
+      titlePort,
     );
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
@@ -1565,6 +1641,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
+        if (name === CORE_TASK_NAMES.SEMP_THREAD_TITLE) {
+          expect(titlePortCalls).toEqual([]);
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+          titlePortCalls.length = 0;
+        }
         if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
