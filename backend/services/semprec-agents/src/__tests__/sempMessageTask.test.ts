@@ -1174,7 +1174,6 @@ describe("queued Semp messages", () => {
         { job: { id: "checkpoint-first" } },
       ),
     );
-    await closeIdleThreadSessions(pool);
     const previous = await runInTenant(tenant, () =>
       pool.query<{ agent_run_id: string }>("SELECT agent_run_id FROM semp_messages WHERE id = $1", [
         first.assistantMessageId,
@@ -1221,6 +1220,7 @@ describe("queued Semp messages", () => {
         result: { content: [{ type: "text", text: "tail result" }] },
       }),
     );
+    await closeIdleThreadSessions(pool);
     const second = await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
         sendSempMessage(client, { threadId: first.threadId, text: "later wake", context: [], hasContext: false }),
