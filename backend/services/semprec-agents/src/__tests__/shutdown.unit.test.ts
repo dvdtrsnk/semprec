@@ -68,6 +68,79 @@ describe("semprec-agents graceful shutdown", () => {
     vi.useRealTimers();
   });
 
+  it.each(["resolve", "reject"])(
+    "fails at the stop deadline and observes a late sweep %s without ending the pool",
+    async (late) => {
+      vi.useFakeTimers();
+      const { calls, errors, deps } = createFakes();
+      let finish!: () => void;
+      let fail!: (reason: unknown) => void;
+      const sweep = new Promise<{ closedRunIds: string[] }>((resolve, reject) => {
+        finish = () => resolve({ closedRunIds: [] });
+        fail = reject;
+      });
+      const result = createGracefulShutdown({
+        ...deps,
+        observeSempSettlement: () => ({ wait: async () => [false], snapshotAndDispose: () => [] }),
+        closeIdleThreadSessions: () => {
+          calls.push("sweep");
+          return sweep;
+        },
+      })("SIGTERM").catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(AGENTS_STOP_WINDOW_MS - 1);
+      expect(calls).toContain("sweep");
+      expect(calls).not.toContain("pool.end");
+      await vi.advanceTimersByTimeAsync(1);
+      const failure: unknown = await result;
+      expect(failure).toBeInstanceOf(AggregateError);
+      if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+      expect(failure.errors[0]).toBe(false);
+      expect(failure.errors[1]).toBeInstanceOf(Error);
+      if (late === "resolve") finish();
+      else fail(new Error("private late failure"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).not.toContain("pool.end");
+      if (late === "reject")
+        expect(errors.at(-1)?.msg).toBe("closeIdleThreadSessions() rejected after the stop window");
+      expect(JSON.stringify(errors)).not.toContain("private late failure");
+    },
+  );
+
+  it("bounds a pending pool end by the remaining stop window and observes its late rejection", async () => {
+    vi.useFakeTimers();
+    const { calls, errors, deps } = createFakes();
+    let finishSweep!: () => void;
+    let rejectPool!: (reason: unknown) => void;
+    const sweep = new Promise<{ closedRunIds: string[] }>((resolve) => {
+      finishSweep = () => resolve({ closedRunIds: [] });
+    });
+    const pool = {
+      end: () => {
+        calls.push("pool.end");
+        return new Promise<void>((_, reject) => {
+          rejectPool = reject;
+        });
+      },
+    } as unknown as Pool;
+    const result = createGracefulShutdown({ ...deps, pool, closeIdleThreadSessions: () => sweep })("SIGTERM").catch(
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(AGENTS_STOP_WINDOW_MS - 1_000);
+    expect(calls).not.toContain("pool.end");
+    finishSweep();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(errors).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBeInstanceOf(Error);
+    rejectPool(new Error("private pool failure"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(errors.at(-1)?.msg).toBe("pool.end() rejected after its shutdown bound had elapsed");
+    expect(JSON.stringify(errors)).not.toContain("private pool failure");
+    expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
+  });
+
   it("rejects an empty cohort when chat quiescence fails", async () => {
     const { calls, deps } = createFakes();
     const runs = createInFlightAgentRuns();

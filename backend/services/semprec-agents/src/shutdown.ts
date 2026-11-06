@@ -40,38 +40,45 @@ function endPool(
   pool: Pool,
   logger: Logger,
   signal: string,
-): Promise<{ failed: false } | { failed: true; error: unknown }> {
+  timeoutMs: number,
+): Promise<{ failed: false } | { failed: true; error: unknown; unsettled: boolean }> {
   return new Promise((resolve) => {
     let settled = false;
 
     const boundTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      logger.error({ signal }, "pool.end() did not settle within POOL_END_TIMEOUT_MS");
-      resolve({ failed: true, error: new Error("pool.end() did not settle within POOL_END_TIMEOUT_MS") });
-    }, POOL_END_TIMEOUT_MS);
+      logger.error({ signal }, "pool.end() did not settle within its shutdown bound");
+      resolve({
+        failed: true,
+        error: new Error("pool.end() did not settle within its shutdown bound"),
+        unsettled: true,
+      });
+    }, timeoutMs);
 
-    pool.end().then(
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(boundTimer);
-        resolve({ failed: false });
-      },
-      (err: unknown) => {
-        if (settled) {
-          logger.error(
-            { errorCategory: errorCategory(err), signal },
-            "pool.end() rejected after POOL_END_TIMEOUT_MS had already elapsed",
-          );
-          return;
-        }
-        settled = true;
-        clearTimeout(boundTimer);
-        logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
-        resolve({ failed: true, error: err });
-      },
-    );
+    Promise.resolve()
+      .then(() => pool.end())
+      .then(
+        () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(boundTimer);
+          resolve({ failed: false });
+        },
+        (err: unknown) => {
+          if (settled) {
+            logger.error(
+              { errorCategory: errorCategory(err), signal },
+              "pool.end() rejected after its shutdown bound had elapsed",
+            );
+            return;
+          }
+          settled = true;
+          clearTimeout(boundTimer);
+          logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
+          resolve({ failed: true, error: err, unsettled: false });
+        },
+      );
   });
 }
 
@@ -134,6 +141,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
+    const stopAt = performance.now() + AGENTS_STOP_WINDOW_MS;
     const observation = observeSempSettlement();
     const abortErrors: unknown[] = [];
     const abort = () => {
@@ -225,18 +233,67 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     const failures = [...outcome.failures, ...abortErrors];
     if (failures.length && general?.status === "rejected") failures.push(general.reason);
 
-    // After the queue stopped, so no turn is still being written; before the pool ends. A failure
-    // is logged and the next startup repair closes the same sessions, so it never blocks the pool end.
-    try {
-      const { closedRunIds } = await closeIdleThreadSessions(pool);
-      logger.info({ signal, closedIdleSessionCount: closedRunIds.length }, "Closed idle thread sessions");
-    } catch (err) {
-      logger.error({ errorCategory: errorCategory(err), signal }, "closeIdleThreadSessions() failed");
-      if (failures.length) failures.push(err);
+    const deadlineFailure = () => new Error("Shutdown cleanup did not settle within the stop window");
+    const rejectFailures = (): never => {
+      if (failures.length === 1) throw failures[0];
+      throw new AggregateError(failures, "Semp settlement and cleanup failed", { cause: failures[0] });
+    };
+    const remaining = () => stopAt - performance.now();
+    if (remaining() <= 0) {
+      failures.push(deadlineFailure());
+      rejectFailures();
     }
+    let sweepTimedOut = false;
+    let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+    const sweep = Promise.resolve()
+      .then(() => {
+        if (remaining() <= 0) return null;
+        return closeIdleThreadSessions(pool);
+      })
+      .then(
+        (result) => {
+          if (result === null) return { kind: "timeout" as const };
+          const { closedRunIds } = result;
+          if (!sweepTimedOut)
+            logger.info({ signal, closedIdleSessionCount: closedRunIds.length }, "Closed idle thread sessions");
+          return { kind: "settled" as const };
+        },
+        (error: unknown) => {
+          logger.error(
+            { errorCategory: errorCategory(error), signal },
+            sweepTimedOut
+              ? "closeIdleThreadSessions() rejected after the stop window"
+              : "closeIdleThreadSessions() failed",
+          );
+          return { kind: "failed" as const, error };
+        },
+      );
+    const sweepResult = await Promise.race([
+      sweep,
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        sweepTimer = setTimeout(() => {
+          sweepTimedOut = true;
+          resolve({ kind: "timeout" });
+        }, remaining());
+      }),
+    ]);
+    clearTimeout(sweepTimer);
+    if (sweepResult.kind === "timeout") {
+      failures.push(deadlineFailure());
+      rejectFailures();
+    }
+    const sweepError = sweepResult.kind === "failed" ? { error: sweepResult.error } : undefined;
+    if (sweepError && failures.length) failures.push(sweepError.error);
 
-    const poolResult = await endPool(pool, logger, signal);
-    if (poolResult.failed && failures.length) failures.push(poolResult.error);
+    const poolTime = remaining();
+    if (poolTime <= 0) {
+      if (sweepError && !failures.length) failures.push(sweepError.error);
+      failures.push(deadlineFailure());
+      rejectFailures();
+    }
+    const poolResult = await endPool(pool, logger, signal, Math.min(POOL_END_TIMEOUT_MS, poolTime));
+    if (poolResult.failed && poolResult.unsettled && sweepError && !failures.length) failures.push(sweepError.error);
+    if (poolResult.failed && (failures.length || poolResult.unsettled)) failures.push(poolResult.error);
 
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1)
