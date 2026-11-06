@@ -132,7 +132,7 @@ export async function listAgentRunEventsAfter(
   if (rowLimit !== undefined && (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 257)) {
     throw new ValidationError("Invalid agent run event row limit");
   }
-  if (scope) {
+  if (scope !== undefined) {
     validateSempEventScope(scope);
     const params: unknown[] = [agentRunId, afterEventId, scope.threadId, scope.sempMessageId];
     if (rowLimit !== undefined) params.push(rowLimit);
@@ -167,7 +167,7 @@ export async function getAgentRunEventById(
   eventId: string,
   scope?: { threadId: string; sempMessageId: string },
 ): Promise<AgentRunEventRow | null> {
-  if (scope) {
+  if (scope !== undefined) {
     validateSempEventScope(scope);
     const { rows } = await client.query<AgentRunEventDbRow>(
       `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
@@ -193,7 +193,13 @@ export async function getAgentRunEventById(
 
 function validateSempEventScope(scope: { threadId: string; sempMessageId: string }): void {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuid.test(scope.threadId) || !uuid.test(scope.sempMessageId))
+  if (
+    !scope ||
+    typeof scope.threadId !== "string" ||
+    typeof scope.sempMessageId !== "string" ||
+    !uuid.test(scope.threadId) ||
+    !uuid.test(scope.sempMessageId)
+  )
     throw new ValidationError("Invalid Semp event scope");
 }
 

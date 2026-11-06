@@ -9,7 +9,7 @@ import {
 } from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
-import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
+import { isAgentRunEventId, isUuid, type AgentDeltaChunk, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 
 export type VoiceRunFrame = { type: "event"; event: AgentRunEventRow } | { type: "delta"; message: AgentStreamMessage };
@@ -232,6 +232,15 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   return {
     async subscribeVoice(input) {
       input.signal?.throwIfAborted();
+      if (
+        !isUuid(input.tenantId) ||
+        !isUuid(input.userId) ||
+        !isUuid(input.runId) ||
+        !isUuid(input.threadId) ||
+        !isUuid(input.sempMessageId) ||
+        !isAgentRunEventId(input.afterEventId)
+      )
+        throw new Error("Voice run watch unavailable");
       if (voiceClosed) throw new Error("Voice run watch unavailable");
       const generation = tenantGenerations.get(input.tenantId) ?? 0;
       const connectionGeneration = voiceGeneration;

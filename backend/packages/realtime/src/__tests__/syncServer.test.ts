@@ -1710,6 +1710,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       { runId: randomUUID() },
       { threadId: randomUUID() },
       { sempMessageId: randomUUID() },
+      { sempMessageId: "invalid" },
     ])
       await expect(tenantServer.subscribeVoice({ ...input, ...other })).rejects.toThrow("unavailable");
   });
