@@ -8,7 +8,9 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
   createAgentRun,
+  createPendingApprovalRequest,
   createUser,
+  decideAndEnqueueApprovalRequest,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
   insertAgentRunEvent,
@@ -31,6 +33,7 @@ import { logger } from "../logger.js";
 let admin: Pool;
 let pool: Pool;
 let tenant: string;
+let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 
@@ -46,7 +49,9 @@ describe("queued Semp messages", () => {
     );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
-    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    userId = (
+      await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" })
+    ).id;
     await runInTenant(tenant, () => seedSystem(pool));
     registry = await loadFullModuleRegistry();
   });
@@ -583,5 +588,124 @@ describe("queued Semp messages", () => {
         { cause: failure?.error },
       );
     if (failure) throw failure.error;
+  });
+
+  it("wakes stored history after a real intervening approval outcome", async () => {
+    const faux = fauxProvider();
+    const prompts: string[] = [];
+    faux.setResponses([
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("first answer");
+      },
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("second answer");
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns());
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { text: "first question", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: first.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "first" } }),
+    );
+    const previous = await runInTenant(tenant, () =>
+      pool.query<{ agent_run_id: string; status: string }>(
+        "SELECT agent_run_id, status FROM semp_messages WHERE id = $1",
+        [first.assistantMessageId],
+      ),
+    );
+    const runId = previous.rows[0]?.agent_run_id;
+    if (!runId) throw new Error("First reply has no run");
+    expect(previous.rows[0]?.status).toBe("done");
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: runId,
+          toolName: "search_web",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        const result = await decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        });
+        expect(result.outcome).toBe("decided");
+      }),
+    );
+    const system = await runInTenant(tenant, () =>
+      pool.query<{ system_key: string }>(
+        "SELECT system_key FROM semp_messages WHERE thread_id = $1 AND role = 'system'",
+        [first.threadId],
+      ),
+    );
+    expect(system.rows).toEqual([{ system_key: "approval.outcome.rejected" }]);
+    const second = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: first.threadId, text: "second question", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: second.threadId, assistantMessageId: second.assistantMessageId }, { job: { id: "second" } }),
+    );
+    const next = await runInTenant(tenant, () =>
+      pool.query<{ agent_run_id: string; status: string }>(
+        "SELECT agent_run_id, status FROM semp_messages WHERE id = $1",
+        [second.assistantMessageId],
+      ),
+    );
+    expect(next.rows[0]?.status).toBe("done");
+    expect(next.rows[0]?.agent_run_id).not.toBe(runId);
+    expect(prompts[1]).toContain("first question");
+    expect(prompts[1]).toContain("first answer");
+    expect(prompts[1]).toContain("second question");
+    await closeIdleThreadSessions(pool);
+  });
+
+  it("wakes for a later queued pair and then reuses the reply actually completed", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns());
+    const send = (text: string, threadId?: string) =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { text, context: [], hasContext: false, ...(threadId ? { threadId } : {}) }),
+        ),
+      );
+    const execute = (turn: { threadId: string; assistantMessageId: string }) =>
+      runInTenant(tenant, () =>
+        task({ threadId: turn.threadId, assistantMessageId: turn.assistantMessageId }, { job: { id: "freshness" } }),
+      );
+    const first = await send("first");
+    await execute(first);
+    const second = await send("second", first.threadId);
+    const third = await send("third", first.threadId);
+    await execute(second);
+    await execute(third);
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; status: string; agent_run_id: string }>(
+        "SELECT id, status, agent_run_id FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
+        [[first.assistantMessageId, second.assistantMessageId, third.assistantMessageId]],
+      ),
+    );
+    expect(rows.rows.map((row) => row.status)).toEqual(["done", "done", "done"]);
+    expect(rows.rows[0]?.agent_run_id).not.toBe(rows.rows[1]?.agent_run_id);
+    expect(rows.rows[1]?.agent_run_id).toBe(rows.rows[2]?.agent_run_id);
+    await closeIdleThreadSessions(pool);
   });
 });
