@@ -165,7 +165,8 @@ describe("docs (CRDT layer)", () => {
       const [first, second] = await Promise.all([docStore.ensurePage(item.id), docStore.ensurePage(item.id)]);
       expect(second).toEqual(first);
       expect(await docStore.ensurePage(item.id)).toEqual(first);
-      expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(1);
+      const stored = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
+      expect(stored.rows).toEqual([{ id: first.docId }]);
       await chokePoint.softDeleteItem(item.databaseId, item.id);
       await expect(docStore.ensurePage(item.id)).rejects.toMatchObject({ status: 404 });
       const canvas = await makeItem();
