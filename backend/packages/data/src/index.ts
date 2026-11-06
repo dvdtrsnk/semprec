@@ -714,3 +714,5 @@ export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutove
 export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";
 
 export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";
+
+export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inbox/inboxAgentTools.js";

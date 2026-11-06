@@ -16,7 +16,7 @@ const PROPOSAL_HISTORY_KINDS = [
 
 export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
 
-const proposalHistoryEntrySchema = z.object({
+export const proposalHistoryEntrySchema = z.object({
   author: z.enum(["ai", "user"]),
   message: z.string(),
   at: z.string(),
