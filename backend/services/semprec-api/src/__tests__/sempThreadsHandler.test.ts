@@ -610,7 +610,7 @@ describe("durable Semp thread history", () => {
     try {
       await rm(directory, { recursive: true, force: true });
     } catch (error) {
-      if (failed) throw new AggregateError([failure, error], "Mail fixture and cleanup failed", { cause: error });
+      if (failed) throw new AggregateError([failure, error], "Mail fixture and cleanup failed", { cause: failure });
       throw error;
     }
     if (failed) throw failure instanceof Error ? failure : new Error("Mail fixture failed", { cause: failure });

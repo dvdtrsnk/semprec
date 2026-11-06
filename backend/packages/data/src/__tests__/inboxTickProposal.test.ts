@@ -5753,6 +5753,98 @@ afterAll(async () => {
 });
 
 describe("Markdown page proposal validation", () => {
+  it("stores resolved model heading and placement variants in the real tick", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = await createTestTenant(pool);
+      await createUser(pool, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      await runInTenant(tenant, () => seedSystem(runtime));
+      await runInTenant(tenant, async () => {
+        const dbs = await withTransaction(runtime, async (client) => ({
+          inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
+          types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
+          proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+          projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+        }));
+        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects)
+          throw new Error("Missing page proposal fixture databases");
+        const cp = createChokePoint(runtime);
+        const page = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Page" } });
+        const empty = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "No document" } });
+        const headingId = randomUUID();
+        const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
+        await mutateDoc(runtime, doc.id, "user", (ydoc) =>
+          writeBlock(ydoc, { id: headingId, type: "h2", text: "Dlažba" }),
+        );
+        const type = await withTransaction(runtime, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: dbs.types!.id,
+            name: "Page note",
+            emoji: "N",
+            processingMethod: "pageContent",
+          }),
+        );
+        const variants = [
+          { target: page.id, input: { afterHeadingText: "dlažba" }, expected: { afterHeading: headingId } },
+          { target: page.id, input: { afterHeadingText: "missing" }, expected: "end" },
+          { target: empty.id, input: { afterHeadingText: "dlažba" }, expected: "end" },
+          { target: page.id, input: "start", expected: "start" },
+          { target: page.id, input: "end", expected: "end" },
+        ];
+        for (const variant of variants) {
+          const source = await withTransaction(runtime, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: dbs.inbox!.id,
+              date: "2026-11-06",
+              time: "12:00",
+              text: "Input",
+              type: type.id,
+            }),
+          );
+          // The model result is synthetic; the tick, storage and placement reader are actual owners.
+          const tick = createSemprecTickAction(runtime, async () => ({
+            target: variant.target,
+            properties: { markdown: "Fixture text", placement: variant.input },
+          }));
+          await tick(
+            {
+              inboxDatabaseId: dbs.inbox.id,
+              inboxItemTypesDatabaseId: dbs.types.id,
+              processingProposalsDatabaseId: dbs.proposals.id,
+            },
+            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+          );
+          const cards = await runtime.query<{ properties: unknown }>(
+            `SELECT card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+             WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+            [dbs.proposals.id, source.id],
+          );
+          expect(cards.rows).toHaveLength(1);
+          const card = z
+            .object({ proposal: z.unknown(), aiProposal: z.unknown() })
+            .passthrough()
+            .parse(cards.rows[0]?.properties);
+          for (const stored of [card.proposal, card.aiProposal]) {
+            expect(stored).toMatchObject({
+              entityKind: "pageContent",
+              target: variant.target,
+              properties: { markdown: "Fixture text", placement: variant.expected },
+            });
+            expect(JSON.stringify(stored)).not.toContain("afterHeadingText");
+          }
+        }
+      });
+    } finally {
+      await runtime.end();
+    }
+  });
+
   it("accepts current real hosts and validates headings without creating documents or exposing other tenants", async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);

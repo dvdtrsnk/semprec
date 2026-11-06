@@ -226,17 +226,38 @@ function shutdown(): void {
   stopping = true;
   clearTimeout(deadline);
   void (async () => {
-    await stt.closeAll();
-    for (const res of pending) res.destroy();
-    for (const res of pendingModel) res.destroy();
-    for (const ws of providerSockets) ws.terminate();
-    gateway.closeAllConnections();
-    provider.closeAllConnections();
-    await new Promise<void>((resolve, reject) => gateway.close((error) => (error ? reject(error) : resolve())));
-    await new Promise<void>((resolve, reject) => providerWs.close((error) => (error ? reject(error) : resolve())));
-    await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
-    await pool.end();
-    process.disconnect?.();
+    const errors: unknown[] = [];
+    const attempt = async (work: () => void | Promise<void>): Promise<void> => {
+      try {
+        await work();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    await attempt(() => stt.closeAll());
+    for (const res of pending)
+      await attempt(() => {
+        res.destroy();
+      });
+    for (const res of pendingModel)
+      await attempt(() => {
+        res.destroy();
+      });
+    for (const ws of providerSockets) await attempt(() => ws.terminate());
+    await attempt(() => gateway.closeAllConnections());
+    await attempt(() => provider.closeAllConnections());
+    await attempt(
+      () => new Promise<void>((resolve, reject) => gateway.close((error) => (error ? reject(error) : resolve()))),
+    );
+    await attempt(
+      () => new Promise<void>((resolve, reject) => providerWs.close((error) => (error ? reject(error) : resolve()))),
+    );
+    await attempt(
+      () => new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve()))),
+    );
+    await attempt(() => pool.end());
+    await attempt(() => process.disconnect?.());
+    if (errors.length) throw new AggregateError(errors, "Voice gateway fixture shutdown failed", { cause: errors[0] });
   })().catch(() => {
     process.stderr.write("Voice gateway fixture shutdown failed\n");
     process.exitCode = 1;

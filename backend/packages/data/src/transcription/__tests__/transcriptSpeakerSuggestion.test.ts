@@ -602,7 +602,15 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         const after = await readEdges();
         const extra = after.edges.filter((edge) => edge.itemA === person.id || edge.itemB === person.id);
         expect(extra).toHaveLength(1);
+        expect(extra[0]?.metadata).toEqual({});
         expect(after.edges).toHaveLength(before.edges.length + 1);
+        const speakerEdges = await runInTenant(tenant, () =>
+          runtime.query<{ metadata: unknown }>(
+            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
+            [transcriptId, person.id],
+          ),
+        );
+        expect(speakerEdges.rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
         expect(confirmed.properties.history).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -854,16 +862,68 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
             [transcriptId, aliceId],
           );
+          const snapshot = () =>
+            runtime.query<{ card: unknown; edges: unknown }>(
+              `SELECT (SELECT to_jsonb(i) FROM items i WHERE i.id = $1) AS card,
+                    (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM item_relations r
+                     WHERE $2 IN (r.item_a, r.item_b) OR $3 IN (r.item_a, r.item_b)) AS edges`,
+              [cardId, transcriptId, eventId],
+            );
+          const beforeState = await snapshot();
+          let firstWriteObserved = false;
           await expect(
-            withTransaction(runtime, (client) =>
-              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-            ),
+            withTransaction(runtime, async (client) => {
+              const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+              /* eslint-disable @typescript-eslint/unbound-method */
+              const query = client.query;
+              const pending: Promise<unknown>[] = [];
+              client.query = new Proxy(query, {
+                apply(target, receiver, args: unknown[]) {
+                  const result: unknown = Reflect.apply(target, receiver, args);
+                  if (typeof args[0] !== "string" || !args[0].includes("INSERT INTO item_relations")) return result;
+                  const values = args[1];
+                  if (!Array.isArray(values) || !values.includes(transcriptId) || !values.includes(aliceId))
+                    return result;
+                  const observed = Promise.resolve(result).then((actual: unknown) => {
+                    const parsed = z.object({ rowCount: z.number().nullable() }).parse(actual);
+                    firstWriteObserved = parsed.rowCount === 1;
+                    return actual;
+                  });
+                  pending.push(observed);
+                  return observed;
+                },
+              });
+              /* eslint-enable @typescript-eslint/unbound-method */
+              let failed = false;
+              let primary: unknown;
+              try {
+                return await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId);
+              } catch (error) {
+                failed = true;
+                primary = error;
+                throw error;
+              } finally {
+                await Promise.allSettled(pending);
+                try {
+                  if (descriptor) Object.defineProperty(client, "query", descriptor);
+                  else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+                } catch (error) {
+                  if (failed)
+                    throw new AggregateError([primary, error], "Confirmation and observer cleanup failed", {
+                      cause: primary,
+                    });
+                  throw error;
+                }
+              }
+            }),
           ).rejects.toMatchObject({ status: 400 });
+          expect(firstWriteObserved).toBe(true);
           const after = await runtime.query<{ count: number }>(
             "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
             [transcriptId, aliceId],
           );
           expect(after.rows).toEqual(before.rows);
+          expect((await snapshot()).rows).toEqual(beforeState.rows);
           const card = await runtime.query<{ status: string }>(
             "SELECT properties->>'status' AS status FROM items WHERE database_id = $1 AND id = $2",
             [proposalsId, cardId],

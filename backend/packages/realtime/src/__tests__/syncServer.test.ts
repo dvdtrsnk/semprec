@@ -1756,6 +1756,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const queryImplementation = observer as unknown as () => void;
     const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     const received: string[] = [];
+    let registration: Promise<() => Promise<void>> | undefined;
+    let disposed = false;
     try {
       const input = {
         tenantId: tenantA,
@@ -1771,8 +1773,9 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
           throw error;
         },
       };
-      const registration = tenantServer.subscribeVoice(input);
-      await queried;
+      registration = tenantServer.subscribeVoice(input);
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
       const live = await announcedEventIn(tenantA, run.id);
       await announcedEventIn(tenantA, sentinelRun.id);
       await waitUntil(() => sentinelFrames.length === 1);
@@ -1780,10 +1783,18 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       const dispose = await registration;
       expect(received).toEqual([first.id, live.id]);
       await dispose();
+      disposed = true;
     } finally {
       release();
-      spy.mockRestore();
-      sentinel.close();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+        }
+      } finally {
+        spy.mockRestore();
+        sentinel.close();
+      }
     }
 
     let releaseAbort!: () => void;
@@ -1813,8 +1824,9 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const abortSpy = vi.spyOn(runtimePool, "query").mockImplementation(abortQueryImplementation);
     const controller = new AbortController();
     const afterAbort: string[] = [];
+    let abortRegistration: Promise<() => Promise<void>> | undefined;
     try {
-      const registration = tenantServer.subscribeVoice({
+      abortRegistration = tenantServer.subscribeVoice({
         tenantId: tenantA,
         userId: userA,
         runId: run.id,
@@ -1827,14 +1839,22 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         },
         onFailure() {},
       });
-      await abortQueried;
+      void abortRegistration.catch(() => {});
+      await waitForVoiceBarrier(abortQueried, abortRegistration);
       controller.abort();
       releaseAbort();
-      await expect(registration).rejects.toThrow();
+      await expect(abortRegistration).rejects.toThrow();
       expect(afterAbort).toEqual([]);
     } finally {
       releaseAbort();
-      abortSpy.mockRestore();
+      try {
+        if (abortRegistration) {
+          const [outcome] = await Promise.allSettled([abortRegistration]);
+          if (outcome?.status === "fulfilled") await outcome.value();
+        }
+      } finally {
+        abortSpy.mockRestore();
+      }
     }
   });
 
@@ -1921,9 +1941,9 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
             JSON.stringify({ tenantId: "invalid", message: base }),
             JSON.stringify({ tenantId: tenantA, message: null }),
           ])
-            await client.query("SELECT pg_notify($1, $2)", ["semprec_agent_stream", raw]);
+            await client.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_agent_stream", raw]);
           for (const message of [...invalid, base])
-            await client.query(
+            await client.query<{ pg_notify: string }>(
               "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
               ["semprec_agent_stream", JSON.stringify(message)],
             );
@@ -1995,7 +2015,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       // A synthetic bounded transport fault crosses the real tenant-stamped LISTEN path.
       await runInTenant(tenantA, () =>
         withTransaction(runtimePool, (client) =>
-          client.query(
+          client.query<{ pg_notify: string }>(
             "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
             ["semprec_agent_stream", JSON.stringify(message)],
           ),
@@ -2055,7 +2075,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       // This syntactically valid inner shape reaches the voice buffer, where the chunk id is refused.
       await runInTenant(tenantA, () =>
         withTransaction(runtimePool, (client) =>
-          client.query(
+          client.query<{ pg_notify: string }>(
             "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
             ["semprec_agent_stream", JSON.stringify(message)],
           ),
@@ -2672,8 +2692,10 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const queryImplementation = observer as unknown as () => void;
     const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    let registration: Promise<() => Promise<void>> | undefined;
+    let disposed = false;
     try {
-      const registration = tenantServer.subscribeVoice({
+      registration = tenantServer.subscribeVoice({
         tenantId: tenantA,
         userId: userA,
         runId: run.id,
@@ -2687,7 +2709,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
           throw error;
         },
       });
-      await queried;
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
       await runInTenant(tenantA, () =>
         withTransaction(runtimePool, (client) =>
           finishSempMessageTurn(client, target.sempMessageId, {
@@ -2772,10 +2795,18 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       ]);
       expect(frames.at(-1)).toMatchObject({ type: "delta", message: { sempMessageId: target.sempMessageId } });
       await dispose();
+      disposed = true;
     } finally {
       release();
-      spy.mockRestore();
-      sentinel.close();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+        }
+      } finally {
+        spy.mockRestore();
+        sentinel.close();
+      }
     }
   });
 

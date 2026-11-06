@@ -28,12 +28,12 @@ const caps = { dailyCapUsd: 1_000_000, monthlyCapUsd: 1_000_000 };
 const controls = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("configure"),
-    mode: z.enum(["v2", "legacy", "invalid", "unmatched"]),
+    mode: z.enum(["v2", "legacy", "invalid", "unmatched", "missingHeading", "accent", "start", "end", "pageBlock"]),
     target: z.string().uuid(),
   }),
   z.strictObject({ type: z.literal("stop") }),
 ]);
-let configuration: { mode: "v2" | "legacy" | "invalid" | "unmatched"; target: string } | undefined;
+let configuration: z.infer<typeof controls> | undefined;
 let calls = 0;
 const provider = createServer((request, response) => {
   if (request.method !== "POST" || request.url !== "/v1/messages" || !configuration) {
@@ -41,6 +41,7 @@ const provider = createServer((request, response) => {
     return;
   }
   const selected = configuration;
+  if (selected.type !== "configure") throw new Error("Missing fixture configuration");
   let body = "";
   request.setEncoding("utf8");
   request.on("data", (chunk: string) => {
@@ -78,8 +79,23 @@ const provider = createServer((request, response) => {
       selected.mode === "legacy"
         ? { flavour: "paragraph", fields: { content: "Fixture legacy" } }
         : {
-            markdown: selected.mode === "invalid" ? "" : "Fixture page text",
-            placement: { afterHeadingText: selected.mode === "unmatched" ? "Missing" : "tiles" },
+            markdown:
+              selected.mode === "invalid"
+                ? ""
+                : selected.mode === "pageBlock"
+                  ? "[Page](semprec://page/abc)"
+                  : "Fixture page text",
+            placement:
+              selected.mode === "start" || selected.mode === "end"
+                ? selected.mode
+                : {
+                    afterHeadingText:
+                      selected.mode === "unmatched" || selected.mode === "missingHeading"
+                        ? "Missing"
+                        : selected.mode === "accent"
+                          ? "dlažba"
+                          : "tiles",
+                  },
           };
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
@@ -172,7 +188,7 @@ process.on("message", (message: unknown) => {
     shutdown();
     return;
   }
-  configuration = { mode: parsed.data.mode, target: parsed.data.target };
+  configuration = parsed.data;
   process.send?.({ type: "configured", mode: parsed.data.mode });
 });
 process.on("disconnect", shutdown);

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
@@ -127,7 +128,7 @@ describe("module agent tools under project ownership", () => {
       );
       const result = await tool.invoke({ proposalId: own.cardId });
       expect(result.error).toBe(false);
-      expect(JSON.parse(result.result)).toMatchObject({
+      expect(z.record(z.string(), z.unknown()).parse(JSON.parse(result.result) as unknown)).toMatchObject({
         captureText: "",
         attachments: [],
         envelope: null,
@@ -139,7 +140,7 @@ describe("module agent tools under project ownership", () => {
       expect(denied).toEqual({ error: true, result: "Proposal not found" });
       expect(
         (
-          await pool.query(
+          await pool.query<{ items: number; edges: number; events: number; attachments: number }>(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
           )
         ).rows,

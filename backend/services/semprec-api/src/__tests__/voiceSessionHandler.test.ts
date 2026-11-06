@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
+import { createServer as createTcpServer, connect as connectTcp, type Socket } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
@@ -275,6 +276,222 @@ describe("voice session through the real gateway and registered worker", () => {
     frames.length = 0;
     audioFrames = 0;
   });
+
+  it.each(["normal", "peer", "tenant", "server"] as const)(
+    "settles an actual gated gateway upgrade after %s",
+    async (ending) => {
+      const ready = gateway?.messages.find((entry) => entry.type === "ready");
+      if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing owned gateway port");
+      const gatewayPort = ready.port;
+      let downstream: Socket | undefined;
+      let upstream: Socket | undefined;
+      let seen = false;
+      let released = false;
+      let retained: Buffer | undefined;
+      let downstreamClosed = false;
+      let upstreamClosed = false;
+      let relayError: unknown;
+      const onSocketError = (error: Error) => {
+        relayError ??= error;
+      };
+      const relay = createTcpServer((incoming) => {
+        if (downstream) {
+          incoming.destroy();
+          return;
+        }
+        downstream = incoming;
+        upstream = connectTcp({ host: "127.0.0.1", port: gatewayPort });
+        const outgoing = upstream;
+        incoming.on("error", onSocketError);
+        outgoing.on("error", onSocketError);
+        incoming.once("close", () => {
+          downstreamClosed = true;
+          outgoing.destroy();
+        });
+        outgoing.once("close", () => {
+          upstreamClosed = true;
+          incoming.destroy();
+        });
+        incoming.pipe(outgoing);
+        outgoing.once("data", (bytes: Buffer) => {
+          outgoing.pause();
+          if (bytes.length > 64 * 1024) {
+            relayError = new Error("Relay byte bound exceeded");
+            incoming.destroy();
+            outgoing.destroy();
+            return;
+          }
+          retained = bytes;
+          seen = true;
+          if (released && !incoming.destroyed) {
+            incoming.write(bytes);
+            retained = undefined;
+            outgoing.pipe(incoming);
+            outgoing.resume();
+          }
+        });
+      });
+      const localServer = createServer();
+      let channel: VoiceChannel | undefined;
+      let ws: WebSocket | undefined;
+      let failure: unknown;
+      let failed = false;
+      const cleanupErrors: unknown[] = [];
+      const received: unknown[] = [];
+      let shutdown: Promise<void> | undefined;
+      try {
+        const listen = (owned: ReturnType<typeof createTcpServer>) =>
+          new Promise<void>((resolveListen, reject) => {
+            const onError = (error: Error) => reject(error);
+            owned.once("error", onError);
+            owned.listen(0, "127.0.0.1", () => {
+              owned.off("error", onError);
+              resolveListen();
+            });
+          });
+        await listen(relay);
+        const relayAddress = relay.address();
+        if (!relayAddress || typeof relayAddress === "string") throw new Error("Missing relay address");
+        let startSignal: AbortSignal | undefined;
+        let closedSessions = 0;
+        const actualHandler = createVoiceSessionHandler(
+          pool,
+          { port: relayAddress.port, token: "batch32-test-token" },
+          sync,
+        );
+        channel = createVoiceChannel(pool, {
+          handler: {
+            ...actualHandler,
+            onStart(identity, frame, sender) {
+              startSignal = sender.signal;
+              return actualHandler.onStart(identity, frame, sender);
+            },
+            async onClose(identity) {
+              await actualHandler.onClose(identity);
+              closedSessions++;
+            },
+          },
+        });
+        const actualChannel = channel;
+        localServer.on("upgrade", (req, stream, head) => actualChannel.handleUpgrade(req, stream, head));
+        await listen(localServer);
+        const address = localServer.address();
+        if (!address || typeof address === "string") throw new Error("Missing gated voice address");
+        const observations = () =>
+          runInTenant(tenant, async () => ({
+            messages: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages")).rows,
+            jobs: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs")).rows,
+            calls: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM ai_gateway_calls")).rows,
+          }));
+        const before = await observations();
+        ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/voice`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const peer = ws;
+        ws.on("message", (data, binary) => {
+          if (!binary) received.push(JSON.parse(messageText(data)) as unknown);
+        });
+        ws.on("error", onSocketError);
+        let peerClosed = false;
+        ws.on("close", () => {
+          peerClosed = true;
+        });
+        const releaseGate = () => {
+          released = true;
+          if (retained && downstream && upstream && !downstream.destroyed && !upstream.destroyed) {
+            downstream.write(retained);
+            retained = undefined;
+            upstream.pipe(downstream);
+            upstream.resume();
+          }
+        };
+        await vi.waitFor(() => expect(peer.readyState).toBe(WebSocket.OPEN), { timeout: 5000 });
+        peer.send(JSON.stringify({ type: "start", language: "en" }));
+        await vi.waitFor(() => expect(seen).toBe(true), { timeout: 5000 });
+        expect(received).toEqual([]);
+        if (ending === "normal") {
+          releaseGate();
+          await vi.waitFor(() => expect(received).toContainEqual({ type: "ready" }), { timeout: 5000 });
+          peer.close();
+        } else {
+          if (ending === "peer") peer.close();
+          else if (ending === "tenant") actualChannel.closeTenant(tenant);
+          else {
+            shutdown = actualChannel.close();
+            void shutdown.catch(() => {});
+          }
+          await vi.waitFor(() => expect(peerClosed).toBe(true), { timeout: 5000 });
+          expect(startSignal?.aborted).toBe(true);
+          await vi.waitFor(
+            () => {
+              expect(downstreamClosed).toBe(true);
+              expect(upstreamClosed).toBe(true);
+            },
+            { timeout: 5000 },
+          );
+          releaseGate();
+          expect(received).toEqual([]);
+        }
+        await vi.waitFor(() => expect(peerClosed).toBe(true), { timeout: 5000 });
+        await vi.waitFor(() => expect(closedSessions).toBe(1), { timeout: 5000 });
+        expect(await observations()).toEqual(before);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      try {
+        ws?.terminate();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        downstream?.destroy();
+        upstream?.destroy();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        if (shutdown) await shutdown;
+        else if (channel) await channel.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await vi.waitFor(
+          () => {
+            if (downstream) expect(downstreamClosed).toBe(true);
+            if (upstream) expect(upstreamClosed).toBe(true);
+          },
+          { timeout: 5000 },
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (downstreamClosed) downstream?.off("error", onSocketError);
+      if (upstreamClosed) upstream?.off("error", onSocketError);
+      if (ws?.readyState === WebSocket.CLOSED) ws.off("error", onSocketError);
+      try {
+        if (ending !== "normal" && seen) expect(received).toEqual([]);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      for (const owned of [localServer, relay]) {
+        try {
+          if (owned.listening)
+            await new Promise<void>((resolveClose, reject) =>
+              owned.close((error) => (error ? reject(error) : resolveClose())),
+            );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (relayError) cleanupErrors.push(relayError);
+      if (failed || cleanupErrors.length)
+        throw new AggregateError([...(failed ? [failure] : []), ...cleanupErrors], "Gated start or cleanup failed", {
+          cause: failed ? failure : cleanupErrors[0],
+        });
+    },
+  );
   afterEach(async () => {
     if (socket && socket.readyState !== WebSocket.CLOSED) {
       const closed = once(socket, "close");
@@ -292,7 +509,9 @@ describe("voice session through the real gateway and registered worker", () => {
         failures.push(error);
       }
     };
-    socket?.terminate();
+    await cleanup(async () => {
+      socket?.terminate();
+    });
     if (voice) await cleanup(() => voice.close());
     if (sync) await cleanup(() => sync.close());
     if (server)
@@ -304,9 +523,9 @@ describe("voice session through the real gateway and registered worker", () => {
       );
     async function stop(owned: OwnedChild | undefined): Promise<void> {
       if (!owned) return;
-      if (!owned.settled && owned.child.connected) send(owned, "stop");
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
+        if (!owned.settled && owned.child.connected) send(owned, "stop");
         const result = await Promise.race([
           owned.exit,
           new Promise<never>((_, reject) => {
@@ -319,15 +538,32 @@ describe("voice session through the real gateway and registered worker", () => {
       } catch (error) {
         failures.push(error);
         if (!owned.settled) {
-          owned.child.kill("SIGKILL");
-          await owned.exit;
+          try {
+            if (!owned.child.kill("SIGKILL")) failures.push(new Error("Unable to signal owned fixture child"));
+          } catch (signalError) {
+            failures.push(signalError);
+          }
+          let exitTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              owned.exit,
+              new Promise<never>((_, reject) => {
+                exitTimer = setTimeout(() => reject(new Error("Fixture exit not observed")), 5000);
+              }),
+            ]);
+          } catch (exitError) {
+            failures.push(exitError);
+          } finally {
+            if (exitTimer) clearTimeout(exitTimer);
+          }
         }
       } finally {
         if (timer) clearTimeout(timer);
       }
     }
     await stop(worker);
-    await stop(gateway);
+    if (!worker || worker.settled) await stop(gateway);
+    else failures.push(new Error("Gateway retained because worker settlement was not observed"));
     if (pool) await cleanup(() => pool.end());
     if (admin) await cleanup(() => admin.end());
     if ((!worker || worker.settled) && (!gateway || gateway.settled)) {
@@ -625,7 +861,7 @@ describe("voice session through the real gateway and registered worker", () => {
     await expect(
       runInTenant(tenant, () =>
         withTransaction(pool, (client) =>
-          client.query(
+          client.query<Record<string, never>>(
             "INSERT INTO semp_messages (thread_id, role, text, source) VALUES ($1, 'user', 'invalid fixture', 'invalid')",
             [turn.threadId],
           ),
@@ -634,7 +870,9 @@ describe("voice session through the real gateway and registered worker", () => {
     ).rejects.toMatchObject({ code: "23514" });
     const foreign = await createTestTenant(admin);
     const invisible = await runInTenant(foreign, () =>
-      pool.query("SELECT id FROM semp_messages WHERE id=ANY($1::uuid[])", [[turn.messageId, turn.assistantMessageId]]),
+      pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE id=ANY($1::uuid[])", [
+        [turn.messageId, turn.assistantMessageId],
+      ]),
     );
     expect(invisible.rows).toEqual([]);
   }, 30_000);

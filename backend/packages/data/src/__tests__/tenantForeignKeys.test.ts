@@ -179,7 +179,7 @@ const REFERENCES: Reference[] = [
     column: "message_id",
     parentId: (p) => p.sempMessageId,
     insert: (client, id, own) =>
-      client.query(
+      client.query<Record<string, never>>(
         "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
         [id, own.blobId],
       ),
@@ -191,7 +191,7 @@ const REFERENCES: Reference[] = [
     column: "blob_id",
     parentId: (p) => p.blobId,
     insert: (client, id, own) =>
-      client.query(
+      client.query<Record<string, never>>(
         "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
         [own.sempMessageId, id],
       ),

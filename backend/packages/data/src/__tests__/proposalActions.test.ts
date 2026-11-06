@@ -1006,7 +1006,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           createItemWithClient(client, { databaseId: databases.projects!.id, properties: { name: "Project" } }),
         );
         const snapshot = () =>
-          runtime.query(
+          runtime.query<{ card: unknown; docs: number; edges: number }>(
             "SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card, (SELECT count(*)::int FROM docs WHERE item_id = $2) AS docs, (SELECT count(*)::int FROM item_relations) AS edges",
             [cardId, project.id],
           );

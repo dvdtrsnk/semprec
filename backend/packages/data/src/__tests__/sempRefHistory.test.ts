@@ -99,6 +99,7 @@ describe("Semp history reference resolution", () => {
       runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
           /* eslint-disable @typescript-eslint/unbound-method */
+          const descriptor = Object.getOwnPropertyDescriptor(client, "query");
           const query = client.query;
           client.query = new Proxy(query, {
             apply(target, receiver, args: unknown[]) {
@@ -110,10 +111,25 @@ describe("Semp history reference resolution", () => {
             },
           });
           /* eslint-enable @typescript-eslint/unbound-method */
+          let failed = false;
+          let primary: unknown;
           try {
             return await listSempThreadMessages(client, sent.threadId, 50, null);
+          } catch (error) {
+            failed = true;
+            primary = error;
+            throw error;
           } finally {
-            client.query = query;
+            try {
+              if (descriptor) Object.defineProperty(client, "query", descriptor);
+              else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+            } catch (error) {
+              if (failed)
+                throw new AggregateError([primary, error], "History read and observer restoration failed", {
+                  cause: primary,
+                });
+              throw error;
+            }
           }
         }),
       );
@@ -326,6 +342,7 @@ describe("Semp history reference resolution", () => {
     const page = await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => {
         /* eslint-disable @typescript-eslint/unbound-method */
+        const descriptor = Object.getOwnPropertyDescriptor(client, "query");
         const query = client.query;
         client.query = new Proxy(query, {
           apply(target, receiver, args: unknown[]) {
@@ -335,10 +352,25 @@ describe("Semp history reference resolution", () => {
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
+        let failed = false;
+        let primary: unknown;
         try {
           return await listSempThreadMessages(client, first.threadId, 50, null);
+        } catch (error) {
+          failed = true;
+          primary = error;
+          throw error;
         } finally {
-          client.query = query;
+          try {
+            if (descriptor) Object.defineProperty(client, "query", descriptor);
+            else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+          } catch (error) {
+            if (failed)
+              throw new AggregateError([primary, error], "History read and observer restoration failed", {
+                cause: primary,
+              });
+            throw error;
+          }
         }
       }),
     );
@@ -534,6 +566,7 @@ describe("Semp history reference resolution", () => {
         const observed = await runInTenant(tenant, () =>
           withTransaction(runtime, async (client) => {
             /* eslint-disable @typescript-eslint/unbound-method */
+            const descriptor = Object.getOwnPropertyDescriptor(client, "query");
             const query = client.query;
             client.query = new Proxy(query, {
               apply(target, receiver, args: unknown[]) {
@@ -542,6 +575,8 @@ describe("Semp history reference resolution", () => {
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
+            let failed = false;
+            let primary: unknown;
             try {
               const page = await listSempThreadMessages(client, first.threadId, 50, null);
               const stored = await client.query<{ id: string; context: unknown }>(
@@ -549,8 +584,21 @@ describe("Semp history reference resolution", () => {
                 [[first.messageId, second.messageId]],
               );
               return { page, stored };
+            } catch (error) {
+              failed = true;
+              primary = error;
+              throw error;
             } finally {
-              client.query = query;
+              try {
+                if (descriptor) Object.defineProperty(client, "query", descriptor);
+                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+              } catch (error) {
+                if (failed)
+                  throw new AggregateError([primary, error], "History read and observer restoration failed", {
+                    cause: primary,
+                  });
+                throw error;
+              }
             }
           }),
         );
@@ -661,6 +709,7 @@ describe("Semp history reference resolution", () => {
     const page = await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => {
         /* eslint-disable @typescript-eslint/unbound-method */
+        const descriptor = Object.getOwnPropertyDescriptor(client, "query");
         const query = client.query;
         client.query = new Proxy(query, {
           apply(target, receiver, args: unknown[]) {
@@ -672,10 +721,25 @@ describe("Semp history reference resolution", () => {
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
+        let failed = false;
+        let primary: unknown;
         try {
           return await listSempThreadMessages(client, sent.threadId, 50, null);
+        } catch (error) {
+          failed = true;
+          primary = error;
+          throw error;
         } finally {
-          client.query = query;
+          try {
+            if (descriptor) Object.defineProperty(client, "query", descriptor);
+            else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+          } catch (error) {
+            if (failed)
+              throw new AggregateError([primary, error], "History read and observer restoration failed", {
+                cause: primary,
+              });
+            throw error;
+          }
         }
       }),
     );
@@ -707,7 +771,7 @@ describe("Semp history reference resolution", () => {
     expect(afterDecision.rows.find((row) => row.id === sent.messageId)?.context).toEqual(expected);
     // Synthetic corrupt stored JSON exercises the existing approval-owner validator.
     await runInTenant(tenant, () =>
-      runtime.query("UPDATE approval_requests SET description = $1::jsonb WHERE id = $2", [
+      runtime.query<Record<string, never>>("UPDATE approval_requests SET description = $1::jsonb WHERE id = $2", [
         JSON.stringify({ key: 5 }),
         described.id,
       ]),
@@ -790,6 +854,7 @@ describe("Semp history reference resolution", () => {
         runInTenant(tenant, () =>
           withTransaction(runtime, async (client) => {
             /* eslint-disable @typescript-eslint/unbound-method */
+            const descriptor = Object.getOwnPropertyDescriptor(client, "query");
             const query = client.query;
             client.query = new Proxy(query, {
               apply(target, receiver, args: unknown[]) {
@@ -799,10 +864,25 @@ describe("Semp history reference resolution", () => {
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
+            let failed = false;
+            let primary: unknown;
             try {
               return await listSempThreadMessages(client, sent.threadId, 50, null);
+            } catch (error) {
+              failed = true;
+              primary = error;
+              throw error;
             } finally {
-              client.query = query;
+              try {
+                if (descriptor) Object.defineProperty(client, "query", descriptor);
+                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+              } catch (error) {
+                if (failed)
+                  throw new AggregateError([primary, error], "History read and observer restoration failed", {
+                    cause: primary,
+                  });
+                throw error;
+              }
             }
           }),
         );

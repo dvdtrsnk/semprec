@@ -44,6 +44,43 @@ const fixtureMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("released") }),
 ]);
 
+type ObservedDescriptors = { query: PropertyDescriptor | undefined; release: PropertyDescriptor | undefined };
+
+function restoreObservedClientOnRelease(client: PoolClient, active: Map<PoolClient, ObservedDescriptors>): void {
+  const descriptors = {
+    query: Object.getOwnPropertyDescriptor(client, "query"),
+    release: Object.getOwnPropertyDescriptor(client, "release"),
+  };
+  active.set(client, descriptors);
+  /* eslint-disable @typescript-eslint/unbound-method */
+  const release = client.release;
+  client.release = new Proxy(release, {
+    apply(target, receiver, args: unknown[]) {
+      const errors: unknown[] = [];
+      for (const key of ["query", "release"] as const) {
+        try {
+          const descriptor = descriptors[key];
+          if (descriptor) Object.defineProperty(client, key, descriptor);
+          else if (!Reflect.deleteProperty(client, key)) throw new Error(`Cannot restore ${key} descriptor`);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      active.delete(client);
+      if (errors.length) {
+        try {
+          Reflect.apply(target, receiver, [true]);
+        } catch (error) {
+          errors.push(error);
+        }
+        throw new AggregateError(errors, "Could not restore observed client", { cause: errors[0] });
+      }
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  /* eslint-enable @typescript-eslint/unbound-method */
+}
+
 describe("message speech HTTP", () => {
   let admin: Pool;
   let pool: Pool;
@@ -334,16 +371,24 @@ describe("message speech HTTP", () => {
     const before = await accounting();
     const calls = providerCalls();
     await setMode("hold");
-    const originals = new Map<PoolClient, PoolClient["query"]>();
+    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const observedQueries: Promise<unknown>[] = [];
     const guardClients = new Set<PoolClient>();
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       // The observer delegates every real query and is restored before the pool closes.
       /* eslint-disable @typescript-eslint/unbound-method */
-      originals.set(client, client.query);
+      restoreObservedClientOnRelease(client, originals);
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
+          if (result instanceof Promise)
+            observedQueries.push(
+              result.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
           if (typeof args[0] !== "string" || !args[0].includes("pg_try_advisory_lock")) return result;
           return Promise.resolve(result).then((value: unknown) => {
             guardClients.add(client);
@@ -395,7 +440,8 @@ describe("message speech HTTP", () => {
     }
     try {
       pool.off("acquire", instrument);
-      for (const [client, query] of originals) client.query = query;
+      await Promise.all(observedQueries);
+      if (originals.size !== 0) throw new Error("Observed clients are still checked out");
       await setMode("normal");
     } catch (error) {
       cleanupFailures.push(error);
@@ -543,7 +589,8 @@ describe("message speech HTTP", () => {
       .mockImplementation((milliseconds) =>
         milliseconds === 300_000 ? deadline.signal : originalTimeout(milliseconds),
       );
-    const originals = new Map<PoolClient, PoolClient["query"]>();
+    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const observedQueries: Promise<unknown>[] = [];
     let release!: () => void;
     const proceed = new Promise<void>((resolve) => {
       release = resolve;
@@ -553,10 +600,17 @@ describe("message speech HTTP", () => {
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       /* eslint-disable @typescript-eslint/unbound-method */
-      originals.set(client, client.query);
+      restoreObservedClientOnRelease(client, originals);
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
+          if (result instanceof Promise)
+            observedQueries.push(
+              result.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
           if (intercepted || typeof args[0] !== "string" || !args[0].includes("INSERT INTO semp_message_speech"))
             return result;
           intercepted = true;
@@ -601,7 +655,8 @@ describe("message speech HTTP", () => {
     release();
     await settled;
     pool.off("acquire", instrument);
-    for (const [client, query] of originals) client.query = query;
+    await Promise.all(observedQueries);
+    if (originals.size !== 0) throw new Error("Observed clients are still checked out");
     timeoutSpy.mockRestore();
     if (failed) throw failure instanceof Error ? failure : new Error("Deadline test failed", { cause: failure });
   });
@@ -609,16 +664,24 @@ describe("message speech HTTP", () => {
   it("retains committed audio after a synthetic lost COMMIT acknowledgement", async () => {
     const value = await turn("Lost acknowledgement");
     const calls = providerCalls();
-    const originals = new Map<PoolClient, PoolClient["query"]>();
+    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const observedQueries: Promise<unknown>[] = [];
     const writers = new Set<PoolClient>();
     let injected = false;
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       /* eslint-disable @typescript-eslint/unbound-method */
-      originals.set(client, client.query);
+      restoreObservedClientOnRelease(client, originals);
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
+          if (result instanceof Promise)
+            observedQueries.push(
+              result.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
           if (typeof args[0] !== "string") return result;
           if (args[0].includes("INSERT INTO semp_message_speech")) {
             return Promise.resolve(result).then((actual: unknown) => {
@@ -659,7 +722,8 @@ describe("message speech HTTP", () => {
       failure = error;
     }
     pool.off("acquire", instrument);
-    for (const [client, query] of originals) client.query = query;
+    await Promise.all(observedQueries);
+    if (originals.size !== 0) throw new Error("Observed clients are still checked out");
     if (failed) throw failure instanceof Error ? failure : new Error("Lost-ack test failed", { cause: failure });
   });
 
@@ -897,6 +961,7 @@ describe("message speech HTTP", () => {
           calls: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM ai_gateway_calls")).rows,
         }));
       const before = await effects();
+      const calls = providerCalls();
       const response = await post(value.threadId, value.messageId);
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: { code: "validation_failed", details: { field: "messageId" } } });
@@ -907,6 +972,48 @@ describe("message speech HTTP", () => {
       );
       expect(count.rows).toEqual([{ count: 0 }]);
       expect(await effects()).toEqual(before);
+      expect(providerCalls()).toBe(calls);
+    }
+    for (const text of ["x".repeat(4001), `${"x".repeat(3999)}😀`]) {
+      const original = "x".repeat(4000);
+      const value = await turn(original);
+      const cached = await cache(value.threadId, value.messageId, original, "alloy");
+      // Synthetic historical state: only this source text changes after its real cache is created.
+      await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const updated = await client.query<{ id: string }>(
+            "UPDATE semp_messages SET text = $1 WHERE id = $2 AND thread_id = $3 AND role = 'user' RETURNING id",
+            [text, value.messageId, value.threadId],
+          );
+          expect(updated.rows).toEqual([{ id: value.messageId }]);
+          expect(updated.rowCount).toBe(1);
+        }),
+      );
+      const snapshot = () =>
+        runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => ({
+            blobs: (await client.query<{ row: unknown }>("SELECT to_jsonb(b) AS row FROM blobs b ORDER BY id")).rows,
+            cache: (
+              await client.query<{ row: unknown }>(
+                "SELECT to_jsonb(s) AS row FROM semp_message_speech s ORDER BY message_id, voice",
+              )
+            ).rows,
+            calls: (
+              await client.query<{ row: unknown }>("SELECT to_jsonb(c) AS row FROM ai_gateway_calls c ORDER BY id")
+            ).rows,
+          })),
+        );
+      const before = await snapshot();
+      const calls = providerCalls();
+      const bytes = await readFile(join(directory, cached.blob.storageKey));
+      const files = (await readdir(directory, { recursive: true })).sort();
+      const response = await post(value.threadId, value.messageId);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: { code: "validation_failed", details: { field: "messageId" } } });
+      expect(await snapshot()).toEqual(before);
+      expect(providerCalls()).toBe(calls);
+      expect(await readFile(join(directory, cached.blob.storageKey))).toEqual(bytes);
+      expect((await readdir(directory, { recursive: true })).sort()).toEqual(files);
     }
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -214,7 +215,7 @@ describe("Inbox proposal tool owner", () => {
       expect(missing).toEqual({ error: true, result: "Proposal not found" });
       expect(
         (
-          await runtime.query(
+          await runtime.query<{ items: number; edges: number; events: number; attachments: number }>(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
           )
         ).rows,
@@ -265,7 +266,15 @@ describe("Inbox proposal tool owner", () => {
         ),
       );
       const snapshot = () =>
-        runtime.query(
+        runtime.query<{
+          card: unknown;
+          association: unknown;
+          thread: unknown;
+          edges: number;
+          items: number;
+          events: number;
+          attachments: number;
+        }>(
           `SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card,
          (SELECT row_to_json(edge) FROM (SELECT * FROM item_relations WHERE id = $2) edge) AS association,
          (SELECT row_to_json(thread) FROM (SELECT * FROM semp_threads WHERE id = $3) thread) AS thread,
@@ -276,12 +285,56 @@ describe("Inbox proposal tool owner", () => {
       const baseline = await snapshot();
       const result = await tool(own.runId, { proposalId: own.cardId });
       expect(result.error).toBe(false);
-      expect(JSON.parse(result.result)).toMatchObject({ userEditedKeys: ["name"], history });
+      expect(z.record(z.string(), z.unknown()).parse(JSON.parse(result.result) as unknown)).toMatchObject({
+        userEditedKeys: ["name"],
+        history,
+      });
       const missing = await tool(own.runId, { proposalId: randomUUID() });
       expect(await tool(own.runId, { proposalId: other.cardId })).toEqual(missing);
       expect(await tool(own.runId, { proposalId: foreignCard.cardId })).toEqual(missing);
       expect(missing).toEqual({ error: true, result: "Proposal not found" });
       expect((await snapshot()).rows).toEqual(baseline.rows);
+    });
+  });
+
+  it("reads valid and malformed synthetic historical proposal history without effects", async () => {
+    const own = await createCard(owner, false);
+    const tool = createInboxProposalGetTool(runtime);
+    const legacy = { author: "user", message: "Legacy", at: "2026-01-01T00:00:00.000Z" };
+    const optional = { ...legacy, kind: "userEdit", keys: ["name"], threadId: own.threadId };
+    const cases: Array<{ history: unknown; expected: unknown[] }> = [
+      { history: [legacy], expected: [legacy] },
+      { history: [optional], expected: [optional] },
+      { history: null, expected: [] },
+      { history: [{ author: "invalid", message: "Malformed", at: "x" }], expected: [] },
+    ];
+    await runInTenant(owner, async () => {
+      for (const fixture of cases) {
+        // Historical-state fixture: only the history field is changed through its actual owner.
+        await withTransaction(runtime, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: own.proposalsId, itemId: own.cardId, propertiesPatch: { history: fixture.history } },
+            { allowedSystemKeys: ["history"] },
+          ),
+        );
+        const snapshot = () =>
+          runtime.query<{ card: unknown; edges: number; events: number }>(
+            `SELECT (SELECT row_to_json(i) FROM (SELECT properties, updated_at FROM items WHERE id = $1) i) AS card,
+             (SELECT count(*)::int FROM item_relations) AS edges,
+             (SELECT count(*)::int FROM agent_run_events) AS events`,
+            [own.cardId],
+          );
+        const before = await snapshot();
+        const result = await tool(own.runId, { proposalId: own.cardId });
+        expect(result.error).toBe(false);
+        const parsed = z
+          .object({ history: z.array(z.unknown()) })
+          .passthrough()
+          .parse(JSON.parse(result.result) as unknown);
+        expect(parsed.history).toEqual(fixture.expected);
+        expect((await snapshot()).rows).toEqual(before.rows);
+      }
     });
   });
 
@@ -297,7 +350,7 @@ describe("Inbox proposal tool owner", () => {
       );
       const result = await tool(own.runId, { proposalId: own.cardId });
       expect(result.error).toBe(false);
-      expect(JSON.parse(result.result)).toMatchObject({
+      expect(z.record(z.string(), z.unknown()).parse(JSON.parse(result.result) as unknown)).toMatchObject({
         captureText: "",
         envelope: own.envelope,
         userEditedKeys: [],
@@ -311,7 +364,7 @@ describe("Inbox proposal tool owner", () => {
       expect(missing).toEqual({ error: true, result: "Proposal not found" });
       expect(
         (
-          await runtime.query(
+          await runtime.query<{ items: number; edges: number; attachments: number; events: number }>(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM inbox_attachments) AS attachments, (SELECT count(*)::int FROM agent_run_events) AS events",
           )
         ).rows,

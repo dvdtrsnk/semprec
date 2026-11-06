@@ -249,7 +249,10 @@ describe("createProposalComputation (issue #1434)", () => {
     const source = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/inboxProposalGateway.ts");
     const wire = z.discriminatedUnion("type", [
       z.strictObject({ type: z.literal("ready"), port: z.number().int().positive() }),
-      z.strictObject({ type: z.literal("configured"), mode: z.enum(["v2", "legacy", "invalid", "unmatched"]) }),
+      z.strictObject({
+        type: z.literal("configured"),
+        mode: z.enum(["v2", "legacy", "invalid", "unmatched", "missingHeading", "accent", "start", "end", "pageBlock"]),
+      }),
       z.strictObject({
         type: z.literal("observation"),
         sequence: z.number().int().positive(),
@@ -367,13 +370,29 @@ describe("createProposalComputation (issue #1434)", () => {
           { id: headingId, flavour: "h2", fields: { text: "Tiles" } },
           "user",
         );
+        const accentHeadingId = randomUUID();
+        await createDocStore(runtime).putBlock(
+          project.id,
+          { id: accentHeadingId, flavour: "h2", fields: { text: "Dlažba" } },
+          "user",
+        );
         const type = await cp.createItem({
           databaseId: dbs.types.id,
           properties: { name: "Note", emoji: "N", status: "active", processingMethod: "pageContent" },
         });
         const client = createHttpAiGatewayClient({ port: ready.port, token: "batch32-inbox-test-token" });
         const tick = createSemprecTickAction(runtime, createProposalComputation({ pool: runtime, gateway: client }));
-        const modes = ["v2", "unmatched", "legacy", "invalid"] as const;
+        const modes = [
+          "v2",
+          "unmatched",
+          "missingHeading",
+          "accent",
+          "start",
+          "end",
+          "pageBlock",
+          "legacy",
+          "invalid",
+        ] as const;
         let priorCalls = 0;
         for (const mode of modes) {
           const target = mode === "unmatched" ? emptyPage.id : project.id;
@@ -408,7 +427,7 @@ describe("createProposalComputation (issue #1434)", () => {
             .object({ status: z.string(), proposal: z.unknown().nullable(), aiProposal: z.unknown().nullable() })
             .passthrough()
             .parse(cards.rows[0]?.properties);
-          if (mode === "invalid")
+          if (mode === "invalid" || mode === "pageBlock")
             expect(card).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
           else if (mode === "legacy")
             expect(card).toMatchObject({
@@ -422,10 +441,19 @@ describe("createProposalComputation (issue #1434)", () => {
                 target,
                 properties: {
                   markdown: "Fixture page text",
-                  placement: mode === "v2" ? { afterHeading: headingId } : "end",
+                  placement:
+                    mode === "v2"
+                      ? { afterHeading: headingId }
+                      : mode === "accent"
+                        ? { afterHeading: accentHeadingId }
+                        : mode === "start"
+                          ? "start"
+                          : "end",
                 },
               },
             });
+          expect(JSON.stringify(card.proposal)).not.toContain("afterHeadingText");
+          expect(JSON.stringify(card.aiProposal)).not.toContain("afterHeadingText");
           const accounting = await runtime.query<{ status: string; operation: string }>(
             "SELECT status, operation FROM ai_gateway_calls WHERE project_item_id = $1 AND operation = 'inbox_proposal' ORDER BY id",
             [projectId],
@@ -443,14 +471,43 @@ describe("createProposalComputation (issue #1434)", () => {
     }
     try {
       if (child && !exited && child.connected) child.send({ type: "stop" });
-      if (exit) {
-        const result = await exit;
-        process.stderr.write(`inbox gateway exit=${result.code} signal=${result.signal}\n`);
-        if (result.error || result.code !== 0 || result.signal !== null)
-          throw result.error ?? new Error("Inbox gateway child failed");
-      }
     } catch (error) {
       cleanup.push(error);
+    }
+    if (exit) {
+      const waitForExit = async (milliseconds: number): Promise<boolean> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            exit.then(() => true),
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), milliseconds);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      try {
+        let observed = await waitForExit(20_000);
+        if (!observed && child) {
+          try {
+            if (!child.kill("SIGTERM")) cleanup.push(new Error("Could not signal inbox gateway child"));
+          } catch (error) {
+            cleanup.push(error);
+          }
+          observed = await waitForExit(5_000);
+        }
+        if (!observed) cleanup.push(new Error("Inbox gateway child exit was not observed"));
+        else {
+          const result = await exit;
+          process.stderr.write(`inbox gateway exit=${result.code} signal=${result.signal}\n`);
+          if (result.error || result.code !== 0 || result.signal !== null)
+            cleanup.push(result.error ?? new Error("Inbox gateway child failed"));
+        }
+      } catch (error) {
+        cleanup.push(error);
+      }
     }
     try {
       await runtime.end();

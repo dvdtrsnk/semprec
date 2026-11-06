@@ -896,7 +896,9 @@ describe("standalone blobs (issue #1401)", () => {
         // No production thread-deletion entry point exists yet; exercise the registered cascade directly.
         await runInTenant(tenant, () =>
           withTransaction(runtime, async (client) => {
-            const deleted = await client.query("DELETE FROM semp_threads WHERE id = $1", [fixture.threadId]);
+            const deleted = await client.query<Record<string, never>>("DELETE FROM semp_threads WHERE id = $1", [
+              fixture.threadId,
+            ]);
             expect(deleted.rowCount).toBe(1);
           }),
         );

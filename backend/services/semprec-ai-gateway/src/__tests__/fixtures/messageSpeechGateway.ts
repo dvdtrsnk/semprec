@@ -110,15 +110,31 @@ let stopping = false;
 function shutdown(): void {
   if (stopping) return;
   stopping = true;
-  for (const response of pending) response.destroy();
-  pending.clear();
-  gateway.closeAllConnections();
-  provider.closeAllConnections();
   void (async () => {
-    await new Promise<void>((resolve, reject) => gateway.close((error) => (error ? reject(error) : resolve())));
-    await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
-    await pool.end();
-    process.disconnect?.();
+    const errors: unknown[] = [];
+    const attempt = async (work: () => void | Promise<void>): Promise<void> => {
+      try {
+        await work();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    for (const response of pending)
+      await attempt(() => {
+        response.destroy();
+      });
+    pending.clear();
+    await attempt(() => gateway.closeAllConnections());
+    await attempt(() => provider.closeAllConnections());
+    await attempt(
+      () => new Promise<void>((resolve, reject) => gateway.close((error) => (error ? reject(error) : resolve()))),
+    );
+    await attempt(
+      () => new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve()))),
+    );
+    await attempt(() => pool.end());
+    await attempt(() => process.disconnect?.());
+    if (errors.length) throw new AggregateError(errors, "Speech gateway fixture shutdown failed", { cause: errors[0] });
   })().catch(() => {
     process.stderr.write("Speech gateway fixture shutdown failed\n");
     process.exitCode = 1;

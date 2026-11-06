@@ -250,12 +250,16 @@ describe("runAgentSession", () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const listener = await pool.connect();
     let release!: () => void;
+    let pending: Promise<unknown> | undefined;
+    let failure: unknown;
+    let failed = false;
+    const messages: unknown[] = [];
+    const onNotification = (event: { payload?: string }) => {
+      if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
+    };
     try {
-      await listener.query("LISTEN semprec_agent_stream");
-      const messages: unknown[] = [];
-      listener.on("notification", (event) => {
-        if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
-      });
+      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
+      listener.on("notification", onNotification);
       const run = await runInTenant(getTenantZeroId(), () =>
         createAgentRun(runtime, { triggeredBy: "user", task: "tagged" }),
       );
@@ -277,7 +281,7 @@ describe("runAgentSession", () => {
         yield { kind: "turn_start" };
         yield { kind: "message_update", text: "next" };
       }
-      const pending = runInTenant(getTenantZeroId(), () =>
+      pending = runInTenant(getTenantZeroId(), () =>
         runAgentTurn(runtime, run.id, delayed(), undefined, undefined, undefined, mutableId),
       );
       mutableId = second;
@@ -329,11 +333,33 @@ describe("runAgentSession", () => {
         }),
         expect.objectContaining({ message: expect.not.objectContaining({ sempMessageId: expect.anything() }) }),
       ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
     } finally {
       release?.();
-      listener.release();
-      await runtime.end();
+      const outcomes = pending ? await Promise.allSettled([pending]) : [];
+      const errors = outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" && (!failed || outcome.reason !== failure) ? [outcome.reason] : [],
+      );
+      listener.removeListener("notification", onNotification);
+      try {
+        listener.release(true);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        throw new AggregateError([...(failed ? [failure] : []), ...errors], "Turn test cleanup failed", {
+          cause: failed ? failure : errors[0],
+        });
+      }
     }
+    if (failed) throw failure;
   });
 
   it("increments the ordinal after one synthetic pre-dispatch publication failure", async () => {
@@ -358,7 +384,7 @@ describe("runAgentSession", () => {
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       );
       expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      await listener.query("LISTEN semprec_agent_stream");
+      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
       listener.on("notification", (notification) => {
         if (!notification.payload) return;
         try {
