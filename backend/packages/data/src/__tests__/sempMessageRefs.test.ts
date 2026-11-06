@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant, type SempMessageRef } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   createChokePoint,
@@ -26,6 +27,53 @@ describe("Semp reference observation", () => {
   afterAll(async () => {
     await runtime.end();
     await admin.end();
+  });
+
+  it("issues one real observation statement per nonempty reference kind", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const makeRefs = (): SempMessageRef[] => [
+      { kind: "item", itemId: randomUUID(), databaseId: randomUUID() },
+      { kind: "transcriptSegment", itemId: randomUUID(), startsAt: 0, endsAt: 1 },
+      { kind: "block", itemId: randomUUID(), blockId: randomUUID() },
+      { kind: "mailAttachment", attachmentId: randomUUID() },
+      { kind: "agentRun", agentRunId: randomUUID() },
+      { kind: "approvalRequest", approvalRequestId: randomUUID() },
+    ];
+    await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const queries: string[] = [];
+        const original = Object.getOwnPropertyDescriptor(client, "query");
+        /* eslint-disable @typescript-eslint/unbound-method */
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            if (typeof args[0] === "string") queries.push(args[0]);
+            return Reflect.apply(target, receiver, args);
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+        try {
+          await expect(validateSempMessageRefs(client, [...makeRefs(), ...makeRefs()])).rejects.toMatchObject({
+            code: "validation_failed",
+            details: { field: "context[0]" },
+          });
+        } finally {
+          if (original) Object.defineProperty(client, "query", original);
+          else Reflect.deleteProperty(client, "query");
+        }
+        expect(queries).toHaveLength(6);
+        for (const fragment of [
+          "JOIN items i ON i.id = r.item_id AND i.database_id",
+          "d.owner_module_id = 'transcripts'",
+          "SELECT d.id, d.item_id FROM docs d",
+          "JOIN mail_attachments t",
+          "JOIN agent_runs t",
+          "JOIN approval_requests t",
+        ]) {
+          expect(queries.filter((sql) => sql.includes(fragment))).toHaveLength(1);
+        }
+      }),
+    );
   });
 
   it("refuses deletion before observation and permits deletion after observation", async () => {
