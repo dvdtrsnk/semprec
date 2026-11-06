@@ -120,6 +120,8 @@ describe("semprec-agents graceful shutdown", () => {
       expect(controller.signal.reason).toBe("shutdown");
     });
     const late = runs.trackSemp(async () => {
+      // The shutdown contract retains undefined rejection reasons.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw undefined;
     });
     await late.catch(() => {});

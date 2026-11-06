@@ -19,6 +19,8 @@ describe("Semp settlement observation", () => {
     await Promise.resolve();
     const settle = runs.observeSempSettlement();
     const late = runs.trackSemp(async () => {
+      // The shutdown contract retains non-Error and falsy rejection reasons.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw null;
     });
     void late.catch(() => {});
@@ -39,6 +41,8 @@ describe("Semp settlement observation", () => {
     const runs = createInFlightAgentRuns();
     const observation = runs.observeSempSettlement();
     const failed = runs.trackSemp(async () => {
+      // The shutdown contract retains non-Error and falsy rejection reasons.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw false;
     });
     await failed.catch(() => {});

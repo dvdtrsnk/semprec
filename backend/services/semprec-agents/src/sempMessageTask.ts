@@ -172,6 +172,8 @@ export function createSempMessageTask(
                 publishSempThreadInvalidation(client, scope.tenantId, threadId);
               });
             } catch (persistenceError) {
+              // The turn error remains primary; persistenceError is retained in the aggregate.
+              // eslint-disable-next-line preserve-caught-error
               throw new AggregateError([error, persistenceError], "Semp turn and error persistence failed", {
                 cause: error,
               });

@@ -107,22 +107,10 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
-  {
-    name: "semp thread create message",
-    method: "POST",
-    path: "/api/semp/threads",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "semp thread send message",
-    method: "POST",
-    path: `/api/semp/threads/${EXAMPLE_ID}/messages`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
+  // prettier-ignore
+  { name: "semp thread create message", method: "POST", path: "/api/semp/threads", surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "semp thread send message", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages`, surface: "api", public: false, tenancy: "tenant" },
   {
     name: "semp thread detail",
     method: "GET",

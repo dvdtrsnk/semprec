@@ -98,6 +98,8 @@ export async function createAgentsQueueRuntime(
     try {
       await runner.stop();
     } catch (cleanupError) {
+      // The startup error remains primary; cleanupError is retained in the aggregate.
+      // eslint-disable-next-line preserve-caught-error
       throw new AggregateError([error, cleanupError], "Chat worker startup and general worker cleanup failed", {
         cause: error,
       });
@@ -130,7 +132,8 @@ export async function createAgentsQueueRuntime(
       stopped ??= (async () => {
         const current = stopOnce();
         const results = await Promise.all([current.general, current.chat]);
-        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+        const errors: unknown[] = [];
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
         if (errors.length) throw new AggregateError(errors, "Agent queue workers failed to stop", { cause: errors[0] });
       })();
       return stopped;

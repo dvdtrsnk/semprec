@@ -1703,8 +1703,11 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     try {
       listener.release(true);
     } catch (error) {
-      if (failure)
+      if (failure) {
+        // Keep the assertion failure primary while retaining the cleanup failure.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure.error, error], "Title invalidation cleanup failed", { cause: failure.error });
+      }
       throw error;
     }
     if (failure) throw failure.error;

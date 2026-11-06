@@ -512,10 +512,13 @@ describe("durable Semp thread history", () => {
     try {
       await writer;
     } catch (error) {
-      if (busyFailure)
+      if (busyFailure) {
+        // Keep the assertion failure primary while retaining the writer failure.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([busyFailure.error, error], "Proposal overlap cleanup failed", {
           cause: busyFailure.error,
         });
+      }
       throw error;
     }
     if (busyFailure) throw busyFailure.error;
