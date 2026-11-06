@@ -34,3 +34,7 @@ Gh1620/1727 use docs/adr/2026-11-06-semp-message-order-and-session-freshness.md.
 ## Explicit startup and stop preconditions
 
 Gh1732 follows docs/adr/2026-11-06-agents-startup-requires-a-quiesced-predecessor.md. Single owning agents instance and externally quiesced predecessor are bounded operational preconditions, not a new proven fence. Repository TimeoutStopSec is120s, named margin30s and grace deadline90s from shutdown entry. No running service or host manager is changed by this permission.
+
+## Same-transaction title enqueue owner
+
+Gh1769 may export exactly enqueueSempThreadTitleIfFirst(client, threadId, messageId) from its existing data title owner through the data barrel and exact public-surface catalog. The actual turn handler calls it with the same managed client after a successful done transition. Its checked tenant/thread/message/first-assistant/title guard and queue insertion remain within that transaction; rollback leaves neither done nor its title job. Preserve the literal first-reply selection of Task3/5, unsafe_dedupe, maxAttempts1 and the guarded title job. No extra transaction, provider call, public queue framework or service SQL is authorized.
