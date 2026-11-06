@@ -493,8 +493,7 @@ describe("Semp thread live prompt", () => {
         expect(prompt).toContain("30 days");
         expect(prompt).toContain("semprec://items/<id>");
         expect(prompt).toContain("Data schema:");
-        expect(prompt).toContain(`"databaseId":"${fixture.inboxId}"`);
-        expect(prompt).toContain('"key":"inbox"');
+        expect(prompt).toContain(`"databaseId":"${fixture.inboxId}","key":"inbox","name":"Inbox"`);
         expect(prompt).toContain('"properties":');
         expect(prompt).toContain('"key":"text"');
       }
