@@ -277,6 +277,99 @@ describe("tenant-scoped reference blob expansion", () => {
     }
   });
 
+  it("waits for post-transfer cleanup before propagating a cancelled read", async () => {
+    const ref = await createFile(tenant, "Cancelled PDF", pdfFixture());
+    const controller = new AbortController();
+    const reason = new Error("synthetic cancellation during byte read");
+    let release: (() => void) | undefined;
+    let started!: () => void;
+    const readable = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const stream = new Readable({
+      read() {
+        this.push(Buffer.from("%PDF-"));
+        started();
+      },
+      destroy(_error, callback) {
+        release = () => callback(null);
+      },
+    });
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    const observer = vi.spyOn(files, "readStream").mockReturnValue(stream);
+    const outcome = runInTenant(tenant, () =>
+      expandSempRefs(runtime, [ref], { files, mailAttachments }, controller.signal),
+    ).then(
+      () => ({ kind: "success" as const }),
+      (error: unknown) => ({ kind: "failure" as const, error }),
+    );
+    let settled = false;
+    void outcome.then(() => {
+      settled = true;
+    });
+    try {
+      await readable;
+      controller.abort(reason);
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(settled).toBe(false);
+      expect(stream.closed).toBe(false);
+      if (!release) throw new Error("Missing controlled destroy callback");
+      release();
+      release = undefined;
+      expect(await outcome).toEqual({ kind: "failure", error: reason });
+      expect(stream.closed).toBe(true);
+    } finally {
+      controller.abort(reason);
+      if (!stream.destroyed) stream.destroy();
+      if (release) release();
+      await closed;
+      await outcome;
+      observer.mockRestore();
+    }
+  });
+
+  it("fails expansion at the cleanup deadline and observes eventual stream closure", async () => {
+    const first = await createFile(tenant, "Stalled PDF", pdfFixture());
+    const second = await createFile(tenant, "Unreached PDF", Buffer.concat([pdfFixture(), Buffer.from("last")]));
+    let release: (() => void) | undefined;
+    const stream = new Readable({
+      read() {
+        this.push(Buffer.from("%PDF-corrupt"));
+        this.push(null);
+      },
+      destroy(_error, callback) {
+        release = () => callback(null);
+      },
+    });
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    const realRead = files.readStream.bind(files);
+    let reads = 0;
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      reads += 1;
+      return reads === 1 ? stream : realRead(key, range);
+    });
+    try {
+      let caught: unknown;
+      try {
+        await runInTenant(tenant, () => expandSempRefs(runtime, [first, second], { files, mailAttachments }));
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(BlobReadCleanupError);
+      if (!(caught instanceof BlobReadCleanupError)) throw new Error("Missing cleanup deadline failure");
+      expect(caught.errors).toHaveLength(1);
+      expect(caught.errors[0]).toBeInstanceOf(Error);
+      expect(stream.closed).toBe(false);
+      expect(reads).toBe(1);
+    } finally {
+      if (!stream.destroyed) stream.destroy();
+      if (release) release();
+      await closed;
+      observer.mockRestore();
+    }
+    expect(stream.closed).toBe(true);
+  }, 15_000);
+
   it("expands real mail text bytes ephemerally and refuses foreign, random and invalid UTF-8 references", async () => {
     const createMail = (owner: string, attachments: Array<{ filename: string; bytes: Buffer }>) =>
       runInTenant(owner, () =>
