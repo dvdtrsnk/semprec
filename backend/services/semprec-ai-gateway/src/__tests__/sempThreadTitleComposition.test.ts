@@ -7,9 +7,12 @@ import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 import {
   claimSempMessage,
   createAgentRun,
+  createActionRegistry,
+  createApiCoreTaskList,
   createChokePoint,
   createHeartbeat,
   createUser,
+  enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
   getDatabaseByModuleId,
   handleSempThreadTitle,
@@ -27,6 +30,7 @@ import {
   setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 import {
@@ -44,6 +48,7 @@ const calls: StructuredCompletionRequest[] = [];
 let providerFailure = false;
 let providerGate: (() => Promise<void>) | undefined;
 let providerTitle = '  "Useful title"  ';
+const providerSecret = "title-provider-secret-sentinel";
 const token = "title-test-token";
 const provider: StructuredCompletionProvider = {
   id: "title-provider",
@@ -51,12 +56,16 @@ const provider: StructuredCompletionProvider = {
   async complete(request) {
     calls.push(request);
     await providerGate?.();
-    if (providerFailure) throw new ProviderCallError("provider unavailable");
+    if (providerFailure) throw new ProviderCallError(`token=${providerSecret}`);
     return { content: { title: providerTitle }, inputTokens: 31, outputTokens: 8 };
   },
 };
 
-async function completedChat(userText = "My first question", assistantText = "First answer"): Promise<string> {
+async function completedChat(
+  userText = "My first question",
+  assistantText = "First answer",
+  enqueueTitle = false,
+): Promise<string> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {
       const turn = await sendSempMessage(client, { text: userText, context: [], hasContext: false });
@@ -76,8 +85,45 @@ async function completedChat(userText = "My first question", assistantText = "Fi
           lastEventId: event.id,
         }),
       ).toBe(true);
+      if (enqueueTitle) await enqueueSempThreadTitleIfFirst(client, turn.threadId, turn.assistantMessageId);
       return turn.threadId;
     }),
+  );
+}
+
+function titleTaskList(): TaskList {
+  const gateway = createHttpAiGatewayClient({ port, token });
+  const registered = createApiCoreTaskList(
+    pool,
+    createActionRegistry(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    gateway,
+  );
+  const title = registered[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
+  if (!title) throw new Error("Missing registered title task");
+  return { [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: title };
+}
+
+function titleJob(threadId: string) {
+  return runInTenant(tenant, () =>
+    pool.query<{ key: string; task_identifier: string; max_attempts: number }>(
+      "SELECT key, task_identifier, max_attempts FROM graphile_worker.jobs WHERE key = $1",
+      [`sempThreadTitle:${threadId}`],
+    ),
+  );
+}
+
+function readTitle(threadId: string) {
+  return runInTenant(tenant, () =>
+    pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [threadId]),
   );
 }
 
@@ -242,6 +288,70 @@ describe("Semp title through the real gateway", () => {
         [failed, null],
       ]),
     );
+  });
+
+  it("settles an admitted title job on budget refusal without retrying", async () => {
+    const threadId = await completedChat("Budget question", "Budget answer", true);
+    const tasks = titleTaskList();
+    const before = calls.length;
+    expect((await titleJob(threadId)).rows).toEqual([
+      { key: `sempThreadTitle:${threadId}`, task_identifier: "sempThreadTitle", max_attempts: 1 },
+    ]);
+    await setTenantAiBudget(admin, tenant, { dailyCapUsd: 0 });
+    let failure: { error: unknown } | undefined;
+    try {
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect((await titleJob(threadId)).rows).toEqual([]);
+      expect((await readTitle(threadId)).rows).toEqual([{ title: null }]);
+      expect(calls).toHaveLength(before);
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect((await titleJob(threadId)).rows).toEqual([]);
+      expect(calls).toHaveLength(before);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await setTenantAiBudget(admin, tenant);
+    } catch (error) {
+      if (failure) {
+        // Preserve the assertion failure and retain the budget restoration failure.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure.error, error], "Title budget fixture cleanup failed", {
+          cause: failure.error,
+        });
+      }
+      throw error;
+    }
+    if (failure) throw failure.error;
+  });
+
+  it("settles an admitted title job on provider failure without retrying", async () => {
+    const threadId = await completedChat("title-user-text-sentinel", "title-assistant-text-sentinel", true);
+    const tasks = titleTaskList();
+    const before = calls.length;
+    expect((await titleJob(threadId)).rows).toEqual([
+      { key: `sempThreadTitle:${threadId}`, task_identifier: "sempThreadTitle", max_attempts: 1 },
+    ]);
+    process.stdout.write(`${JSON.stringify({ type: "titlePrivacyFixture", tenantId: tenant, threadId })}\n`);
+    providerFailure = true;
+    try {
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect((await titleJob(threadId)).rows).toEqual([]);
+      expect((await readTitle(threadId)).rows).toEqual([{ title: null }]);
+      expect(calls).toHaveLength(before + 1);
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect((await titleJob(threadId)).rows).toEqual([]);
+      expect((await readTitle(threadId)).rows).toEqual([{ title: null }]);
+      expect(calls).toHaveLength(before + 1);
+      const failed = await runInTenant(tenant, () =>
+        pool.query<{ status: string; project_item_id: string | null }>(
+          "SELECT status, project_item_id FROM ai_gateway_calls WHERE operation = 'semp_thread_title' ORDER BY at DESC LIMIT 1",
+        ),
+      );
+      expect(failed.rows).toEqual([{ status: "failed", project_item_id: null }]);
+    } finally {
+      providerFailure = false;
+    }
   });
 
   it("bounds the first exchange and discards an empty normalized title", async () => {
