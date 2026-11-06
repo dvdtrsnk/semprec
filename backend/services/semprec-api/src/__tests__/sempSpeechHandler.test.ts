@@ -409,6 +409,29 @@ describe("message speech HTTP", () => {
     );
   });
 
+  it("uniformly refuses an own message paired with the wrong thread without effects", async () => {
+    const first = await turn("First thread");
+    const second = await turn("Second thread");
+    const beforeCalls = await accounting();
+    const beforeProvider = providerCalls();
+    const before = await runInTenant(tenant, async () => ({
+      blobs: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs")).rows,
+      cache: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_message_speech")).rows,
+    }));
+    const wrong = await post(first.threadId, second.messageId);
+    const missing = await post(first.threadId, randomUUID());
+    expect(wrong.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await wrong.json()).toEqual(await missing.json());
+    expect(providerCalls()).toBe(beforeProvider);
+    expect((await accounting()).rows).toEqual(beforeCalls.rows);
+    const after = await runInTenant(tenant, async () => ({
+      blobs: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs")).rows,
+      cache: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_message_speech")).rows,
+    }));
+    expect(after).toEqual(before);
+  });
+
   it("does not mislabel a provider failure as budget exhaustion or cache success", async () => {
     const value = await turn("Provider failure");
     const before = await accounting();
