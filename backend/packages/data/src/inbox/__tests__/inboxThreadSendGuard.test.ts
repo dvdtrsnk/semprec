@@ -264,6 +264,77 @@ describe("Inbox thread association reservations", () => {
       ]),
     );
     expect(messages.rows).toEqual([{ count: 4 }]);
+
+    // Exercise the inverse order for each edge mutation with a real blocked backend.
+    for (const phase of ["insert-first", "send-first-delete"] as const) {
+      let releaseHolder!: () => void;
+      let holderReady!: () => void;
+      let reportPid!: (value: number) => void;
+      const hold = new Promise<void>((resolve) => {
+        releaseHolder = resolve;
+      });
+      const readyHolder = new Promise<void>((resolve) => {
+        holderReady = resolve;
+      });
+      const contenderPid = new Promise<number>((resolve) => {
+        reportPid = resolve;
+      });
+      const holder = runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          if (phase === "insert-first") await createRelationWithClient(client, edgeInput, owner);
+          else
+            await sendSempMessage(client, {
+              threadId: sentTurn.threadId,
+              text: "before delete",
+              context: [],
+              hasContext: false,
+            });
+          holderReady();
+          await hold;
+        }),
+      );
+      let contender: Promise<unknown> | undefined;
+      let primary: { error: unknown } | undefined;
+      try {
+        await Promise.race([
+          readyHolder,
+          holder.then(() => {
+            throw new Error("Holder ended early");
+          }),
+        ]);
+        contender = runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!identity.rows[0]) throw new Error("Missing contender backend identity");
+            reportPid(identity.rows[0].pid);
+            if (phase === "insert-first")
+              return sendSempMessage(client, {
+                threadId: sentTurn.threadId,
+                text: "after insert",
+                context: [],
+                hasContext: false,
+              });
+            return deleteRelationWithClient(client, edgeInput, owner);
+          }),
+        );
+        void contender.catch(() => {});
+        await waitForLock(await contenderPid);
+        expect(await edges()).toHaveLength(phase === "insert-first" ? 0 : 1);
+      } catch (error) {
+        primary = { error };
+      }
+      releaseHolder();
+      const outcomes = await Promise.allSettled([holder, ...(contender ? [contender] : [])]);
+      const extra = outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" && outcome.reason !== primary?.error ? [outcome.reason] : [],
+      );
+      if (extra.length)
+        throw new AggregateError(primary ? [primary.error, ...extra] : extra, "Inverse association work failed", {
+          cause: primary?.error,
+        });
+      if (primary) throw primary.error;
+      expect(await edges()).toHaveLength(phase === "insert-first" ? 1 : 0);
+    }
   }, 60_000);
 
   it("uses live associations rather than a stale decided thread hint", async () => {

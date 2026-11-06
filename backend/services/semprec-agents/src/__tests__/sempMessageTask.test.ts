@@ -1143,6 +1143,66 @@ describe("queued Semp messages", () => {
     await closeIdleThreadSessions(pool);
   });
 
+  it("wakes when the completed reply's stored content changes under the same id", async () => {
+    const other = await createTestTenant(admin);
+    const faux = fauxProvider();
+    faux.setResponses([fauxAssistantMessage("original"), fauxAssistantMessage("after change")]);
+    let calls = 0;
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => {
+        calls++;
+        return faux.provider.streamSimple(model, context, options);
+      },
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns());
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "first", context: [], hasContext: false })),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: first.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "fresh-first" } }),
+    );
+    // Synthetic stored-row change exercises the cache frontier; no production writer of a completed reply is implied.
+    const foreign = await runInTenant(other, () =>
+      pool.query("UPDATE semp_messages SET text = $1 WHERE id = $2", ["foreign", first.assistantMessageId]),
+    );
+    expect(foreign.rowCount).toBe(0);
+    const changed = await runInTenant(tenant, () =>
+      pool.query("UPDATE semp_messages SET text = $1 WHERE id = $2", ["changed fixture", first.assistantMessageId]),
+    );
+    expect(changed.rowCount).toBe(1);
+    const second = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: first.threadId, text: "second", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(other, () =>
+      task({ threadId: second.threadId, assistantMessageId: second.assistantMessageId }, { job: { id: "foreign" } }),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: second.threadId, assistantMessageId: randomUUID() }, { job: { id: "missing" } }),
+    );
+    expect(calls).toBe(1);
+    await runInTenant(tenant, () =>
+      task(
+        { threadId: second.threadId, assistantMessageId: second.assistantMessageId },
+        { job: { id: "fresh-second" } },
+      ),
+    );
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; agent_run_id: string; status: string }>(
+        "SELECT id, agent_run_id, status FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
+        [[first.assistantMessageId, second.assistantMessageId]],
+      ),
+    );
+    expect(rows.rows.map((row) => row.id)).toEqual([first.assistantMessageId, second.assistantMessageId]);
+    expect(rows.rows.map((row) => row.status)).toEqual(["done", "done"]);
+    expect(rows.rows[0]?.agent_run_id).not.toBe(rows.rows[1]?.agent_run_id);
+    expect(calls).toBe(2);
+    await closeIdleThreadSessions(pool);
+  });
+
   it("publishes the committed turn invalidation for the owning tenant", async () => {
     await runtime?.stop();
     runtime = undefined;
