@@ -8,6 +8,7 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
   createAgentRun,
+  createItemWithClient,
   createPendingApprovalRequest,
   createUser,
   decideAndEnqueueApprovalRequest,
@@ -168,8 +169,19 @@ describe("queued Semp messages", () => {
     runtime = await createAgentsQueueRuntime(pool, registry, {
       sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
     });
+    const ref = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox) throw new Error("Missing Inbox database");
+        const item = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-01-01", time: "12:00", text: "Referenced item" },
+        });
+        return { kind: "item" as const, itemId: item.id, databaseId: inbox.id, label: "Referenced item" };
+      }),
+    );
     const first = await runInTenant(tenant, () =>
-      withTransaction(pool, (client) => sendSempMessage(client, { text: "first", context: [], hasContext: false })),
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "first", context: [ref], hasContext: true })),
     );
     const second = await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
@@ -208,6 +220,16 @@ describe("queued Semp messages", () => {
     }
     expect(rows[0]?.agent_run_id).toBe(rows[1]?.agent_run_id);
     expect(messageHeaders).toEqual([first.assistantMessageId, second.assistantMessageId]);
+    const userEvents = await runInTenant(tenant, () =>
+      pool.query<{ payload: unknown }>(
+        "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'user_message' ORDER BY id",
+        [rows[0]?.agent_run_id],
+      ),
+    );
+    expect(userEvents.rows).toEqual([
+      { payload: expect.objectContaining({ kind: "user_message", text: "first", context: [ref] }) },
+      { payload: expect.objectContaining({ kind: "user_message", text: "second", context: [] }) },
+    ]);
     const titles = await admin.query<{ key: string; max_attempts: number; task_identifier: string }>(
       "SELECT key, max_attempts, task_identifier FROM graphile_worker.jobs WHERE key = $1",
       [`sempThreadTitle:${first.threadId}`],
