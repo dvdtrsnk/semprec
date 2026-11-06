@@ -3001,8 +3001,8 @@
       "sequence": 31,
       "status": "proposed",
       "title": "[backend-delivery 31/74] Implement semprec-agents, data/semp, queue changes",
-      "bodyCharacters": 59959,
-      "specSha256": "5c407ad956b2e7fa5dc021bd465d1efcb5833c8933327db08afe89073380c838",
+      "bodyCharacters": 59804,
+      "specSha256": "a039dd504926cf73b0bb4d3075744eb3ba526950997ae732af3a9149d4479ddd",
       "members": [
         {
           "id": "gh-1620",
@@ -3031,7 +3031,7 @@
         },
         {
           "id": "gh-1769",
-          "specSha256": "d972df379514206d026436cbd4a3119c1c0fafc425f2d41d5b488be578f7f484",
+          "specSha256": "412129e7b70fef3581eea35e5104a0f27d5a500ab40914a5ea1f3beed1f41672",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1727"
