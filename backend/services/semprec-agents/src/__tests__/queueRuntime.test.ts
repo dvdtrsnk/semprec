@@ -188,6 +188,15 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
       await stop;
       runtime = undefined;
       expect(stopped).toBe(true);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            rolePool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+              chat.assistantMessageId,
+            ]),
+          )
+        ).rows,
+      ).toEqual([{ status: "done" }]);
     } catch (error) {
       failure = { error };
     }
