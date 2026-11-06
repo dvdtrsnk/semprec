@@ -253,9 +253,11 @@ describe("voice session through the real gateway and registered worker", () => {
     await once(socket, "open");
     socket.send(JSON.stringify({ type: "start", language: "en" }));
     await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }), { timeout: 10_000 });
+    socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
     await vi.waitFor(() => expect(gateway?.messages.some((entry) => entry.type === "sttReady")).toBe(true), {
       timeout: 10_000,
     });
+    await vi.waitFor(() => expect(gateway?.messages.some((entry) => entry.type === "audioAccepted")).toBe(true));
     send(gateway, "holdModel");
     send(gateway, "partial");
     await vi.waitFor(() =>
