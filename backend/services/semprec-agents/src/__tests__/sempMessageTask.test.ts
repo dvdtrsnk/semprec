@@ -18,7 +18,9 @@ import {
   loadFullModuleRegistry,
   seedSystem,
   sendSempMessage,
+  startTenantDeactivationListener,
   startSempMessageTurn,
+  suspendAccount,
   withTransaction,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -349,6 +351,114 @@ describe("queued Semp messages", () => {
       await runtime.stop();
       runtime = undefined;
     }
+  });
+
+  it("aborts a deactivated tenant's real Semp turn while another tenant completes", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const target = await createTestTenant(admin);
+    const actorTenant = await createTestTenant(admin);
+    const targetUser = await createUser(admin, {
+      tenantId: target,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+    });
+    const actor = await createUser(admin, {
+      tenantId: actorTenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      role: "admin",
+    });
+    await runInTenant(target, () => seedSystem(pool));
+    const inFlight = createInFlightAgentRuns();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const faux = fauxProvider();
+    faux.setResponses([
+      async (_context, options) => {
+        if (!options?.signal) throw new Error("Missing provider abort signal");
+        const signal = options.signal;
+        entered();
+        return new Promise((_, reject) => {
+          if (signal.aborted) reject(new Error("provider aborted"));
+          else signal.addEventListener("abort", () => reject(new Error("provider aborted")), { once: true });
+        });
+      },
+      fauxAssistantMessage("other tenant completed"),
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const listener = await startTenantDeactivationListener(pool, async (id) => {
+      inFlight.abortTenant(id);
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      runtime = await createAgentsQueueRuntime(pool, registry, {
+        sempMessageTask: createSempMessageTask(pool, registry, gateway, inFlight),
+      });
+      const stopped = await runInTenant(target, () =>
+        withTransaction(pool, (client) => sendSempMessage(client, { text: "target", context: [], hasContext: false })),
+      );
+      await Promise.race([
+        started,
+        sleep(10_000).then(() => {
+          throw new Error("Semp turn did not start");
+        }),
+      ]);
+      const allowed = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => sendSempMessage(client, { text: "other", context: [], hasContext: false })),
+      );
+      await runAsSystem("sempCancellationTest", () =>
+        withTransaction(pool, (client) =>
+          suspendAccount(client, { actorUserId: actor.id, targetUserId: targetUser.id }),
+        ),
+      );
+      const read = (tenantId: string, id: string) =>
+        runInTenant(tenantId, () =>
+          pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [id]),
+        );
+      const deadline = Date.now() + 15_000;
+      let targetRows = (await read(target, stopped.assistantMessageId)).rows;
+      let otherRows = (await read(tenant, allowed.assistantMessageId)).rows;
+      while ((targetRows[0]?.status !== "error" || otherRows[0]?.status !== "done") && Date.now() < deadline) {
+        await sleep(50);
+        targetRows = (await read(target, stopped.assistantMessageId)).rows;
+        otherRows = (await read(tenant, allowed.assistantMessageId)).rows;
+      }
+      expect(targetRows).toEqual([{ status: "error" }]);
+      expect(otherRows).toEqual([{ status: "done" }]);
+      expect((await read(tenant, stopped.assistantMessageId)).rows).toEqual([]);
+      expect((await read(tenant, randomUUID())).rows).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanup: unknown[] = [];
+    try {
+      inFlight.abortTenant(target);
+      await runtime?.stop();
+      runtime = undefined;
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      await listener.close();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (cleanup.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanup] : cleanup,
+        "Semp deactivation test cleanup failed",
+        {
+          cause: failure?.error,
+        },
+      );
+    if (failure) throw failure.error;
   });
 
   it("refuses oversized stored history before a model call without writing a checkpoint", async () => {
