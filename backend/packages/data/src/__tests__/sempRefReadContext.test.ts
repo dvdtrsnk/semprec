@@ -372,7 +372,7 @@ describe("Semp reference turn reads", () => {
     let failure: unknown;
     let failed = false;
     try {
-      const attachmentId = await runInTenant(tenant, () =>
+      const fixture = await runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
           const ids = await resolveMailModuleIds(client);
           const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
@@ -394,6 +394,7 @@ describe("Semp reference turn reads", () => {
             behavior: "folder",
             specialPurpose: "inbox",
           });
+          const firstMessageId = `<${randomUUID()}@example.test>`;
           const email = await ingestEmailMessage(client, {
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
@@ -401,7 +402,8 @@ describe("Semp reference turn reads", () => {
             attachmentsRelationPropertyId: attachment.id,
             folderItemId: folderId,
             mailboxItemId: mailboxItem.id,
-            messageId: `<${randomUUID()}@example.test>`,
+            messageId: firstMessageId,
+            date: new Date("2026-11-01T10:00:00Z"),
             subject: "Mail",
             envelope: {},
             attachments: [
@@ -416,15 +418,37 @@ describe("Semp reference turn reads", () => {
             storage: new LocalFsBlobStorageWriter(directory),
             storageKeyPrefix: "ref-reader-test",
           });
+          const newer = await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: folder.id,
+            attachmentsRelationPropertyId: attachment.id,
+            folderItemId: folderId,
+            mailboxItemId: mailboxItem.id,
+            messageId: `<${randomUUID()}@example.test>`,
+            references: [firstMessageId],
+            date: new Date("2026-11-02T10:00:00Z"),
+            subject: "Reply",
+            envelope: {},
+            attachments: [],
+            storage: new LocalFsBlobStorageWriter(directory),
+            storageKeyPrefix: "ref-reader-test",
+          });
           const rows = await client.query<{ id: string }>(
             "SELECT id FROM mail_attachments WHERE message_item_id = $1",
             [email.itemId],
           );
           if (!rows.rows[0]) throw new Error("Missing mail attachment");
-          return rows.rows[0].id;
+          return {
+            attachmentId: rows.rows[0].id,
+            older: email.itemId,
+            newer: newer.itemId,
+            databaseId: ids.emailsDatabaseId,
+          };
         }),
       );
-      const ref = { kind: "mailAttachment" as const, attachmentId };
+      const ref = { kind: "mailAttachment" as const, attachmentId: fixture.attachmentId };
+      const emailRef = { kind: "item" as const, itemId: fixture.older, databaseId: fixture.databaseId };
       await runInTenant(tenant, async () => {
         const before = await runtime.query(
           "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs",
@@ -435,6 +459,10 @@ describe("Semp reference turn reads", () => {
           state: "active",
           details: { filename: "note.txt", contentType: "text/plain", byteSize: "4" },
           blob: { byteSize: "4", mimeType: "text/plain" },
+        });
+        const email = await withTransaction(runtime, (client) => readSempRefContext(client, emailRef));
+        expect(email).toMatchObject({
+          details: { thread: { messages: [{ id: fixture.newer }, { id: fixture.older }], truncated: false } },
         });
         await expect(
           withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, attachmentId: randomUUID() })),
@@ -449,6 +477,9 @@ describe("Semp reference turn reads", () => {
       });
       await expect(
         runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+      ).resolves.toBeNull();
+      await expect(
+        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, emailRef))),
       ).resolves.toBeNull();
     } catch (error) {
       failed = true;
