@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import {
@@ -7,9 +8,23 @@ import {
   repairInterruptedRuns,
 } from "@semprec/agent-runtime";
 import { fauxProvider } from "@earendil-works/pi-ai";
-import { createAgentRun, createUser, hashPassword, insertAgentRunEvent, withTransaction } from "@semprec/data";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { runInTenant, type Logger } from "@semprec/shared";
+import {
+  claimSempMessage,
+  createAgentRun,
+  createUser,
+  hashPassword,
+  insertAgentRunEvent,
+  sendSempMessage,
+  withTransaction,
+} from "@semprec/data";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { runAsSystem, runInTenant, type Logger } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { toPiMessages } from "../piConversationHistory.js";
@@ -150,6 +165,87 @@ describe("semprec-agents startup repair (issue #642)", () => {
       [mcpRun.id],
     );
     expect(mcpEvents.map((r) => r.kind)).toEqual(["turn_start"]);
+  });
+
+  it("repairs running Semp rows idempotently without modifying existing job or queue lock markers", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:repair-role", () =>
+        runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const other = await createTestTenant(pool);
+      await createUser(pool, { email: "other@example.test", passwordHash: "unused", tenantId: other });
+      const createTurn = (tenant: string) =>
+        runInTenant(tenant, () =>
+          withTransaction(runtimePool, async (client) => {
+            const turn = await sendSempMessage(client, { text: "repair", context: [], hasContext: false });
+            expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+            return turn;
+          }),
+        );
+      const first = await createTurn(getTenantZeroId());
+      const second = await createTurn(other);
+      const queued = await runInTenant(other, () =>
+        withTransaction(runtimePool, (client) =>
+          sendSempMessage(client, { text: "queued", context: [], hasContext: false }),
+        ),
+      );
+      const key = `sempMessage:${second.assistantMessageId}`;
+      // A stored lock marker is a fixture for preservation only; it makes no claim about worker liveness.
+      const job = await pool.query<{ job_queue_id: string }>(
+        "UPDATE graphile_worker._private_jobs SET locked_at = now(), locked_by = 'pool-fixture' WHERE key = $1 RETURNING job_queue_id::text",
+        [key],
+      );
+      expect(job.rowCount).toBe(1);
+      const queue = await pool.query(
+        "UPDATE graphile_worker._private_job_queues SET locked_at = now(), locked_by = 'pool-fixture' WHERE id = $1::int",
+        [job.rows[0]?.job_queue_id],
+      );
+      expect(queue.rowCount).toBe(1);
+      const locks = () =>
+        pool.query<{
+          job_owner: string | null;
+          queue_owner: string | null;
+          job_time: Date | null;
+          queue_time: Date | null;
+        }>(
+          `SELECT j.locked_by AS job_owner, q.locked_by AS queue_owner, j.locked_at AS job_time, q.locked_at AS queue_time
+           FROM graphile_worker._private_jobs j JOIN graphile_worker._private_job_queues q ON q.id = j.job_queue_id WHERE j.key = $1`,
+          [key],
+        );
+      const before = (await locks()).rows;
+      expect(before).toHaveLength(1);
+      expect(before[0]).toMatchObject({ job_owner: "pool-fixture", queue_owner: "pool-fixture" });
+      await repairInterruptedRuns(runtimePool);
+      const read = (tenant: string, id: string) =>
+        runInTenant(tenant, () =>
+          runtimePool.query<{ status: string; error_code: string | null }>(
+            "SELECT status, error_code FROM semp_messages WHERE id = $1",
+            [id],
+          ),
+        );
+      expect((await read(getTenantZeroId(), first.assistantMessageId)).rows).toEqual([
+        { status: "error", error_code: "interrupted" },
+      ]);
+      expect((await read(other, second.assistantMessageId)).rows).toEqual([
+        { status: "error", error_code: "interrupted" },
+      ]);
+      expect((await read(other, first.assistantMessageId)).rows).toEqual([]);
+      expect((await read(other, randomUUID())).rows).toEqual([]);
+      expect((await read(other, queued.assistantMessageId)).rows).toEqual([{ status: "queued", error_code: null }]);
+      expect((await locks()).rows).toEqual(before);
+      const again = await repairInterruptedRuns(runtimePool);
+      expect(again.repairedRunIds).toEqual([]);
+      expect((await read(getTenantZeroId(), first.assistantMessageId)).rows).toEqual([
+        { status: "error", error_code: "interrupted" },
+      ]);
+      expect((await locks()).rows).toEqual(before);
+    } finally {
+      await runtimePool.end();
+    }
   });
 
   it("converts the actually repaired stored history into pi messages", async () => {
