@@ -8,6 +8,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
+import { ensureUnplannedArea } from "../seed/seedUnplannedArea.js";
 
 let admin: Pool;
 let data: Pool;
@@ -52,6 +53,23 @@ describe("unplanned system area", () => {
       expect(list.items).toHaveLength(1);
       expect(list.items[0]?.properties).toMatchObject({ name: "Renamed", systemActive: true });
     });
+  });
+
+  it("creates one area when two direct owner calls run concurrently", async () => {
+    const before = await runInTenant(tenant, () => cp.listItems(areasId));
+    const area = before.items[0];
+    if (!area) throw new Error("Area missing");
+    const deleted = await admin.query("DELETE FROM items WHERE tenant_id = $1 AND id = $2", [tenant, area.id]);
+    expect(deleted.rowCount).toBe(1);
+    await runInTenant(tenant, () =>
+      Promise.all([
+        withTransaction(data, (client) => ensureUnplannedArea(client, areasId)),
+        withTransaction(data, (client) => ensureUnplannedArea(client, areasId)),
+      ]),
+    );
+    const after = await runInTenant(tenant, () => cp.listItems(areasId));
+    expect(after.items).toHaveLength(1);
+    expect(after.items[0]?.properties).toMatchObject({ name: "(neplánováno)", active: true, systemActive: true });
   });
 
   it("keeps other tenants' system areas invisible and unchanged", async () => {
