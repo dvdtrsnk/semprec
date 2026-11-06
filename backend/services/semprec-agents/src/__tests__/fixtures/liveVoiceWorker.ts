@@ -1,5 +1,4 @@
 import { register } from "node:module";
-import { z } from "zod";
 
 register(new URL("../../../src/__tests__/fixtures/liveVoiceWorkerResolver.mjs", import.meta.url), import.meta.url);
 const { createPool, loadFullModuleRegistry, LocalFsBlobStorageWriter } = await import("@semprec/data");
@@ -84,9 +83,16 @@ function shutdown(): void {
     process.disconnect?.();
   })();
 }
-const control = z.strictObject({ type: z.literal("stop") });
 process.on("message", (message: unknown) => {
-  if (!control.safeParse(message).success || JSON.stringify(message).length > 128) process.exitCode = 1;
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    Array.isArray(message) ||
+    !("type" in message) ||
+    message.type !== "stop" ||
+    Object.keys(message).length !== 1
+  )
+    process.exitCode = 1;
   shutdown();
 });
 process.on("disconnect", shutdown);
