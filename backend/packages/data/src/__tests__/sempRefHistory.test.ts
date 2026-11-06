@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant, type SempMessageRef } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
@@ -13,6 +13,7 @@ import {
   createChokePoint,
   createItemWithClient,
   createPendingApprovalRequest,
+  createDocStore,
   createUser,
   getDatabaseByModuleId,
   listSempThreadMessages,
@@ -22,6 +23,7 @@ import {
   seedSystem,
   sendSempMessage,
   withTransaction,
+  writeComputed,
 } from "../index.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
@@ -335,6 +337,239 @@ describe("Semp history reference resolution", () => {
     expect(page.rows).toHaveLength(50);
     expect(page.rows.filter((row) => row.role === "user")).toHaveLength(25);
     expect(resolverQueries).toBe(1);
+  });
+
+  it("batches two distinct live references of each kind across repeated messages", async () => {
+    const tenant = await createTestTenant(admin);
+    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const db = (moduleId: string) =>
+      runInTenant(tenant, () => withTransaction(runtime, (client) => getDatabaseByModuleId(client, moduleId)));
+    const tasks = await db("tasks");
+    const transcripts = await db("transcripts");
+    if (!tasks || !transcripts) throw new Error("Missing fixture databases");
+    const cp = createChokePoint(runtime);
+    const firstItem = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "First item" } }),
+    );
+    const secondItem = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Second item" } }),
+    );
+    const firstBlock = randomUUID();
+    const secondBlock = randomUUID();
+    await runInTenant(tenant, async () => {
+      const docs = createDocStore(runtime);
+      await docs.putBlock(firstItem.id, { id: firstBlock, flavour: "paragraph", fields: { text: "First" } }, "user");
+      await docs.putBlock(secondItem.id, { id: secondBlock, flavour: "paragraph", fields: { text: "Second" } }, "user");
+    });
+    const firstTranscript = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: transcripts.id, properties: { name: "First recording" } }),
+    );
+    const secondTranscript = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: transcripts.id, properties: { name: "Second recording" } }),
+    );
+    await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const segments = [{ speaker: "SPEAKER_00", text: "Fixture", startsAt: 0, endsAt: 1 }];
+        await writeComputed(client, transcripts.id, firstTranscript.id, "segments", segments);
+        await writeComputed(client, transcripts.id, secondTranscript.id, "segments", segments);
+      }),
+    );
+    const firstRun = await runInTenant(tenant, () =>
+      createAgentRun(runtime, { triggeredBy: "user", task: "First run" }),
+    );
+    const secondRun = await runInTenant(tenant, () =>
+      createAgentRun(runtime, { triggeredBy: "user", task: "Second run" }),
+    );
+    const firstDescription = { key: "approval.itemDelete", params: { itemName: "First" } };
+    const secondDescription = { key: "approval.itemDelete", params: { itemName: "Second" } };
+    const approval = (agentRunId: string, description: typeof firstDescription) =>
+      runInTenant(tenant, () =>
+        createPendingApprovalRequest(runtime, {
+          agentRunId,
+          toolName: "test",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+          description,
+        }),
+      );
+    const firstApproval = await approval(firstRun.id, firstDescription);
+    const secondApproval = await approval(secondRun.id, secondDescription);
+    const directory = await mkdtemp(join(tmpdir(), "semp-history-batch-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const attachments = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const folderProperties = await listPropertiesByDatabase(client, ids.foldersDatabaseId);
+          const attachment = properties.find((property) => property.key === "attachments");
+          const folder = properties.find((property) => property.key === "folder");
+          const mailboxProperty = folderProperties.find((property) => property.key === "mailbox");
+          if (!attachment || !folder || !mailboxProperty) throw new Error("Missing mail relations");
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mail" },
+          });
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId: mailbox.id,
+            mailboxRelationPropertyId: mailboxProperty.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const email = await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: folder.id,
+            attachmentsRelationPropertyId: attachment.id,
+            folderItemId: folderId,
+            mailboxItemId: mailbox.id,
+            messageId: `<${randomUUID()}@example.test>`,
+            subject: "Mail",
+            envelope: {},
+            attachments: ["first.txt", "second.txt"].map((filename) => ({
+              filename,
+              contentType: "text/plain",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from([filename]),
+            })),
+            storage: new LocalFsBlobStorageWriter(directory),
+            storageKeyPrefix: "history-batch",
+          });
+          return (
+            await client.query<{ id: string; filename: string }>(
+              "SELECT id, filename FROM mail_attachments WHERE message_item_id = $1 ORDER BY filename",
+              [email.itemId],
+            )
+          ).rows;
+        }),
+      );
+      if (attachments.length !== 2 || !attachments[0] || !attachments[1]) throw new Error("Missing mail attachments");
+      const cases: Array<{
+        refs: [SempMessageRef, SempMessageRef];
+        labels: [unknown, unknown];
+        keys: [string | null, string | null];
+        query: string;
+      }> = [
+        {
+          refs: [
+            { kind: "item", itemId: firstItem.id, databaseId: tasks.id },
+            { kind: "item", itemId: secondItem.id, databaseId: tasks.id },
+          ],
+          labels: ["First item", "Second item"],
+          keys: ["tasks", "tasks"],
+          query: "AS r(item_id, database_id, ordinal)",
+        },
+        {
+          refs: [
+            { kind: "block", itemId: firstItem.id, blockId: firstBlock },
+            { kind: "block", itemId: secondItem.id, blockId: secondBlock },
+          ],
+          labels: ["First item", "Second item"],
+          keys: ["tasks", "tasks"],
+          query: "AS r(item_id, database_id, ordinal)",
+        },
+        {
+          refs: [
+            { kind: "transcriptSegment", itemId: firstTranscript.id, startsAt: 0, endsAt: 1 },
+            { kind: "transcriptSegment", itemId: secondTranscript.id, startsAt: 0, endsAt: 1 },
+          ],
+          labels: ["First recording", "Second recording"],
+          keys: ["transcripts", "transcripts"],
+          query: "AS r(item_id, database_id, ordinal)",
+        },
+        {
+          refs: [
+            { kind: "mailAttachment", attachmentId: attachments[0].id },
+            { kind: "mailAttachment", attachmentId: attachments[1].id },
+          ],
+          labels: ["first.txt", "second.txt"],
+          keys: ["emails", "emails"],
+          query: "LEFT JOIN mail_attachments a ON a.id = r.id",
+        },
+        {
+          refs: [
+            { kind: "agentRun", agentRunId: firstRun.id },
+            { kind: "agentRun", agentRunId: secondRun.id },
+          ],
+          labels: ["First run", "Second run"],
+          keys: [null, null],
+          query: "LEFT JOIN agent_runs a ON a.id = r.id",
+        },
+        {
+          refs: [
+            { kind: "approvalRequest", approvalRequestId: firstApproval.id },
+            { kind: "approvalRequest", approvalRequestId: secondApproval.id },
+          ],
+          labels: [firstDescription, secondDescription],
+          keys: [null, null],
+          query: "LEFT JOIN approval_requests a ON a.id = r.id",
+        },
+      ];
+      for (const fixture of cases) {
+        const context = [{ ...fixture.refs[0], label: "Preserved label" }, fixture.refs[1]];
+        const first = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => sendSempMessage(client, { text: "First", context, hasContext: true })),
+        );
+        const second = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            sendSempMessage(client, { threadId: first.threadId, text: "Second", context, hasContext: true }),
+          ),
+        );
+        let resolverQueries = 0;
+        const observed = await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            /* eslint-disable @typescript-eslint/unbound-method */
+            const query = client.query;
+            client.query = new Proxy(query, {
+              apply(target, receiver, args: unknown[]) {
+                if (typeof args[0] === "string" && args[0].includes(fixture.query)) resolverQueries += 1;
+                return Reflect.apply(target, receiver, args);
+              },
+            });
+            /* eslint-enable @typescript-eslint/unbound-method */
+            try {
+              const page = await listSempThreadMessages(client, first.threadId, 50, null);
+              const stored = await client.query<{ id: string; context: unknown }>(
+                "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
+                [[first.messageId, second.messageId]],
+              );
+              return { page, stored };
+            } finally {
+              client.query = query;
+            }
+          }),
+        );
+        expect(resolverQueries).toBe(1);
+        expect(observed.page.rows).toHaveLength(4);
+        const expected = context.map((entry, index) => ({
+          ...entry,
+          resolved: { label: fixture.labels[index], databaseKey: fixture.keys[index], state: "active" },
+        }));
+        const users = observed.page.rows.filter((row) => row.role === "user");
+        expect(users).toHaveLength(2);
+        expect(users.map((row) => row.context)).toEqual([expected, expected]);
+        expect(observed.stored.rows).toHaveLength(2);
+        expect(observed.stored.rows.map((row) => row.context)).toEqual([context, context]);
+      }
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true });
+    } catch (cleanupError) {
+      if (failed)
+        throw new AggregateError([failure, cleanupError], "History batch test and cleanup failed", { cause: failure });
+      throw cleanupError;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("History batch test failed", { cause: failure });
   });
 
   it("keeps empty and absent title values and a nullable user database key distinct", async () => {
