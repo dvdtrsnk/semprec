@@ -2510,7 +2510,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
           publishAgentRunDelta(
             runtimePool,
             run.id,
-            { text: `delta-${sequence}` },
+            { kind: "message_update", type: "text_delta", delta: sequence === 1 ? "Hello. " : "untrusted later text" },
             target.sempMessageId,
             first.id,
             sequence,
@@ -2518,14 +2518,29 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         );
       await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta")).toHaveLength(3));
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1));
-      const event = await announcedEventIn(tenantA, run.id);
+      // Synthetic state-only lifecycle event: it does not claim that a model generated this message.
+      const event = await runInTenant(tenantA, async () => {
+        const value = await insertAgentRunEvent(runtimePool, run.id, "message", {
+          kind: "message",
+          text: "Hello. world.",
+        });
+        await publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: value.id });
+        return value;
+      });
       await vi.waitFor(() =>
         expect(frames).toContainEqual(
           expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
         ),
       );
       expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1);
-      expect(frames[0]).toMatchObject({ type: "delta", message: { delta: { text: "delta-1" } } });
+      expect(frames[0]).toMatchObject({
+        type: "delta",
+        message: { delta: { kind: "message_update", type: "text_delta", delta: "Hello. " } },
+      });
+      expect(frames.at(-1)).toMatchObject({
+        type: "event",
+        event: { payload: { kind: "message", text: "Hello. world." } },
+      });
     } catch (error) {
       failed = true;
       failure = error;
