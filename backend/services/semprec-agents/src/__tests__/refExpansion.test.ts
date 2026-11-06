@@ -124,7 +124,21 @@ describe("tenant-scoped reference blob expansion", () => {
       await createFile(tenant, "DOCX", docx),
       await createFile(tenant, "Image", image),
     ];
-    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+    const opened: Readable[] = [];
+    const realRead = files.readStream.bind(files);
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      const stream = realRead(key, range);
+      opened.push(stream);
+      return stream;
+    });
+    let result: Awaited<ReturnType<typeof expandSempRefs>>;
+    try {
+      result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+      expect(opened).toHaveLength(3);
+      expect(opened.every((stream) => stream.closed)).toBe(true);
+    } finally {
+      observer.mockRestore();
+    }
     expect(result.text).toContain("PDF reference sentinel");
     expect(result.text).toContain("DOCX reference sentinel");
     expect(result.images).toHaveLength(1);
@@ -254,6 +268,20 @@ describe("tenant-scoped reference blob expansion", () => {
   it.each([
     ["over-cap bytes", () => Readable.from([Buffer.alloc(10 * 1024 * 1024 + 1)])],
     ["invalid chunk", () => Readable.from([{ invalid: true }])],
+    [
+      "read error",
+      () => {
+        let started = false;
+        return new Readable({
+          read() {
+            if (started) return;
+            started = true;
+            this.push(Buffer.from("%PDF-"));
+            setImmediate(() => this.destroy(new Error("synthetic transport read failure")));
+          },
+        });
+      },
+    ],
   ])("closes a controlled %s stream before an unavailable note and next real ref", async (_case, createStream) => {
     const first = await createFile(tenant, "Fault PDF", pdfFixture());
     const second = await createFile(tenant, "Next PDF", Buffer.concat([pdfFixture(), Buffer.from("next")]));
