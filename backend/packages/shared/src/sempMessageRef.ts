@@ -81,9 +81,14 @@ export type SempRefResolution = {
   state: "active" | "trashed" | "purged";
 };
 
-export type ResolvedSempMessageRef = (SempMessageRef | LabeledSempMessageRef) & {
-  resolved: SempRefResolution;
-};
+type StoredSempMessageRef = SempMessageRef | LabeledSempMessageRef;
+export type ResolvedSempMessageRef =
+  | (Exclude<StoredSempMessageRef, { kind: "approvalRequest" }> & {
+      resolved: SempRefResolution & { label: string | null };
+    })
+  | (Extract<StoredSempMessageRef, { kind: "approvalRequest" }> & {
+      resolved: SempRefResolution & { label: SempApprovalDescription | null };
+    });
 
 export const SEMP_MESSAGE_REF_KINDS = [
   "item",

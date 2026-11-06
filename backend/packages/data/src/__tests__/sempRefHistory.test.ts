@@ -167,12 +167,38 @@ describe("Semp history reference resolution", () => {
     expect(page.rows.filter((row) => row.role === "user")).toHaveLength(25);
     expect(resolverQueries).toBe(1);
   });
+
+  it("keeps empty and absent title values and a nullable user database key distinct", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const cp = createChokePoint(runtime);
+    const database = await runInTenant(tenant, () => cp.createDatabaseWithProperties({ name: "Personal" }, "Name", []));
+    const empty = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: { name: "" } }));
+    const absent = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: {} }));
+    const context = [empty, absent].map((item) => ({ kind: "item", itemId: item.id, databaseId: database.id }));
+    const sent = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => sendSempMessage(client, { text: "Question", context, hasContext: true })),
+    );
+    const page = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+    );
+    expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
+      { ...context[0], resolved: { label: "", databaseKey: null, state: "active" } },
+      { ...context[1], resolved: { label: null, databaseKey: null, state: "active" } },
+    ]);
+  });
   it("returns code-point-bounded run labels and structured or null approval labels", async () => {
     const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
     await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await createUser(admin, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
     const run = await runInTenant(tenant, () =>
       createAgentRun(runtime, { triggeredBy: "user", task: "😀".repeat(121) }),
+    );
+    const foreignRun = await runInTenant(foreign, () =>
+      createAgentRun(runtime, { triggeredBy: "user", task: "Private" }),
     );
     const description = { key: "approval.itemDelete", params: { itemName: "Example" } };
     const createApproval = (withDescription: boolean) =>
@@ -193,6 +219,8 @@ describe("Semp history reference resolution", () => {
       { kind: "approvalRequest", approvalRequestId: described.id },
       { kind: "approvalRequest", approvalRequestId: legacy.id },
       { kind: "approvalRequest", approvalRequestId: randomUUID() },
+      { kind: "agentRun", agentRunId: randomUUID() },
+      { kind: "agentRun", agentRunId: foreignRun.id },
     ];
     const sent = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) => sendSempMessage(client, { text: "Question", context, hasContext: true })),
@@ -205,7 +233,21 @@ describe("Semp history reference resolution", () => {
       { ...context[1], resolved: { label: description, databaseKey: null, state: "active" } },
       { ...context[2], resolved: { label: null, databaseKey: null, state: "active" } },
       { ...context[3], resolved: { label: null, databaseKey: null, state: "purged" } },
+      { ...context[4], resolved: { label: null, databaseKey: null, state: "purged" } },
+      { ...context[5], resolved: { label: null, databaseKey: null, state: "purged" } },
     ]);
+    // Synthetic corrupt stored JSON exercises the existing approval-owner validator.
+    await runInTenant(tenant, () =>
+      runtime.query("UPDATE approval_requests SET description = $1::jsonb WHERE id = $2", [
+        JSON.stringify({ key: 5 }),
+        described.id,
+      ]),
+    );
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+      ),
+    ).rejects.toThrow("description");
   });
 
   it("shows the filename of a real ingested mail attachment", async () => {
@@ -298,6 +340,8 @@ describe("Semp history reference resolution", () => {
     } catch (cleanupError) {
       if (failed)
         throw new AggregateError([failure, cleanupError], "Attachment history test and cleanup failed", {
+          // Keep the original test failure primary and retain cleanup failure in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
           cause: failure,
         });
       throw cleanupError;
