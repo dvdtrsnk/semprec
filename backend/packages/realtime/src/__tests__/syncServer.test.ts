@@ -2006,6 +2006,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       await runInTenant(tenantA, () =>
         publishAgentRunDelta(runtimePool, run.id, { text: "next after first" }, second.assistantMessageId),
       );
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 2);
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(2));
       expect(frames.filter((frame) => frame.type === "event").map((frame) => frame.event.id)).toEqual([
         first.id,

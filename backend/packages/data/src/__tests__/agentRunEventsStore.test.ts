@@ -221,6 +221,7 @@ describe("agentRunEventsStore", () => {
       expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, randomUUID(), "0", 257, scopeA))).toEqual(
         [],
       );
+      await expect(listAgentRunEventsAfter(runtime, run.id, "0", 257, scopeA)).rejects.toThrow();
       await expect(list({ ...scopeA, threadId: "invalid" })).rejects.toBeInstanceOf(ValidationError);
       expect(
         (await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0"))).map((event) => event.id),
@@ -231,6 +232,12 @@ describe("agentRunEventsStore", () => {
         ),
       );
       expect(await list(scopeB)).toEqual([]);
+      const queued = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, { threadId: firstTurn.threadId, text: "queued", context: [], hasContext: false }),
+        ),
+      );
+      expect(await list({ threadId: queued.threadId, sempMessageId: queued.assistantMessageId })).toEqual([]);
     } finally {
       await runtime.end();
     }
