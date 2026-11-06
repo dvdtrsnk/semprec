@@ -704,6 +704,11 @@ describe("tenancy classification catalog", () => {
       try {
         await client.query("BEGIN");
         try {
+          if (twin.constraint_name === "ai_gateway_calls_semp_message_id_tenant_fkey") {
+            // Synthetic detector fixture uses only these fixed literal identifiers, and is rolled back below.
+            await client.query(`ALTER TABLE ai_gateway_calls ADD CONSTRAINT test_semp_message_single_fk
+              FOREIGN KEY (semp_message_id) REFERENCES semp_messages (id)`);
+          }
           // Identifiers come from pg_constraint, never from input; ALTER TABLE accepts no bind parameters.
           await client.query(`ALTER TABLE ${twin.table_name} DROP CONSTRAINT ${twin.constraint_name}`);
           expect(await listCompositeForeignKeyViolations(client), twin.constraint_name).toEqual([
@@ -711,6 +716,14 @@ describe("tenancy classification catalog", () => {
           ]);
         } finally {
           await client.query("ROLLBACK");
+        }
+        if (twin.constraint_name === "ai_gateway_calls_semp_message_id_tenant_fkey") {
+          const restored = await client.query<{ conname: string }>(
+            `SELECT conname FROM pg_constraint WHERE conrelid = 'ai_gateway_calls'::regclass
+              AND conname = ANY($1::text[]) ORDER BY conname`,
+            [["ai_gateway_calls_semp_message_id_tenant_fkey", "test_semp_message_single_fk"]],
+          );
+          expect(restored.rows).toEqual([{ conname: "ai_gateway_calls_semp_message_id_tenant_fkey" }]);
         }
       } finally {
         client.release();

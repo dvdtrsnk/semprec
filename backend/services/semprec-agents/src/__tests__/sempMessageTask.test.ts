@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
@@ -28,7 +28,7 @@ import {
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
+import { REALTIME_CHANNEL, publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask } from "../agentRunTasks.js";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
@@ -1314,18 +1314,51 @@ describe("queued Semp messages", () => {
       withTransaction(pool, (client) => sendSempMessage(client, { text: "notify", context: [], hasContext: false })),
     );
     const listener = await admin.connect();
+    const sentinelId = randomUUID();
+    const raw: string[] = [];
+    let rawOverflow = 0;
+    const publication: string[] = [];
+    let publicationOverflow = 0;
+    const handlerEvents: Array<{ jobId: string; phase: string }> = [];
+    let handlerOverflow = 0;
+    let providerCalls = 0;
+    const recordRaw = (value: string) => {
+      if (raw.length < 64) raw.push(value);
+      else rawOverflow++;
+    };
+    const recordPublication = (value: string) => {
+      if (publication.length < 32) publication.push(value);
+      else publicationOverflow++;
+    };
+    const recordHandler = (jobId: string, phase: string) => {
+      if (handlerEvents.length < 32) handlerEvents.push({ jobId, phase });
+      else handlerOverflow++;
+    };
+    const category = (error: unknown) => (error instanceof Error ? "error" : typeof error);
     const observed: { tenantId: string; threadId: string }[] = [];
+    let observedOverflow = 0;
     listener.on("notification", (notification) => {
-      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
-      const parsed: unknown = JSON.parse(notification.payload);
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) {
+        recordRaw("other-channel-or-empty");
+        return;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(notification.payload);
+      } catch {
+        recordRaw("invalid-json");
+        return;
+      }
       if (
         typeof parsed !== "object" ||
         parsed === null ||
         !("tenantId" in parsed) ||
         typeof parsed.tenantId !== "string" ||
         !("message" in parsed)
-      )
+      ) {
+        recordRaw("invalid-envelope");
         return;
+      }
       const message = parsed.message;
       if (
         typeof message !== "object" ||
@@ -1336,14 +1369,80 @@ describe("queued Semp messages", () => {
         message.scope !== "sempThread" ||
         !("threadId" in message) ||
         typeof message.threadId !== "string"
-      )
+      ) {
+        recordRaw("other-message");
         return;
-      observed.push({ tenantId: parsed.tenantId, threadId: message.threadId });
+      }
+      recordRaw(
+        message.threadId === turn.threadId ? "target" : message.threadId === sentinelId ? "sentinel" : "other-thread",
+      );
+      if (observed.length < 64) observed.push({ tenantId: parsed.tenantId, threadId: message.threadId });
+      else observedOverflow++;
     });
     let failure: { error: unknown } | undefined;
+    let restoreQuery: (() => void) | undefined;
     try {
       await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
       wireRealtimeHooks(pool);
+      const querySpy = vi.spyOn(pool, "query");
+      restoreQuery = () => querySpy.mockRestore();
+      // Preserve the real pool method, its receiver, arguments, return value and rejection identity.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      pool.query = new Proxy(pool.query, {
+        apply(target, receiver, args: unknown[]) {
+          const values: unknown = args[1];
+          const matching =
+            typeof args[0] === "string" &&
+            args[0].includes("pg_notify") &&
+            Array.isArray(values) &&
+            values[0] === REALTIME_CHANNEL &&
+            typeof values[1] === "string" &&
+            values[1].includes(turn.threadId);
+          if (matching) recordPublication("start");
+          try {
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (matching && result instanceof Promise)
+              void result.then(
+                () => recordPublication("fulfilled"),
+                (error: unknown) => recordPublication(`rejected:${category(error)}`),
+              );
+            return result;
+          } catch (error) {
+            if (matching) recordPublication(`threw:${category(error)}`);
+            throw error;
+          }
+        },
+      });
+      const jobKey = `sempMessage:${turn.assistantMessageId}`;
+      const readJob = async () => {
+        const result = await admin.query<{
+          id: string;
+          key: string;
+          task_identifier: string;
+          attempts: number;
+          max_attempts: number;
+          locked_at: Date | null;
+          has_error: boolean;
+        }>(
+          "SELECT id::text, key, task_identifier, attempts, max_attempts, locked_at, last_error IS NOT NULL AS has_error FROM graphile_worker.jobs WHERE key = $1",
+          [jobKey],
+        );
+        return result.rows;
+      };
+      const initialJob = await readJob();
+      expect(initialJob).toHaveLength(1);
+      expect(initialJob[0]?.key).toBe(jobKey);
+      expect(initialJob[0]?.task_identifier).toBe("sempMessage");
+      const deadline = Date.now() + 15_000;
+      await runInTenant(tenant, () =>
+        publishRealtimeMessage(pool, { type: "invalidation", scope: "sempThread", threadId: sentinelId }),
+      );
+      while (
+        !observed.some((value) => value.tenantId === tenant && value.threadId === sentinelId) &&
+        Date.now() < deadline
+      )
+        await sleep(50);
+      expect(observed).toContainEqual({ tenantId: tenant, threadId: sentinelId });
       const faux = fauxProvider();
       faux.setResponses([
         fauxAssistantMessage("notified"),
@@ -1351,18 +1450,70 @@ describe("queued Semp messages", () => {
       ]);
       const gateway: GatewayModel = {
         model: faux.getModel(),
-        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        streamFn: (model, context, options) => {
+          providerCalls++;
+          return faux.provider.streamSimple(model, context, options);
+        },
         isBudgetRefusal: () => false,
       };
-      runtime = await createAgentsQueueRuntime(pool, registry, {
-        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
-      });
-      const deadline = Date.now() + 15_000;
+      const realTask = createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns());
+      const observedTask: typeof realTask = async (payload, helpers) => {
+        const matching =
+          typeof payload === "object" &&
+          payload !== null &&
+          "assistantMessageId" in payload &&
+          payload.assistantMessageId === turn.assistantMessageId;
+        if (matching) recordHandler(helpers.job.id, "entry");
+        try {
+          await realTask(payload, helpers);
+          if (matching) recordHandler(helpers.job.id, "fulfilled");
+        } catch (error) {
+          if (matching) recordHandler(helpers.job.id, `rejected:${category(error)}`);
+          throw error;
+        }
+      };
+      runtime = await createAgentsQueueRuntime(pool, registry, { sempMessageTask: observedTask });
       while (
         !observed.some((value) => value.tenantId === tenant && value.threadId === turn.threadId) &&
         Date.now() < deadline
       )
         await sleep(50);
+      const readMessage = (tenantId: string, id: string) =>
+        runInTenant(tenantId, () =>
+          pool.query<{
+            status: string;
+            agent_run_id: string | null;
+            event_from_id: string | null;
+            event_to_id: string | null;
+            run_status: string | null;
+          }>(
+            `SELECT m.status, m.agent_run_id, m.event_from_id, m.event_to_id, r.status AS run_status
+             FROM semp_messages m LEFT JOIN agent_runs r ON r.id = m.agent_run_id AND r.tenant_id = m.tenant_id
+            WHERE m.id = $1`,
+            [id],
+          ),
+        );
+      const snapshot = await Promise.allSettled([
+        readJob(),
+        readMessage(tenant, turn.assistantMessageId),
+        readMessage(other, turn.assistantMessageId),
+        readMessage(tenant, randomUUID()),
+      ]);
+      const diagnostic = snapshot.map((result) =>
+        result.status === "fulfilled"
+          ? { status: "fulfilled", value: Array.isArray(result.value) ? result.value : result.value.rows }
+          : { status: "rejected", category: category(result.reason) },
+      );
+      process.stdout.write(
+        `${JSON.stringify({ fixture: "semp-invalidation-diagnostic", threadId: turn.threadId, assistantMessageId: turn.assistantMessageId, jobKey, initialJob, snapshot: diagnostic, handlerEvents, handlerOverflow, providerCalls, publication, publicationOverflow, raw, rawOverflow, observedOverflow })}\n`,
+      );
+      if (snapshot[2]?.status !== "fulfilled" || Array.isArray(snapshot[2].value))
+        throw new Error("Foreign read observation failed");
+      if (snapshot[3]?.status !== "fulfilled" || Array.isArray(snapshot[3].value))
+        throw new Error("Random read observation failed");
+      expect(snapshot[2].value.rows).toEqual([]);
+      expect(snapshot[3].value.rows).toEqual([]);
+      expect(observedOverflow).toBe(0);
       expect(observed).toContainEqual({ tenantId: tenant, threadId: turn.threadId });
       expect(observed.filter((value) => value.tenantId === other)).toEqual([]);
       const message = await runInTenant(tenant, () =>
@@ -1397,6 +1548,11 @@ describe("queued Semp messages", () => {
     try {
       await runtime?.stop();
       runtime = undefined;
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      restoreQuery?.();
     } catch (error) {
       cleanup.push(error);
     }
