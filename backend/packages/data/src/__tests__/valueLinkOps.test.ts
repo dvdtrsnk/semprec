@@ -1,23 +1,42 @@
 import "../domainWriteHooks.js";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { insertValueLink } from "../chokePoint/valueLinksStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import * as registryLoader from "../manifest/fullModuleRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
 
 let admin: Pool;
 let data: Pool;
 let cp: ChokePoint;
 let tenant: string;
+let restoreLoader = () => {};
 
 describe("explicit value link operations", () => {
   beforeAll(async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixtureLinkRuleValid", "systemDatabases"]));
+    await registry.loadModule(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
+    await registry.loadModule(new URL("./fixtures/linkRuleValidModule.js", import.meta.url).href);
+    registry.validateLinkRules();
+    const loader = vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
+    restoreLoader = () => loader.mockRestore();
     admin = getTestPool();
     data = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("check link test role", () =>
+      data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(data);
   });
   beforeEach(async () => {
@@ -25,6 +44,7 @@ describe("explicit value link operations", () => {
     tenant = await createTestTenant(admin);
   });
   afterAll(async () => {
+    restoreLoader();
     await data.end();
     await admin.end();
   });
@@ -210,6 +230,10 @@ describe("explicit value link operations", () => {
         }),
       );
       const before = await cp.getValueLinksForItems([target.id]);
+      const jobsBefore = await admin.query<{ key: string | null }>(
+        "SELECT key FROM graphile_worker.jobs WHERE key LIKE $1 ORDER BY key",
+        [`valueLinksPropagate:${tenant}:%`],
+      );
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
@@ -218,12 +242,73 @@ describe("explicit value link operations", () => {
           code: "validation_failed",
         });
         expect(events).toEqual([]);
+        expect(
+          (
+            await admin.query<{ key: string | null }>(
+              "SELECT key FROM graphile_worker.jobs WHERE key LIKE $1 ORDER BY key",
+              [`valueLinksPropagate:${tenant}:%`],
+            )
+          ).rows,
+        ).toEqual(jobsBefore.rows);
       } finally {
         setInvalidationHook(() => {});
       }
       expect(await cp.getValueLinksForItems([target.id])).toEqual(before);
       expect(await cp.listItemRelations(target.id)).toEqual([]);
     });
+  });
+
+  it("propagates a relink through the fixture-configured registered worker", async () => {
+    const foreignTenant = await createTestTenant(admin);
+    const foreign = await runInTenant(foreignTenant, async () => {
+      await seedSystem(data);
+      const areas = (await cp.listDatabases()).find((db) => db.ownerModuleId === "areas");
+      if (!areas) throw new Error("Foreign Areas missing");
+      const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Foreign" } });
+      return { areas, item };
+    });
+    const fixture = await runInTenant(tenant, async () => {
+      await seedSystem(data);
+      const databases = await cp.listDatabases();
+      const areas = databases.find((db) => db.ownerModuleId === "areas");
+      const projects = databases.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("System databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: areas.id, properties: { name: "Old" } });
+      const project = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Project area relation missing");
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: target.id });
+      expect((await cp.getItem(projects.id, project.id))?.properties.name).toBe("Old");
+      await withTransaction(data, (client) =>
+        insertValueLink(client, {
+          itemId: target.id,
+          propertyKey: "name",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "name" }],
+        }),
+      );
+      const key = `valueLinksPropagate:${tenant}:fixtureValid.areaNameToProjectName:${target.id}:1`;
+      const jobs = () => admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key]);
+      expect((await jobs()).rows).toEqual([]);
+      expect(await cp.findItem(foreign.item.id)).toBeNull();
+      expect(await cp.findItem(randomUUID())).toBeNull();
+      expect(await cp.relinkValue({ itemId: target.id, propertyKey: "name" })).toMatchObject({
+        valueKind: "inherited",
+      });
+      expect((await jobs()).rows).toEqual([{ key }]);
+      return { projects, project };
+    });
+    const handler = createCoreTaskList(data, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
+    if (!handler) throw new Error("Registered propagation worker missing");
+    await runOnce({ pgPool: data, taskList: { [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: handler } });
+    expect(
+      (await runInTenant(tenant, () => cp.getItem(fixture.projects.id, fixture.project.id)))?.properties.name,
+    ).toBe("Source");
+    expect(await runInTenant(foreignTenant, () => cp.getItem(foreign.areas.id, foreign.item.id))).toEqual(foreign.item);
   });
 
   it("refuses missing links, missing live sources and over-cardinality without changing state", async () => {
