@@ -40,27 +40,31 @@ function endPool(
   pool: Pool,
   logger: Logger,
   signal: string,
-  timeoutMs: number,
   stopAt: number,
-): Promise<{ failed: false } | { failed: true; error: unknown; unsettled: boolean }> {
+): Promise<{ failed: false } | { failed: true; errors: unknown[]; unsettled: boolean }> {
   return new Promise((resolve) => {
     let settled = false;
+    const poolDeadline = Math.min(stopAt, performance.now() + POOL_END_TIMEOUT_MS);
+    const timeoutError = () => new Error("pool.end() did not settle within its shutdown bound");
 
-    const boundTimer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      logger.error({ signal }, "pool.end() did not settle within its shutdown bound");
-      resolve({
-        failed: true,
-        error: new Error("pool.end() did not settle within its shutdown bound"),
-        unsettled: true,
-      });
-    }, timeoutMs);
+    const boundTimer = setTimeout(
+      () => {
+        if (settled) return;
+        settled = true;
+        logger.error({ signal }, "pool.end() did not settle within its shutdown bound");
+        resolve({
+          failed: true,
+          errors: [timeoutError()],
+          unsettled: true,
+        });
+      },
+      Math.max(0, poolDeadline - performance.now()),
+    );
 
     const expiredBeforeStart = new Error("Shutdown stop window elapsed before pool.end()");
     Promise.resolve()
       .then(() => {
-        if (performance.now() >= stopAt) throw expiredBeforeStart;
+        if (performance.now() >= poolDeadline) throw expiredBeforeStart;
         return pool.end();
       })
       .then(
@@ -68,8 +72,7 @@ function endPool(
           if (settled) return;
           settled = true;
           clearTimeout(boundTimer);
-          if (performance.now() >= stopAt)
-            resolve({ failed: true, error: new Error("pool.end() settled after the stop window"), unsettled: true });
+          if (performance.now() >= poolDeadline) resolve({ failed: true, errors: [timeoutError()], unsettled: true });
           else resolve({ failed: false });
         },
         (err: unknown) => {
@@ -83,7 +86,12 @@ function endPool(
           settled = true;
           clearTimeout(boundTimer);
           logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
-          resolve({ failed: true, error: err, unsettled: err === expiredBeforeStart });
+          const late = performance.now() >= poolDeadline;
+          resolve({
+            failed: true,
+            errors: err === expiredBeforeStart ? [timeoutError()] : late ? [err, timeoutError()] : [err],
+            unsettled: late,
+          });
         },
       );
   });
@@ -174,6 +182,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       outcome = await Promise.race([
         (async () => {
           await closeListener(tenantDeactivationListener, logger, signal);
+          if (abandoned || performance.now() >= stopAt) return { kind: "timeout" as const };
           let attempt: AgentRunnerStopAttempt;
           try {
             attempt = queueRuntime.stopForShutdown();
@@ -298,14 +307,14 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       failures.push(deadlineFailure());
       rejectFailures();
     }
-    const poolResult = await endPool(pool, logger, signal, Math.min(POOL_END_TIMEOUT_MS, poolTime), stopAt);
+    const poolResult = await endPool(pool, logger, signal, stopAt);
     if (poolResult.failed && !poolResult.unsettled && remaining() <= 0) {
       if (sweepError && !failures.length) failures.push(sweepError.error);
-      failures.push(poolResult.error, deadlineFailure());
+      failures.push(...poolResult.errors, deadlineFailure());
       rejectFailures();
     }
     if (poolResult.failed && poolResult.unsettled && sweepError && !failures.length) failures.push(sweepError.error);
-    if (poolResult.failed && (failures.length || poolResult.unsettled)) failures.push(poolResult.error);
+    if (poolResult.failed && (failures.length || poolResult.unsettled)) failures.push(...poolResult.errors);
 
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1)

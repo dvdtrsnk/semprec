@@ -17,6 +17,7 @@ interface CapturedLine {
 function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
   const calls: string[] = [];
   const errors: CapturedLine[] = [];
+  const infos: CapturedLine[] = [];
   const tenantDeactivationListener = {
     close: async () => {
       calls.push("tenantDeactivationListener.close:start");
@@ -39,7 +40,9 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
     },
   } as unknown as Pool;
   const logger = {
-    info: () => {},
+    info: (obj: unknown, msg: string) => {
+      infos.push({ obj, msg });
+    },
     error: (obj: unknown, msg: string) => {
       errors.push({ obj, msg });
     },
@@ -51,6 +54,7 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
   return {
     calls,
     errors,
+    infos,
     deps: {
       queueRuntime,
       tenantDeactivationListener,
@@ -65,8 +69,100 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
 
 describe("semprec-agents graceful shutdown", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  it.each(["resolve", "reject"])("rejects an overdue pool %s before its timer callback", async (late) => {
+    vi.useFakeTimers();
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const { calls, infos, deps } = createFakes();
+    let finish!: () => void;
+    let fail!: (reason: unknown) => void;
+    const pool = {
+      end: () => {
+        calls.push("pool.end");
+        return new Promise<void>((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        });
+      },
+    } as unknown as Pool;
+    const result = createGracefulShutdown({
+      ...deps,
+      pool,
+      observeSempSettlement: () => ({ wait: async () => [false], snapshotAndDispose: () => [] }),
+    })("SIGTERM").catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
+    clock = 5_001;
+    if (late === "resolve") finish();
+    else fail(null);
+    const failure: unknown = await result;
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(failure.errors[0]).toBe(false);
+    if (late === "reject") expect(failure.errors[1]).toBeNull();
+    expect(failure.errors.at(-1)).toBeInstanceOf(Error);
+    expect(infos.some((entry) => entry.msg === "semprec-agents shutdown complete")).toBe(false);
+    expect(calls.filter((call) => call === "pool.end")).toHaveLength(1);
+  });
+
+  it("does not start runner stop after a delayed listener crosses the absolute deadline", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    let finish!: () => void;
+    const { calls, infos, deps } = createFakes({
+      listenerClose: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const result = createGracefulShutdown(deps)("SIGTERM").catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(0);
+    clock = AGENTS_STOP_WINDOW_MS + 1;
+    finish();
+    expect(await result).toBeInstanceOf(Error);
+    expect(calls).not.toContain("queueRuntime.stop");
+    expect(calls).not.toContain("closeIdleThreadSessions");
+    expect(calls).not.toContain("pool.end");
+    expect(infos.some((entry) => entry.msg === "semprec-agents shutdown complete")).toBe(false);
+  });
+
+  it.each(["resolve", "reject"])(
+    "rejects a hung sweep after an empty successful cohort and observes late %s",
+    async (late) => {
+      vi.useFakeTimers();
+      const { calls, errors, infos, deps } = createFakes();
+      let finish!: () => void;
+      let fail!: (reason: unknown) => void;
+      const sweep = new Promise<{ closedRunIds: string[] }>((resolve, reject) => {
+        finish = () => resolve({ closedRunIds: [] });
+        fail = reject;
+      });
+      const result = createGracefulShutdown({
+        ...deps,
+        closeIdleThreadSessions: () => {
+          calls.push("sweep");
+          return sweep;
+        },
+      })("SIGTERM").catch((reason: unknown) => reason);
+      await vi.advanceTimersByTimeAsync(AGENTS_STOP_WINDOW_MS);
+      expect(await result).toBeInstanceOf(Error);
+      expect(calls).toContain("queueRuntime.stop");
+      expect(calls).toContain("sweep");
+      expect(calls).not.toContain("pool.end");
+      if (late === "resolve") finish();
+      else fail(new Error("private late sweep"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).not.toContain("pool.end");
+      expect(infos.some((entry) => entry.msg === "semprec-agents shutdown complete")).toBe(false);
+      if (late === "reject")
+        expect(errors.at(-1)?.msg).toBe("closeIdleThreadSessions() rejected after the stop window");
+    },
+  );
 
   it.each(["resolve", "reject"])(
     "fails at the stop deadline and observes a late sweep %s without ending the pool",

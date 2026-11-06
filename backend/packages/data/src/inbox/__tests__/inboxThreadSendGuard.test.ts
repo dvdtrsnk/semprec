@@ -432,6 +432,116 @@ describe("Inbox thread association reservations", () => {
         ),
       ),
     ).rejects.toMatchObject({ code: "proposal_locked" });
+
+    const confirmationFirst = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!inbox || !tasks) throw new Error("Missing confirmation fixture databases");
+        const source = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-01-01", time: "15:00", text: "confirmation first" },
+        });
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: fixture.proposalsId,
+            properties: {
+              kind: "inbox",
+              fingerprint: randomUUID(),
+              history: [],
+              status: "proposed",
+              proposal: {
+                entityKind: "database",
+                target: tasks.id,
+                properties: { name: "Confirmation first" },
+              },
+            },
+          },
+          { allowedSystemKeys: ["kind", "fingerprint", "history", "status", "proposal"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: fixture.propertyId, callerItemId: card.id, targetItemId: source.id },
+          owner,
+        );
+        const turn = await sendSempMessage(client, {
+          subject: { inboxItemId: source.id },
+          text: "before confirmation",
+          context: [],
+          hasContext: false,
+        });
+        return { cardId: card.id, threadId: turn.threadId };
+      }),
+    );
+    const counts = () =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => ({
+          messages: (
+            await client.query("SELECT id FROM semp_messages WHERE thread_id = $1", [confirmationFirst.threadId])
+          ).rowCount,
+          jobs: (await client.query("SELECT key FROM graphile_worker.jobs WHERE key LIKE 'sempMessage:%'")).rowCount,
+        })),
+      );
+    const beforeConfirm = await counts();
+    let releaseConfirmation!: () => void;
+    let confirmationReady!: () => void;
+    const confirmationGate = new Promise<void>((resolve) => {
+      releaseConfirmation = resolve;
+    });
+    const confirmedAndHeld = new Promise<void>((resolve) => {
+      confirmationReady = resolve;
+    });
+    const confirmation = runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const result = await confirmProposalWithClient(
+          client,
+          { processingProposalsDatabaseId: fixture.proposalsId },
+          confirmationFirst.cardId,
+        );
+        expect(result.properties.status).toBe("confirmed");
+        confirmationReady();
+        await confirmationGate;
+      }),
+    );
+    let confirmationFailure: { error: unknown } | undefined;
+    const sendAfterConfirmation = () =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            threadId: confirmationFirst.threadId,
+            text: "contending",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+    try {
+      await Promise.race([
+        confirmedAndHeld,
+        confirmation.then(() => {
+          throw new Error("Confirmation ended before overlap");
+        }),
+      ]);
+      await expect(sendAfterConfirmation()).rejects.toMatchObject({ code: "version_conflict" });
+      expect(await counts()).toEqual(beforeConfirm);
+    } catch (error) {
+      confirmationFailure = { error };
+    }
+    releaseConfirmation();
+    const confirmationResult = await Promise.allSettled([confirmation]);
+    const confirmationErrors = confirmationResult.flatMap((result) =>
+      result.status === "rejected" && result.reason !== confirmationFailure?.error ? [result.reason] : [],
+    );
+    if (confirmationErrors.length)
+      throw new AggregateError(
+        confirmationFailure ? [confirmationFailure.error, ...confirmationErrors] : confirmationErrors,
+        "Confirmation-first cleanup failed",
+        { cause: confirmationFailure?.error },
+      );
+    if (confirmationFailure) throw confirmationFailure.error;
+    await expect(sendAfterConfirmation()).rejects.toMatchObject({ code: "proposal_locked" });
+    expect(await counts()).toEqual(beforeConfirm);
   }, 60_000);
 
   it("uses live associations rather than a stale decided thread hint", async () => {
