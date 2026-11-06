@@ -19,6 +19,7 @@ import {
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
@@ -171,5 +172,134 @@ describe("queued Semp messages", () => {
     );
     expect(after.message.rows).toEqual([{ status: "running" }]);
     expect(after.job.rows).toEqual([]);
+  });
+
+  it("stores a provider failure once, continues the thread and ignores redelivery of its completed reply", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
+      fauxAssistantMessage("recovered"),
+      fauxAssistantMessage("must not be used"),
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "fail", context: [], hasContext: false })),
+    );
+    const read = (id: string) =>
+      runInTenant(
+        tenant,
+        async () =>
+          (
+            await pool.query<{ status: string; text: string | null }>(
+              "SELECT status, text FROM semp_messages WHERE id = $1",
+              [id],
+            )
+          ).rows[0],
+      );
+    const awaitStatus = async (id: string, status: string) => {
+      const deadline = Date.now() + 15_000;
+      let row = await read(id);
+      while (row?.status !== status && Date.now() < deadline) {
+        await sleep(50);
+        row = await read(id);
+      }
+      expect(row?.status).toBe(status);
+      return row;
+    };
+    await awaitStatus(first.assistantMessageId, "error");
+    const failedJob = await admin.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [
+      `sempMessage:${first.assistantMessageId}`,
+    ]);
+    expect(failedJob.rows).toEqual([]);
+    const second = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: first.threadId, text: "continue", context: [], hasContext: false }),
+      ),
+    );
+    expect(await awaitStatus(second.assistantMessageId, "done")).toEqual({ status: "done", text: "recovered" });
+    const redeliveryKey = `redelivery:${randomUUID()}`;
+    await runInTenant(tenant, () =>
+      enqueueJob(
+        pool,
+        AGENT_TASK_NAMES.SEMP_MESSAGE,
+        { threadId: second.threadId, assistantMessageId: second.assistantMessageId },
+        { jobKey: redeliveryKey, maxAttempts: 1 },
+      ),
+    );
+    const deadline = Date.now() + 15_000;
+    let job = await admin.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [redeliveryKey]);
+    while (job.rowCount && Date.now() < deadline) {
+      await sleep(50);
+      job = await admin.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [redeliveryKey]);
+    }
+    expect(job.rows).toEqual([]);
+    expect(await read(second.assistantMessageId)).toEqual({ status: "done", text: "recovered" });
+    expect(faux.getPendingResponseCount()).toBe(1);
+  });
+
+  it("runs turns for different tenants concurrently on the dedicated runner", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const other = await createTestTenant(admin);
+    await createUser(admin, { tenantId: other, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await runInTenant(other, () => seedSystem(pool));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const faux = fauxProvider();
+    faux.setResponses([
+      async () => {
+        await gate;
+        return fauxAssistantMessage("first tenant");
+      },
+      async () => {
+        await gate;
+        return fauxAssistantMessage("second tenant");
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    try {
+      const a = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { text: "first tenant", context: [], hasContext: false }),
+        ),
+      );
+      const b = await runInTenant(other, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { text: "second tenant", context: [], hasContext: false }),
+        ),
+      );
+      const deadline = Date.now() + 15_000;
+      while (faux.state.callCount < 2 && Date.now() < deadline) await sleep(50);
+      expect(faux.state.callCount).toBe(2);
+      for (const [scope, id] of [
+        [tenant, a.assistantMessageId],
+        [other, b.assistantMessageId],
+      ] as const) {
+        const row = await runInTenant(scope, () =>
+          pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [id]),
+        );
+        expect(row.rows).toEqual([{ status: "running" }]);
+      }
+    } finally {
+      release();
+      await runtime.stop();
+      runtime = undefined;
+    }
   });
 });
