@@ -143,3 +143,17 @@ the new operation coordinator, do not export the helper from the public barrel,
 and introduce no lock, source rewrite or propagation behavior. Existing actual
 relink/rollback/no-effect tests remain the evidence owners. Per-member permissions
 and the six original aggregate criteria stay separate and unchanged.
+
+## Registration is separate from automatic project-agent grants
+
+Follow docs/adr/2026-11-06-page-capability-registration-does-not-grant-project-agents.md. Register the two page identifiers in schemaCore
+for existing human-session MCP composition; narrow only the existing project
+permission-manifest computation to exclude those exact automatic core grants.
+Keep both identifiers in the core set so the non-core module loop cannot
+reintroduce them. Retain other core grants, current module ownership rules and
+credential checks. No new grant state, administration API or early page policy.
+The existing manifest and persisted-run AgentTool harnesses prove exclusion,
+no module regrant and no document/approval effects; direct gateway tests with
+explicitly supplied page grants are separate binding evidence. Legacy item-only
+agent access to page.restoreVersion is not grandfathered. Human MCP page
+discovery and calls remain supported. Old accepted ADR bodies stay unchanged.
