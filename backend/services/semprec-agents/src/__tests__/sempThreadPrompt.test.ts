@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions, SempConversation } from "@semprec/agent-runtime";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createSempChatThread,
   createChokePoint,
+  createAgentRun,
+  createHeartbeat,
   createUser,
   getDatabaseByModuleId,
+  finishAgentRun,
   loadFullModuleRegistry,
   seedSystem,
   sendSempMessage,
@@ -190,5 +193,123 @@ describe("Semp thread live prompt", () => {
       await setZone("Europe/Prague");
       await closeIdleThreadSessions(runtime);
     }
+  });
+
+  it("binds tick questions and heartbeat tools to the heartbeat project while chat stays general", async () => {
+    const registry = await loadFullModuleRegistry();
+    const fixture = await runInTenant(tenant, async () => {
+      const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      const projectId = inbox.ownerProjectItemId;
+      const chokePoint = createChokePoint(runtime);
+      const projects = (await chokePoint.listDatabases()).find((database) => database.key === "projects");
+      if (!projects) throw new Error("Missing projects database");
+      const otherProject = await chokePoint.createItem({
+        databaseId: projects.id,
+        properties: { name: "Other project" },
+      });
+      const own = await withTransaction(runtime, (client) =>
+        createHeartbeat(client, {
+          projectItemId: projectId,
+          name: "Daily own",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Review my tasks" },
+        }),
+      );
+      const other = await withTransaction(runtime, (client) =>
+        createHeartbeat(client, {
+          projectItemId: otherProject.id,
+          name: "Other private heartbeat",
+          rule: { kind: "interval", minutes: 20 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Other task" },
+        }),
+      );
+      const prior = await createAgentRun(runtime, {
+        projectItemId: projectId,
+        heartbeatId: own.id,
+        triggeredBy: "heartbeat",
+        task: "earlier",
+      });
+      expect(await finishAgentRun(runtime, prior.id, "done", "Earlier result")).toBe(true);
+      // A valid existing tick thread is a fixture: its producing tick-store is private to data.
+      const thread = await runtime.query<{ id: string }>(
+        "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+        [own.id],
+      );
+      if (!thread.rows[0]) throw new Error("Missing tick thread");
+      return { threadId: thread.rows[0].id, projectId, own: own.id, other: other.id };
+    });
+    const faux = fauxProvider();
+    const prompts: string[] = [];
+    const tools: string[][] = [];
+    faux.setResponses([
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        tools.push((context.tools ?? []).map((tool) => tool.name));
+        return fauxAssistantMessage([fauxToolCall("heartbeat_list", {}, { id: "tick-list" })], {
+          stopReason: "toolUse",
+        });
+      },
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("tick answer");
+      },
+      (context) => {
+        prompts.push(JSON.stringify(context.messages));
+        tools.push((context.tools ?? []).map((tool) => tool.name));
+        return fauxAssistantMessage("chat answer");
+      },
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns());
+    const tick = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) =>
+        sendSempMessage(client, { threadId: fixture.threadId, text: "What happened?", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: tick.threadId, assistantMessageId: tick.assistantMessageId }, { job: { id: "tick-test" } }),
+    );
+    const row = await runInTenant(tenant, () =>
+      runtime.query<{ status: string; project_item_id: string; agent_run_id: string }>(
+        "SELECT m.status, r.project_item_id, r.id AS agent_run_id FROM semp_messages m JOIN agent_runs r ON r.id = m.agent_run_id AND r.tenant_id = m.tenant_id WHERE m.id = $1",
+        [tick.assistantMessageId],
+      ),
+    );
+    expect(row.rows).toEqual([expect.objectContaining({ status: "done", project_item_id: fixture.projectId })]);
+    expect(prompts[0]).toContain("Daily own");
+    expect(prompts[0]).toContain("Review my tasks");
+    expect(prompts[0]).toContain("Earlier result");
+    expect(prompts[0]).toContain("interval");
+    expect(tools[0]).toEqual(expect.arrayContaining(["heartbeat_list", "heartbeat_history", "heartbeat_trigger"]));
+    const events = await runInTenant(tenant, () =>
+      runtime.query<{ payload: unknown }>(
+        "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_result' ORDER BY id",
+        [row.rows[0]?.agent_run_id],
+      ),
+    );
+    const rendered = JSON.stringify(events.rows);
+    expect(rendered).toContain(fixture.own);
+    expect(rendered).not.toContain(fixture.other);
+    const chat = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) =>
+        sendSempMessage(client, { text: "normal chat", context: [], hasContext: false }),
+      ),
+    );
+    await runInTenant(tenant, () =>
+      task({ threadId: chat.threadId, assistantMessageId: chat.assistantMessageId }, { job: { id: "chat-test" } }),
+    );
+    expect(prompts[2]).not.toContain("Automation:");
+    expect(tools[1]).toEqual(expect.arrayContaining(["heartbeat_list", "heartbeat_history", "heartbeat_trigger"]));
+    await expect(
+      runInTenant(tenant, () => runtime.query("DELETE FROM project_heartbeats WHERE id = $1", [fixture.own])),
+    ).rejects.toMatchObject({ code: "23001" });
+    await closeIdleThreadSessions(runtime);
   });
 });
