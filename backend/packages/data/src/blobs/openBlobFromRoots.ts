@@ -34,11 +34,16 @@ async function openIn(
     await once(stream, "readable", { signal });
     signal?.throwIfAborted();
   } catch (err) {
+    let cleanupFailed = false;
+    let cleanupFailure: unknown;
     try {
       stream.destroy();
     } catch (cleanupError) {
-      throw new AggregateError([err, cleanupError], "Blob open and stream cleanup failed", { cause: err });
+      cleanupFailed = true;
+      cleanupFailure = cleanupError;
     }
+    if (cleanupFailed)
+      throw new AggregateError([err, cleanupFailure], "Blob open and stream cleanup failed", { cause: err });
     if (isMissingFileError(err)) {
       signal?.throwIfAborted();
       return null;
@@ -70,11 +75,16 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
     input.signal?.throwIfAborted();
     return stream;
   } catch (err) {
+    let cleanupFailed = false;
+    let cleanupFailure: unknown;
     try {
       stream.destroy();
     } catch (cleanupError) {
-      throw new AggregateError([err, cleanupError], "Blob transfer and stream cleanup failed", { cause: err });
+      cleanupFailed = true;
+      cleanupFailure = cleanupError;
     }
+    if (cleanupFailed)
+      throw new AggregateError([err, cleanupFailure], "Blob transfer and stream cleanup failed", { cause: err });
     throw err;
   }
 }

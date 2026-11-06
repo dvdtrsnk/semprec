@@ -85,9 +85,12 @@ export async function expandSempRefs(
                   } else {
                     const chunks: Buffer[] = [];
                     let size = 0;
-                    for await (const chunk of stream) {
+                    for await (const raw of stream) {
                       signal?.throwIfAborted();
-                      const bytes: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                      const chunk: unknown = raw;
+                      if (typeof chunk !== "string" && !(chunk instanceof Uint8Array))
+                        throw new Error("Invalid attachment byte stream");
+                      const bytes = Buffer.from(chunk);
                       size += bytes.length;
                       if (size > cap) throw new Error("Attachment exceeds the size limit");
                       chunks.push(bytes);

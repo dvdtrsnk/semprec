@@ -651,6 +651,11 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         let second: Promise<unknown> | undefined;
         let firstFailure: unknown;
         let secondFailure: unknown;
+        let firstFailed = false;
+        let secondFailed = false;
+        let primaryFailure: unknown;
+        let primaryFailed = false;
+        const cleanupFailures: unknown[] = [];
         try {
           const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
             "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -701,11 +706,15 @@ describe("Speaker mapping suggestions (issue #185)", () => {
               return result;
             });
             void first.catch((error: unknown) => {
+              firstFailed = true;
               firstFailure = error;
             });
             await vi.waitFor(
               () => {
-                if (firstFailure) throw firstFailure;
+                if (firstFailed)
+                  throw firstFailure instanceof Error
+                    ? firstFailure
+                    : new Error("First concurrent operation failed", { cause: firstFailure });
                 expect(firstReady).toBe(true);
               },
               { timeout: 5000 },
@@ -716,11 +725,15 @@ describe("Speaker mapping suggestions (issue #185)", () => {
               return order === "user-first" ? confirm(client) : userWrite(client);
             });
             void second.catch((error: unknown) => {
+              secondFailed = true;
               secondFailure = error;
             });
             await vi.waitFor(
               async () => {
-                if (secondFailure) throw secondFailure;
+                if (secondFailed)
+                  throw secondFailure instanceof Error
+                    ? secondFailure
+                    : new Error("Second concurrent operation failed", { cause: secondFailure });
                 expect(secondPid).not.toBe(0);
                 const blocked = await runtime.query<{ blocked: boolean; insertion: boolean }>(
                   "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion FROM pg_stat_activity WHERE pid = $1::int",
@@ -751,15 +764,33 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             else
               expect(history.at(-1)?.addedRelations).toEqual([expect.objectContaining({ edgeId: rows.rows[0]?.id })]);
           });
+        } catch (error) {
+          primaryFailed = true;
+          primaryFailure = error;
         } finally {
           release();
           const settled = await Promise.allSettled(
             [first, second].filter((entry): entry is Promise<unknown> => entry !== undefined),
           );
-          await runtime.end();
-          if (settled.some((entry) => entry.status === "rejected") && !firstFailure && !secondFailure)
-            throw new Error("Concurrent operations did not settle successfully");
+          for (const result of settled)
+            if (result.status === "rejected" && result.reason !== primaryFailure) cleanupFailures.push(result.reason);
+          try {
+            await runtime.end();
+          } catch (error) {
+            cleanupFailures.push(error);
+          }
         }
+        if (primaryFailed) {
+          if (cleanupFailures.length)
+            throw new AggregateError([primaryFailure, ...cleanupFailures], "Concurrent test and cleanup failed", {
+              cause: primaryFailure,
+            });
+          throw primaryFailure instanceof Error
+            ? primaryFailure
+            : new Error("Concurrent test failed", { cause: primaryFailure });
+        }
+        if (cleanupFailures.length)
+          throw new AggregateError(cleanupFailures, "Concurrent test cleanup failed", { cause: cleanupFailures[0] });
       },
       20_000,
     );

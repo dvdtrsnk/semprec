@@ -76,6 +76,34 @@ it("preserves a non-ENOENT primary error without opening the alternate", async (
   }
 });
 
+it("preserves the primary initial-read error and a separate stream cleanup error", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const original = new Error("controlled primary read failure");
+  const cleanup = new Error("controlled destroy failure");
+  const stream = new Readable({
+    read() {
+      this.emit("error", original);
+    },
+  });
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const destroy = vi.spyOn(stream, "destroy").mockImplementation(() => {
+    throw cleanup;
+  });
+  const other = vi.spyOn(alternate, "readStream");
+  try {
+    await expect(openBlobFromRoots({ primary, alternate, storageKey: "key" })).rejects.toMatchObject({
+      cause: original,
+      errors: [original, cleanup],
+    });
+    expect(other).not.toHaveBeenCalled();
+  } finally {
+    destroy.mockRestore();
+    stream.destroy();
+    vi.restoreAllMocks();
+  }
+});
+
 it("refuses an already aborted open without opening either root", async () => {
   const primary = new LocalFsBlobStorageWriter("/unused-primary");
   const alternate = new LocalFsBlobStorageWriter("/unused-alternate");

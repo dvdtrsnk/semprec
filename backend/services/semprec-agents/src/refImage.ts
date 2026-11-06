@@ -24,8 +24,10 @@ export async function decodeRefImage(stream: Readable, signal?: AbortSignal): Pr
     if (signal?.aborted) return null;
     const chunks: Buffer[] = [];
     let total = 0;
-    for await (const chunk of stream) {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    for await (const raw of stream) {
+      const chunk: unknown = raw;
+      if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) return null;
+      const bytes = Buffer.from(chunk);
       total += bytes.length;
       if (total > MAX_IMAGE_INPUT_BYTES || signal?.aborted) return null;
       chunks.push(bytes);
