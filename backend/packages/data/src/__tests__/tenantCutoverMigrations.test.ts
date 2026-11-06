@@ -145,6 +145,54 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     await adminPool.end();
   });
 
+  it("colors each listed catalog for an existing tenant and preserves unlisted options", async () => {
+    for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const catalogs = [
+      ["files", "type"],
+      ["healthRecords", "status"],
+      ["people", "relationship"],
+      ["events", "type"],
+      ["projects", "status"],
+      ["books", "status"],
+      ["movies", "status"],
+    ] as const;
+    const read = (tenant: string, moduleId: string, key: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await dataPool.query<Record<string, unknown>>(
+          `SELECT p.id, p.xmin::text AS version, p.config FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = $1 AND p.key = $2`,
+          [moduleId, key],
+        );
+        return z
+          .object({
+            id: z.string(),
+            version: z.string(),
+            config: z.object({ options: z.array(z.object({ key: z.string() }).passthrough()) }).passthrough(),
+          })
+          .parse(rows[0]);
+      });
+    for (const [moduleId, key] of catalogs) {
+      const old = await read(b, moduleId, key);
+      const options = old.config.options.map(({ color: _color, ...option }) => option);
+      options.push({ key: "custom", marker: "preserved" });
+      // These schema-locked catalogs cannot be reverted via the public property API.
+      const updated = await adminPool.query(
+        "UPDATE properties SET config = jsonb_set(config, '{options}', $3::jsonb) WHERE tenant_id = $1 AND id = $2",
+        [b, old.id, JSON.stringify(options)],
+      );
+      expect(updated.rowCount).toBe(1);
+    }
+    await runCutovers(dataPool);
+    const versions = new Map<string, string>();
+    for (const [moduleId, key] of catalogs) {
+      const fresh = await read(zero, moduleId, key);
+      const migrated = await read(b, moduleId, key);
+      expect(migrated.config.options).toEqual([...fresh.config.options, { key: "custom", marker: "preserved" }]);
+      versions.set(moduleId, migrated.version);
+    }
+    await runCutovers(dataPool);
+    for (const [moduleId, key] of catalogs) expect((await read(b, moduleId, key)).version).toBe(versions.get(moduleId));
+  });
+
   it("colors old select catalogs without overwriting existing colors and does not rewrite on replay", async () => {
     for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
     const read = (tenant: string) =>
