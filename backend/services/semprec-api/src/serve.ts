@@ -146,6 +146,8 @@ if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
 }
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
 const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
+const speechGatewayToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
+if (!speechGatewayToken) throw new Error("AI_GATEWAY_INTERNAL_TOKEN is not set");
 
 // Issue #635: this process sits behind Caddy on loopback, so the socket peer is always 127.0.0.1.
 // Only the exact string "1" trusts the proxy's `X-Forwarded-For`; any other value, or unset, is false.
@@ -173,6 +175,7 @@ const dispatch = await createDispatcher(pool, {
   moduleRegistry,
   blobStorage,
   mailAttachmentStorage,
+  speechGateway: { port: Number(process.env.AI_GATEWAY_PORT ?? "3002"), token: speechGatewayToken },
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
   trustProxy,
   customRouteDependencies,

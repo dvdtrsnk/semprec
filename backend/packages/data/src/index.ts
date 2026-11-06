@@ -686,6 +686,14 @@ export {
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export {
+  getMessageSpeech,
+  getMessageSpeechSource,
+  MessageSpeechCapacityError,
+  messageSpeechStagedBlobExists,
+  storeMessageSpeech,
+  withMessageSpeechGuard,
+} from "./semp/messageSpeechStore.js";
+export {
   claimSempMessage,
   finishSempMessageTurn,
   getSempMessageFrontier,

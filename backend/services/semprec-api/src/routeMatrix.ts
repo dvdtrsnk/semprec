@@ -112,6 +112,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "semp thread send message", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages`, surface: "api", public: false, tenancy: "tenant" },
   {
+    name: "semp message speech",
+    method: "POST",
+    path: `/api/semp/threads/${EXAMPLE_ID}/messages/${EXAMPLE_ID}/speech`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "semp thread detail",
     method: "GET",
     path: `/api/semp/threads/${EXAMPLE_ID}`,

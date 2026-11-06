@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { WebSocket } from "ws";
 import { randomBytes, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -56,6 +57,7 @@ import {
   resolveMailModuleIds,
   resolveNotificationsBySource,
   settleAudioGatewayCall,
+  storeMessageSpeech,
   setSempThreadInvalidationHook,
   revokeInvite,
   setProjectMcpGrantForAgentPage,
@@ -1432,6 +1434,54 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(answer.text, "error", "code")).toBe("not_found");
     await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}/messages` });
   },
+  "semp message speech": () =>
+    leavesAUnchanged(async () => {
+      const created = await sendOk(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages`,
+        body: { text: "Speech isolation" },
+      });
+      const ownMessageId = readString(created, "messageId");
+      const foreignMessage = await inTenantTransaction(a.tenantId, async (client) => {
+        const result = await client.query<{ id: string }>("SELECT id FROM semp_messages WHERE thread_id = $1 LIMIT 1", [
+          a.sempThreadId,
+        ]);
+        if (!result.rows[0]) throw new Error("Missing foreign message");
+        return result.rows[0].id;
+      });
+      const key = `${b.tenantId}/blobs/${randomUUID()}`;
+      await filesStorage.writeStream(key, Readable.from([Buffer.from("AB")]), { maxBytes: 2 });
+      await inTenantTransaction(b.tenantId, (client) =>
+        storeMessageSpeech(client, {
+          threadId: b.sempThreadId,
+          messageId: ownMessageId,
+          voice: "alloy",
+          text: "Speech isolation",
+          storageKey: key,
+          byteSize: 2,
+        }),
+      );
+      const response = await expectForeignLikeRandom(
+        b.member,
+        [a.sempThreadId, foreignMessage],
+        ([thread, message]) => ({
+          method: "POST",
+          path: `/api/semp/threads/${thread}/messages/${message}/speech`,
+        }),
+      );
+      expect(response.status).toBe(404);
+      const wrongThread = await send(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages/${foreignMessage}/speech`,
+      });
+      expect(wrongThread.status).toBe(404);
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages/${ownMessageId}/speech`,
+      });
+      expect(own.status).toBe(200);
+      expect(own.text).toBe("AB");
+    }),
   "agent run detail": async () => {
     await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
       method: "GET",

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
@@ -28,6 +28,8 @@ import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { registerItemPreWriteTransform } from "../../chokePoint/hooks.js";
+import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
+import { storeMessageSpeech } from "../../semp/messageSpeechStore.js";
 
 /** In-memory storage that enforces `maxBytes` like the real writer and records deletes. */
 class FakeStorage implements BlobStorageWriter {
@@ -659,6 +661,78 @@ describe("standalone blobs (issue #1401)", () => {
   });
 
   describe("sweepUnreferencedBlobs", () => {
+    it("keeps speech and shared item bytes until their last reference is removed", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "semprec-speech-collection-"));
+      const storage = new LocalFsBlobStorageWriter(dir);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const tenant = getTenantZeroId();
+      let failure: unknown;
+      let failed = false;
+      try {
+        const role = await runInTenant(tenant, () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const key = `${tenant}/blobs/${randomUUID()}`;
+        await storage.writeStream(key, Readable.from([Buffer.from("AB")]), { maxBytes: 2 });
+        const fixture = await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const turn = await sendSempMessage(client, { text: "speech", context: [], hasContext: false });
+            const speech = await storeMessageSpeech(client, {
+              threadId: turn.threadId,
+              messageId: turn.messageId,
+              text: "speech",
+              voice: "alloy",
+              storageKey: key,
+              byteSize: 2,
+            });
+            return { ...turn, blobId: speech.blob.id };
+          }),
+        );
+        const cp = createChokePoint(runtime);
+        const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Speech references" }));
+        await runInTenant(tenant, () =>
+          cp.createProperty({ databaseId: database.id, key: "photo", name: "Photo", type: "image" }),
+        );
+        const item = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: database.id, properties: { photo: { blobId: fixture.blobId } } }),
+        );
+        const future = new Date("9999-01-01T00:00:00Z");
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(0);
+        expect(await readFile(join(dir, key))).toEqual(Buffer.from("AB"));
+        // No production thread-deletion entry point exists yet; exercise the registered cascade directly.
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const deleted = await client.query("DELETE FROM semp_threads WHERE id = $1", [fixture.threadId]);
+            expect(deleted.rowCount).toBe(1);
+          }),
+        );
+        const cache = await runInTenant(tenant, () =>
+          runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM semp_message_speech WHERE message_id = $1",
+            [fixture.messageId],
+          ),
+        );
+        expect(cache.rows).toEqual([{ count: 0 }]);
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(0);
+        expect(await readFile(join(dir, key))).toEqual(Buffer.from("AB"));
+        await runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { photo: null } }),
+        );
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(1);
+        await expect(readFile(join(dir, key))).rejects.toMatchObject({ code: "ENOENT" });
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      const cleanup = await Promise.allSettled([runtime.end(), rm(dir, { recursive: true, force: true })]);
+      const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (failed || errors.length)
+        throw new AggregateError([...(failed ? [failure] : []), ...errors], "Speech collection or cleanup failed");
+    });
+
     it("removes a stale unreferenced standalone blob and its bytes, keeping referenced and fresh ones", async () => {
       const storage = new FakeStorage();
       const database = await recipesDatabaseWithImageProperty();

@@ -33,9 +33,9 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** The `public: false` matrix entries answered by the eight tenant-scoped bespoke listeners. */
+/** The `public: false` matrix entries answered by tenant-scoped bespoke listeners. */
 const TENANT_LISTENER_PATH =
-  /^\/(?:api\/notifications\/|api\/schema$|api\/approval-requests|mcp$|api\/agent-runs\/|api\/projects\/[^/]+\/mcp-grants|api\/mcp-tool-registrations\/|api\/files$|api\/blobs\/)/;
+  /^\/(?:api\/notifications\/|api\/schema$|api\/approval-requests|mcp$|api\/agent-runs\/|api\/projects\/[^/]+\/mcp-grants|api\/mcp-tool-registrations\/|api\/files$|api\/blobs\/|api\/semp\/threads\/[^/]+\/messages\/[^/]+\/speech$)/;
 
 const tenantRoutes = ROUTE_MATRIX.filter((r) => r.surface === "api" && !r.public && TENANT_LISTENER_PATH.test(r.path));
 
@@ -153,7 +153,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   }
 
   it("covers every tenant-scoped listener route of the matrix", () => {
-    expect(tenantRoutes).toHaveLength(15);
+    expect(tenantRoutes).toHaveLength(16);
   });
 
   describe.each(tenantRoutes)("$name ($method $path)", (route) => {

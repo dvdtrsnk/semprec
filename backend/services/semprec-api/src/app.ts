@@ -13,6 +13,8 @@ import {
 } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createSempThreadRoutes } from "./sempThreadsHandler.js";
+import { createSempSpeechRequestListener, isMessageSpeechPath } from "./sempSpeechHandler.js";
+import type { HttpAiGatewayClientConfig } from "@semprec/ai-gateway-client";
 import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
@@ -52,6 +54,7 @@ export interface AppOptions {
   blobStorage: BlobStorageWriter;
   /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
   mailAttachmentStorage?: BlobStorageWriter;
+  speechGateway?: HttpAiGatewayClientConfig;
   /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
   /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
@@ -150,6 +153,7 @@ export async function createDispatcher(
     files: options.blobStorage,
     mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
   });
+  const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
@@ -174,6 +178,10 @@ export async function createDispatcher(
     if (dispatchResourceRoute(req, res)) return;
 
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "POST" && isMessageSpeechPath(pathname)) {
+      speechListener(req, res);
+      return;
+    }
     if (pathname === "/healthz") {
       void healthzListener(req, res);
       return;

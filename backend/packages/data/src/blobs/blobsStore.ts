@@ -181,6 +181,7 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
        )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
        AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
+       AND NOT EXISTS (SELECT 1 FROM semp_message_speech WHERE tenant_id = app_tenant_default() AND blob_id = $1)
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],
   );
