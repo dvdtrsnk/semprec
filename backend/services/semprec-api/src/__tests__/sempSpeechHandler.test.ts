@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,7 @@ import {
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 import { MESSAGE_SPEECH_VOICES } from "../sempSpeechHandler.js";
+import { logger } from "../logger.js";
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const blockRoot = resolve(backend, "../shared/block-model");
@@ -280,7 +281,9 @@ describe("message speech HTTP", () => {
       await cleanup();
     } catch (error) {
       if (!outcome.ok)
-        throw new AggregateError([outcome.error, error], "Speech test and cleanup failed", { cause: error });
+        // The action failure remains primary; retain the caught cleanup failure in errors.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([outcome.error, error], "Speech test and cleanup failed", { cause: outcome.error });
       throw error;
     }
     if (!outcome.ok)
@@ -475,6 +478,55 @@ describe("message speech HTTP", () => {
         expect(cacheRows.rows).toEqual([{ count: 0 }]);
       },
       () => setMode("normal"),
+    );
+  });
+
+  it("returns failure when provider and owned filesystem cleanup both fail", async () => {
+    const value = await turn("Provider and cleanup failure");
+    const before = await accounting();
+    const calls = providerCalls();
+    const blobDirectory = join(directory, tenant, "blobs");
+    await mkdir(blobDirectory, { recursive: true });
+    const originalMode = (await stat(blobDirectory)).mode & 0o777;
+    await setMode("fail");
+    const observedLog = vi.spyOn(logger, "error");
+    await withCleanup(
+      async () => {
+        await chmod(blobDirectory, 0);
+        await expect(readdir(blobDirectory)).rejects.toMatchObject({ code: "EACCES" });
+        const response = await post(value.threadId, value.messageId);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({ error: { code: "internal_error" } });
+        expect(observedLog).toHaveBeenCalledWith({ errorName: "AggregateError" }, "Speech request failed");
+        await vi.waitFor(() => expect(providerCalls()).toBe(calls + 1), { timeout: 5000 });
+        const after = await accounting();
+        const newRows = after.rows.filter((row) => !before.rows.some((old) => old.id === row.id));
+        expect(newRows).toHaveLength(1);
+        expect(newRows[0]?.status).toBe("failed");
+        const cacheRows = await runInTenant(tenant, () =>
+          pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM semp_message_speech WHERE message_id = $1",
+            [value.messageId],
+          ),
+        );
+        expect(cacheRows.rows).toEqual([{ count: 0 }]);
+      },
+      async () => {
+        observedLog.mockRestore();
+        const failures: unknown[] = [];
+        try {
+          await chmod(blobDirectory, originalMode);
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await setMode("normal");
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length)
+          throw new AggregateError(failures, "Speech fixture restoration failed", { cause: failures[0] });
+      },
     );
   });
 

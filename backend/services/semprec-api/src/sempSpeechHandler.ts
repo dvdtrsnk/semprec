@@ -142,6 +142,8 @@ export function createSempSpeechRequestListener(
             );
             if (!exists) await storage.delete(key);
           } catch (cleanupError) {
+            // The fill failure remains primary; the caught cleanup failure is retained in errors.
+            // eslint-disable-next-line preserve-caught-error
             throw new AggregateError([operationFailure, cleanupError], "Speech fill and cleanup failed", {
               cause: operationFailure,
             });
