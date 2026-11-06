@@ -16,6 +16,8 @@ import { ingestUploadedBlob } from "../blobs/fileUploadStore.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { appendHistoryEntry } from "../inbox/proposalHistory.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
@@ -217,6 +219,66 @@ describe("Inbox proposal tool owner", () => {
           )
         ).rows,
       ).toEqual(baseline.rows);
+    });
+  });
+
+  it("preserves synthetic historical keys and an existing relation descriptor without effects", async () => {
+    const own = await createCard(owner, false);
+    const other = await createCard(owner, false);
+    const foreignCard = await createCard(foreign, false);
+    const tool = createInboxProposalGetTool(runtime);
+    await runInTenant(owner, async () => {
+      const association = await runtime.query<{ edge_id: string; property_id: string }>(
+        `SELECT edge.id AS edge_id, property.id AS property_id FROM properties property
+         JOIN relation_definitions def ON def.property_id_a = property.id OR def.property_id_b = property.id
+         JOIN item_relations edge ON edge.relation_definition_id = def.id
+         WHERE property.database_id = $1 AND property.key = 'sourceInbox'
+           AND (($2 = edge.item_a AND $3 = edge.item_b) OR ($2 = edge.item_b AND $3 = edge.item_a))`,
+        [own.proposalsId, own.cardId, own.sourceId],
+      );
+      expect(association.rows).toHaveLength(1);
+      const actual = association.rows[0];
+      if (!actual) throw new Error("Missing sourceInbox association");
+      const original = await runtime.query<{ properties: { history?: unknown } }>(
+        "SELECT properties FROM items WHERE id = $1",
+        [own.cardId],
+      );
+      const descriptor = {
+        edgeId: actual.edge_id,
+        relationPropertyId: actual.property_id,
+        callerItemId: own.cardId,
+        targetItemId: own.sourceId,
+      };
+      const history = appendHistoryEntry(original.rows[0]?.properties.history, "Synthetic historical entry", "user", {
+        addedRelations: [descriptor],
+      });
+      await withTransaction(runtime, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: own.proposalsId,
+            itemId: own.cardId,
+            propertiesPatch: { userEditedKeys: ["name"], history },
+          },
+          { allowedSystemKeys: ["userEditedKeys", "history"] },
+        ),
+      );
+      const snapshot = () =>
+        runtime.query(
+          `SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card,
+         (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM items) AS items,
+         (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments`,
+          [own.cardId],
+        );
+      const baseline = await snapshot();
+      const result = await tool(own.runId, { proposalId: own.cardId });
+      expect(result.error).toBe(false);
+      expect(JSON.parse(result.result)).toMatchObject({ userEditedKeys: ["name"], history });
+      const missing = await tool(own.runId, { proposalId: randomUUID() });
+      expect(await tool(own.runId, { proposalId: other.cardId })).toEqual(missing);
+      expect(await tool(own.runId, { proposalId: foreignCard.cardId })).toEqual(missing);
+      expect(missing).toEqual({ error: true, result: "Proposal not found" });
+      expect((await snapshot()).rows).toEqual(baseline.rows);
     });
   });
 

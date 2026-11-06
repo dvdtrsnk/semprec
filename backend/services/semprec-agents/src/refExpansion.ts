@@ -38,7 +38,7 @@ export async function expandSempRefs(
       sections.push("Reference unavailable.");
       continue;
     }
-    let label = old.success ? old.data.label : ref.kind;
+    let label = old.success ? old.data.label : "";
     try {
       const observed = await withTransaction(pool, async (client) => {
         const resolved = await readSempRefContext(client, ref);

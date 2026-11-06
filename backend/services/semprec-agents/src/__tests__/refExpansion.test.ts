@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
 import {
   createChokePoint,
   getDatabaseByModuleId,
@@ -146,9 +146,28 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(result.text).toContain("Attachment type cannot be extracted.");
     expect(result.text).not.toContain("Private");
     expect(result.images).toEqual([]);
+    expect(result.context.map((ref) => ref.label)).toEqual(["Corrupt", "Large", "Unknown", "", ""]);
     const after = await runInTenant(tenant, () =>
       runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs"),
     );
     expect(after.rows).toEqual(before.rows);
+  });
+
+  it("preserves historical labels while fresh unavailable references carry empty labels", async () => {
+    const own = await createFile(tenant, "Current label", Buffer.from("unsupported"));
+    const other = await createFile(foreign, "Foreign label", Buffer.from("unsupported"));
+    const missing = { ...own, itemId: randomUUID() };
+    const refs = [own, other, missing, { ...own, label: "Historical label" }, { ...missing, label: "Old missing" }];
+    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+    expect(result.context).toEqual([
+      { ...own, label: "Current label" },
+      { ...other, label: "" },
+      { ...missing, label: "" },
+      { ...own, label: "Historical label" },
+      { ...missing, label: "Old missing" },
+    ]);
+    for (const ref of result.context) expect(labeledSempMessageRefSchema.safeParse(ref).success).toBe(true);
+    expect(result.text).toContain("no longer exists or is unavailable");
+    expect(result.text).not.toContain("Foreign label");
   });
 });
