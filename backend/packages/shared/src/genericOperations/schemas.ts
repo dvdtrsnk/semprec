@@ -364,19 +364,19 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
-export const PageEnsureInputSchema = z.object({ itemId: z.string() }).strict();
+export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 
 export const PageGetInputSchema = z
   .object({
-    itemId: z.string(),
+    itemId: canonicalUuid,
     format: z.literal("summary").default("summary"),
     limit: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type PageGetInput = z.infer<typeof PageGetInputSchema>;
 
-export const ValueLinkInputSchema = z.object({ itemId: z.string(), propertyKey: z.string() }).strict();
+export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
 /** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */

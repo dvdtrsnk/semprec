@@ -2349,8 +2349,14 @@ const MCP_CASES = {
   },
   "link.unlink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
   "link.relink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
-  "page.ensure": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId })),
-  "page.get": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" })),
+  "page.ensure": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+    await p.excludesA({ itemId: b.itemId }, []);
+  },
+  "page.get": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));
+    await p.excludesA({ itemId: b.itemId, format: "summary" }, []);
+  },
   "page.restoreVersion": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
       itemId,

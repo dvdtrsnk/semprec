@@ -16,7 +16,7 @@ export async function readPageSummary(client: PoolClient, itemId: string, locale
     const titleValue: unknown = doc.getMap("meta").get("title");
     const catalogs = await loadModuleCatalogs(import.meta.url);
     const title =
-      typeof titleValue === "string" && titleValue.length > 0
+      typeof titleValue === "string"
         ? titleValue
         : resolveCatalogLabel(null, locale === "cs" ? catalogs.cs : catalogs.en, catalogs.en, "page.notes.title");
     const all =
