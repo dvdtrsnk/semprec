@@ -66,6 +66,8 @@ describe("Semp history reference resolution", () => {
     const randomRef = { kind: "item" as const, itemId: randomUUID(), databaseId: database.id };
     const blockRef = { kind: "block" as const, itemId: item.id, blockId: randomUUID() };
     const segmentRef = { kind: "transcriptSegment" as const, itemId: item.id, startsAt: 0, endsAt: 1 };
+    const secondBlock = { ...blockRef, blockId: randomUUID() };
+    const secondSegment = { ...segmentRef, startsAt: 2, endsAt: 3 };
     const originalContext = [
       { ...ref, label: "Historic" },
       { kind: "future", data: "kept" },
@@ -73,6 +75,8 @@ describe("Semp history reference resolution", () => {
       randomRef,
       blockRef,
       segmentRef,
+      secondBlock,
+      secondSegment,
     ];
     const sent = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) =>
@@ -83,14 +87,34 @@ describe("Semp history reference resolution", () => {
         }),
       ),
     );
+    const batchSizes: number[] = [];
     const read = () =>
       runInTenant(tenant, () =>
-        withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+        withTransaction(runtime, async (client) => {
+          /* eslint-disable @typescript-eslint/unbound-method */
+          const query = client.query;
+          client.query = new Proxy(query, {
+            apply(target, receiver, args: unknown[]) {
+              if (typeof args[0] === "string" && args[0].includes("AS r(item_id, database_id, ordinal)")) {
+                const values: unknown = args[1];
+                if (Array.isArray(values) && Array.isArray(values[0])) batchSizes.push(values[0].length);
+              }
+              return Reflect.apply(target, receiver, args);
+            },
+          });
+          /* eslint-enable @typescript-eslint/unbound-method */
+          try {
+            return await listSempThreadMessages(client, sent.threadId, 50, null);
+          } finally {
+            client.query = query;
+          }
+        }),
       );
     await runInTenant(tenant, () =>
       cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { name: "New" } }),
     );
     let history = await read();
+    expect(batchSizes).toEqual([3, 2, 2]);
     let user = history.rows.find((row) => row.id === sent.messageId);
     expect(user?.context).toEqual([
       { ...ref, label: "Historic", resolved: { label: "New", databaseKey: "tasks", state: "active" } },
@@ -99,6 +123,8 @@ describe("Semp history reference resolution", () => {
       { ...randomRef, resolved: { label: null, databaseKey: null, state: "purged" } },
       { ...blockRef, resolved: { label: "New", databaseKey: "tasks", state: "active" } },
       { ...segmentRef, resolved: { label: "New", databaseKey: "tasks", state: "active" } },
+      { ...secondBlock, resolved: { label: "New", databaseKey: "tasks", state: "active" } },
+      { ...secondSegment, resolved: { label: "New", databaseKey: "tasks", state: "active" } },
     ]);
     const stored = await runInTenant(tenant, () =>
       runtime.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [sent.messageId]),
@@ -238,9 +264,31 @@ describe("Semp history reference resolution", () => {
     const sent = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) => sendSempMessage(client, { text: "Question", context, hasContext: true })),
     );
+    let runQueries = 0;
+    let approvalQueries = 0;
     const page = await runInTenant(tenant, () =>
-      withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+      withTransaction(runtime, async (client) => {
+        /* eslint-disable @typescript-eslint/unbound-method */
+        const query = client.query;
+        client.query = new Proxy(query, {
+          apply(target, receiver, args: unknown[]) {
+            if (typeof args[0] === "string" && args[0].includes("LEFT JOIN agent_runs a ON a.id = r.id"))
+              runQueries += 1;
+            if (typeof args[0] === "string" && args[0].includes("LEFT JOIN approval_requests a ON a.id = r.id"))
+              approvalQueries += 1;
+            return Reflect.apply(target, receiver, args);
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+        try {
+          return await listSempThreadMessages(client, sent.threadId, 50, null);
+        } finally {
+          client.query = query;
+        }
+      }),
     );
+    expect(runQueries).toBe(1);
+    expect(approvalQueries).toBe(1);
     expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
       { ...context[0], resolved: { label: "😀".repeat(120), databaseKey: null, state: "active" } },
       { ...context[1], resolved: { label: description, databaseKey: null, state: "active" } },
@@ -329,11 +377,29 @@ describe("Semp history reference resolution", () => {
           sendSempMessage(client, { text: "Question", context: [ref, missing], hasContext: true }),
         ),
       );
+      let attachmentQueries = 0;
       const read = () =>
         runInTenant(tenant, () =>
-          withTransaction(runtime, (client) => listSempThreadMessages(client, sent.threadId, 50, null)),
+          withTransaction(runtime, async (client) => {
+            /* eslint-disable @typescript-eslint/unbound-method */
+            const query = client.query;
+            client.query = new Proxy(query, {
+              apply(target, receiver, args: unknown[]) {
+                if (typeof args[0] === "string" && args[0].includes("LEFT JOIN mail_attachments a ON a.id = r.id"))
+                  attachmentQueries += 1;
+                return Reflect.apply(target, receiver, args);
+              },
+            });
+            /* eslint-enable @typescript-eslint/unbound-method */
+            try {
+              return await listSempThreadMessages(client, sent.threadId, 50, null);
+            } finally {
+              client.query = query;
+            }
+          }),
         );
       let page = await read();
+      expect(attachmentQueries).toBe(1);
       expect(page.rows.find((row) => row.id === sent.messageId)?.context).toEqual([
         { ...ref, resolved: { label: "note.txt", databaseKey: "emails", state: "active" } },
         { ...missing, resolved: { label: null, databaseKey: null, state: "purged" } },
