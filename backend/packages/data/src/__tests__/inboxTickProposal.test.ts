@@ -5835,7 +5835,9 @@ describe("Markdown page proposal validation", () => {
           ),
         );
       const modelEnvelope = { markdown: "Hello", placement: { afterHeadingText: "  HEADING " } };
-      expect((await resolvePlacement(own.project.id, modelEnvelope)).properties.placement).toEqual({
+      const resolvedEnvelope = await resolvePlacement(own.project.id, modelEnvelope);
+      expect(JSON.stringify(resolvedEnvelope)).not.toContain("afterHeadingText");
+      expect(resolvedEnvelope.properties.placement).toEqual({
         afterHeading: "heading",
       });
       expect(
