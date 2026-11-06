@@ -361,6 +361,28 @@ it("handles already closed and destroyed-but-not-yet-closed streams", async () =
   }
 });
 
+it("does not transfer a stream destroyed immediately after its readable event", async () => {
+  const primary = new LocalFsBlobStorageWriter("/unused-primary");
+  const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
+  const stream = new Readable({
+    read() {
+      this.emit("readable");
+      this.destroy();
+    },
+  });
+  vi.spyOn(primary, "readStream").mockReturnValue(stream);
+  const second = vi.spyOn(alternate, "readStream");
+  try {
+    await expect(openBlobFromRoots({ primary, alternate, storageKey: "key" })).rejects.toThrow(
+      "closed before ownership transfer",
+    );
+    expect(stream.closed).toBe(true);
+    expect(second).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
 it("preserves primary and asynchronous cleanup errors in order after close", async () => {
   const primary = new LocalFsBlobStorageWriter("/unused-primary");
   const alternate = new LocalFsBlobStorageWriter("/unused-alternate");

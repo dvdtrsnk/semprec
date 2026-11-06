@@ -28,6 +28,12 @@ interface CleanupBudget {
   lastMissing?: Error;
 }
 
+interface OpenedStream {
+  stream: Readable;
+  openingErrors: unknown[];
+  detachOpeningObserver(): void;
+}
+
 async function waitForReadable(stream: Readable, signal: AbortSignal | undefined): Promise<void> {
   const outcome = await new Promise<{ ok: true } | { ok: false; error: unknown }>((resolve) => {
     const remove = () => {
@@ -163,30 +169,31 @@ async function openIn(
   range: OpenBlobFromRootsInput["range"],
   signal: AbortSignal | undefined,
   budget: CleanupBudget,
-): Promise<Readable | null> {
+): Promise<OpenedStream | null> {
   signal?.throwIfAborted();
   const stream = storage.readStream(storageKey, range);
   const openingErrors: unknown[] = [];
   const openingError = (error: unknown) => {
     if (openingErrors.length < 2 && !openingErrors.some((entry) => entry === error)) openingErrors.push(error);
   };
+  const detachOpeningObserver = () => stream.off("error", openingError);
   stream.on("error", openingError);
   try {
     await waitForReadable(stream, signal);
     if (openingErrors.length) throw openingErrors[0];
     signal?.throwIfAborted();
+    if (stream.closed || stream.destroyed)
+      throw stream.errored ?? new Error("Blob stream closed before ownership transfer");
   } catch (err) {
-    await closeOwnedStream(stream, err, budget, openingErrors, () => stream.off("error", openingError));
+    await closeOwnedStream(stream, err, budget, openingErrors, detachOpeningObserver);
     if (isMissingFileError(err)) {
       signal?.throwIfAborted();
       budget.lastMissing = err;
       return null;
     }
     throw err;
-  } finally {
-    stream.off("error", openingError);
   }
-  return stream;
+  return { stream, openingErrors, detachOpeningObserver };
 }
 
 /**
@@ -199,8 +206,8 @@ async function openIn(
 export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<Readable | null> {
   input.signal?.throwIfAborted();
   const budget: CleanupBudget = {};
-  let stream = await openIn(input.primary, input.storageKey, input.range, input.signal, budget);
-  if (!stream) {
+  let opened = await openIn(input.primary, input.storageKey, input.range, input.signal, budget);
+  if (!opened) {
     input.signal?.throwIfAborted();
     if (budget.deadline !== undefined && performance.now() >= budget.deadline)
       throw new AggregateError(
@@ -208,17 +215,22 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
         "Blob cleanup deadline expired before fallback",
         { cause: budget.lastMissing },
       );
-    stream = await openIn(input.alternate, input.storageKey, input.range, input.signal, budget);
+    opened = await openIn(input.alternate, input.storageKey, input.range, input.signal, budget);
   }
-  if (!stream) {
+  if (!opened) {
     input.signal?.throwIfAborted();
     return null;
   }
+  const { stream, openingErrors, detachOpeningObserver } = opened;
   try {
     input.signal?.throwIfAborted();
+    if (openingErrors.length) throw openingErrors[0];
+    if (stream.closed || stream.destroyed)
+      throw stream.errored ?? new Error("Blob stream closed before ownership transfer");
+    detachOpeningObserver();
     return stream;
   } catch (err) {
-    await closeOwnedStream(stream, err, budget);
+    await closeOwnedStream(stream, err, budget, openingErrors, detachOpeningObserver);
     throw err;
   }
 }
