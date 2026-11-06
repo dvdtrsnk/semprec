@@ -7,6 +7,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { insertValueLink } from "../chokePoint/valueLinksStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let admin: Pool;
 let data: Pool;
@@ -55,6 +56,41 @@ describe("explicit value link operations", () => {
         valueKind: "inheritedBroken",
         brokenBy: "agent",
       });
+    });
+  });
+
+  it("publishes committed link changes and does not publish for repeated or refused unlink", async () => {
+    await runInTenant(tenant, async () => {
+      const db = await cp.createDatabase({ name: "Link notifications" });
+      await cp.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+      const source = await cp.createItem({ databaseId: db.id, properties: { name: "source" } });
+      const target = await cp.createItem({ databaseId: db.id, properties: { name: "old" } });
+      await withTransaction(data, (client) =>
+        insertValueLink(client, {
+          itemId: target.id,
+          propertyKey: "name",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "name" }],
+        }),
+      );
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await cp.unlinkValue({ itemId: target.id, propertyKey: "name" }, "user");
+        expect(events).toContainEqual(expect.objectContaining({ scope: "item", itemId: target.id, op: "update" }));
+        expect((await cp.getValueLinksForItems([target.id])).get(target.id)?.name?.valueKind).toBe("inheritedBroken");
+        events.length = 0;
+        await cp.unlinkValue({ itemId: target.id, propertyKey: "name" }, "user");
+        await expect(cp.unlinkValue({ itemId: target.id, propertyKey: "missing" }, "user")).rejects.toMatchObject({
+          code: "value_link_conflict",
+        });
+        expect(events).toEqual([]);
+        await cp.relinkValue({ itemId: target.id, propertyKey: "name" });
+        expect(events).toContainEqual(expect.objectContaining({ scope: "item", itemId: target.id, op: "update" }));
+        expect((await cp.getItem(db.id, target.id))?.properties.name).toBe("source");
+      } finally {
+        setInvalidationHook(() => {});
+      }
     });
   });
 
