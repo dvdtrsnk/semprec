@@ -68,28 +68,53 @@ describe("settleBlobReadStream", () => {
     expect(stream.listenerCount("error")).toBe(0);
   });
 
+  it("retains a synchronous cleanup failure after delegated destruction without a primary", async () => {
+    const cleanup = new Error("synthetic synchronous destroy failure");
+    const stream = new Readable({ read() {} });
+    const destroy = stream.destroy.bind(stream);
+    stream.destroy = (error?: Error) => {
+      destroy(error);
+      throw cleanup;
+    };
+    let caught: unknown;
+    try {
+      await settleBlobReadStream(stream, {});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(BlobReadCleanupError);
+    if (!(caught instanceof BlobReadCleanupError)) throw new Error("Missing typed cleanup failure");
+    expect(caught.errors).toEqual([cleanup]);
+    expect(caught.cause).toBe(cleanup);
+    expect(stream.closed).toBe(true);
+  });
+
   it("reports a bounded stalled cleanup and observes its eventual late error and close", async () => {
     const primary = new Error("synthetic read failure");
-    const cleanup = new Error("synthetic late cleanup failure");
+    const cleanup = new Error("synthetic asynchronous cleanup failure");
+    const late = new Error("synthetic late cleanup failure");
     let release: (() => void) | undefined;
     const stream = new Readable({
       read() {},
       destroy(_error, callback) {
-        release = () => callback(cleanup);
+        release = () => callback(late);
       },
     });
     const closed = new Promise<void>((resolve) => stream.once("close", resolve));
     try {
       let caught: unknown;
       try {
-        await settleBlobReadStream(stream, {}, { error: primary });
+        const settlement = settleBlobReadStream(stream, {}, { error: primary });
+        stream.emit("error", cleanup);
+        await settlement;
       } catch (error) {
         caught = error;
       }
       expect(caught).toBeInstanceOf(BlobReadCleanupError);
       if (!(caught instanceof BlobReadCleanupError)) throw new Error("Missing typed cleanup failure");
       expect(caught.errors[0]).toBe(primary);
-      expect(caught.errors[1]).toBeInstanceOf(Error);
+      expect(caught.errors[1]).toBe(cleanup);
+      expect(caught.errors[2]).toBeInstanceOf(Error);
       expect(caught.cause).toBe(primary);
       expect(stream.closed).toBe(false);
     } finally {
