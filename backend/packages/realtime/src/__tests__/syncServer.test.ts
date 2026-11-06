@@ -1639,6 +1639,56 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     });
   }
 
+  it("bounds voice replay before delivery and scopes callbacks to the authenticated run actor", async () => {
+    const role = await runAsSystem("test:role", () =>
+      runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    const run = await createRunIn(tenantA, userA);
+    const inserted: string[] = [];
+    for (let i = 0; i < 256; i++) inserted.push((await silentEventIn(tenantA, run.id)).id);
+    const received: string[] = [];
+    const errors: unknown[] = [];
+    const input = {
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      afterEventId: "0",
+      onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
+        if (frame.type === "event") received.push(frame.event.id);
+        return true;
+      },
+      onFailure(error: unknown) {
+        errors.push(error);
+      },
+    };
+    const dispose = await tenantServer.subscribeVoice(input);
+    expect(received).toEqual(inserted);
+    const live = await announcedEventIn(tenantA, run.id);
+    await vi.waitFor(() => expect(received.at(-1)).toBe(live.id));
+    dispose();
+    dispose();
+    await announcedEventIn(tenantA, run.id);
+    await settle();
+    expect(received).toHaveLength(257);
+    expect(errors).toEqual([]);
+    const refused: string[] = [];
+    await expect(
+      tenantServer.subscribeVoice({
+        ...input,
+        onFrame: (frame) => {
+          if (frame.type === "event") refused.push(frame.event.id);
+          return true;
+        },
+      }),
+    ).rejects.toThrow("replay exceeds");
+    expect(refused).toEqual([]);
+    for (const other of [{ tenantId: tenantB }, { userId: randomUUID() }, { runId: randomUUID() }])
+      await expect(tenantServer.subscribeVoice({ ...input, ...other })).rejects.toThrow("unavailable");
+  });
+
   it("delivers nothing to a socket of another tenant watching a run, as for an unknown run id", async () => {
     const run = await createRunIn(tenantA, userA);
     await silentEventIn(tenantA, run.id);

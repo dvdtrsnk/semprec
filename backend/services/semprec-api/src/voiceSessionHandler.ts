@@ -153,10 +153,12 @@ export function createVoiceSessionHandler(
       reject = rejectPromise;
     });
     void ended.catch(() => {});
+    let finished = false;
     const aborted = () => reject(signal.reason);
     signal.addEventListener("abort", aborted, { once: true });
     const onFrame = (frame: VoiceRunFrame): boolean => {
       if (signal.aborted) return false;
+      if (finished) return true;
       if (frame.type === "delta" && !("chunk" in frame.message)) {
         const delta = frame.message.delta;
         if (
@@ -183,6 +185,7 @@ export function createVoiceSessionHandler(
       }
       if (frame.type === "event" && frame.event.kind === "turn_end") {
         if (!appendText(session, "", true)) return false;
+        finished = true;
         finish();
       }
       return true;
@@ -246,24 +249,40 @@ export function createVoiceSessionHandler(
             {
               onPartial(text) {
                 if (sender.signal.aborted) return;
-                if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
-                sender.sendControl({ type: "transcript", text, final: false });
+                try {
+                  if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
+                  if (Buffer.byteLength(JSON.stringify({ type: "transcript", text, final: false })) > 4096) {
+                    sender.fail("overloaded");
+                    return;
+                  }
+                  sender.sendControl({ type: "transcript", text, final: false });
+                } catch (error) {
+                  fail(session, error);
+                }
               },
               onFinal(text) {
                 if (sender.signal.aborted) return;
-                if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
-                if (!sender.sendControl({ type: "transcript", text, final: true }) || !text.trim()) return;
-                if (session.queued >= MAX_QUEUED_TURNS) {
-                  sender.fail("overloaded");
-                  return;
+                try {
+                  if (text.trim() && (session.speaking || session.speechController)) stopSpeech(session);
+                  if (Buffer.byteLength(JSON.stringify({ type: "transcript", text, final: true })) > 4096) {
+                    sender.fail("overloaded");
+                    return;
+                  }
+                  if (!sender.sendControl({ type: "transcript", text, final: true }) || !text.trim()) return;
+                  if (session.queued >= MAX_QUEUED_TURNS) {
+                    sender.fail("overloaded");
+                    return;
+                  }
+                  session.queued++;
+                  session.work = session.work
+                    .then(() => turn(session, text))
+                    .catch((error: unknown) => fail(session, error))
+                    .finally(() => {
+                      session.queued--;
+                    });
+                } catch (error) {
+                  fail(session, error);
                 }
-                session.queued++;
-                session.work = session.work
-                  .then(() => turn(session, text))
-                  .catch((error: unknown) => fail(session, error))
-                  .finally(() => {
-                    session.queued--;
-                  });
               },
               onError(code) {
                 sender.fail(
