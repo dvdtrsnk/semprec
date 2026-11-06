@@ -598,12 +598,14 @@ describe("Semp reference turn reads", () => {
       const detailsSchema = z.object({
         thread: z.object({ messages: z.array(z.object({ id: z.string() })), truncated: z.boolean() }),
       });
-      await runInTenant(tenant, async () => {
-        const snapshot = () =>
+      const snapshot = () =>
+        runInTenant(tenant, () =>
           runtime.query(
             "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM mail_message_meta) AS messages, (SELECT count(*)::int FROM item_search_index) AS search",
-          );
-        const before = await snapshot();
+          ),
+        );
+      const before = await snapshot();
+      await runInTenant(tenant, async () => {
         const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
         if (!resolved) throw new Error("Missing own mail thread");
         const thread = detailsSchema.parse(resolved.details).thread;
@@ -613,11 +615,11 @@ describe("Semp reference turn reads", () => {
         await expect(
           withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, itemId: randomUUID() })),
         ).resolves.toBeNull();
-        await expect(
-          runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
-        ).resolves.toBeNull();
-        expect((await snapshot()).rows).toEqual(before.rows);
       });
+      await expect(
+        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+      ).resolves.toBeNull();
+      expect((await snapshot()).rows).toEqual(before.rows);
     } catch (error) {
       failed = true;
       failure = error;

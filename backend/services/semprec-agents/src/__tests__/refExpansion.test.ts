@@ -271,15 +271,17 @@ describe("tenant-scoped reference blob expansion", () => {
       };
     });
     const refs = [fixture.capture, fixture.card];
-    await runInTenant(tenant, async () => {
-      const snapshot = () =>
+    const snapshot = () =>
+      runInTenant(tenant, () =>
         runtime.query(
           `SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges,
          (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($1::uuid[])) AS fixture_items,
          (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM item_relations r WHERE r.item_a = ANY($1::uuid[]) OR r.item_b = ANY($1::uuid[])) AS fixture_edges`,
           [[fixture.capture.itemId, fixture.card.itemId]],
-        );
-      const before = await snapshot();
+        ),
+      );
+    const before = await snapshot();
+    await runInTenant(tenant, async () => {
       const result = await expandSempRefs(runtime, refs, { files, mailAttachments });
       const sections = result.text.split("\n\n");
       expect(sections).toHaveLength(2);
@@ -300,12 +302,12 @@ describe("tenant-scoped reference blob expansion", () => {
       );
       expect(random.context.map((ref) => ref.label)).toEqual(["", ""]);
       expect(random.text).not.toContain("Inbox revision sentinel");
-      const foreignResult = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
-      expect(foreignResult.context.map((ref) => ref.label)).toEqual(["", ""]);
-      expect(foreignResult.text).not.toContain("Inbox envelope sentinel");
-      expect(foreignResult.text).not.toContain("Inbox revision sentinel");
-      expect((await snapshot()).rows).toEqual(before.rows);
     });
+    const foreignResult = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+    expect(foreignResult.context.map((ref) => ref.label)).toEqual(["", ""]);
+    expect(foreignResult.text).not.toContain("Inbox envelope sentinel");
+    expect(foreignResult.text).not.toContain("Inbox revision sentinel");
+    expect((await snapshot()).rows).toEqual(before.rows);
   });
 
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {
