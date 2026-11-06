@@ -65,8 +65,9 @@ async function completedChat(
   userText = "My first question",
   assistantText = "First answer",
   enqueueTitle = false,
+  tenantId = tenant,
 ): Promise<string> {
-  return runInTenant(tenant, () =>
+  return runInTenant(tenantId, () =>
     withTransaction(pool, async (client) => {
       const turn = await sendSempMessage(client, { text: userText, context: [], hasContext: false });
       expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
@@ -380,6 +381,34 @@ describe("Semp title through the real gateway", () => {
     } finally {
       providerTitle = '  "Useful title"  ';
     }
+  });
+
+  it("uses the owning tenant's stored locale and refuses foreign or unknown threads", async () => {
+    const localizedTenant = await createTestTenant(admin);
+    await setTenantAiBudget(admin, localizedTenant);
+    await createUser(admin, {
+      tenantId: localizedTenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      locale: "cs",
+    });
+    await runInTenant(localizedTenant, () => seedSystem(pool));
+    const threadId = await completedChat("Czech locale question", "Czech locale answer", false, localizedTenant);
+    const gateway = createHttpAiGatewayClient({ port, token });
+    const before = calls.length;
+    await runInTenant(tenant, () => handleSempThreadTitle(pool, threadId, gateway));
+    await runInTenant(tenant, () => handleSempThreadTitle(pool, randomUUID(), gateway));
+    expect(calls).toHaveLength(before);
+    expect(
+      (await runInTenant(tenant, () => pool.query("SELECT id FROM semp_threads WHERE id = $1", [threadId]))).rows,
+    ).toEqual([]);
+    await runInTenant(localizedTenant, () => handleSempThreadTitle(pool, threadId, gateway));
+    expect(calls).toHaveLength(before + 1);
+    expect(calls[before]?.system).toContain("locale: cs");
+    const title = await runInTenant(localizedTenant, () =>
+      pool.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [threadId]),
+    );
+    expect(title.rows).toEqual([{ title: "Useful title" }]);
   });
 
   it("does not hold the thread lock while the real gateway is in flight", async () => {
