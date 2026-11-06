@@ -5867,7 +5867,7 @@ describe("Markdown page proposal validation", () => {
     }
   });
 
-  it.each(["blank", "page block", "non-heading", "non-host"] as const)(
+  it.each(["blank", "page block", "non-heading", "foreign heading", "non-host"] as const)(
     "keeps an invalid %s computation out of the real background tick and revise",
     async (mode) => {
       pool ??= getTestPool();
@@ -5886,6 +5886,24 @@ describe("Markdown page proposal validation", () => {
           await createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
           await runInTenant(tenantId, () => seedSystem(runtime));
         }
+        const foreignFixture = await runInTenant(foreign, async () => {
+          const db = await withTransaction(runtime, (client) =>
+            databasesStore.getDatabaseByModuleId(client, "projects"),
+          );
+          if (!db) throw new Error("Missing foreign Projects database");
+          const page = await createChokePoint(runtime).createItem({
+            databaseId: db.id,
+            properties: { name: "Foreign" },
+          });
+          const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
+          const id = randomUUID();
+          await mutateDoc(runtime, doc.id, "user", (ydoc) => writeBlock(ydoc, { id, type: "h2", text: "Foreign" }));
+          const rows = await runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1",
+            [doc.id],
+          );
+          return { id, docId: doc.id, rows: rows.rows };
+        });
         await runInTenant(tenant, async () => {
           const dbs = await withTransaction(runtime, async (client) => ({
             inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
@@ -5929,7 +5947,9 @@ describe("Markdown page proposal validation", () => {
                 ? { markdown: "[Page](semprec://page/abc)", placement: "end" }
                 : mode === "non-heading"
                   ? { markdown: "Hello", placement: { afterHeading: blockId } }
-                  : { markdown: "Hello", placement: "end" };
+                  : mode === "foreign heading"
+                    ? { markdown: "Hello", placement: { afterHeading: foreignFixture.id } }
+                    : { markdown: "Hello", placement: "end" };
           let calls = 0;
           // This is a synthetic computed result passed to the real tick owner, not a model-success claim.
           const tick = createSemprecTickAction(runtime, async () => {
@@ -5970,6 +5990,12 @@ describe("Markdown page proposal validation", () => {
           ]);
           expect(after.rows).toEqual([{ properties: card.properties }]);
         });
+        const foreignAfter = await runInTenant(foreign, () =>
+          runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [
+            foreignFixture.docId,
+          ]),
+        );
+        expect(foreignAfter.rows).toEqual(foreignFixture.rows);
       } catch (error) {
         failed = true;
         failure = error;
