@@ -94,6 +94,65 @@ describe("queued Semp messages", () => {
     expect((await jobs()).rows).toEqual([]);
   });
 
+  it("ignores running, failed, missing and foreign messages without model or queue effects", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const other = await createTestTenant(admin);
+    const faux = fauxProvider();
+    faux.setResponses([fauxAssistantMessage("must not run")]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns());
+    const turns = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const running = await sendSempMessage(client, { text: "running", context: [], hasContext: false });
+        const failed = await sendSempMessage(client, { text: "failed", context: [], hasContext: false });
+        expect(await claimSempMessage(client, running.threadId, running.assistantMessageId)).toBe(true);
+        expect(await claimSempMessage(client, failed.threadId, failed.assistantMessageId)).toBe(true);
+        expect(await finishSempMessageTurn(client, failed.assistantMessageId, { status: "error" })).toBe(true);
+        return { running, failed };
+      }),
+    );
+    const keys = Object.values(turns).map((turn) => `sempMessage:${turn.assistantMessageId}`);
+    const jobs = () =>
+      admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key", [
+        keys,
+      ]);
+    const before = (await jobs()).rows;
+    expect(before).toHaveLength(2);
+    for (const turn of [turns.running, turns.failed]) {
+      await runInTenant(tenant, () =>
+        task({ threadId: turn.threadId, assistantMessageId: turn.assistantMessageId }, { job: { id: "noop" } }),
+      );
+    }
+    await runInTenant(tenant, () =>
+      task({ threadId: turns.running.threadId, assistantMessageId: randomUUID() }, { job: { id: "missing" } }),
+    );
+    await runInTenant(other, () =>
+      task(
+        { threadId: turns.running.threadId, assistantMessageId: turns.running.assistantMessageId },
+        { job: { id: "foreign" } },
+      ),
+    );
+    const states = await runInTenant(tenant, () =>
+      pool.query<{ id: string; status: string }>("SELECT id, status FROM semp_messages WHERE id = ANY($1::uuid[])", [
+        [turns.running.assistantMessageId, turns.failed.assistantMessageId],
+      ]),
+    );
+    expect(states.rows).toEqual(
+      expect.arrayContaining([
+        { id: turns.running.assistantMessageId, status: "running" },
+        { id: turns.failed.assistantMessageId, status: "error" },
+      ]),
+    );
+    expect(states.rows).toHaveLength(2);
+    expect((await jobs()).rows).toEqual(before);
+    expect(faux.getPendingResponseCount()).toBe(1);
+  });
+
   it("runs two queued turns in their stored order through the real agents runtime", async () => {
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
