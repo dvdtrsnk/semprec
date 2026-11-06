@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -18,6 +24,7 @@ import {
   getDatabaseByModuleId,
   insertAgentRunEvent,
   loadFullModuleRegistry,
+  readSempRefContext,
   seedSystem,
   sendSempMessage,
   startTenantDeactivationListener,
@@ -25,14 +32,20 @@ import {
   suspendAccount,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+} from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { REALTIME_CHANNEL, publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask } from "../agentRunTasks.js";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
-import type { GatewayModel } from "../modelComposition.js";
+import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
 import { createGracefulShutdown } from "../shutdown.js";
@@ -83,6 +96,270 @@ describe("queued Semp messages", () => {
     }
     if (errors.length) throw new AggregateError(errors, "Semp test cleanup failed", { cause: errors[0] });
   });
+
+  it("expands tenant references through the registered worker and real gateway without persisting content", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const blockRoot = resolve(backend, "../shared/block-model");
+    const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/refExpansionGateway.js");
+    const fixtureSource = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/refExpansionGateway.ts");
+    const messageSchema = z.discriminatedUnion("type", [
+      z.strictObject({ type: z.literal("ready"), port: z.number().int().min(1).max(65535) }),
+      z.strictObject({
+        type: z.literal("observation"),
+        sequence: z.number().int().min(1).max(20),
+        owner: z.boolean(),
+        foreign: z.boolean(),
+      }),
+    ]);
+    const messages: z.infer<typeof messageSchema>[] = [];
+    let invalidOutput = false;
+    let outputBytes = 0;
+    let child: ChildProcess | undefined;
+    let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
+    let exited = false;
+    let blockDir: string | undefined;
+    let failed = false;
+    let failure: unknown;
+    const cleanupFailures: unknown[] = [];
+    try {
+      if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
+        throw new Error("Stale reference gateway fixture build");
+      blockDir = await mkdtemp(join(blockRoot, "node_modules/.batch09-"));
+      const args = [
+        join(backend, "node_modules/typescript/bin/tsc"),
+        "-p",
+        join(blockRoot, "tsconfig.json"),
+        "--noEmit",
+        "false",
+        "--declaration",
+        "false",
+        "--incremental",
+        "false",
+        "--outDir",
+        blockDir,
+      ];
+      const compiled = spawnSync(process.execPath, args, { cwd: backend, timeout: 25_000, maxBuffer: 1_000_000 });
+      process.stderr.write(
+        `ref block compiler pid=${compiled.pid} status=${compiled.status} signal=${compiled.signal} argv=${JSON.stringify([process.execPath, ...args])}\n`,
+      );
+      if (compiled.error) throw compiled.error;
+      if (compiled.status !== 0) throw new Error("Reference fixture block-model build failed");
+      const blockEntry = join(blockDir, "index.js");
+      const fixtureHash = createHash("sha256")
+        .update(await readFile(fixture))
+        .digest("hex");
+      const blockHash = createHash("sha256")
+        .update(await readFile(blockEntry))
+        .digest("hex");
+      const databaseUrl = z.object({ connectionString: z.string() }).parse(pool.options).connectionString;
+      child = spawn(process.execPath, [fixture], {
+        cwd: backend,
+        detached: true,
+        env: { ...process.env, BATCH09_BLOCK_MODEL_ENTRY: blockEntry, BATCH32_GATEWAY_DATABASE_URL: databaseUrl },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+      const owned = child;
+      if (!owned.pid) throw new Error("Reference gateway child did not start");
+      childExit = new Promise((resolveExit) => {
+        let childError: Error | undefined;
+        owned.once("error", (error) => {
+          childError = error;
+        });
+        owned.once("close", (code, signal) => {
+          exited = true;
+          resolveExit({ code, signal, ...(childError ? { error: childError } : {}) });
+        });
+      });
+      const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(owned.pid)], { encoding: "utf8" }).trim());
+      if (pgid !== owned.pid) throw new Error("Unexpected reference gateway process group");
+      process.stderr.write(
+        `ref gateway argv=${JSON.stringify([process.execPath, fixture])} pid=${owned.pid} pgid=${pgid} sha256=${fixtureHash} blockSha256=${blockHash}\n`,
+      );
+      for (const output of [owned.stdout, owned.stderr])
+        output?.on("data", (chunk: Buffer) => {
+          outputBytes += chunk.length;
+          if (outputBytes > 100_000) invalidOutput = true;
+        });
+      owned.on("message", (value: unknown) => {
+        const parsed = messageSchema.safeParse(value);
+        if (!parsed.success || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+        else messages.push(parsed.data);
+      });
+      await vi.waitFor(
+        () => {
+          expect(invalidOutput).toBe(false);
+          expect(messages.some((entry) => entry.type === "ready")).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
+      const ready = messages.find((entry) => entry.type === "ready");
+      if (!ready || ready.type !== "ready") throw new Error("Missing reference gateway readiness");
+      await setTenantAiBudget(admin, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
+      const foreign = await createTestTenant(admin);
+      await runInTenant(foreign, () => seedSystem(pool));
+      const ids = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabaseByModuleId(client, "tasks");
+          if (!database) throw new Error("Missing tasks database");
+          const item = await createItemWithClient(client, {
+            databaseId: database.id,
+            properties: { name: "Reference", note: "REF_OWNER_SENTINEL_32" },
+          });
+          return { databaseId: database.id, itemId: item.id };
+        }),
+      );
+      const foreignIds = await runInTenant(foreign, () =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabaseByModuleId(client, "tasks");
+          if (!database) throw new Error("Missing foreign tasks database");
+          const item = await createItemWithClient(client, {
+            databaseId: database.id,
+            properties: { name: "REF_FOREIGN_SENTINEL_32" },
+          });
+          return { databaseId: database.id, itemId: item.id };
+        }),
+      );
+      const refs = [
+        { kind: "item", ...ids },
+        { kind: "item", ...foreignIds },
+        { kind: "item", databaseId: ids.databaseId, itemId: randomUUID() },
+      ];
+      await expect(
+        withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
+      ).rejects.toThrow();
+      expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(0);
+      // Synthetic historical refs include foreign and random IDs; the reader must not expand them.
+      const turn = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { text: "Question", context: refs, hasContext: true }),
+        ),
+      );
+      const gateway = createGatewayModel({
+        AI_GATEWAY_BASE_URL: `http://127.0.0.1:${ready.port}/internal/pi`,
+        AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
+        AGENT_MODEL: "claude-haiku-4-5",
+      });
+      runtime = await createAgentsQueueRuntime(pool, registry, {
+        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+      });
+      let runId = "";
+      await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ status: string; agent_run_id: string | null }>(
+              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+              [turn.assistantMessageId],
+            ),
+          );
+          expect(result.rows[0]?.status).toBe("done");
+          runId = result.rows[0]?.agent_run_id ?? "";
+          expect(runId).not.toBe("");
+        },
+        { timeout: 20_000 },
+      );
+      await vi.waitFor(
+        () =>
+          expect(messages.filter((entry) => entry.type === "observation")).toEqual([
+            { type: "observation", sequence: 1, owner: true, foreign: false },
+          ]),
+        { timeout: 5000 },
+      );
+      const evidence = await runInTenant(tenant, async () => {
+        const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
+        const events = await pool.query<{ payload: unknown }>(
+          "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+          [runId],
+        );
+        const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1",
+          [runId],
+        );
+        return { run: run.rows, events: events.rows, calls: calls.rows };
+      });
+      expect(evidence.run).toEqual([{ task: "Question" }]);
+      expect(JSON.stringify(evidence.events)).not.toContain("REF_OWNER_SENTINEL_32");
+      expect(JSON.stringify(evidence.events)).not.toContain("REF_FOREIGN_SENTINEL_32");
+      expect(evidence.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              kind: "user_message",
+              context: expect.arrayContaining([expect.objectContaining({ ...refs[0], label: "Reference" })]),
+            }),
+          }),
+        ]),
+      );
+      expect(evidence.calls).toEqual([
+        { status: "settled", agent_run_id: runId, semp_message_id: turn.assistantMessageId },
+      ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      const active = runtime;
+      runtime = undefined;
+      await active?.stop();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      await closeIdleThreadSessions(pool);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    if (child && childExit && !exited) {
+      try {
+        child.send?.({ type: "stop" });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            childExit,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Reference gateway stop timed out")), 10_000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      } catch (error) {
+        cleanupFailures.push(error);
+        try {
+          child.kill("SIGKILL");
+          await childExit;
+        } catch (killError) {
+          cleanupFailures.push(killError);
+        }
+      }
+    }
+    if (childExit && exited) {
+      try {
+        const outcome = await childExit;
+        process.stderr.write(`ref gateway exit=${outcome.code} signal=${outcome.signal}\n`);
+        if (outcome.error) throw outcome.error;
+        if (outcome.code !== 0 || outcome.signal !== null) throw new Error("Reference gateway did not exit cleanly");
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    if (blockDir && (!child || exited)) {
+      try {
+        await rm(blockDir, { recursive: true });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    if (failed && cleanupFailures.length)
+      throw new AggregateError([failure, ...cleanupFailures], "Reference worker test and cleanup failed", {
+        cause: failure,
+      });
+    if (failed)
+      throw failure instanceof Error ? failure : new Error("Reference worker test failed", { cause: failure });
+    if (cleanupFailures.length)
+      throw new AggregateError(cleanupFailures, "Reference worker cleanup failed", { cause: cleanupFailures[0] });
+  }, 60_000);
 
   it("refuses Semp enqueue outside a tenant scope without creating a job", async () => {
     const payload = { threadId: randomUUID(), assistantMessageId: randomUUID() };
