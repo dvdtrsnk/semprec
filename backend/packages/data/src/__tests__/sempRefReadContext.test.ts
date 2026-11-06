@@ -8,11 +8,15 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
 import {
   createChokePoint,
   createAgentRun,
   createPendingApprovalRequest,
   insertAgentRunEvent,
+  createItemWithClient,
+  resolveMailModuleIds,
   createDocStore,
   createRelationWithClient,
   getDatabaseByModuleId,
@@ -250,6 +254,107 @@ describe("Semp reference turn reads", () => {
       await expect(read(randomUUID())).resolves.toBeNull();
       expect((await snapshot()).rows).toEqual(before.rows);
     });
+  });
+
+  it("reads metadata of a real ingested mail attachment without foreign access or writes", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    const directory = await mkdtemp(join(tmpdir(), "semp-ref-mail-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const attachmentId = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const properties = await listPropertiesByDatabase(client, ids.emailsDatabaseId);
+          const folders = await listPropertiesByDatabase(client, ids.foldersDatabaseId);
+          const attachment = properties.find((entry) => entry.key === "attachments");
+          const folder = properties.find((entry) => entry.key === "folder");
+          const mailbox = folders.find((entry) => entry.key === "mailbox");
+          if (!attachment || !folder || !mailbox) throw new Error("Missing mail relations");
+          const mailboxItem = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mail" },
+          });
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId: mailboxItem.id,
+            mailboxRelationPropertyId: mailbox.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const email = await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: folder.id,
+            attachmentsRelationPropertyId: attachment.id,
+            folderItemId: folderId,
+            mailboxItemId: mailboxItem.id,
+            messageId: `<${randomUUID()}@example.test>`,
+            subject: "Mail",
+            envelope: {},
+            attachments: [
+              {
+                filename: "note.txt",
+                contentType: "text/plain",
+                contentId: null,
+                disposition: "attachment",
+                openStream: () => Readable.from(["note"]),
+              },
+            ],
+            storage: new LocalFsBlobStorageWriter(directory),
+            storageKeyPrefix: "ref-reader-test",
+          });
+          const rows = await client.query<{ id: string }>(
+            "SELECT id FROM mail_attachments WHERE message_item_id = $1",
+            [email.itemId],
+          );
+          if (!rows.rows[0]) throw new Error("Missing mail attachment");
+          return rows.rows[0].id;
+        }),
+      );
+      const ref = { kind: "mailAttachment" as const, attachmentId };
+      await runInTenant(tenant, async () => {
+        const before = await runtime.query(
+          "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs",
+        );
+        const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
+        expect(resolved).toMatchObject({
+          label: "note.txt",
+          state: "active",
+          details: { filename: "note.txt", contentType: "text/plain", byteSize: "4" },
+          blob: { byteSize: "4", mimeType: "text/plain" },
+        });
+        await expect(
+          withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, attachmentId: randomUUID() })),
+        ).resolves.toBeNull();
+        expect(
+          (
+            await runtime.query(
+              "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs",
+            )
+          ).rows,
+        ).toEqual(before.rows);
+      });
+      await expect(
+        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+      ).resolves.toBeNull();
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (failed)
+        throw new AggregateError([failure, cleanupError], "Mail reference test and cleanup failed", { cause: failure });
+      throw cleanupError;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("Mail reference test failed", { cause: failure });
   });
 
   it("reads a run's actual task, status and ordered tool steps under tenant scope", async () => {
