@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { createBoundedSempHistory } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -301,5 +302,70 @@ describe("queued Semp messages", () => {
       await runtime.stop();
       runtime = undefined;
     }
+  });
+
+  it("refuses oversized stored history before a model call without writing a checkpoint", async () => {
+    const turn = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const first = await sendSempMessage(client, { text: "earlier", context: [], hasContext: false });
+        expect(await claimSempMessage(client, first.threadId, first.assistantMessageId)).toBe(true);
+        const run = await createAgentRun(client, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "earlier",
+          threadId: first.threadId,
+        });
+        const event = await insertAgentRunEvent(client, run.id, "message", {
+          kind: "message",
+          text: "ě".repeat(131_073),
+        });
+        await startSempMessageTurn(client, first.assistantMessageId, run.id, event.id);
+        expect(
+          await finishSempMessageTurn(client, first.assistantMessageId, {
+            status: "done",
+            text: "earlier answer",
+            lastEventId: event.id,
+          }),
+        ).toBe(true);
+        return first;
+      }),
+    );
+    const next = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: turn.threadId, text: "next", context: [], hasContext: false }),
+      ),
+    );
+    await expect(
+      runInTenant(tenant, () => createBoundedSempHistory()(pool, { threadId: turn.threadId, projectItemId: "unused" })),
+    ).rejects.toThrow("Semp conversation history exceeds replay limits");
+    const faux = fauxProvider();
+    faux.setResponses([fauxAssistantMessage("must not run")]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    const deadline = Date.now() + 15_000;
+    let rows = await runInTenant(tenant, () =>
+      pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [next.assistantMessageId]),
+    );
+    while (rows.rows[0]?.status !== "error" && Date.now() < deadline) {
+      await sleep(50);
+      rows = await runInTenant(tenant, () =>
+        pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [next.assistantMessageId]),
+      );
+    }
+    expect(rows.rows).toEqual([{ status: "error" }]);
+    expect(faux.state.callCount).toBe(0);
+    const checkpoints = await runInTenant(tenant, () =>
+      pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM agent_run_events e JOIN agent_runs r ON r.id = e.agent_run_id WHERE r.thread_id = $1 AND e.kind = 'compaction'",
+        [turn.threadId],
+      ),
+    );
+    expect(checkpoints.rows).toEqual([{ count: 0 }]);
   });
 });
