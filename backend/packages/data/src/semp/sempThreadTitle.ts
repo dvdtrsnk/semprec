@@ -9,7 +9,11 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 const titleSchema = z.object({ title: z.string() });
 const logger = createLogger("semp-thread-title");
 
-export async function enqueueSempThreadTitleIfFirst(client: PoolClient, threadId: string, messageId: string): Promise<void> {
+export async function enqueueSempThreadTitleIfFirst(
+  client: PoolClient,
+  threadId: string,
+  messageId: string,
+): Promise<void> {
   requireManagedTransaction(client);
   const thread = await client.query<{ id: string }>(
     "SELECT id FROM semp_threads WHERE id = $1 AND kind = 'chat' AND title IS NULL AND title_source = 'auto' FOR UPDATE",
@@ -21,16 +25,19 @@ export async function enqueueSempThreadTitleIfFirst(client: PoolClient, threadId
     [threadId],
   );
   if (first.rows[0]?.id !== messageId || first.rows[0].status !== "done") return;
-  await enqueueJob(client, CORE_TASK_NAMES.SEMP_THREAD_TITLE, { threadId }, {
-    jobKey: `sempThreadTitle:${threadId}`, jobKeyMode: "unsafe_dedupe", maxAttempts: 1,
-  });
+  await enqueueJob(
+    client,
+    CORE_TASK_NAMES.SEMP_THREAD_TITLE,
+    { threadId },
+    {
+      jobKey: `sempThreadTitle:${threadId}`,
+      jobKeyMode: "unsafe_dedupe",
+      maxAttempts: 1,
+    },
+  );
 }
 
-export async function handleSempThreadTitle(
-  pool: Pool,
-  threadId: string,
-  gateway: AiGatewayClientPort,
-): Promise<void> {
+export async function handleSempThreadTitle(pool: Pool, threadId: string, gateway: AiGatewayClientPort): Promise<void> {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("Semp thread title requires a tenant scope");
   const source = await withTransaction(pool, async (client) => {
@@ -66,8 +73,16 @@ export async function handleSempThreadTitle(
       operation: "semp_thread_title",
       temperature: 0.2,
       system: `Give this conversation a title of at most 60 characters in the user's language (locale: ${source.locale ?? "en"}).`,
-      messages: [{ role: "user", content: source.user }, { role: "assistant", content: source.assistant }],
-      responseSchema: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 60 } }, required: ["title"], additionalProperties: false },
+      messages: [
+        { role: "user", content: source.user },
+        { role: "assistant", content: source.assistant },
+      ],
+      responseSchema: {
+        type: "object",
+        properties: { title: { type: "string", minLength: 1, maxLength: 60 } },
+        required: ["title"],
+        additionalProperties: false,
+      },
     });
     content = response.content;
   } catch {
@@ -76,7 +91,15 @@ export async function handleSempThreadTitle(
   }
   const parsed = titleSchema.safeParse(content);
   if (!parsed.success) return;
-  const normalized = Array.from(parsed.data.title.replace(/[\r\n]+/g, " ").trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").trim()).slice(0, 60).join("");
+  const normalized = Array.from(
+    parsed.data.title
+      .replace(/[\r\n]+/g, " ")
+      .trim()
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+      .trim(),
+  )
+    .slice(0, 60)
+    .join("");
   if (!normalized) return;
   await withTransaction(pool, async (client) => {
     const updated = await client.query(

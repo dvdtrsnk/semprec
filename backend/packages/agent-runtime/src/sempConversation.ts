@@ -107,7 +107,10 @@ export interface SempConversationOptions {
    * waking turn, after the run is `running` and before the first prompt, so the session's tools
    * bind to that run's id. A test double can return a constant factory.
    */
-  createAgentSessionForRun: (run: AgentRunRow, currentSempMessage?: { current: string | null }) => Promise<CreateAgentSession>;
+  createAgentSessionForRun: (
+    run: AgentRunRow,
+    currentSempMessage?: { current: string | null },
+  ) => Promise<CreateAgentSession>;
   /**
    * Resolves the waking tenant's own Semprec project item id — `agent_runs.project_item_id` for
    * a chat or item thread's wake run (a tick thread supplies its heartbeat's project instead and
@@ -369,7 +372,9 @@ export class SempConversation {
             try {
               await failRun(this.pool, entry.agentRunId, err);
             } catch (cleanupError) {
-              const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", { cause: err });
+              const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", {
+                cause: err,
+              });
               sendOptions.onFailurePersistenceError?.(failure);
               throw failure;
             }
@@ -438,7 +443,9 @@ export class SempConversation {
           try {
             await failRun(this.pool, run.id, err);
           } catch (cleanupError) {
-            const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", { cause: err });
+            const failure = new AggregateError([err, cleanupError], "Semp turn and run persistence failed", {
+              cause: err,
+            });
             sendOptions.onFailurePersistenceError?.(failure);
             throw failure;
           }
@@ -446,7 +453,13 @@ export class SempConversation {
         }
 
         if (wakeState.dropped) {
-          const entry: ConversationRegistryEntry = { agentRunId: run.id, session, busy: true, ttlTimer: undefined, currentSempMessage };
+          const entry: ConversationRegistryEntry = {
+            agentRunId: run.id,
+            session,
+            busy: true,
+            ttlTimer: undefined,
+            currentSempMessage,
+          };
           wakeState.entry = entry;
           await this.closeDropped(wakeState, entry);
         } else {

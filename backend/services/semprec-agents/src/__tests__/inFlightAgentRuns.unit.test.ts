@@ -9,11 +9,18 @@ describe("Semp settlement observation", () => {
     runs.register("tenant", general);
     runs.register("tenant", semp, true);
     let rejectFirst!: (reason: unknown) => void;
-    const first = runs.trackSemp(() => new Promise<void>((_, reject) => { rejectFirst = reject; }));
+    const first = runs.trackSemp(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectFirst = reject;
+        }),
+    );
     void first.catch(() => {});
     await Promise.resolve();
     const settle = runs.observeSempSettlement();
-    const late = runs.trackSemp(async () => { throw null; });
+    const late = runs.trackSemp(async () => {
+      throw null;
+    });
     void late.catch(() => {});
     expect(runs.abortSemp()).toBe(1);
     expect(semp.signal.reason).toBe("shutdown");

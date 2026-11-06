@@ -313,7 +313,11 @@ describe("POST /internal/complete", () => {
     const refused = await post("/internal/complete", { ...VALID_BODY, operation: "semp_thread_title" });
     expect(refused.status).toBe(400);
     expect(provider.calls).toHaveLength(0);
-    const accepted = await post("/internal/complete", { ...VALID_BODY, operation: "semp_thread_title", projectItemId: null });
+    const accepted = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "semp_thread_title",
+      projectItemId: null,
+    });
     expect(accepted.status).toBe(200);
     expect(provider.calls).toHaveLength(1);
     const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(

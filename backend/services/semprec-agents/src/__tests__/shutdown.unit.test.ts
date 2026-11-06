@@ -1,7 +1,12 @@
 import type { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "@semprec/shared";
-import { createGracefulShutdown, LISTENER_CLOSE_TIMEOUT_MS, SEMP_TURN_GRACE_MS, AGENTS_STOP_WINDOW_MS } from "../shutdown.js";
+import {
+  createGracefulShutdown,
+  LISTENER_CLOSE_TIMEOUT_MS,
+  SEMP_TURN_GRACE_MS,
+  AGENTS_STOP_WINDOW_MS,
+} from "../shutdown.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 
 interface CapturedLine {
@@ -39,7 +44,19 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
     calls.push("closeIdleThreadSessions");
     return { closedRunIds: [] };
   };
-  return { calls, errors, deps: { queueRuntime, tenantDeactivationListener, pool, logger, closeIdleThreadSessions, abortSempTurns: () => {}, observeSempSettlement: () => async () => [] } };
+  return {
+    calls,
+    errors,
+    deps: {
+      queueRuntime,
+      tenantDeactivationListener,
+      pool,
+      logger,
+      closeIdleThreadSessions,
+      abortSempTurns: () => {},
+      observeSempSettlement: () => async () => [],
+    },
+  };
 }
 
 describe("semprec-agents graceful shutdown", () => {
@@ -51,14 +68,22 @@ describe("semprec-agents graceful shutdown", () => {
     const { calls, deps } = createFakes();
     const runs = createInFlightAgentRuns();
     let rejectWork!: (reason: unknown) => void;
-    const work = runs.trackSemp(() => new Promise<void>((_, reject) => { rejectWork = reject; }));
+    const work = runs.trackSemp(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectWork = reject;
+        }),
+    );
     void work.catch(() => {});
     await Promise.resolve();
     const cleanupFailure = new Error("cleanup");
     const shutdown = createGracefulShutdown({
       ...deps,
       observeSempSettlement: () => runs.observeSempSettlement(),
-      closeIdleThreadSessions: async () => { calls.push("closeIdleThreadSessions"); throw cleanupFailure; },
+      closeIdleThreadSessions: async () => {
+        calls.push("closeIdleThreadSessions");
+        throw cleanupFailure;
+      },
     })("SIGTERM");
     await vi.waitFor(() => expect(calls).toContain("queueRuntime.stop"));
     expect(calls).not.toContain("pool.end");
@@ -80,7 +105,9 @@ describe("semprec-agents graceful shutdown", () => {
     const shutdown = createGracefulShutdown({
       ...deps,
       observeSempSettlement: () => runs.observeSempSettlement(),
-      abortSempTurns: () => { runs.abortSemp(); },
+      abortSempTurns: () => {
+        runs.abortSemp();
+      },
     })("SIGTERM");
     const rejection = expect(shutdown).rejects.toThrow("did not settle within the stop window");
     await vi.advanceTimersByTimeAsync(SEMP_TURN_GRACE_MS);

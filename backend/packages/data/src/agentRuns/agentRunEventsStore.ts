@@ -179,8 +179,14 @@ export async function listSessionAgentRunEventsFromLastCompaction(
   const params =
     "threadId" in filter ? [filter.threadId] : [filter.projectItemId, filter.triggeredBy, filter.parentRunId];
   if (bounds) {
-    if (!("threadId" in filter) || !Number.isSafeInteger(bounds.maxRows) || bounds.maxRows < 1 ||
-        !Number.isSafeInteger(bounds.maxBytes) || bounds.maxBytes < 1) throw new Error("Invalid history bounds");
+    if (
+      !("threadId" in filter) ||
+      !Number.isSafeInteger(bounds.maxRows) ||
+      bounds.maxRows < 1 ||
+      !Number.isSafeInteger(bounds.maxBytes) ||
+      bounds.maxBytes < 1
+    )
+      throw new Error("Invalid history bounds");
     const result = await client.query<{
       overflow: boolean;
       id: string | null;
@@ -210,7 +216,8 @@ export async function listSessionAgentRunEventsFromLastCompaction(
     if (result.rows[0]?.overflow) throw new Error("Semp conversation history exceeds replay limits");
     return result.rows.flatMap((row) => {
       if (row.id === null) return [];
-      if (row.agent_run_id === null || row.kind === null || row.at === null) throw new Error("Malformed conversation history row");
+      if (row.agent_run_id === null || row.kind === null || row.at === null)
+        throw new Error("Malformed conversation history row");
       return [mapRow({ id: row.id, agent_run_id: row.agent_run_id, kind: row.kind, payload: row.payload, at: row.at })];
     });
   }

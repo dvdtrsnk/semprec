@@ -180,8 +180,7 @@ export async function getSempThread(client: PoolClient, id: string) {
     id: row.id,
     kind,
     title: row.title,
-    subject:
-      kind === "item" ? { inboxItemId: row.subject_inbox_item_id, proposalId: row.subject_proposal_id } : null,
+    subject: kind === "item" ? { inboxItemId: row.subject_inbox_item_id, proposalId: row.subject_proposal_id } : null,
     createdAt: row.created_at.toISOString(),
     lastActivityAt: row.last_activity_at.toISOString(),
   };
@@ -218,11 +217,14 @@ export async function listSempThreadMessages(
       eventFromId: row.event_from_id,
       status: row.status,
       createdAt: row.created_at,
-      run: row.run_started_at === null ? null : {
-        startedAt: row.run_started_at.toISOString(),
-        finishedAt: row.run_finished_at?.toISOString() ?? null,
-        status: assertKnownValue(["running", "done", "error"] as const, row.run_status ?? "", "run status"),
-      },
+      run:
+        row.run_started_at === null
+          ? null
+          : {
+              startedAt: row.run_started_at.toISOString(),
+              finishedAt: row.run_finished_at?.toISOString() ?? null,
+              status: assertKnownValue(["running", "done", "error"] as const, row.run_status ?? "", "run status"),
+            },
     })),
     nextCursor:
       hasMore && last

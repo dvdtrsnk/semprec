@@ -26,7 +26,12 @@ import {
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName } from "@semprec/shared";
+import {
+  GENERIC_OPERATION_NAMES,
+  OPERATION_METADATA,
+  operationInputJsonSchema,
+  type GenericOperationName,
+} from "@semprec/shared";
 import type { GatewayModel } from "./modelComposition.js";
 import { createPiAgentSessionFactory } from "./piAgentSession.js";
 import { logger } from "./logger.js";
@@ -48,8 +53,16 @@ const AGENT_BASE_SYSTEM_PROMPT = [
 ].join(" ");
 
 const ITEM_THREAD_OPERATIONS = [
-  "database.list", "database.get", "property.list", "property.get", "property.getByKey",
-  "view.list", "view.get", "view.query", "item.get", "database.query",
+  "database.list",
+  "database.get",
+  "property.list",
+  "property.get",
+  "property.getByKey",
+  "view.list",
+  "view.get",
+  "view.query",
+  "item.get",
+  "database.query",
 ] as const satisfies readonly GenericOperationName[];
 
 /** The header `semprec-ai-gateway`'s pi-messages route attributes its `ai_gateway_calls` row by. */
@@ -290,34 +303,48 @@ export async function createAgentSessionFactoryForRun(
   const allGenericTools = await createGenericOperationTools(pool, moduleRegistry, run.id);
   const locale = await getTenantUserLocale(pool);
   const threadId = run.threadId;
-  const threadContext = threadId ? await withTransaction(pool, async (client) => {
-    const thread = await getSempThread(client, threadId);
-    if (!thread) throw new Error("Semp thread not found for run");
-    const schema = await generateSchemaProjection(client, moduleRegistry, { locale: toManifestLocale(locale ?? "en") });
-    const turn = thread.kind === "tick" && currentSempMessage?.current
-      ? await getSempMessageTurn(client, threadId, currentSempMessage.current) : null;
-    return { kind: thread.kind, databases: schema.databases, missingHeartbeat: thread.kind === "tick" && !!currentSempMessage?.current && !turn?.projectItemId };
-  }) : null;
-  const tools = threadContext?.kind === "item"
-    ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
-    : allGenericTools;
+  const threadContext = threadId
+    ? await withTransaction(pool, async (client) => {
+        const thread = await getSempThread(client, threadId);
+        if (!thread) throw new Error("Semp thread not found for run");
+        const schema = await generateSchemaProjection(client, moduleRegistry, {
+          locale: toManifestLocale(locale ?? "en"),
+        });
+        const turn =
+          thread.kind === "tick" && currentSempMessage?.current
+            ? await getSempMessageTurn(client, threadId, currentSempMessage.current)
+            : null;
+        return {
+          kind: thread.kind,
+          databases: schema.databases,
+          missingHeartbeat: thread.kind === "tick" && !!currentSempMessage?.current && !turn?.projectItemId,
+        };
+      })
+    : null;
+  const tools =
+    threadContext?.kind === "item"
+      ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
+      : allGenericTools;
   let moduleTools: typeof tools = [];
   // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
   const instruction = languageInstruction(locale);
-  const basePrompt = threadContext ? [
-    "You are Semp, the user's assistant for tasks, calendar, notes and other data.",
-    "Answer in the user's language. A tool requiring approval has not run yet.",
-    "Deleting an item moves it to trash for 30 days; item.restore restores it.",
-    "Link items as semprec://items/<id>.",
-    `Data schema: ${JSON.stringify(threadContext.databases)}`,
-  ].join("\n") : AGENT_BASE_SYSTEM_PROMPT;
+  const basePrompt = threadContext
+    ? [
+        "You are Semp, the user's assistant for tasks, calendar, notes and other data.",
+        "Answer in the user's language. A tool requiring approval has not run yet.",
+        "Deleting an item moves it to trash for 30 days; item.restore restores it.",
+        "Link items as semprec://items/<id>.",
+        `Data schema: ${JSON.stringify(threadContext.databases)}`,
+      ].join("\n")
+    : AGENT_BASE_SYSTEM_PROMPT;
   let systemPrompt = instruction ? `${basePrompt}\n${instruction}` : basePrompt;
 
   if (run.projectItemId) {
     if (threadContext?.kind !== "item") {
       tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
       moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
-      if (threadContext?.missingHeartbeat) moduleTools = moduleTools.filter((tool) => !tool.label.startsWith("heartbeat."));
+      if (threadContext?.missingHeartbeat)
+        moduleTools = moduleTools.filter((tool) => !tool.label.startsWith("heartbeat."));
       tools.push(...moduleTools);
     }
     const transactions = createPoolClientTransactionRunner(pool);

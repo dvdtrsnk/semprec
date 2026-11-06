@@ -163,10 +163,16 @@ async function walkStoredEntries(
   return entries;
 }
 
-export async function reconstructBoundedThreadHistory(pool: Pool, threadId: string): Promise<ReconstructedHistory | null> {
+export async function reconstructBoundedThreadHistory(
+  pool: Pool,
+  threadId: string,
+): Promise<ReconstructedHistory | null> {
   const bounds = { maxRows: 2000, maxBytes: 262144 };
   const entries = await walkStoredEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, bounds);
-  const expandedBytes = entries.reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry.message), "utf8"), 0);
+  const expandedBytes = entries.reduce(
+    (total, entry) => total + Buffer.byteLength(JSON.stringify(entry.message), "utf8"),
+    0,
+  );
   if (entries.length > bounds.maxRows || expandedBytes > bounds.maxBytes) {
     throw new Error("Semp conversation history exceeds replay limits");
   }

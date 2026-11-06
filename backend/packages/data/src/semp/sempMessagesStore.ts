@@ -11,12 +11,18 @@ const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 
   'errorCode', error_code, 'createdAt', created_at, 'updatedAt', updated_at)::text`;
 
 export async function getSempMessageToken(client: PoolClient, messageId: string): Promise<string | null> {
-  const { rows } = await client.query<{ token: string }>(`SELECT ${MESSAGE_TOKEN} AS token FROM semp_messages WHERE id = $1`, [messageId]);
+  const { rows } = await client.query<{ token: string }>(
+    `SELECT ${MESSAGE_TOKEN} AS token FROM semp_messages WHERE id = $1`,
+    [messageId],
+  );
   return rows[0]?.token ?? null;
 }
 
 export async function getSempMessageFrontier(
-  client: PoolClient, threadId: string, sourceId: string, assistantId: string,
+  client: PoolClient,
+  threadId: string,
+  sourceId: string,
+  assistantId: string,
 ): Promise<string | null> {
   const { rows } = await client.query<{ token: string }>(
     `SELECT ${MESSAGE_TOKEN} AS token FROM semp_messages WHERE thread_id = $1 AND id <> $2 AND id <> $3
@@ -57,7 +63,13 @@ export async function finishSempMessageTurn(
   requireManagedTransaction(client);
   const result = await client.query(
     "UPDATE semp_messages SET status = $2, text = $3, event_to_id = $4::bigint, error_code = $5, updated_at = now() WHERE id = $1 AND status = 'running'",
-    [messageId, outcome.status, outcome.status === "done" ? outcome.text : null, outcome.status === "done" ? outcome.lastEventId : null, outcome.status === "error" && outcome.interrupted ? "interrupted" : null],
+    [
+      messageId,
+      outcome.status,
+      outcome.status === "done" ? outcome.text : null,
+      outcome.status === "done" ? outcome.lastEventId : null,
+      outcome.status === "error" && outcome.interrupted ? "interrupted" : null,
+    ],
   );
   return result.rowCount === 1;
 }

@@ -1,5 +1,11 @@
 import type { Pool } from "pg";
-import { AGENT_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges, resolveSempChatQueueConcurrency, runWorker } from "@semprec/queue";
+import {
+  AGENT_TASK_NAMES,
+  ensureQueueSchema,
+  grantQueueSchemaPrivileges,
+  resolveSempChatQueueConcurrency,
+  runWorker,
+} from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
   createAgentTaskList,
@@ -64,7 +70,9 @@ export async function createAgentsQueueRuntime(
 
   const chatTask = taskList[AGENT_TASK_NAMES.SEMP_MESSAGE];
   if (!chatTask) throw new Error("Missing Semp message task");
-  const generalTasks = Object.fromEntries(Object.entries(taskList).filter(([name]) => name !== AGENT_TASK_NAMES.SEMP_MESSAGE));
+  const generalTasks = Object.fromEntries(
+    Object.entries(taskList).filter(([name]) => name !== AGENT_TASK_NAMES.SEMP_MESSAGE),
+  );
   const chatConcurrency = resolveSempChatQueueConcurrency(process.env);
   const runner = await runWorker({
     pgPool: pool,
@@ -84,7 +92,9 @@ export async function createAgentsQueueRuntime(
     try {
       await runner.stop();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Chat worker startup and general worker cleanup failed", { cause: error });
+      throw new AggregateError([error, cleanupError], "Chat worker startup and general worker cleanup failed", {
+        cause: error,
+      });
     }
     throw error;
   }
@@ -94,7 +104,7 @@ export async function createAgentsQueueRuntime(
     stop(): Promise<void> {
       stopped ??= (async () => {
         const results = await Promise.allSettled([runner.stop(), chatRunner.stop()]);
-        const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
         if (errors.length) throw new AggregateError(errors, "Agent queue workers failed to stop", { cause: errors[0] });
       })();
       return stopped;

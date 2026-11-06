@@ -73,6 +73,8 @@ describe("semprec-agents startup repair (issue #642)", () => {
       const shutdown = createGracefulShutdown({
         pool: runtimePool,
         logger,
+        abortSempTurns: () => {},
+        observeSempSettlement: () => async () => [],
         queueRuntime: {
           stop: async () => {
             order.push("queue");

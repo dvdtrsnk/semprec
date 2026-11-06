@@ -82,7 +82,9 @@ const shutdown = createGracefulShutdown({
   pool,
   logger,
   closeIdleThreadSessions,
-  abortSempTurns: () => { inFlightAgentRuns.abortSemp(); },
+  abortSempTurns: () => {
+    inFlightAgentRuns.abortSemp();
+  },
   observeSempSettlement: () => inFlightAgentRuns.observeSempSettlement(),
 });
 registerShutdownSignals(shutdown);

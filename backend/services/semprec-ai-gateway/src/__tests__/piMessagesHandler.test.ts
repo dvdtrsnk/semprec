@@ -24,9 +24,25 @@ import {
   type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as piClientStream } from "@earendil-works/pi-ai/compat";
-import { createAgentRun, createSempChatThread, createUser, hashPassword, insertSempUserTurn, seedSystem, withTransaction } from "@semprec/data";
+import {
+  createAgentRun,
+  createSempChatThread,
+  createUser,
+  hashPassword,
+  insertSempUserTurn,
+  seedSystem,
+  withTransaction,
+} from "@semprec/data";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTenantZeroId, getTestPool, resetDatabase, setTenantAiBudget, withTenantTransaction } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+  withTenantTransaction,
+} from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
@@ -311,10 +327,12 @@ describe("POST /internal/pi/messages", () => {
   });
 
   it("records the attributed Semp message id", async () => {
-    const messageId = await runInTenant(getTenantZeroId(), () => withTransaction(pool, async (client) => {
-      const threadId = await createSempChatThread(client);
-      return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
-    }));
+    const messageId = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const threadId = await createSempChatThread(client);
+        return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
+      }),
+    );
     faux.setResponses([fauxAssistantMessage("hi")]);
     startServer();
     await listen();
@@ -346,23 +364,29 @@ describe("POST /internal/pi/messages", () => {
     try {
       const side = await createRuntimeRolePool(pool, "semprec_side");
       sidePool = side;
-      const roles = await runAsSystem("test:role", () => side.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-      ));
+      const roles = await runAsSystem("test:role", () =>
+        side.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
       expect(roles.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      const makeMessage = (tenantId: string) => runInTenant(tenantId, () => withTenantTransaction(dataPool, tenantId, async (client) => {
-        const threadId = await createSempChatThread(client);
-        return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
-      }));
+      const makeMessage = (tenantId: string) =>
+        runInTenant(tenantId, () =>
+          withTenantTransaction(dataPool, tenantId, async (client) => {
+            const threadId = await createSempChatThread(client);
+            return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
+          }),
+        );
       const foreignId = await makeMessage(tenantA);
       const ownId = await makeMessage(tenantB);
       faux.setResponses([fauxAssistantMessage("hi")]);
       startServer(fauxStreamFn(), {}, side);
       await listen();
-      const call = (id: string) => post({ model: MODEL_ID, context: CONTEXT }, TOKEN, {
-        "x-semprec-tenant-id": tenantB,
-        "x-semprec-semp-message-id": id,
-      });
+      const call = (id: string) =>
+        post({ model: MODEL_ID, context: CONTEXT }, TOKEN, {
+          "x-semprec-tenant-id": tenantB,
+          "x-semprec-semp-message-id": id,
+        });
       const unknown = await call(randomUUID());
       const unknownBody = await unknown.text();
       const foreign = await call(foreignId);
@@ -383,8 +407,9 @@ describe("POST /internal/pi/messages", () => {
       failed = true;
     }
     const cleanup = await Promise.allSettled([dataPool.end(), ...(sidePool ? [sidePool.end()] : [])]);
-    const failures = cleanup.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-    if (failed && failures.length) throw new AggregateError([primary, ...failures], "Test and runtime pool cleanup failed", { cause: primary });
+    const failures = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed && failures.length)
+      throw new AggregateError([primary, ...failures], "Test and runtime pool cleanup failed", { cause: primary });
     if (failed) throw primary;
     if (failures.length) throw new AggregateError(failures, "Runtime pool cleanup failed", { cause: failures[0] });
   });

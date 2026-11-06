@@ -8,7 +8,11 @@ import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPi
 import { lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 
-export async function guardInboxThreadSend(client: PoolClient, inboxItemId: string, proposalId?: string): Promise<void> {
+export async function guardInboxThreadSend(
+  client: PoolClient,
+  inboxItemId: string,
+  proposalId?: string,
+): Promise<void> {
   if (!(await lockInboxSourceIfPresent(client, inboxItemId))) {
     throw new ValidationError("Invalid Inbox subject", { field: "subject" });
   }
@@ -40,7 +44,9 @@ export async function guardInboxThreadSend(client: PoolClient, inboxItemId: stri
         await client.query("ROLLBACK TO SAVEPOINT semp_proposal_lock");
         await client.query("RELEASE SAVEPOINT semp_proposal_lock");
       } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], "Proposal reservation and savepoint cleanup failed", { cause: error });
+        throw new AggregateError([error, cleanupError], "Proposal reservation and savepoint cleanup failed", {
+          cause: error,
+        });
       }
       if (error instanceof DatabaseError && error.code === "55P03") {
         throw new ConflictError("Inbox proposal is busy", { field: "subject" });

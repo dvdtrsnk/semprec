@@ -4,7 +4,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { claimSempMessage, createAgentRun, createUser, enqueueSempThreadTitleIfFirst, finishSempMessageTurn, insertAgentRunEvent, loadFullModuleRegistry, seedSystem, sendSempMessage, startSempMessageTurn, withTransaction } from "@semprec/data";
+import {
+  claimSempMessage,
+  createAgentRun,
+  createUser,
+  enqueueSempThreadTitleIfFirst,
+  finishSempMessageTurn,
+  insertAgentRunEvent,
+  loadFullModuleRegistry,
+  seedSystem,
+  sendSempMessage,
+  startSempMessageTurn,
+  withTransaction,
+} from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
@@ -23,9 +35,11 @@ describe("queued Semp messages", () => {
     admin = getTestPool();
     await resetDatabase(admin);
     pool = await createRuntimeRolePool(admin, "semprec_data");
-    const role = await runAsSystem("test:role", () => pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-    ));
+    const role = await runAsSystem("test:role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
     await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
@@ -35,9 +49,21 @@ describe("queued Semp messages", () => {
 
   afterAll(async () => {
     const errors: unknown[] = [];
-    try { await runtime?.stop(); } catch (error) { errors.push(error); }
-    try { await pool?.end(); } catch (error) { errors.push(error); }
-    try { await admin?.end(); } catch (error) { errors.push(error); }
+    try {
+      await runtime?.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await pool?.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await admin?.end();
+    } catch (error) {
+      errors.push(error);
+    }
     if (errors.length) throw new AggregateError(errors, "Semp test cleanup failed", { cause: errors[0] });
   });
 
@@ -52,18 +78,28 @@ describe("queued Semp messages", () => {
     runtime = await createAgentsQueueRuntime(pool, registry, {
       sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
     });
-    const first = await runInTenant(tenant, () => withTransaction(pool, (client) =>
-      sendSempMessage(client, { text: "first", context: [], hasContext: false }),
-    ));
-    const second = await runInTenant(tenant, () => withTransaction(pool, (client) =>
-      sendSempMessage(client, { threadId: first.threadId, text: "second", context: [], hasContext: false }),
-    ));
-    const read = () => runInTenant(tenant, () => pool.query<{
-      id: string; text: string | null; status: string | null; agent_run_id: string | null; event_from_id: string | null; event_to_id: string | null;
-    }>(
-      "SELECT id, text, status, agent_run_id, event_from_id, event_to_id FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
-      [[first.assistantMessageId, second.assistantMessageId]],
-    ));
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => sendSempMessage(client, { text: "first", context: [], hasContext: false })),
+    );
+    const second = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: first.threadId, text: "second", context: [], hasContext: false }),
+      ),
+    );
+    const read = () =>
+      runInTenant(tenant, () =>
+        pool.query<{
+          id: string;
+          text: string | null;
+          status: string | null;
+          agent_run_id: string | null;
+          event_from_id: string | null;
+          event_to_id: string | null;
+        }>(
+          "SELECT id, text, status, agent_run_id, event_from_id, event_to_id FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
+          [[first.assistantMessageId, second.assistantMessageId]],
+        ),
+      );
     const deadline = Date.now() + 15_000;
     let rows = (await read()).rows;
     while (rows.some((row) => row.status !== "done") && Date.now() < deadline) {
@@ -85,27 +121,54 @@ describe("queued Semp messages", () => {
   it("rolls back a title job observed in the same transaction as the done transition", async () => {
     await runtime?.stop();
     runtime = undefined;
-    const turn = await runInTenant(tenant, () => withTransaction(pool, (client) =>
-      sendSempMessage(client, { text: "title rollback", context: [], hasContext: false }),
-    ));
-    const eventId = await runInTenant(tenant, () => withTransaction(pool, async (client) => {
-      expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
-      const run = await createAgentRun(client, { triggeredBy: "user", unit: "session", task: "title rollback", threadId: turn.threadId });
-      const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "answer" });
-      await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
-      return event.id;
-    }));
-    await expect(runInTenant(tenant, () => withTransaction(pool, async (client) => {
-      expect(await finishSempMessageTurn(client, turn.assistantMessageId, { status: "done", text: "answer", lastEventId: eventId })).toBe(true);
-      await enqueueSempThreadTitleIfFirst(client, turn.threadId, turn.assistantMessageId);
-      const job = await client.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempThreadTitle:${turn.threadId}`]);
-      expect(job.rows).toEqual([{ key: `sempThreadTitle:${turn.threadId}` }]);
-      throw new Error("rollback sentinel");
-    }))).rejects.toThrow("rollback sentinel");
-    const after = await runInTenant(tenant, () => withTransaction(pool, async (client) => ({
-      message: await client.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [turn.assistantMessageId]),
-      job: await client.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempThreadTitle:${turn.threadId}`]),
-    })));
+    const turn = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { text: "title rollback", context: [], hasContext: false }),
+      ),
+    );
+    const eventId = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+        const run = await createAgentRun(client, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "title rollback",
+          threadId: turn.threadId,
+        });
+        const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "answer" });
+        await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+        return event.id;
+      }),
+    );
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: "answer",
+              lastEventId: eventId,
+            }),
+          ).toBe(true);
+          await enqueueSempThreadTitleIfFirst(client, turn.threadId, turn.assistantMessageId);
+          const job = await client.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+            `sempThreadTitle:${turn.threadId}`,
+          ]);
+          expect(job.rows).toEqual([{ key: `sempThreadTitle:${turn.threadId}` }]);
+          throw new Error("rollback sentinel");
+        }),
+      ),
+    ).rejects.toThrow("rollback sentinel");
+    const after = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => ({
+        message: await client.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+          turn.assistantMessageId,
+        ]),
+        job: await client.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `sempThreadTitle:${turn.threadId}`,
+        ]),
+      })),
+    );
     expect(after.message.rows).toEqual([{ status: "running" }]);
     expect(after.job.rows).toEqual([]);
   });

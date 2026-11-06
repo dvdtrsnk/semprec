@@ -44,7 +44,12 @@ import {
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
-import { inboxSourceEdgeDeleteHook, inboxSourceEdgeWriteHook, inboxTypeEdgeDeleteHook, inboxTypeEdgeWriteHook } from "./inbox/inboxSourceWriteHook.js";
+import {
+  inboxSourceEdgeDeleteHook,
+  inboxSourceEdgeWriteHook,
+  inboxTypeEdgeDeleteHook,
+  inboxTypeEdgeWriteHook,
+} from "./inbox/inboxSourceWriteHook.js";
 import { blobReferenceItemCreateHook, blobReferenceItemUpdateHook } from "./blobs/blobReferenceWriteHook.js";
 import { filesItemPreWriteTransform } from "./blobs/filesItemPreWriteTransform.js";
 

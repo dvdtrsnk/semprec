@@ -1,14 +1,28 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import { getSempThread, listSempThreadMessages, NotFoundError, sendSempMessage, ValidationError, withTransaction } from "@semprec/data";
-import { assertUuid, requireJsonObjectBody, requireStringField, requireUuidParam } from "./adapter/requestValidation.js";
+import {
+  getSempThread,
+  listSempThreadMessages,
+  NotFoundError,
+  sendSempMessage,
+  ValidationError,
+  withTransaction,
+} from "@semprec/data";
+import {
+  assertUuid,
+  requireJsonObjectBody,
+  requireStringField,
+  requireUuidParam,
+} from "./adapter/requestValidation.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 
-const messageRunSchema = z.object({
-  startedAt: z.string().datetime(),
-  finishedAt: z.string().datetime().nullable(),
-  status: z.enum(["running", "done", "error"]),
-}).nullable();
+const messageRunSchema = z
+  .object({
+    startedAt: z.string().datetime(),
+    finishedAt: z.string().datetime().nullable(),
+    status: z.enum(["running", "done", "error"]),
+  })
+  .nullable();
 
 function parseMessageInput(value: unknown) {
   const body = requireJsonObjectBody(value);
@@ -60,7 +74,10 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
         if (body.subject !== undefined) {
           const value = requireJsonObjectBody(body.subject);
           const inboxItemId = assertUuid(requireStringField(value, "inboxItemId"), "inboxItemId");
-          const proposalId = value.proposalId === undefined ? undefined : assertUuid(requireStringField(value, "proposalId"), "proposalId");
+          const proposalId =
+            value.proposalId === undefined
+              ? undefined
+              : assertUuid(requireStringField(value, "proposalId"), "proposalId");
           subject = { inboxItemId, ...(proposalId === undefined ? {} : { proposalId }) };
         }
         const result = await withTransaction(pool, (client) => sendSempMessage(client, { ...message, subject }));

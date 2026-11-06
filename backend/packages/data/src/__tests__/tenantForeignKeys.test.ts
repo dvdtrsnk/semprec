@@ -178,10 +178,11 @@ const REFERENCES: Reference[] = [
     table: "ai_gateway_calls",
     column: "semp_message_id",
     parentId: (p) => p.sempMessageId,
-    insert: (client, id) => client.query(
-      "INSERT INTO ai_gateway_calls (provider, model, cost_usd, semp_message_id) VALUES ('fixture', 'fixture', 0, $1)",
-      [id],
-    ),
+    insert: (client, id) =>
+      client.query(
+        "INSERT INTO ai_gateway_calls (provider, model, cost_usd, semp_message_id) VALUES ('fixture', 'fixture', 0, $1)",
+        [id],
+      ),
   },
   {
     parent: "problem",

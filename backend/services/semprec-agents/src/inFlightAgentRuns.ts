@@ -21,10 +21,14 @@ export function createInFlightAgentRuns(): InFlightAgentRuns {
       const result = Promise.resolve().then(work);
       const observed = result.then(
         () => {},
-        (error: unknown) => { failures?.push(error); },
+        (error: unknown) => {
+          failures?.push(error);
+        },
       );
       active.add(observed);
-      void observed.then(() => { active.delete(observed); });
+      void observed.then(() => {
+        active.delete(observed);
+      });
       return result;
     },
     observeSempSettlement() {
