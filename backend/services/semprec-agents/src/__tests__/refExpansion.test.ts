@@ -205,6 +205,78 @@ describe("tenant-scoped reference blob expansion", () => {
     }
   });
 
+  it("waits for delayed post-transfer closure before returning an ordinary placeholder", async () => {
+    const ref = await createFile(tenant, "Delayed PDF", pdfFixture());
+    let release: (() => void) | undefined;
+    const stream = new Readable({
+      read() {
+        this.push(Buffer.from("%PDF-corrupt"));
+        this.push(null);
+      },
+      destroy(_error, callback) {
+        release = () => callback(null);
+      },
+    });
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    const realRead = files.readStream.bind(files);
+    let reads = 0;
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      reads += 1;
+      return reads === 1 ? stream : realRead(key, range);
+    });
+    let returned = false;
+    const expansion = runInTenant(tenant, () => expandSempRefs(runtime, [ref], { files, mailAttachments })).then(
+      (result) => {
+        returned = true;
+        return result;
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(returned).toBe(false);
+      expect(stream.closed).toBe(false);
+      if (!release) throw new Error("Missing controlled destroy callback");
+      release();
+      release = undefined;
+      const result = await expansion;
+      expect(stream.closed).toBe(true);
+      expect(result.text).toContain("Attachment text unavailable.");
+      expect(result.context).toEqual([{ ...ref, label: "Delayed PDF" }]);
+    } finally {
+      if (!stream.destroyed) stream.destroy();
+      if (release) release();
+      await closed;
+      await Promise.allSettled([expansion]);
+      observer.mockRestore();
+    }
+  });
+
+  it.each([
+    ["over-cap bytes", () => Readable.from([Buffer.alloc(10 * 1024 * 1024 + 1)])],
+    ["invalid chunk", () => Readable.from([{ invalid: true }])],
+  ])("closes a controlled %s stream before an unavailable note and next real ref", async (_case, createStream) => {
+    const first = await createFile(tenant, "Fault PDF", pdfFixture());
+    const second = await createFile(tenant, "Next PDF", Buffer.concat([pdfFixture(), Buffer.from("next")]));
+    const stream = createStream();
+    const realRead = files.readStream.bind(files);
+    let reads = 0;
+    const observer = vi.spyOn(files, "readStream").mockImplementation((key, range) => {
+      reads += 1;
+      return reads === 1 ? stream : realRead(key, range);
+    });
+    try {
+      const result = await runInTenant(tenant, () =>
+        expandSempRefs(runtime, [first, second], { files, mailAttachments }),
+      );
+      expect(stream.closed).toBe(true);
+      expect(reads).toBe(2);
+      expect(result.text).toContain("Attachment text unavailable.");
+      expect(result.text).toContain("PDF reference sentinel");
+    } finally {
+      observer.mockRestore();
+    }
+  });
+
   it("expands real mail text bytes ephemerally and refuses foreign, random and invalid UTF-8 references", async () => {
     const createMail = (owner: string, attachments: Array<{ filename: string; bytes: Buffer }>) =>
       runInTenant(owner, () =>
