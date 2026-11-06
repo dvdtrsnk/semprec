@@ -8,6 +8,9 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
+import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { reviseProposalWithClient } from "../inbox/proposalActions.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import {
@@ -254,6 +257,110 @@ describe("Semp reference turn reads", () => {
       await expect(read(randomUUID())).resolves.toBeNull();
       expect((await snapshot()).rows).toEqual(before.rows);
     });
+  });
+
+  it("reads a tick-created Inbox capture and its revised card in both directions", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    const refs = await runInTenant(tenant, async () => {
+      const dbs = await withTransaction(runtime, async (client) => ({
+        inbox: await getDatabaseByModuleId(client, "inbox"),
+        types: await getDatabaseByModuleId(client, "inboxItemTypes"),
+        proposals: await getDatabaseByModuleId(client, "processingProposals"),
+        projects: await getDatabaseByModuleId(client, "projects"),
+      }));
+      if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects)
+        throw new Error("Missing Inbox fixture databases");
+      const source = await withTransaction(runtime, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: dbs.inbox!.id,
+          date: "2026-11-06",
+          time: "12:00",
+          text: "",
+        }),
+      );
+      const tick = createSemprecTickAction(runtime, async () => {
+        throw new Error("Unexpected model computation");
+      });
+      await tick(
+        {
+          inboxDatabaseId: dbs.inbox.id,
+          inboxItemTypesDatabaseId: dbs.types.id,
+          processingProposalsDatabaseId: dbs.proposals.id,
+        },
+        { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+      );
+      const cards = await runtime.query<{ id: string }>(
+        `SELECT card.id FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+        WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+        [dbs.proposals.id, source.id],
+      );
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing tick-created card");
+      const project = await createChokePoint(runtime).createItem({
+        databaseId: dbs.projects.id,
+        properties: { name: "Project" },
+      });
+      const envelope = {
+        entityKind: "pageContent" as const,
+        target: project.id,
+        properties: { flavour: "paragraph", fields: { content: "Note" } },
+      };
+      await withTransaction(runtime, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: dbs.proposals!.id }, cards.rows[0]!.id, {
+          message: "Revise fixture",
+          ...envelope,
+        }),
+      );
+      const capture = { kind: "item" as const, databaseId: dbs.inbox.id, itemId: source.id };
+      const card = { kind: "item" as const, databaseId: dbs.proposals.id, itemId: cards.rows[0].id };
+      const before = await runtime.query(
+        "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
+      );
+      const sourceRead = await withTransaction(runtime, (client) => readSempRefContext(client, capture));
+      const cardRead = await withTransaction(runtime, (client) => readSempRefContext(client, card));
+      expect(sourceRead).toMatchObject({
+        details: {
+          properties: { text: "" },
+          inboxRelated: {
+            items: [
+              {
+                id: card.itemId,
+                properties: {
+                  proposal: envelope,
+                  history: expect.arrayContaining([expect.objectContaining({ message: "Revise fixture" })]),
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(cardRead).toMatchObject({
+        details: {
+          properties: { proposal: envelope },
+          inboxRelated: { items: [{ id: source.id, properties: { text: "" } }] },
+        },
+      });
+      await expect(
+        withTransaction(runtime, (client) => readSempRefContext(client, { ...card, itemId: randomUUID() })),
+      ).resolves.toBeNull();
+      expect(
+        (
+          await runtime.query(
+            "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
+          )
+        ).rows,
+      ).toEqual(before.rows);
+      return { capture, card };
+    });
+    await expect(
+      runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, refs.card))),
+    ).resolves.toBeNull();
+    await expect(
+      runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, refs.capture))),
+    ).resolves.toBeNull();
   });
 
   it("reads metadata of a real ingested mail attachment without foreign access or writes", async () => {
