@@ -70,8 +70,8 @@ describe("unplanned system area", () => {
       expect(await cp.findItem(own.id)).toEqual(own);
       expect(await cp.findItem(foreign.item.id)).toBeNull();
       expect(await cp.findItem(randomUUID())).toBeNull();
-      await expect(cp.softDeleteItem(areasId, foreign.item.id)).rejects.toMatchObject({ status: 404 });
-      await expect(cp.softDeleteItem(areasId, randomUUID())).rejects.toMatchObject({ status: 404 });
+      expect(await cp.softDeleteItem(areasId, foreign.item.id)).toBeNull();
+      expect(await cp.softDeleteItem(areasId, randomUUID())).toBeNull();
       expect(await cp.getItem(areasId, own.id)).toEqual(own);
     });
     expect(await runInTenant(other, () => cp.getItem(foreign.database.id, foreign.item.id))).toEqual(foreign.item);

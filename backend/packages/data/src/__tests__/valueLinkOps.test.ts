@@ -132,7 +132,8 @@ describe("explicit value link operations", () => {
       );
       const before = await cp.getValueLinksForItems([target.id]);
       await expect(cp.relinkValue({ itemId: target.id, propertyKey: "project" })).rejects.toMatchObject({
-        status: 404,
+        status: 400,
+        code: "validation_failed",
       });
       expect(await cp.getValueLinksForItems([target.id])).toEqual(before);
       expect(await cp.listItemRelations(target.id)).toEqual([]);
