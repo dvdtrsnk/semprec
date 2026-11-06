@@ -606,7 +606,18 @@ describe("message speech HTTP", () => {
         });
         /* eslint-enable @typescript-eslint/unbound-method */
       };
-      guardPool.on("acquire", instrument);
+      /* eslint-disable @typescript-eslint/unbound-method */
+      const originalConnect = guardPool.connect;
+      guardPool.connect = new Proxy(originalConnect, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          return Promise.resolve(result).then((client: PoolClient) => {
+            instrument(client);
+            return client;
+          });
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
       let failure: unknown;
       let failed = false;
       try {
@@ -651,7 +662,7 @@ describe("message speech HTTP", () => {
         failed = true;
         failure = error;
       }
-      guardPool.off("acquire", instrument);
+      guardPool.connect = originalConnect;
       let cleanupFailure: unknown;
       try {
         await guardPool.end();
@@ -665,6 +676,74 @@ describe("message speech HTTP", () => {
         throw cleanupFailure instanceof Error
           ? cleanupFailure
           : new Error("Guard pool cleanup failed", { cause: cleanupFailure });
+    },
+  );
+
+  it.each([undefined, false, 0])(
+    "preserves a falsy work failure and both synthetic cleanup failures: %s",
+    async (primary) => {
+      const databaseUrl = z.object({ connectionString: z.string() }).parse(pool.options).connectionString;
+      const guardPool = new Pool({ connectionString: databaseUrl, max: 2 });
+      const unlockFailure = new Error("Synthetic unlock failure");
+      const releaseFailure = new Error("Synthetic release failure");
+      let releases = 0;
+      let listenersSettled = false;
+      /* eslint-disable @typescript-eslint/unbound-method */
+      const originalConnect = guardPool.connect;
+      guardPool.connect = new Proxy(originalConnect, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          return Promise.resolve(result).then((client: PoolClient) => {
+            const errorListeners = client.listenerCount("error");
+            const endListeners = client.listenerCount("end");
+            client.query = new Proxy(client.query, {
+              apply(query, queryReceiver, queryArgs: unknown[]) {
+                const actual: unknown = Reflect.apply(query, queryReceiver, queryArgs);
+                if (typeof queryArgs[0] !== "string" || !queryArgs[0].includes("pg_advisory_unlock")) return actual;
+                return Promise.resolve(actual).then(() => {
+                  throw unlockFailure;
+                });
+              },
+            });
+            client.release = new Proxy(client.release, {
+              apply(release, releaseReceiver, releaseArgs: unknown[]) {
+                releases += 1;
+                listenersSettled =
+                  client.listenerCount("error") === errorListeners && client.listenerCount("end") === endListeners;
+                Reflect.apply(release, releaseReceiver, releaseArgs);
+                throw releaseFailure;
+              },
+            });
+            return client;
+          });
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
+      try {
+        let caught: unknown;
+        try {
+          await runInTenant(tenant, () =>
+            withMessageSpeechGuard(guardPool, randomUUID(), "alloy", AbortSignal.timeout(5000), async () => {
+              throw primary;
+            }),
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("Missing aggregate failure");
+        expect(caught.errors).toEqual([primary, unlockFailure, releaseFailure]);
+        expect(caught.cause).toBe(primary);
+        expect(releases).toBe(1);
+        expect(listenersSettled).toBe(true);
+        guardPool.connect = originalConnect;
+        await runInTenant(tenant, () =>
+          withMessageSpeechGuard(guardPool, randomUUID(), "alloy", AbortSignal.timeout(5000), async () => undefined),
+        );
+      } finally {
+        guardPool.connect = originalConnect;
+        await guardPool.end();
+      }
     },
   );
 
