@@ -22,6 +22,8 @@ import {
   listSessionAgentRunEventsFromLastCompaction,
 } from "../agentRuns/agentRunEventsStore.js";
 import { setAgentRunEventHook } from "../realtimeHook.js";
+import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
+import { claimSempMessage, finishSempMessageTurn, startSempMessageTurn } from "../semp/sempMessagesStore.js";
 
 let pool: Pool;
 
@@ -142,6 +144,93 @@ describe("agentRunEventsStore", () => {
       expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, randomUUID(), "0", 257))).toEqual([]);
       for (const limit of [0, -1, 1.5, NaN, Infinity, 258])
         await expect(listAgentRunEventsAfter(runtime, run.id, "0", limit)).rejects.toBeInstanceOf(ValidationError);
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it("scopes successive Semp messages on the same run in the event query snapshot", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const tenant = getTenantZeroId();
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const foreign = await createTestTenant(pool);
+      const run = await runInTenant(tenant, () => createAgentRun(runtime, { triggeredBy: "user", task: "two turns" }));
+      const first = await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, run.id, "user_message", { kind: "user_message", text: "first" }),
+      );
+      const firstTurn = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const turn = await sendSempMessage(client, { text: "first", context: [], hasContext: false });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, first.id);
+          return turn;
+        }),
+      );
+      const end = await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, run.id, "message", { kind: "message", text: "first answer" }),
+      );
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          finishSempMessageTurn(client, firstTurn.assistantMessageId, {
+            status: "done",
+            text: "first answer",
+            lastEventId: end.id,
+          }),
+        ),
+      );
+      const next = await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, run.id, "user_message", { kind: "user_message", text: "second" }),
+      );
+      const secondTurn = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const turn = await sendSempMessage(client, {
+            threadId: firstTurn.threadId,
+            text: "second",
+            context: [],
+            hasContext: false,
+          });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, next.id);
+          return turn;
+        }),
+      );
+      const last = await runInTenant(tenant, () =>
+        insertAgentRunEvent(runtime, run.id, "message", { kind: "message", text: "second answer" }),
+      );
+      const scopeA = { threadId: firstTurn.threadId, sempMessageId: firstTurn.assistantMessageId };
+      const scopeB = { threadId: secondTurn.threadId, sempMessageId: secondTurn.assistantMessageId };
+      const list = (scope: typeof scopeA, cursor = "0", limit = 257) =>
+        runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, cursor, limit, scope));
+      expect((await list(scopeA)).map((event) => event.id)).toEqual([first.id, end.id]);
+      expect((await list(scopeA, first.id)).map((event) => event.id)).toEqual([end.id]);
+      expect((await list(scopeB, "0", 1)).map((event) => event.id)).toEqual([next.id]);
+      expect((await list(scopeB)).map((event) => event.id)).toEqual([next.id, last.id]);
+      expect(await runInTenant(tenant, () => getAgentRunEventById(runtime, run.id, last.id, scopeA))).toBeNull();
+      expect((await runInTenant(tenant, () => getAgentRunEventById(runtime, run.id, last.id, scopeB)))?.id).toBe(
+        last.id,
+      );
+      expect(await list({ ...scopeA, threadId: randomUUID() })).toEqual([]);
+      expect(await list({ ...scopeA, sempMessageId: randomUUID() })).toEqual([]);
+      expect(await runInTenant(foreign, () => listAgentRunEventsAfter(runtime, run.id, "0", 257, scopeA))).toEqual([]);
+      expect(await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, randomUUID(), "0", 257, scopeA))).toEqual(
+        [],
+      );
+      await expect(list({ ...scopeA, threadId: "invalid" })).rejects.toBeInstanceOf(ValidationError);
+      expect(
+        (await runInTenant(tenant, () => listAgentRunEventsAfter(runtime, run.id, "0"))).map((event) => event.id),
+      ).toEqual([first.id, end.id, next.id, last.id]);
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          finishSempMessageTurn(client, secondTurn.assistantMessageId, { status: "error" }),
+        ),
+      );
+      expect(await list(scopeB)).toEqual([]);
     } finally {
       await runtime.end();
     }

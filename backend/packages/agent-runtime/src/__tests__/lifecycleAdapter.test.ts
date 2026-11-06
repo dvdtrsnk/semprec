@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   createAgentRun,
@@ -10,8 +11,14 @@ import {
   setSessionRevokedHook,
   type AgentRunRow,
 } from "@semprec/data";
-import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { getTraceContext } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { getTraceContext, runInTenant } from "@semprec/shared";
 import { publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import {
   AgentRunCancelledError,
@@ -236,6 +243,55 @@ describe("runAgentSession", () => {
       });
     } finally {
       listenClient.release(true);
+    }
+  });
+
+  it("tags each real turn publication with its captured assistant id and leaves generic deltas untagged", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    let release!: () => void;
+    try {
+      await listener.query("LISTEN semprec_agent_stream");
+      const messages: unknown[] = [];
+      listener.on("notification", (event) => {
+        if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
+      });
+      const run = await runInTenant(getTenantZeroId(), () =>
+        createAgentRun(runtime, { triggeredBy: "user", task: "tagged" }),
+      );
+      const first = randomUUID();
+      const second = randomUUID();
+      let mutableId = first;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      async function* delayed(): AsyncGenerator<AgentMessage> {
+        await gate;
+        yield { kind: "message_update", text: "first" };
+      }
+      async function* immediate(): AsyncGenerator<AgentMessage> {
+        yield { kind: "message_update", text: "next" };
+      }
+      const pending = runInTenant(getTenantZeroId(), () =>
+        runAgentTurn(runtime, run.id, delayed(), undefined, undefined, undefined, mutableId),
+      );
+      mutableId = second;
+      release();
+      await pending;
+      await runInTenant(getTenantZeroId(), () =>
+        runAgentTurn(runtime, run.id, immediate(), undefined, undefined, undefined, mutableId),
+      );
+      await runInTenant(getTenantZeroId(), () => runAgentTurn(runtime, run.id, immediate()));
+      await vi.waitFor(() => expect(messages).toHaveLength(3));
+      expect(messages).toEqual([
+        expect.objectContaining({ message: expect.objectContaining({ agentRunId: run.id, sempMessageId: first }) }),
+        expect.objectContaining({ message: expect.objectContaining({ agentRunId: run.id, sempMessageId: second }) }),
+        expect.objectContaining({ message: expect.not.objectContaining({ sempMessageId: expect.anything() }) }),
+      ]);
+    } finally {
+      release?.();
+      listener.release();
+      await runtime.end();
     }
   });
 });

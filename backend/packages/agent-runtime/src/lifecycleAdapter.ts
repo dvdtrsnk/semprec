@@ -84,9 +84,14 @@ async function recordPersistentEvent(
 }
 
 /** Best-effort: a lost typing delta affects animation only; the completed message is durable. */
-async function pushLiveDelta(client: Pool | PoolClient, agentRunId: string, delta: AgentMessage): Promise<void> {
+async function pushLiveDelta(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  delta: AgentMessage,
+  sempMessageId?: string,
+): Promise<void> {
   try {
-    await publishAgentRunDelta(client, agentRunId, delta);
+    await publishAgentRunDelta(client, agentRunId, delta, sempMessageId);
   } catch (err) {
     logger.error({ err, agentRunId, kind: delta.kind }, "Failed to publish agent_run_delta realtime message");
   }
@@ -123,6 +128,7 @@ export async function runAgentTurn(
   onEvent?: (message: AgentMessage) => void,
   signal?: AbortSignal,
   onFirstEvent?: (eventId: string) => Promise<void> | void,
+  sempMessageId?: string,
 ): Promise<AgentMessage | null> {
   let firstEventReported = false;
   let lastMessage: AgentMessage | null = null;
@@ -167,7 +173,7 @@ export async function runAgentTurn(
       // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
       // a missed message_update is deliberately lost, same as a dropped WS typing frame.
       if (message.kind === "message_update") {
-        await pushLiveDelta(client, agentRunId, message);
+        await pushLiveDelta(client, agentRunId, message, sempMessageId);
       } else {
         if (PERSISTED_EVENT_KINDS.has(message.kind)) {
           const stored = await recordPersistentEvent(client, agentRunId, message.kind, message);

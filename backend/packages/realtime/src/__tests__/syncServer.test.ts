@@ -9,12 +9,15 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import {
   createPool,
+  claimSempMessage,
   withTransaction,
   createAgentRun,
   createUser,
   hashPassword,
   insertAndNotifyAgentRunEvent,
   insertAgentRunEvent,
+  sendSempMessage,
+  startSempMessageTurn,
   publishSempThreadInvalidation,
   writeNotification,
   createChokePoint,
@@ -1639,6 +1642,18 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     });
   }
 
+  // State-only fixture: production message and lifecycle writers establish the real association.
+  async function voiceTarget(runId: string, firstEventId: string) {
+    return runInTenant(tenantA, () =>
+      withTransaction(runtimePool, async (client) => {
+        const turn = await sendSempMessage(client, { text: "voice target", context: [], hasContext: false });
+        expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+        await startSempMessageTurn(client, turn.assistantMessageId, runId, firstEventId);
+        return { threadId: turn.threadId, sempMessageId: turn.assistantMessageId };
+      }),
+    );
+  }
+
   it("bounds voice replay before delivery and scopes callbacks to the authenticated run actor", async () => {
     const role = await runAsSystem("test:role", () =>
       runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -1649,12 +1664,14 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const run = await createRunIn(tenantA, userA);
     const inserted: string[] = [];
     for (let i = 0; i < 256; i++) inserted.push((await silentEventIn(tenantA, run.id)).id);
+    const target = await voiceTarget(run.id, inserted[0]!);
     const received: string[] = [];
     const errors: unknown[] = [];
     const input = {
       tenantId: tenantA,
       userId: userA,
       runId: run.id,
+      ...target,
       afterEventId: "0",
       onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
         if (frame.type === "event") received.push(frame.event.id);
@@ -1686,13 +1703,20 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }),
     ).rejects.toThrow("replay exceeds");
     expect(refused).toEqual([]);
-    for (const other of [{ tenantId: tenantB }, { userId: randomUUID() }, { runId: randomUUID() }])
+    for (const other of [
+      { tenantId: tenantB },
+      { userId: randomUUID() },
+      { runId: randomUUID() },
+      { threadId: randomUUID() },
+      { sempMessageId: randomUUID() },
+    ])
       await expect(tenantServer.subscribeVoice({ ...input, ...other })).rejects.toThrow("unavailable");
   });
 
   it("hands off voice replay to live notifications and aborts an in-flight replay", async () => {
     const run = await createRunIn(tenantA, userA);
     const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
     const sentinelRun = await createRunIn(tenantA, userA);
     const sentinel = await connectAs("voice-sentinel", tenantA, userA);
     const sentinelFrames = collectFrames(sentinel);
@@ -1714,7 +1738,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         !held &&
         typeof args[0] === "string" &&
         args[0].includes("FROM agent_run_events") &&
-        args[0].includes("LIMIT $3")
+        args[0].includes("LIMIT $5")
       ) {
         held = true;
         observed();
@@ -1729,6 +1753,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         tenantId: tenantA,
         userId: userA,
         runId: run.id,
+        ...target,
         afterEventId: "0",
         onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
           if (frame.type === "event") received.push(frame.event.id);
@@ -1768,7 +1793,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         !abortHeld &&
         typeof args[0] === "string" &&
         args[0].includes("FROM agent_run_events") &&
-        args[0].includes("LIMIT $3")
+        args[0].includes("LIMIT $5")
       ) {
         abortHeld = true;
         observedAbort();
@@ -1784,6 +1809,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         tenantId: tenantA,
         userId: userA,
         runId: run.id,
+        ...target,
         afterEventId: "0",
         signal: controller.signal,
         onFrame(frame) {
@@ -1800,6 +1826,66 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     } finally {
       releaseAbort();
       abortSpy.mockRestore();
+    }
+  });
+
+  it("filters tagged voice deltas by message while keeping socket frames unchanged", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const voiceFrames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        voiceFrames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-wire", tenantA, userA);
+    const wire = collectFrames(socket);
+    try {
+      socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+      await settle();
+      await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "untagged" }));
+      await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "other" }, randomUUID()));
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "owned" }, target.sempMessageId),
+      );
+      await vi.waitFor(() => expect(voiceFrames.filter((frame) => frame.type === "delta")).toHaveLength(1));
+      expect(voiceFrames[0]).toMatchObject({
+        type: "delta",
+        message: { sempMessageId: target.sempMessageId, delta: { text: "owned" } },
+      });
+      const before = voiceFrames.length;
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId),
+      );
+      await vi.waitFor(() => expect(voiceFrames.length).toBeGreaterThan(before + 1));
+      const chunks = voiceFrames.slice(before);
+      expect(
+        chunks.every(
+          (frame) =>
+            frame.type === "delta" &&
+            frame.message.sempMessageId === target.sempMessageId &&
+            "chunk" in frame.message &&
+            Buffer.byteLength(JSON.stringify(frame.message)) < 7500,
+        ),
+      ).toBe(true);
+      await vi.waitFor(() => expect(wire.length).toBeGreaterThanOrEqual(3 + chunks.length));
+      expect(wire.every((frame) => frame.type === "agent:delta" && !("sempMessageId" in frame))).toBe(true);
+      await expect(
+        runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "invalid" }, "not-a-uuid")),
+      ).rejects.toThrow();
+    } finally {
+      dispose();
+      socket.close();
     }
   });
 

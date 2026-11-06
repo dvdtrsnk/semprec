@@ -1,6 +1,12 @@
 import type { Pool } from "pg";
 import type { WebSocket } from "ws";
-import { getAgentRun, getAgentRunEventById, listAgentRunEventsAfter, type AgentRunEventRow } from "@semprec/data";
+import {
+  getAgentRun,
+  getAgentRunEventById,
+  getSempVoiceDelivery,
+  listAgentRunEventsAfter,
+  type AgentRunEventRow,
+} from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
@@ -12,6 +18,8 @@ export interface VoiceRunWatchInput {
   tenantId: string;
   userId: string;
   runId: string;
+  threadId: string;
+  sempMessageId: string;
   afterEventId: string;
   signal?: AbortSignal;
   onFrame(frame: VoiceRunFrame): boolean;
@@ -127,7 +135,10 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         for (const id of ids) {
           if (!watcher.active || !isLater(id, watcher.lastEventId)) continue;
           const event = await runInTenant(watcher.input.tenantId, () =>
-            getAgentRunEventById(pool, watcher.input.runId, id),
+            getAgentRunEventById(pool, watcher.input.runId, id, {
+              threadId: watcher.input.threadId,
+              sempMessageId: watcher.input.sempMessageId,
+            }),
           );
           if (event) deliverVoiceEvent(watcher, event);
         }
@@ -225,6 +236,9 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       const generation = tenantGenerations.get(input.tenantId) ?? 0;
       const connectionGeneration = voiceGeneration;
       const run = await runInTenant(input.tenantId, () => getAgentRun(pool, input.runId));
+      const delivery = await runInTenant(input.tenantId, () =>
+        getSempVoiceDelivery(pool, input.threadId, input.sempMessageId),
+      );
       input.signal?.throwIfAborted();
       if (
         voiceClosed ||
@@ -232,7 +246,16 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         generation !== (tenantGenerations.get(input.tenantId) ?? 0)
       )
         throw new Error("Voice run watch unavailable");
-      if (!run || run.actorUserId !== input.userId) throw new Error("Voice run watch unavailable");
+      if (
+        !run ||
+        run.actorUserId !== input.userId ||
+        !delivery ||
+        delivery.runId !== input.runId ||
+        !delivery.firstEventId ||
+        (delivery.status !== "running" &&
+          !((delivery.status === "done" || delivery.status === "error") && delivery.lastEventId))
+      )
+        throw new Error("Voice run watch unavailable");
       const watcher: VoiceWatcher = {
         input,
         lastEventId: input.afterEventId,
@@ -256,7 +279,10 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       watchers.add(watcher);
       try {
         const replay = await runInTenant(input.tenantId, () =>
-          listAgentRunEventsAfter(pool, input.runId, input.afterEventId, 257),
+          listAgentRunEventsAfter(pool, input.runId, input.afterEventId, 257, {
+            threadId: input.threadId,
+            sempMessageId: input.sempMessageId,
+          }),
         );
         if (!watcher.active) {
           input.signal?.throwIfAborted();
@@ -271,7 +297,12 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           watcher.queuedEventIds.clear();
           for (const eventId of queued) {
             if (!watcher.active || !isLater(eventId, watcher.lastEventId)) continue;
-            const event = await runInTenant(input.tenantId, () => getAgentRunEventById(pool, input.runId, eventId));
+            const event = await runInTenant(input.tenantId, () =>
+              getAgentRunEventById(pool, input.runId, eventId, {
+                threadId: input.threadId,
+                sempMessageId: input.sempMessageId,
+              }),
+            );
             if (event) deliverVoiceEvent(watcher, event);
           }
         }
@@ -428,7 +459,12 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       const voices = voiceByRun.get(message.agentRunId);
       if (voices)
         for (const watcher of voices)
-          if (watcher.active && !watcher.replaying && watcher.input.tenantId === tenantId)
+          if (
+            watcher.active &&
+            !watcher.replaying &&
+            watcher.input.tenantId === tenantId &&
+            message.sempMessageId === watcher.input.sempMessageId
+          )
             deliverVoice(watcher, { type: "delta", message });
       const watchers = watchersByRun.get(message.agentRunId);
       if (!watchers) return;

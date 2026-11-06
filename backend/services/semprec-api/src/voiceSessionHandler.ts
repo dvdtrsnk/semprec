@@ -184,6 +184,8 @@ export function createVoiceSessionHandler(
         tenantId: session.identity.tenantId,
         userId: session.identity.userId,
         runId: delivery.runId,
+        threadId: result.threadId,
+        sempMessageId: result.assistantMessageId,
         afterEventId: delivery.firstEventId,
         signal,
         onFrame,

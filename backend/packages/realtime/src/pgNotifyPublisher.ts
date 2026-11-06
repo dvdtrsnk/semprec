@@ -91,8 +91,8 @@ async function publishEnveloped(pool: Pool | PoolClient, channel: string, messag
 }
 
 export type AgentStreamMessage =
-  | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
-  | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk };
+  | { type: "agent_run_delta"; agentRunId: string; delta: unknown; sempMessageId?: string }
+  | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk; sempMessageId?: string };
 
 function serializedBytes(message: AgentStreamMessage): number {
   return Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -103,11 +103,22 @@ function serializedBytes(message: AgentStreamMessage): number {
  * below its ~8 KiB ceiling, so unusually large JSON values are split into independently valid
  * base64 pieces. The receiver forwards the chunk metadata unchanged for the client to reassemble.
  */
-export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: string, delta: unknown): Promise<void> {
+export async function publishAgentRunDelta(
+  pool: Pool | PoolClient,
+  agentRunId: string,
+  delta: unknown,
+  sempMessageId?: string,
+): Promise<void> {
+  if (sempMessageId !== undefined && !isUuid(sempMessageId)) throw new Error("Invalid Semp message id");
   // `JSON.stringify` drops an object key whose value is `undefined`, and `parseAgentStreamMessage`
   // requires a `delta` key to be present — normalize so an explicit `undefined` delta still
   // round-trips instead of being silently dropped on the fast (unchunked) path below.
-  const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta: delta === undefined ? null : delta };
+  const single: AgentStreamMessage = {
+    type: "agent_run_delta",
+    agentRunId,
+    delta: delta === undefined ? null : delta,
+    ...(sempMessageId === undefined ? {} : { sempMessageId }),
+  };
   if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
     await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(single));
     return;
@@ -123,6 +134,7 @@ export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: 
     const message: AgentStreamMessage = {
       type: "agent_run_delta",
       agentRunId,
+      ...(sempMessageId === undefined ? {} : { sempMessageId }),
       delta: encoded.slice(index * AGENT_STREAM_CHUNK_BYTES, (index + 1) * AGENT_STREAM_CHUNK_BYTES),
       chunk,
     };
@@ -252,7 +264,10 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   if (typeof raw !== "object" || raw === null) return null;
   const value = raw as Record<string, unknown>;
   if (value.type !== "agent_run_delta" || !isUuid(value.agentRunId) || !("delta" in value)) return null;
-  if (value.chunk === undefined) return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta };
+  if (value.sempMessageId !== undefined && !isUuid(value.sempMessageId)) return null;
+  const sempMessageId = value.sempMessageId === undefined ? {} : { sempMessageId: value.sempMessageId };
+  if (value.chunk === undefined)
+    return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta, ...sempMessageId };
   if (typeof value.chunk !== "object" || value.chunk === null || Array.isArray(value.chunk)) return null;
   const chunk = value.chunk as Record<string, unknown>;
   if (
@@ -272,6 +287,7 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   return {
     type: "agent_run_delta",
     agentRunId: value.agentRunId,
+    ...sempMessageId,
     delta: value.delta,
     chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
   };

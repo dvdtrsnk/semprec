@@ -319,6 +319,7 @@ export class SempConversation {
 
   async send(task: string, thread: SempThread, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
     const { signal, onTurnStart } = sendOptions;
+    const sempMessageId = sendOptions.messageId;
     const modelTask = sendOptions.modelPrefix ? `${sendOptions.modelPrefix}\n\n${task}` : task;
     const parsedContext = labeledSempMessageRefSchema
       .array()
@@ -345,7 +346,7 @@ export class SempConversation {
     if (state?.entry) {
       const entry = state.entry;
       entry.busy = true;
-      if (entry.currentSempMessage) entry.currentSempMessage.current = sendOptions.messageId ?? null;
+      if (entry.currentSempMessage) entry.currentSempMessage.current = sempMessageId ?? null;
       try {
         return await withTraceContext({ agentRunId: entry.agentRunId }, async () => {
           let lastMessage: AgentMessage | null;
@@ -362,6 +363,7 @@ export class SempConversation {
               undefined,
               signal,
               onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: entry.agentRunId, firstEventId })),
+              sempMessageId,
             );
           } catch (err) {
             // A broken turn leaves the underlying AgentSession in an unknown state — close the
@@ -393,7 +395,7 @@ export class SempConversation {
     }
 
     const wakeState: ThreadConversation = { tenantId, threadId: thread.threadId, entry: null, waking: true };
-    const currentSempMessage = { current: sendOptions.messageId ?? null };
+    const currentSempMessage = { current: sempMessageId ?? null };
     this.conversations.set(key, wakeState);
     try {
       const projectItemId =
@@ -438,6 +440,7 @@ export class SempConversation {
             undefined,
             signal,
             onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: run.id, firstEventId })),
+            sempMessageId,
           );
         } catch (err) {
           try {
