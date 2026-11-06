@@ -143,7 +143,7 @@ export function createSempSpeechRequestListener(
             if (!exists) await storage.delete(key);
           } catch (cleanupError) {
             throw new AggregateError([operationFailure, cleanupError], "Speech fill and cleanup failed", {
-              cause: cleanupError,
+              cause: operationFailure,
             });
           }
         }
