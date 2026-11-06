@@ -442,6 +442,7 @@ it("reports an unobserved cleanup deadline and safely observes the eventual late
   const primary = new LocalFsBlobStorageWriter("/unused-primary");
   const alternate = new LocalFsBlobStorageWriter("/unused-alternate");
   const original = Object.assign(new Error("controlled missing file"), { code: "ENOENT" });
+  const cleanup = new Error("controlled pending cleanup error");
   const late = new Error("controlled late cleanup error");
   let release: (() => void) | undefined;
   const stream = new Readable({
@@ -464,6 +465,8 @@ it("reports an unobserved cleanup deadline and safely observes the eventual late
     () => {},
   );
   try {
+    await vi.waitFor(() => expect(release).toBeDefined());
+    stream.emit("error", cleanup);
     let failure: unknown;
     try {
       await opened;
@@ -473,7 +476,8 @@ it("reports an unobserved cleanup deadline and safely observes the eventual late
     expect(failure).toBeInstanceOf(AggregateError);
     if (!(failure instanceof AggregateError)) throw new Error("Expected cleanup deadline failure");
     expect(failure.errors[0]).toBe(original);
-    expect(failure.errors[1]).toMatchObject({
+    expect(failure.errors[1]).toBe(cleanup);
+    expect(failure.errors[2]).toMatchObject({
       message: "Blob stream cleanup closure was not observed within its deadline",
     });
     expect(second).not.toHaveBeenCalled();
