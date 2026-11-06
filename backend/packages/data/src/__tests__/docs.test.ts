@@ -2,7 +2,7 @@ import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
@@ -85,6 +85,12 @@ describe("docs (CRDT layer)", () => {
     it("waits for a concurrent trash and refuses both absent and existing documents", async () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       try {
+        const role = await runAsSystem("check page reservation role", () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
         const tenant = await createTestTenant(pool);
         await runInTenant(tenant, async () => {
           const cp = createChokePoint(runtime);

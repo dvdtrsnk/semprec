@@ -130,9 +130,15 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
   let zero: string;
   let b: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     adminPool = getTestPool();
     dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    const role = await runAsSystem("check tenant cutover role", () =>
+      dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
 
   beforeEach(async () => {

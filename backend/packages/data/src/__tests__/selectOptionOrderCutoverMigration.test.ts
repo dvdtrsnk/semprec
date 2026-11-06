@@ -42,9 +42,15 @@ async function property(tenant: string, moduleId: string, key: string) {
 }
 
 describe("select option order tenant cutover", () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     admin = getTestPool();
     data = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    const role = await runAsSystem("check option order role", () =>
+      data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);
