@@ -208,7 +208,19 @@ describe("tenant-scoped reference blob expansion", () => {
     await runInTenant(tenant, async () => {
       const snapshot = () =>
         runtime.query(
-          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM item_search_index) AS search",
+          `SELECT (SELECT count(*)::int FROM items) AS items,
+            (SELECT count(*)::int FROM item_relations) AS edges,
+            (SELECT count(*)::int FROM blobs) AS blobs,
+            (SELECT count(*)::int FROM mail_attachments) AS attachments,
+            (SELECT count(*)::int FROM item_search_index) AS search,
+            (SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM mail_attachments a WHERE a.id = ANY($1::uuid[])) AS attachment_rows,
+            (SELECT jsonb_agg(to_jsonb(b) ORDER BY b.id) FROM blobs b WHERE b.id IN
+              (SELECT a.blob_id FROM mail_attachments a WHERE a.id = ANY($1::uuid[]))) AS blob_rows,
+            (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id IN
+              (SELECT a.message_item_id FROM mail_attachments a WHERE a.id = ANY($1::uuid[]))) AS message_rows,
+            (SELECT jsonb_agg(to_jsonb(s) ORDER BY s.item_id) FROM item_search_index s WHERE s.item_id IN
+              (SELECT a.message_item_id FROM mail_attachments a WHERE a.id = ANY($1::uuid[]))) AS search_rows`,
+          [own.map((row) => row.id)],
         );
       const before = await snapshot();
       const result = await expandSempRefs(runtime, refs, { files, mailAttachments }, new AbortController().signal);
