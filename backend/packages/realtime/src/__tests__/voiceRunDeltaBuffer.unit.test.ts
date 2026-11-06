@@ -97,6 +97,23 @@ describe("bounded voice delta buffer", () => {
     );
   });
 
+  it("admits exactly 512 KiB of pending serialized content and rejects one more value as overload", () => {
+    const buffer = new VoiceRunDeltaBuffer("1");
+    const value = "x".repeat(262142);
+    buffer.admit(delta("1", 1, value), 0);
+    buffer.admit(delta("1", 2, value), 0);
+    let failure: unknown;
+    try {
+      buffer.admit(delta("1", 3, null), 0);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ causeCode: "overloaded" });
+    expect(buffer.shift()?.delta).toBe(value);
+    expect(buffer.shift()?.delta).toBe(value);
+    expect(buffer.shift()).toBeUndefined();
+  });
+
   it("suppresses out-of-order and interleaved assemblies without stitching later data", () => {
     const buffer = new VoiceRunDeltaBuffer("1");
     buffer.admit(chunk("1", 1, 1, 2, "IjoxfQ=="), 0);
