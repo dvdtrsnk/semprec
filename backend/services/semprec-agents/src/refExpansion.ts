@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { Readable } from "node:stream";
 import {
   extractAttachmentText,
   isTextExtractableContentType,
@@ -9,13 +10,75 @@ import {
   type BlobStorageWriter,
 } from "@semprec/data";
 import type { AgentImage } from "@semprec/agent-runtime";
-import { labeledSempMessageRefSchema, sempMessageRefSchema, type LabeledSempMessageRef } from "@semprec/shared";
+import {
+  BlobReadCleanupError,
+  labeledSempMessageRefSchema,
+  sempMessageRefSchema,
+  settleBlobReadStream,
+  type LabeledSempMessageRef,
+} from "@semprec/shared";
 import { boundRefSections } from "./refExpansionLimits.js";
 import { decodeRefImage, MAX_IMAGE_INPUT_BYTES } from "./refImage.js";
 
 const MAX_TEXT_BLOB_BYTES = 10 * 1024 * 1024;
 
 type StorageRoots = { files: BlobStorageWriter; mailAttachments: BlobStorageWriter };
+
+/** Consume a transferred stream without leaving an iterator return waiting on destruction. */
+async function readRefBytes(stream: Readable, cap: number, signal?: AbortSignal): Promise<Buffer> {
+  const errors: unknown[] = [];
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let result: { bytes: Buffer } | { error: unknown } | undefined;
+  let resolve!: () => void;
+  const terminal = new Promise<void>((done) => {
+    resolve = done;
+  });
+  const detachTerminals = () => {
+    stream.off("data", data);
+    stream.off("end", end);
+    stream.off("close", close);
+    signal?.removeEventListener("abort", abort);
+  };
+  const finish = (outcome: { bytes: Buffer } | { error: unknown }) => {
+    if (result) return;
+    result = outcome;
+    stream.pause();
+    detachTerminals();
+    resolve();
+  };
+  const data = (raw: unknown) => {
+    if (typeof raw !== "string" && !(raw instanceof Uint8Array))
+      return finish({ error: new Error("Invalid attachment byte stream") });
+    const bytes = Buffer.from(raw);
+    if (size + bytes.length > cap) return finish({ error: new Error("Attachment exceeds the size limit") });
+    size += bytes.length;
+    chunks.push(bytes);
+  };
+  const end = () => finish({ bytes: Buffer.concat(chunks, size) });
+  const error = (value: unknown) => {
+    if (errors.length < 2 && !errors.some((entry) => entry === value)) errors.push(value);
+    finish({ error: value });
+  };
+  const close = () => finish({ error: stream.errored ?? new Error("Attachment closed before read completed") });
+  const abort = () => finish({ error: signal?.reason });
+  stream.on("error", error);
+  stream.once("end", end);
+  stream.once("close", close);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  else if (stream.closed || stream.destroyed || stream.readableEnded) close();
+  else stream.on("data", data);
+  await terminal;
+  if (!result) throw new Error("Attachment read has no outcome");
+  const outcome: { bytes: Buffer } | { error: unknown } = result;
+  await settleBlobReadStream(stream, {}, "error" in outcome ? { error: outcome.error } : undefined, errors, () =>
+    stream.off("error", error),
+  );
+  if ("error" in outcome) throw outcome.error;
+  signal?.throwIfAborted();
+  return outcome.bytes;
+}
 
 /** Resolve each stored reference independently; only labels and refs are retained for replay. */
 export async function expandSempRefs(
@@ -73,41 +136,22 @@ export async function expandSempRefs(
               });
               if (!stream) section += "\nAttachment unavailable.";
               else {
-                const abort = () => stream.destroy();
-                signal?.addEventListener("abort", abort, { once: true });
-                try {
+                const bytes = await readRefBytes(stream, cap, signal);
+                if (image) {
+                  const decoded = await decodeRefImage(bytes, signal);
                   signal?.throwIfAborted();
-                  if (image) {
-                    const decoded = await decodeRefImage(stream, signal);
-                    signal?.throwIfAborted();
-                    if (decoded) images.push(decoded);
-                    else section += "\nImage unavailable.";
-                  } else {
-                    const chunks: Buffer[] = [];
-                    let size = 0;
-                    for await (const raw of stream) {
-                      signal?.throwIfAborted();
-                      const chunk: unknown = raw;
-                      if (typeof chunk !== "string" && !(chunk instanceof Uint8Array))
-                        throw new Error("Invalid attachment byte stream");
-                      const bytes = Buffer.from(chunk);
-                      size += bytes.length;
-                      if (size > cap) throw new Error("Attachment exceeds the size limit");
-                      chunks.push(bytes);
-                    }
-                    const bytes = Buffer.concat(chunks, size);
-                    const text = plain
-                      ? new TextDecoder("utf-8", { fatal: true }).decode(bytes)
-                      : await extractAttachmentText(blob.mimeType, bytes);
-                    signal?.throwIfAborted();
-                    section += text === null ? "\nAttachment type cannot be extracted." : `\n${text}`;
-                  }
-                } finally {
-                  signal?.removeEventListener("abort", abort);
-                  stream.destroy();
+                  if (decoded) images.push(decoded);
+                  else section += "\nImage unavailable.";
+                } else {
+                  const text = plain
+                    ? new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+                    : await extractAttachmentText(blob.mimeType, bytes);
+                  signal?.throwIfAborted();
+                  section += text === null ? "\nAttachment type cannot be extracted." : `\n${text}`;
                 }
               }
-            } catch {
+            } catch (error) {
+              if (error instanceof BlobReadCleanupError) throw error;
               signal?.throwIfAborted();
               section += image ? "\nImage unavailable." : "\nAttachment text unavailable.";
             }
@@ -115,7 +159,8 @@ export async function expandSempRefs(
         }
         sections.push(section);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof BlobReadCleanupError) throw error;
       signal?.throwIfAborted();
       sections.push(`${ref.kind}: unavailable.`);
     }

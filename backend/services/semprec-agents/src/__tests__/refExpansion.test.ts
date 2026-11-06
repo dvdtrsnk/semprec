@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import type { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
 import {
   createChokePoint,
@@ -223,7 +223,21 @@ describe("tenant-scoped reference blob expansion", () => {
           [own.map((row) => row.id)],
         );
       const before = await snapshot();
-      const result = await expandSempRefs(runtime, refs, { files, mailAttachments }, new AbortController().signal);
+      const opened: Readable[] = [];
+      const realRead = mailAttachments.readStream.bind(mailAttachments);
+      const observer = vi.spyOn(mailAttachments, "readStream").mockImplementation((key, range) => {
+        const stream = realRead(key, range);
+        opened.push(stream);
+        return stream;
+      });
+      let result: Awaited<ReturnType<typeof expandSempRefs>>;
+      try {
+        result = await expandSempRefs(runtime, refs, { files, mailAttachments }, new AbortController().signal);
+        expect(opened).toHaveLength(2);
+        expect(opened.every((stream) => stream.closed)).toBe(true);
+      } finally {
+        observer.mockRestore();
+      }
       expect(result.text).toContain("Mail text fixture sentinel");
       expect(result.text).toContain('"mimeType":"text/plain"');
       expect(result.text).toContain("Attachment text unavailable.");

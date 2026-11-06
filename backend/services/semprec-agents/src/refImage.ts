@@ -1,4 +1,3 @@
-import type { Readable } from "node:stream";
 import sharp from "sharp";
 import type { AgentImage } from "@semprec/agent-runtime";
 
@@ -17,22 +16,9 @@ function supportedSignature(bytes: Buffer): boolean {
 }
 
 /** Read and decode one authorized image; failures leave no persistent derivative. */
-export async function decodeRefImage(stream: Readable, signal?: AbortSignal): Promise<AgentImage | null> {
-  const abort = () => stream.destroy();
-  signal?.addEventListener("abort", abort, { once: true });
+export async function decodeRefImage(input: Buffer, signal?: AbortSignal): Promise<AgentImage | null> {
   try {
-    if (signal?.aborted) return null;
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for await (const raw of stream) {
-      const chunk: unknown = raw;
-      if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) return null;
-      const bytes = Buffer.from(chunk);
-      total += bytes.length;
-      if (total > MAX_IMAGE_INPUT_BYTES || signal?.aborted) return null;
-      chunks.push(bytes);
-    }
-    const input = Buffer.concat(chunks, total);
+    if (input.length > MAX_IMAGE_INPUT_BYTES || signal?.aborted) return null;
     if (!supportedSignature(input) || signal?.aborted) return null;
     const image = sharp(input, { failOn: "warning", limitInputPixels: MAX_IMAGE_INPUT_PIXELS, pages: 1 });
     const output = await image
@@ -45,8 +31,5 @@ export async function decodeRefImage(stream: Readable, signal?: AbortSignal): Pr
     return { type: "image", data: output.toString("base64"), mimeType: "image/jpeg" };
   } catch {
     return null;
-  } finally {
-    signal?.removeEventListener("abort", abort);
-    stream.destroy();
   }
 }

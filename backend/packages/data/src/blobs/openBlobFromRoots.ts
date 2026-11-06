@@ -1,4 +1,5 @@
 import type { Readable } from "node:stream";
+import { BlobReadCleanupError, settleBlobReadStream, type BlobReadCleanupBudget } from "@semprec/shared";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 export type BlobRootName = "files" | "mailAttachments";
@@ -20,11 +21,7 @@ function isMissingFileError(err: unknown): err is Error {
   return err instanceof Error && "code" in err && err.code === "ENOENT";
 }
 
-const CLEANUP_LIMIT_MS = 5_000;
-const CLOSED_POLL_MS = 10;
-
-interface CleanupBudget {
-  deadline?: number;
+interface CleanupBudget extends BlobReadCleanupBudget {
   lastMissing?: Error;
 }
 
@@ -68,100 +65,6 @@ async function waitForReadable(stream: Readable, signal: AbortSignal | undefined
   if (!outcome.ok) throw outcome.error;
 }
 
-/** Observe closure of a stream retained by this helper before allowing fallback or failure. */
-async function closeOwnedStream(
-  stream: Readable,
-  primary: unknown,
-  budget: CleanupBudget,
-  openingErrors: readonly unknown[] = [],
-  detachOpeningObserver: () => void = () => {},
-): Promise<void> {
-  const deadline = (budget.deadline ??= performance.now() + CLEANUP_LIMIT_MS);
-  const failures: unknown[] = openingErrors.filter((error) => error !== primary);
-  let firstAsyncError: unknown;
-  let hasAsyncError = false;
-  let settled = false;
-  const lateObservation: { count: number; hasFirst: boolean; first: unknown; category: "error" | "other" } = {
-    count: 0,
-    hasFirst: false,
-    first: undefined,
-    category: "other",
-  };
-  let closureObserved = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let continuation: ReturnType<typeof setImmediate> | undefined;
-  let finish!: (closed: boolean) => void;
-  const observed = new Promise<boolean>((resolve) => {
-    finish = resolve;
-  });
-  const remove = () => {
-    stream.off("close", onClose);
-    stream.off("error", onError);
-  };
-  const complete = (closed: boolean) => {
-    if (settled) return;
-    settled = true;
-    if (timer) clearTimeout(timer);
-    if (continuation) clearImmediate(continuation);
-    if (closed) remove();
-    finish(closed);
-  };
-  const onClose = () => {
-    if (settled) {
-      remove();
-      return;
-    }
-    complete(closureObserved || performance.now() < deadline);
-    remove();
-  };
-  const onError = (error: unknown) => {
-    if (settled) {
-      lateObservation.count = Math.min(lateObservation.count + 1, 1_000_000);
-      if (!lateObservation.hasFirst && error !== primary) {
-        lateObservation.hasFirst = true;
-        lateObservation.first = error;
-        lateObservation.category = error instanceof Error ? "error" : "other";
-      }
-      return;
-    }
-    if (error !== primary && !hasAsyncError) {
-      hasAsyncError = true;
-      firstAsyncError = error;
-    }
-  };
-  const check = () => {
-    const now = performance.now();
-    if (now >= deadline) {
-      complete(false);
-      return;
-    }
-    if (stream.closed) {
-      closureObserved = true;
-      // Node may publish an already-recorded destroy error before its close notification.
-      // Keep the error observer through that event-loop turn, including emitClose:false.
-      continuation = setImmediate(() => complete(true));
-      return;
-    }
-    timer = setTimeout(check, Math.min(CLOSED_POLL_MS, Math.max(0, deadline - now)));
-  };
-  stream.on("close", onClose);
-  stream.on("error", onError);
-  detachOpeningObserver();
-  if (!stream.closed && !stream.destroyed) {
-    try {
-      stream.destroy();
-    } catch (error) {
-      if (error !== primary) failures.push(error);
-    }
-  }
-  if (!settled) check();
-  const closed = await observed;
-  if (hasAsyncError && !failures.some((error) => error === firstAsyncError)) failures.push(firstAsyncError);
-  if (!closed) failures.push(new Error("Blob stream cleanup closure was not observed within its deadline"));
-  if (failures.length)
-    throw new AggregateError([primary, ...failures], "Blob stream cleanup failed", { cause: primary });
-}
-
 /** Opens `storageKey` in one root, or `null` when its file does not exist. Waits for the first `readable` event so a missing file is known before any header is written; any other read error propagates. */
 async function openIn(
   storage: BlobStorageWriter,
@@ -185,7 +88,7 @@ async function openIn(
     if (stream.closed || stream.destroyed)
       throw stream.errored ?? new Error("Blob stream closed before ownership transfer");
   } catch (err) {
-    await closeOwnedStream(stream, err, budget, openingErrors, detachOpeningObserver);
+    await settleBlobReadStream(stream, budget, { error: err }, openingErrors, detachOpeningObserver);
     if (isMissingFileError(err)) {
       signal?.throwIfAborted();
       budget.lastMissing = err;
@@ -210,9 +113,8 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
   if (!opened) {
     input.signal?.throwIfAborted();
     if (budget.deadline !== undefined && performance.now() >= budget.deadline)
-      throw new AggregateError(
+      throw new BlobReadCleanupError(
         [budget.lastMissing, new Error("Blob stream cleanup deadline expired before fallback")],
-        "Blob cleanup deadline expired before fallback",
         { cause: budget.lastMissing },
       );
     opened = await openIn(input.alternate, input.storageKey, input.range, input.signal, budget);
@@ -230,7 +132,7 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
     detachOpeningObserver();
     return stream;
   } catch (err) {
-    await closeOwnedStream(stream, err, budget, openingErrors, detachOpeningObserver);
+    await settleBlobReadStream(stream, budget, { error: err }, openingErrors, detachOpeningObserver);
     throw err;
   }
 }
