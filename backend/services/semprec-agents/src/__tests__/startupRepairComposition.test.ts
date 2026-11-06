@@ -302,8 +302,21 @@ describe("semprec-agents startup repair (issue #642)", () => {
       expect((await read(other, randomUUID())).rows).toEqual([]);
       expect((await read(other, queued.assistantMessageId)).rows).toEqual([{ status: "queued", error_code: null }]);
       expect((await locks()).rows).toEqual(before);
+      const snapshot = (tenantId: string, id: string) =>
+        runInTenant(tenantId, () =>
+          runtimePool.query<{ status: string; error_code: string | null; updated_at: Date; last_activity_at: Date }>(
+            `SELECT m.status, m.error_code, m.updated_at, t.last_activity_at
+               FROM semp_messages m JOIN semp_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id
+              WHERE m.id = $1`,
+            [id],
+          ),
+        );
+      const firstBefore = (await snapshot(getTenantZeroId(), first.assistantMessageId)).rows;
+      const secondBefore = (await snapshot(other, second.assistantMessageId)).rows;
       const again = await repairInterruptedRuns(runtimePool);
       expect(again.repairedRunIds).toEqual([]);
+      expect((await snapshot(getTenantZeroId(), first.assistantMessageId)).rows).toEqual(firstBefore);
+      expect((await snapshot(other, second.assistantMessageId)).rows).toEqual(secondBefore);
       expect((await read(getTenantZeroId(), first.assistantMessageId)).rows).toEqual([
         { status: "error", error_code: "interrupted" },
       ]);
