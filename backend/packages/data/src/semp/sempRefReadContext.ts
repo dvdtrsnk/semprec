@@ -22,7 +22,7 @@ export interface SempRefContext {
   label: string;
   state: "active" | "trashed";
   details: unknown;
-  blob: { storageKey: string; mimeType: string; byteSize: string } | null;
+  blob: { id: string; storageKey: string; mimeType: string; byteSize: string } | null;
 }
 
 const segmentsSchema = z.array(
@@ -32,7 +32,7 @@ const RELATED_KEYS = new Set(["project", "projects", "company", "companies", "pe
 const MAX_RELATION_TARGETS = 200;
 
 function blobProjection(blob: BlobRow | null): SempRefContext["blob"] {
-  return blob ? { storageKey: blob.storageKey, mimeType: blob.mimeType, byteSize: blob.byteSize } : null;
+  return blob ? { id: blob.id, storageKey: blob.storageKey, mimeType: blob.mimeType, byteSize: blob.byteSize } : null;
 }
 
 async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {

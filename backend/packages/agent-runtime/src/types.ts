@@ -9,6 +9,13 @@ export type AgentMessageKind =
  */
 export type UserTurnContextRef = LabeledSempMessageRef;
 
+/** Ephemeral image input for a model prompt; never written to a run event. */
+export interface AgentImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 /** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
 export interface AgentMessage {
   kind: AgentMessageKind;
@@ -27,12 +34,15 @@ export interface ConversationEntry {
   seq: number;
   timestamp: number;
   message: AgentMessage;
+  /** Rebuilt for this wake only and never stored with the event. */
+  images?: readonly AgentImage[];
 }
 
 export interface AgentSessionOptions {
   task: string;
   /** Context refs sent with the wake turn's `task`; persisted on its `user_message` event. */
   context?: readonly UserTurnContextRef[];
+  images?: readonly AgentImage[];
   /** Cancels the underlying agent, including a prompt blocked waiting for its next event. */
   signal?: AbortSignal;
   /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
@@ -62,7 +72,11 @@ export interface AgentSession {
    * whole transcript again. Optional because every session up to #228/#117 only ever ran
    * one turn to completion and never needed it.
    */
-  send?(task: string, context?: readonly UserTurnContextRef[]): AsyncIterable<AgentMessage>;
+  send?(
+    task: string,
+    context?: readonly UserTurnContextRef[],
+    images?: readonly AgentImage[],
+  ): AsyncIterable<AgentMessage>;
 }
 
 export type CreateAgentSession = (options: AgentSessionOptions) => AgentSession;

@@ -16,7 +16,7 @@ import {
   type ReconstructedHistory,
 } from "./conversationReconstruction.js";
 import { closeFailedAgentRun, extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
-import type { AgentMessage, AgentSession, CreateAgentSession, UserTurnContextRef } from "./types.js";
+import type { AgentImage, AgentMessage, AgentSession, CreateAgentSession, UserTurnContextRef } from "./types.js";
 import { logger } from "./logger.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -32,6 +32,7 @@ export type SempTurnResult = { ok: true; message: string | null } | { ok: false;
 export interface SempThreadWake {
   threadId: string;
   projectItemId: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -130,6 +131,7 @@ export interface SempTurnStart {
 
 export interface SempSendOptions {
   context?: readonly UserTurnContextRef[];
+  images?: readonly AgentImage[];
   /** Text prepended only to the model input; the durable user event keeps the original task. */
   modelPrefix?: string;
   messageId?: string;
@@ -356,7 +358,7 @@ export class SempConversation {
             lastMessage = await runAgentTurn(
               this.pool,
               entry.agentRunId,
-              preserveUserText(entry.session.send(modelTask, context), task),
+              preserveUserText(entry.session.send(modelTask, context, sendOptions.images), task),
               undefined,
               signal,
               onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: entry.agentRunId, firstEventId })),
@@ -397,7 +399,7 @@ export class SempConversation {
       const projectItemId =
         thread.kind === "tick" ? thread.projectItemId : await this.options.resolveProjectItemId(this.pool);
       const reconstruct = this.options.reconstructHistory ?? stubReconstructConversationHistory;
-      const priorHistory = await reconstruct(this.pool, { threadId: thread.threadId, projectItemId });
+      const priorHistory = await reconstruct(this.pool, { threadId: thread.threadId, projectItemId, signal });
 
       const run = await createAgentRun(this.pool, {
         projectItemId,
@@ -425,6 +427,7 @@ export class SempConversation {
           session = createAgentSession({
             task: modelTask,
             context,
+            images: sendOptions.images,
             signal,
             initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
           });

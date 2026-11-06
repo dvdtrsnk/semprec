@@ -112,6 +112,16 @@ describe("toPiMessages (issue #647)", () => {
     });
   });
 
+  it("adds only wake-time images to the reconstructed user message", () => {
+    const [entry] = entries({ kind: "user_message", text: "question", context: [] });
+    if (!entry) throw new Error("Missing entry");
+    const image = { type: "image" as const, data: "aW1hZ2U=", mimeType: "image/jpeg" };
+    expect(toPiMessages([{ ...entry, images: [image] }], model)).toEqual([
+      { role: "user", timestamp: 100, content: [{ type: "text", text: "question" }, image] },
+    ]);
+    expect(entry.message).toEqual({ kind: "user_message", text: "question", context: [] });
+  });
+
   it("converts a user_message to a pi user message without expanding its refs", () => {
     const converted = toPiMessages(
       entries(

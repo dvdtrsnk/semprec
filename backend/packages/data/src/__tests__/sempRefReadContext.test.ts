@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -9,6 +13,9 @@ import {
   createRelationWithClient,
   getDatabaseByModuleId,
   listPropertiesByDatabase,
+  ingestUploadedBlob,
+  LocalFsBlobStorageWriter,
+  primaryRootForBlob,
   readSempRefContext,
   seedSystem,
   withTransaction,
@@ -90,6 +97,54 @@ describe("Semp reference turn reads", () => {
       state: "trashed",
       label: "Page",
     });
+  });
+
+  it("returns the tenant-owned blob ID for a Files reference and refuses foreign references", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    await runInTenant(foreign, () => seedSystem(runtime));
+    const root = await mkdtemp(join(tmpdir(), "semp-ref-blob-"));
+    try {
+      const storage = new LocalFsBlobStorageWriter(root);
+      const upload = await runInTenant(tenant, () =>
+        ingestUploadedBlob(runtime, {
+          mimeType: "image/png",
+          source: Readable.from([Buffer.from("image fixture")]),
+          maxBytes: 100,
+          storage,
+        }),
+      );
+      const files = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files")),
+      );
+      if (!files) throw new Error("Missing Files database");
+      const item = await runInTenant(tenant, () =>
+        createChokePoint(runtime).createItem({
+          databaseId: files.id,
+          properties: { name: "Image", file: { blobId: upload.blob.id } },
+        }),
+      );
+      const ref = { kind: "item" as const, itemId: item.id, databaseId: files.id };
+      const resolved = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const value = await readSempRefContext(client, ref);
+          return { value, root: value?.blob ? await primaryRootForBlob(client, value.blob.id) : null };
+        }),
+      );
+      expect(resolved.value?.blob).toMatchObject({ id: upload.blob.id, storageKey: upload.blob.storageKey });
+      expect(resolved.root).toBe("files");
+      await expect(
+        runInTenant(foreign, () => withTransaction(runtime, (client) => readSempRefContext(client, ref))),
+      ).resolves.toBeNull();
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, itemId: randomUUID() })),
+        ),
+      ).resolves.toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("reads a transcript segment with three neighbors and the current speaker name", async () => {

@@ -132,10 +132,15 @@ function toToolResultMessage(entry: ConversationEntry, message: AgentMessage): T
   };
 }
 
-/** A stored `user_message` keeps only the text; its refs are not expanded into the model history. */
+/** The durable user event retains refs; wake-time images exist only on this reconstructed entry. */
 function toUserMessage(entry: ConversationEntry, message: AgentMessage): UserMessage {
   if (typeof message.text !== "string") throw invalidEntry(entry, "has a non-string user message text");
-  return { role: "user", content: message.text, timestamp: entry.timestamp };
+  const images = entry.images ?? [];
+  return {
+    role: "user",
+    content: images.length ? [{ type: "text", text: message.text }, ...images] : message.text,
+    timestamp: entry.timestamp,
+  };
 }
 
 /**
