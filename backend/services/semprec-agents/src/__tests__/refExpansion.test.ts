@@ -10,14 +10,20 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { BlobReadCleanupError, labeledSempMessageRefSchema, runInTenant } from "@semprec/shared";
 import {
   createChokePoint,
+  createAgentRun,
+  createDocStore,
   createItemWithClient,
+  createPendingApprovalRequest,
+  createUser,
   getDatabaseByModuleId,
   ingestUploadedBlob,
+  insertAgentRunEvent,
   listPropertiesByDatabase,
   LocalFsBlobStorageWriter,
   resolveMailModuleIds,
   seedSystem,
   withTransaction,
+  writeComputed,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -113,6 +119,95 @@ describe("tenant-scoped reference blob expansion", () => {
       return { kind: "item" as const, databaseId: db.id, itemId: item.id };
     });
   }
+
+  it("expands actual item, block, transcript, run and approval refs without writes", async () => {
+    await createUser(admin, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    const databases = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => ({
+        tasks: await getDatabaseByModuleId(client, "tasks"),
+        transcripts: await getDatabaseByModuleId(client, "transcripts"),
+      })),
+    );
+    if (!databases.tasks || !databases.transcripts) throw new Error("Missing reference fixture databases");
+    const cp = createChokePoint(runtime);
+    const page = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: databases.tasks!.id, properties: { name: "Page sentinel" } }),
+    );
+    const transcript = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: databases.transcripts!.id, properties: { name: "Transcript sentinel" } }),
+    );
+    const first = randomUUID();
+    const sibling = randomUUID();
+    const parent = randomUUID();
+    await runInTenant(tenant, async () => {
+      const docs = createDocStore(runtime);
+      await docs.putBlock(page.id, { id: first, flavour: "paragraph", fields: { text: "Block sentinel" } }, "user");
+      await docs.putBlock(page.id, { id: sibling, flavour: "paragraph", fields: { text: "Sibling sentinel" } }, "user");
+      await docs.putBlock(page.id, { id: parent, flavour: "page", children: [first, sibling] }, "user");
+      await withTransaction(runtime, (client) =>
+        writeComputed(client, databases.transcripts!.id, transcript.id, "segments", [
+          { speaker: "SPEAKER_00", text: "Segment sentinel", startsAt: 0, endsAt: 1 },
+        ]),
+      );
+    });
+    const run = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const created = await createAgentRun(client, { triggeredBy: "user", task: "Run sentinel" });
+        await insertAgentRunEvent(client, created.id, "tool_use", { name: "Tool sentinel" });
+        return created;
+      }),
+    );
+    const approval = await runInTenant(tenant, () =>
+      createPendingApprovalRequest(runtime, {
+        agentRunId: run.id,
+        toolName: "test",
+        riskClass: "unclassified",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        description: { key: "approval.itemDelete", params: { itemName: "Approval sentinel" } },
+      }),
+    );
+    const refs = [
+      { kind: "item" as const, itemId: page.id, databaseId: databases.tasks.id },
+      { kind: "block" as const, itemId: page.id, blockId: first, label: "Saved block" },
+      { kind: "transcriptSegment" as const, itemId: transcript.id, startsAt: 0, endsAt: 1 },
+      { kind: "agentRun" as const, agentRunId: run.id },
+      { kind: "approvalRequest" as const, approvalRequestId: approval.id },
+    ];
+    await runInTenant(tenant, async () => {
+      const snapshot = () =>
+        runtime.query(
+          "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM doc_updates) AS updates, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM approval_requests) AS approvals",
+        );
+      const before = await snapshot();
+      const result = await expandSempRefs(runtime, refs, { files, mailAttachments });
+      expect(result.context.map((entry) => entry.label)).toEqual([
+        "Page sentinel",
+        "Saved block",
+        "Transcript sentinel",
+        "Run sentinel",
+        "approval.itemDelete",
+      ]);
+      for (const sentinel of [
+        "Page sentinel",
+        "Block sentinel",
+        "Sibling sentinel",
+        "Segment sentinel",
+        "Run sentinel",
+        "Tool sentinel",
+        "Approval sentinel",
+      ])
+        expect(result.text).toContain(sentinel);
+      expect(result.images).toEqual([]);
+      expect(JSON.stringify(result.context)).not.toContain("Sibling sentinel");
+      expect((await snapshot()).rows).toEqual(before.rows);
+    });
+    const refused = await runInTenant(foreign, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+    expect(refused.context.map((entry) => entry.label)).toEqual(["", "Saved block", "", "", ""]);
+    expect(refused.text).not.toContain("Page sentinel");
+    expect(refused.text).not.toContain("Tool sentinel");
+    expect(refused.text).not.toContain("Approval sentinel");
+  });
 
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {
     const docx = await readFile(join(dirname(fileURLToPath(import.meta.url)), "fixtures/reference-text.docx"));
