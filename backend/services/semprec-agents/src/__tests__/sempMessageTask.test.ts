@@ -2,12 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import {
-  closeIdleThreadSessions,
-  createBoundedSempHistory,
-  persistCompaction,
-  SempConversation,
-} from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -1188,39 +1183,34 @@ describe("queued Semp messages", () => {
     const runId = previous.rows[0]?.agent_run_id;
     if (!runId) throw new Error("Missing first session run");
     await runInTenant(tenant, () =>
-      persistCompaction(
-        pool,
-        runId,
-        [
-          {
-            id: "summary",
-            parentId: null,
-            seq: 0,
-            timestamp: 0,
-            message: { kind: "user_message", text: "checkpoint summary", context: [] },
+      insertAgentRunEvent(pool, runId, "compaction", [
+        {
+          id: "summary",
+          parentId: null,
+          seq: 0,
+          timestamp: 0,
+          message: { kind: "user_message", text: "checkpoint summary", context: [] },
+        },
+        {
+          id: "assistant",
+          parentId: "summary",
+          seq: 1,
+          timestamp: 0,
+          message: {
+            kind: "message",
+            role: "assistant",
+            content: [{ type: "toolCall", id: "pair", name: "search", arguments: {} }],
+            stopReason: "toolUse",
           },
-          {
-            id: "assistant",
-            parentId: "summary",
-            seq: 1,
-            timestamp: 0,
-            message: {
-              kind: "message",
-              role: "assistant",
-              content: [{ type: "toolCall", id: "pair", name: "search", arguments: {} }],
-              stopReason: "toolUse",
-            },
-          },
-          {
-            id: "tool",
-            parentId: "assistant",
-            seq: 2,
-            timestamp: 0,
-            message: { kind: "tool_use", toolCallId: "pair", name: "search" },
-          },
-        ],
-        { threadId: first.threadId, triggeredBy: "user", parentRunId: null },
-      ),
+        },
+        {
+          id: "tool",
+          parentId: "assistant",
+          seq: 2,
+          timestamp: 0,
+          message: { kind: "tool_use", toolCallId: "pair", name: "search" },
+        },
+      ]),
     );
     await runInTenant(tenant, () =>
       insertAgentRunEvent(pool, runId, "tool_result", {
