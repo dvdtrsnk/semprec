@@ -307,6 +307,25 @@ describe("message speech HTTP", () => {
     expect(providerCalls()).toBe(priorCalls + 1);
   });
 
+  it("synthesizes an uncached 4000-unit message exactly once through the real gateway", async () => {
+    const value = await turn("x".repeat(4000));
+    const before = await accounting();
+    const calls = providerCalls();
+    const response = await post(value.threadId, value.messageId);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.alloc(480, 1));
+    const after = await accounting();
+    const created = after.rows.filter((row) => !before.rows.some((old) => old.id === row.id));
+    expect(created).toHaveLength(1);
+    expect(created[0]?.status).toBe("settled");
+    await vi.waitFor(() => expect(providerCalls()).toBe(calls + 1), { timeout: 5000 });
+    const cached = await post(value.threadId, value.messageId);
+    expect(cached.status).toBe(200);
+    await cached.arrayBuffer();
+    expect((await accounting()).rows).toEqual(after.rows);
+    expect(providerCalls()).toBe(calls + 1);
+  });
+
   it("coalesces two overlapping requests through the real API, guard and gateway", async () => {
     const value = await turn("Concurrent speech");
     const before = await accounting();
