@@ -6,9 +6,13 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import {
   createChokePoint,
   createDocStore,
+  createRelationWithClient,
   getDatabaseByModuleId,
+  listPropertiesByDatabase,
   readSempRefContext,
+  seedSystem,
   withTransaction,
+  writeComputed,
 } from "../index.js";
 
 describe("Semp reference turn reads", () => {
@@ -86,5 +90,62 @@ describe("Semp reference turn reads", () => {
       state: "trashed",
       label: "Page",
     });
+  });
+
+  it("reads a transcript segment with three neighbors and the current speaker name", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const transcriptDatabase = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "transcripts")),
+    );
+    const peopleDatabase = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "people")),
+    );
+    if (!transcriptDatabase || !peopleDatabase) throw new Error("Missing transcript or people database");
+    const cp = createChokePoint(runtime);
+    const transcript = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: transcriptDatabase.id, properties: { name: "Recording" } }),
+    );
+    const person = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: peopleDatabase.id, properties: { name: "Speaker" } }),
+    );
+    const segments = Array.from({ length: 9 }, (_, index) => ({
+      speaker: "SPEAKER_00",
+      text: `Segment ${index}`,
+      startsAt: index,
+      endsAt: index + 1,
+    }));
+    await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        await writeComputed(client, transcriptDatabase.id, transcript.id, "segments", segments);
+        const property = (await listPropertiesByDatabase(client, transcriptDatabase.id)).find(
+          (entry) => entry.key === "speakers",
+        );
+        if (!property) throw new Error("Missing speakers relation");
+        await createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: transcript.id,
+          targetItemId: person.id,
+          metadata: { speaker: "SPEAKER_00" },
+        });
+      }),
+    );
+    const ref = { kind: "transcriptSegment" as const, itemId: transcript.id, startsAt: 4, endsAt: 5 };
+    const resolved = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => readSempRefContext(client, ref)),
+    );
+    expect(resolved).toMatchObject({
+      label: "Recording",
+      state: "active",
+      details: {
+        segments: segments.slice(1, 8),
+        speakers: [{ speaker: "SPEAKER_00", person: { id: person.id, name: "Speaker" } }],
+      },
+    });
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, startsAt: 40, endsAt: 41 })),
+      ),
+    ).resolves.toBeNull();
   });
 });

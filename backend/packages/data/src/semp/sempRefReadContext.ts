@@ -119,7 +119,7 @@ async function itemBlob(client: PoolClient, item: ItemRow): Promise<SempRefConte
   return first ? blobProjection(await getBlob(client, first.blobId)) : null;
 }
 
-async function blockDetails(client: PoolClient, itemId: string, blockId: string): Promise<unknown | null> {
+async function blockDetails(client: PoolClient, itemId: string, blockId: string): Promise<unknown> {
   const state = (await readRefDocumentStates(client, [itemId]))[0];
   if (!state) return null;
   const doc = new Y.Doc();
