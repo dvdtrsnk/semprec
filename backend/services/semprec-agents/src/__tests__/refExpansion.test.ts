@@ -221,6 +221,9 @@ describe("tenant-scoped reference blob expansion", () => {
         refs.map((ref, index) => ({ ...ref, label: ["plain.txt", "invalid.txt", "", ""][index] })),
       );
       expect(JSON.stringify(result.context)).not.toContain("Mail text fixture sentinel");
+      expect(JSON.stringify(result.context)).not.toContain(
+        Buffer.from("Mail text fixture sentinel").toString("base64"),
+      );
       expect((await snapshot()).rows).toEqual(before.rows);
     });
   });
