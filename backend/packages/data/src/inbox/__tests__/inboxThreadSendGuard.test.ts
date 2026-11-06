@@ -7,7 +7,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
-import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem } from "../../chokePoint/relationsStore.js";
@@ -263,4 +263,103 @@ describe("Inbox thread association reservations", () => {
     );
     expect(messages.rows).toEqual([{ count: 4 }]);
   }, 60_000);
+
+  it("uses live associations rather than a stale decided thread hint", async () => {
+    const fixture = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const proposals = await getDatabaseByModuleId(client, "processingProposals");
+        if (!inbox || !proposals) throw new Error("Missing Inbox databases");
+        const property = await getPropertyByKey(client, proposals.id, "sourceInbox");
+        if (!property) throw new Error("Missing sourceInbox property");
+        const source = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-01-01", time: "13:00", text: "stale hint" },
+        });
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: proposals.id,
+            properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "pending" },
+          },
+          { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+        );
+        const edge = { relationPropertyId: property.id, callerItemId: card.id, targetItemId: source.id };
+        await createRelationWithClient(client, edge, { ownerProcess: "processingProposals" });
+        const turn = await sendSempMessage(client, {
+          subject: { inboxItemId: source.id, proposalId: card.id },
+          text: "first",
+          context: [],
+          hasContext: false,
+        });
+        return {
+          sourceId: source.id,
+          cardId: card.id,
+          proposalsId: proposals.id,
+          propertyId: property.id,
+          edge,
+          threadId: turn.threadId,
+        };
+      }),
+    );
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        expect(
+          await deleteRelationWithClient(client, fixture.edge, { ownerProcess: "processingProposals" }),
+        ).not.toBeNull();
+        await updateItemWithClient(
+          client,
+          { databaseId: fixture.proposalsId, itemId: fixture.cardId, propertiesPatch: { status: "confirmed" } },
+          { allowedSystemKeys: ["status"] },
+        );
+      }),
+    );
+    const stale = await runInTenant(tenant, () =>
+      pool.query<{ subject_proposal_id: string | null }>("SELECT subject_proposal_id FROM semp_threads WHERE id = $1", [
+        fixture.threadId,
+      ]),
+    );
+    expect(stale.rows).toEqual([{ subject_proposal_id: fixture.cardId }]);
+    const sent = await runInTenant(tenant, () =>
+      withTransaction(pool, (client) =>
+        sendSempMessage(client, { threadId: fixture.threadId, text: "after unlink", context: [], hasContext: false }),
+      ),
+    );
+    expect(sent.threadId).toBe(fixture.threadId);
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const rejected = await createItemWithClient(
+          client,
+          {
+            databaseId: fixture.proposalsId,
+            properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "rejected" },
+          },
+          { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: fixture.propertyId, callerItemId: rejected.id, targetItemId: fixture.sourceId },
+          { ownerProcess: "processingProposals" },
+        );
+      }),
+    );
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            threadId: fixture.threadId,
+            text: "after rejection",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "proposal_locked" });
+    const messages = await runInTenant(tenant, () =>
+      pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+        fixture.threadId,
+      ]),
+    );
+    expect(messages.rows).toEqual([{ count: 4 }]);
+  });
 });
