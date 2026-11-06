@@ -36,6 +36,7 @@ import {
   assertValidEnvelopeRelations,
   assertValidV2PageContent,
   assertWritableProposalPropertyKeys,
+  requireProposalPageTarget,
 } from "./proposalEnvelopeValidation.js";
 import {
   proposalEnvelopeSchema,
@@ -387,15 +388,7 @@ export async function assertValidProposalEnvelope(
     return null;
   }
 
-  if (!UUID_RE.test(envelope.target)) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a page id`, { field: "target" });
-  }
-  const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
-  if (!targetPage) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, {
-      field: "target",
-    });
-  }
+  const targetPage = await requireProposalPageTarget(client, envelope.target);
   if (Object.hasOwn(envelope.properties, "markdown")) {
     await assertValidV2PageContent(client, targetPage, envelope.properties);
     return null;

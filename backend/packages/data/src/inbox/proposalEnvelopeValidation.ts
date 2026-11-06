@@ -15,6 +15,20 @@ import { parseJournalPeriodKey } from "../journal/journalPeriods.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { pageContentV2Schema } from "./proposalEnvelope.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+
+const PAGE_TARGET_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function requireProposalPageTarget(client: PoolClient, target: string): Promise<ItemRow> {
+  if (!PAGE_TARGET_UUID.test(target)) {
+    throw new ValidationError(`Proposal envelope target '${target}' is not a page id`, { field: "target" });
+  }
+  const [targetPage] = await getItemsByIds(client, [target]);
+  if (!targetPage) {
+    throw new ValidationError(`Proposal envelope target '${target}' is not an existing page`, { field: "target" });
+  }
+  return targetPage;
+}
 
 export async function assertValidV2PageContent(
   client: PoolClient,
@@ -47,13 +61,12 @@ export async function assertValidV2PageContent(
   if (database?.system && database.key === "pages" && database.ownerModuleId === "pages") {
     const properties = await propertiesStore.listPropertiesByDatabase(client, database.id);
     const parent = properties.find((property) => property.key === "parentItemId");
-    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     host =
       parent?.type === "text" &&
       parent.owner === "system" &&
       parent.ownerProcess === "pages" &&
       typeof targetPage.properties.parentItemId === "string" &&
-      uuid.test(targetPage.properties.parentItemId);
+      PAGE_TARGET_UUID.test(targetPage.properties.parentItemId);
   }
   if (!host) throw new ValidationError("Proposal target is not a page host", { field: "target" });
   if (typeof parsed.data.placement === "object") {
