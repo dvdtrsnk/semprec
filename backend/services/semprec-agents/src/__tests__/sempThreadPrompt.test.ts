@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions, SempConversation } from "@semprec/agent-runtime";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createSempChatThread,
   createChokePoint,
@@ -11,9 +11,12 @@ import {
   createHeartbeat,
   createUser,
   getDatabaseByModuleId,
+  generatePermissionManifest,
   finishAgentRun,
   loadFullModuleRegistry,
+  loadGuidanceSections,
   seedSystem,
+  saveGuidanceSections,
   sendSempMessage,
   withTransaction,
 } from "@semprec/data";
@@ -26,6 +29,7 @@ import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 let admin: Pool;
 let runtime: Pool;
 let tenant: string;
+let userId: string;
 
 describe("Semp thread live prompt", () => {
   beforeAll(async () => {
@@ -39,12 +43,13 @@ describe("Semp thread live prompt", () => {
     );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenant = await createTestTenant(admin);
-    await createUser(admin, {
+    const user = await createUser(admin, {
       tenantId: tenant,
       email: `${randomUUID()}@example.test`,
       passwordHash: "unused",
       locale: "en",
     });
+    userId = user.id;
     await runInTenant(tenant, () => seedSystem(runtime));
   });
 
@@ -327,5 +332,127 @@ describe("Semp thread live prompt", () => {
     );
     expect(retained.rows).toEqual([{ count: 1 }]);
     await closeIdleThreadSessions(runtime);
+  });
+
+  it("keeps guidance and granted chat tools while item threads expose no write operations", async () => {
+    const registry = await loadFullModuleRegistry();
+    const fixture = await runInTenant(tenant, async () => {
+      const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      const projectId = inbox.ownerProjectItemId;
+      const source = await createChokePoint(runtime).createItem({
+        databaseId: inbox.id,
+        properties: { date: "2026-01-01", time: "12:00", text: "item question" },
+      });
+      const guidance = await withTransaction(runtime, (client) => loadGuidanceSections(client, projectId));
+      const saved = await withTransaction(runtime, (client) =>
+        saveGuidanceSections(client, {
+          actorUserId: userId,
+          projectItemId: projectId,
+          sections: { ...guidance.sections, generalInstructions: "Batch guidance marker" },
+          expectedUpdatedAt: guidance.updatedAt,
+        }),
+      );
+      const manifest = await withTransaction(runtime, (client) =>
+        generatePermissionManifest(client, projectId, { moduleRegistry: registry }),
+      );
+      return { projectId, sourceId: source.id, guidance, saved, grants: manifest.grantedCapabilities };
+    });
+    const prompts: string[] = [];
+    const toolLists: string[][] = [];
+    const faux = fauxProvider();
+    faux.setResponses(
+      Array.from({ length: 3 }, () => (context) => {
+        prompts.push(context.systemPrompt ?? "");
+        toolLists.push((context.tools ?? []).map((tool) => tool.name));
+        return fauxAssistantMessage("answer");
+      }),
+    );
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    const task = createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns());
+    let failure: { error: unknown } | undefined;
+    try {
+      const chat = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => sendSempMessage(client, { text: "chat", context: [], hasContext: false })),
+      );
+      await runInTenant(tenant, () =>
+        task({ threadId: chat.threadId, assistantMessageId: chat.assistantMessageId }, { job: { id: "chat" } }),
+      );
+      const item = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            text: "item",
+            context: [],
+            hasContext: false,
+            subject: { inboxItemId: fixture.sourceId },
+          }),
+        ),
+      );
+      await runInTenant(tenant, () =>
+        task({ threadId: item.threadId, assistantMessageId: item.assistantMessageId }, { job: { id: "item" } }),
+      );
+      for (const prompt of prompts.slice(0, 2)) {
+        expect(prompt).toContain("Batch guidance marker");
+        expect(prompt).toContain("user's assistant");
+        expect(prompt).toContain("approval");
+        expect(prompt).toContain("30 days");
+        expect(prompt).toContain("semprec://items/<id>");
+        expect(prompt).toContain("Data schema:");
+      }
+      const modelName = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+      const chatTools = toolLists[0] ?? [];
+      const itemTools = toolLists[1] ?? [];
+      for (const name of GENERIC_OPERATION_NAMES) {
+        if (OPERATION_METADATA[name].riskClass !== "read") expect(itemTools).not.toContain(modelName(name));
+        if (chatTools.includes(modelName(name)))
+          expect(fixture.grants).toContain(OPERATION_METADATA[name].requiresCapability);
+      }
+      expect(itemTools).toContain("item_get");
+      expect(chatTools).not.toContain("page_create");
+      const standalone = await runInTenant(tenant, () =>
+        createAgentRun(runtime, { projectItemId: fixture.projectId, triggeredBy: "user", task: "standalone" }),
+      );
+      await runInTenant(tenant, async () => {
+        const factory = await createAgentSessionFactoryForRun(runtime, registry, gateway, standalone);
+        for await (const event of factory({ task: "standalone" }).messages()) void event;
+      });
+      expect(prompts[2]).not.toContain("user's assistant for tasks");
+      expect(prompts[2]).toContain("Batch guidance marker");
+      expect(await runInTenant(tenant, () => finishAgentRun(runtime, standalone.id, "done", null))).toBe(true);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => closeIdleThreadSessions(runtime),
+      async () =>
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            saveGuidanceSections(client, {
+              actorUserId: userId,
+              projectItemId: fixture.projectId,
+              sections: fixture.guidance.sections,
+              expectedUpdatedAt: fixture.saved.updatedAt,
+            }),
+          ),
+        ),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Prompt test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
   });
 });
