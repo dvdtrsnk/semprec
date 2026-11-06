@@ -19,6 +19,7 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
+    "@semprec/ai-gateway-client": "workspace:*",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "vitest": "^4.1.11"
