@@ -57,7 +57,7 @@ import {
   type ProposalEnvelope,
   type ProposalStep,
 } from "../inbox/inboxTickAction.js";
-import { confirmProposalWithClient } from "../inbox/proposalActions.js";
+import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -5866,4 +5866,126 @@ describe("Markdown page proposal validation", () => {
       await runtime.end();
     }
   });
+
+  it.each(["blank", "page block", "non-heading", "non-host"] as const)(
+    "keeps an invalid %s computation out of the real background tick and revise",
+    async (mode) => {
+      pool ??= getTestPool();
+      await resetDatabase(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let failed = false;
+      let failure: unknown;
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = await createTestTenant(pool);
+        const foreign = await createTestTenant(pool);
+        for (const tenantId of [tenant, foreign]) {
+          await createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+          await runInTenant(tenantId, () => seedSystem(runtime));
+        }
+        await runInTenant(tenant, async () => {
+          const dbs = await withTransaction(runtime, async (client) => ({
+            inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
+            types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
+            proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
+          }));
+          if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects || !dbs.tasks)
+            throw new Error("Missing page proposal fixture databases");
+          const cp = createChokePoint(runtime);
+          const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
+          const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
+          const blockId = randomUUID();
+          const doc = await createDocStore(runtime).getOrCreateDoc(project.id, "page");
+          await mutateDoc(runtime, doc.id, "user", (ydoc) =>
+            writeBlock(ydoc, { id: blockId, type: "text", text: "Text" }),
+          );
+          const type = await withTransaction(runtime, (client) =>
+            createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: dbs.types!.id,
+              name: "Page note",
+              emoji: "N",
+              processingMethod: "pageContent",
+            }),
+          );
+          const source = await withTransaction(runtime, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: dbs.inbox!.id,
+              date: "2026-11-06",
+              time: "12:00",
+              text: "Input",
+              type: type.id,
+            }),
+          );
+          const target = mode === "non-host" ? task.id : project.id;
+          const properties =
+            mode === "blank"
+              ? { markdown: " ", placement: "end" }
+              : mode === "page block"
+                ? { markdown: "[Page](semprec://page/abc)", placement: "end" }
+                : mode === "non-heading"
+                  ? { markdown: "Hello", placement: { afterHeading: blockId } }
+                  : { markdown: "Hello", placement: "end" };
+          let calls = 0;
+          // This is a synthetic computed result passed to the real tick owner, not a model-success claim.
+          const tick = createSemprecTickAction(runtime, async () => {
+            calls++;
+            return { target, properties };
+          });
+          await tick(
+            {
+              inboxDatabaseId: dbs.inbox.id,
+              inboxItemTypesDatabaseId: dbs.types.id,
+              processingProposalsDatabaseId: dbs.proposals.id,
+            },
+            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+          );
+          expect(calls).toBe(1);
+          const cards = await runtime.query<{ id: string; properties: unknown }>(
+            `SELECT card.id, card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+              WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+            [dbs.proposals.id, source.id],
+          );
+          expect(cards.rows).toHaveLength(1);
+          const card = cards.rows[0];
+          if (!card) throw new Error("Missing clarification card");
+          expect(card.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+          const expectedField = mode === "non-host" ? "target" : "properties";
+          await expect(
+            withTransaction(runtime, (client) =>
+              reviseProposalWithClient(client, { processingProposalsDatabaseId: dbs.proposals!.id }, card.id, {
+                message: "Revise",
+                entityKind: "pageContent",
+                target,
+                properties,
+              }),
+            ),
+          ).rejects.toMatchObject({ status: 400, details: { field: expectedField } });
+          const after = await runtime.query<{ properties: unknown }>("SELECT properties FROM items WHERE id = $1", [
+            card.id,
+          ]);
+          expect(after.rows).toEqual([{ properties: card.properties }]);
+        });
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      let cleanupFailure: unknown;
+      let cleanupFailed = false;
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailed = true;
+        cleanupFailure = error;
+      }
+      if (failed && cleanupFailed)
+        throw new AggregateError([failure, cleanupFailure], "Tick test and cleanup failed", { cause: failure });
+      if (failed) throw failure;
+      if (cleanupFailed) throw cleanupFailure;
+    },
+  );
 });
