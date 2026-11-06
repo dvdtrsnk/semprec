@@ -134,7 +134,7 @@ describe("Projects completion date", () => {
         return ["year", "month", "day"].map((type) => parts.find((part) => part.type === type)?.value).join("-");
       };
       const utcDay = dateIn("UTC");
-      const zone = ["Pacific/Kiritimati", "America/Adak"].find((candidate) => dateIn(candidate) !== utcDay);
+      const zone = ["Pacific/Kiritimati", "Etc/GMT+12"].find((candidate) => dateIn(candidate) !== utcDay);
       if (!zone) throw new Error("Expected one tenant zone on a different day from UTC");
       const settings = await withTransaction(data, async (client) => ({
         databaseId: await getSystemSettingsDatabaseId(client),
