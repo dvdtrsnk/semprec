@@ -487,7 +487,7 @@ describe("Semp reference turn reads", () => {
       const emailRef = { kind: "item" as const, itemId: fixture.older, databaseId: fixture.databaseId };
       await runInTenant(tenant, async () => {
         const before = await runtime.query(
-          "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs",
+          "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
         );
         const resolved = await withTransaction(runtime, (client) => readSempRefContext(client, ref));
         expect(resolved).toMatchObject({
@@ -506,7 +506,7 @@ describe("Semp reference turn reads", () => {
         expect(
           (
             await runtime.query(
-              "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs",
+              "SELECT (SELECT count(*)::int FROM mail_attachments) AS attachments, (SELECT count(*)::int FROM blobs) AS blobs, (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges",
             )
           ).rows,
         ).toEqual(before.rows);
