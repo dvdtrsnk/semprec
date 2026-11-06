@@ -1833,6 +1833,27 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     }
   });
 
+  async function waitForVoiceBarrier(barrier: Promise<void>, operation?: Promise<unknown>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        barrier,
+        ...(operation
+          ? [
+              operation.then(() => {
+                throw new Error("Voice operation completed before barrier");
+              }),
+            ]
+          : []),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Voice barrier timed out")), 3000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   it("orders a next-cycle delta behind a held real durable event read", async () => {
     const run = await createRunIn(tenantA, userA);
     const first = await silentEventIn(tenantA, run.id);
@@ -1871,9 +1892,11 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       return original(...args);
     };
     const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    let failed = false;
+    let failure: unknown;
     try {
       const event = await announcedEventIn(tenantA, run.id);
-      await waiting;
+      await waitForVoiceBarrier(waiting);
       await runInTenant(tenantA, () =>
         publishAgentRunDelta(runtimePool, run.id, { text: "next cycle" }, target.sempMessageId, event.id, 1),
       );
@@ -1885,12 +1908,122 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         type: "delta",
         message: { afterEventId: event.id, delta: { text: "next cycle" } },
       });
-    } finally {
-      release();
-      await dispose();
-      spy.mockRestore();
+    } catch (error) {
+      failed = true;
+      failure = error;
     }
+    release();
+    const cleanup = await Promise.allSettled([dispose()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Ordered voice test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
   });
+
+  it("expires an incomplete live delta and recovers only through the durable event", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-expiry-sentinel", tenantA, userA);
+    const wire = collectFrames(socket);
+    socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let chunks = 0;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (
+        typeof args[0] === "string" &&
+        args[0].includes("pg_notify") &&
+        Array.isArray(args[1]) &&
+        args[1][0] === "semprec_agent_stream"
+      ) {
+        chunks++;
+        if (chunks === 2) {
+          observed();
+          await gate;
+        }
+      }
+      return original(...args);
+    };
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    let publication: Promise<void> | undefined;
+    let failed = false;
+    let failure: unknown;
+    try {
+      publication = runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId, first.id, 1),
+      );
+      await waitForVoiceBarrier(waiting, publication);
+      await vi.waitFor(() =>
+        expect(
+          wire.some((frame) => frame.type === "agent:delta" && isRecord(frame.chunk) && frame.chunk.index === 0),
+        ).toBe(true),
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 5100));
+      release();
+      await publication;
+      await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta").length).toBeGreaterThan(1));
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+      const event = await announcedEventIn(tenantA, run.id);
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual(
+          expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
+        ),
+      );
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    const socketClosed = waitForClose(socket);
+    socket.close();
+    const closeSocket = async () => {
+      try {
+        await waitForVoiceBarrier(socketClosed.then(() => {}));
+      } catch (error) {
+        socket.terminate();
+        await socketClosed;
+        throw error;
+      }
+    };
+    const cleanup = await Promise.allSettled([publication, dispose(), closeSocket()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice expiry test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  }, 15_000);
 
   it("filters tagged voice deltas by message while keeping socket frames unchanged", async () => {
     const run = await createRunIn(tenantA, userA);

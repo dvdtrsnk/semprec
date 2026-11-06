@@ -60,7 +60,10 @@ export class VoiceRunDeltaBuffer {
     const index = this.ready.findIndex((entry) => entry.message === first);
     const [entry] = index < 0 ? [] : this.ready.splice(index, 1);
     if (entry) this.bytes -= entry.bytes;
-    return entry?.message;
+    if (!entry?.chunks) return entry?.message;
+    const decoded = Buffer.from(entry.chunks.parts.join(""), "base64");
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded));
+    return { ...entry.message, delta: value };
   }
 
   advance(eventId: string): void {
@@ -191,18 +194,15 @@ export class VoiceRunDeltaBuffer {
     const decoded = Buffer.from(encoded, "base64");
     if (decoded.length > MAX_DECODED) throw new VoiceDeltaBufferError("overloaded");
     if (decoded.toString("base64") !== encoded) throw new VoiceDeltaBufferError("unavailable");
-    if (this.bytes + decoded.length > MAX_RETAINED) throw new VoiceDeltaBufferError("overloaded");
-    let value: unknown;
     try {
-      value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded));
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded));
     } catch {
       throw new VoiceDeltaBufferError("unavailable");
     }
     const { chunk: _chunk, ...base } = message;
-    this.bytes += decoded.length;
     this.ready.push({
-      message: { ...base, delta: value },
-      bytes: assembly.bytes + decoded.length,
+      message: { ...base, delta: null },
+      bytes: assembly.bytes,
       since: assembly.since,
       chunks: { id: assembly.id, total: assembly.total, parts: assembly.parts },
     });

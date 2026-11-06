@@ -72,4 +72,43 @@ describe("bounded voice delta buffer", () => {
     buffer.admit(delta("2", 1, "stale"), 5102);
     expect(buffer.peek()).toBeUndefined();
   });
+
+  it("admits exact decoded and encoded limits while refusing malformed or oversized values", () => {
+    const buffer = new VoiceRunDeltaBuffer("1");
+    const value = "x".repeat(262142);
+    const encoded = Buffer.from(JSON.stringify(value)).toString("base64");
+    expect(Buffer.byteLength(JSON.stringify(value))).toBe(262144);
+    expect(encoded.length).toBe(349528);
+    const parts = encoded.match(/.{1,7000}/g) ?? [];
+    expect(parts).toHaveLength(50);
+    for (const [index, part] of parts.entries()) buffer.admit(chunk("1", 1, index, parts.length, part), 0);
+    expect(buffer.shift()?.delta).toBe(value);
+    buffer.clear();
+    expect(() => {
+      for (let index = 0; index < 50; index++) buffer.admit(chunk("1", 1, index, 50, "A".repeat(7000)), 0);
+    }).toThrow(VoiceDeltaBufferError);
+    buffer.clear();
+    expect(() => buffer.admit(chunk("1", 1, 0, 1, Buffer.from([0xff]).toString("base64")), 0)).toThrow(
+      VoiceDeltaBufferError,
+    );
+    buffer.clear();
+    expect(() => buffer.admit(chunk("1", 1, 0, 1, Buffer.from("not json").toString("base64")), 0)).toThrow(
+      VoiceDeltaBufferError,
+    );
+  });
+
+  it("suppresses out-of-order and interleaved assemblies without stitching later data", () => {
+    const buffer = new VoiceRunDeltaBuffer("1");
+    buffer.admit(chunk("1", 1, 1, 2, "IjoxfQ=="), 0);
+    buffer.admit(chunk("1", 1, 0, 2, "eyJ4"), 1);
+    expect(buffer.peek()).toBeUndefined();
+    buffer.admit(chunk("2", 1, 0, 2, "eyJ4"), 2);
+    buffer.admit(chunk("3", 1, 0, 2, "eyJ5"), 3);
+    buffer.admit(chunk("2", 1, 1, 2, "IjoxfQ=="), 4);
+    buffer.admit(chunk("3", 1, 1, 2, "IjoyfQ=="), 5);
+    expect(buffer.peek()).toBeUndefined();
+    buffer.clear();
+    buffer.admit(delta("4", 1, "fresh"), 6);
+    expect(buffer.shift()?.delta).toBe("fresh");
+  });
 });
