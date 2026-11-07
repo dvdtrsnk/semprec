@@ -63,9 +63,46 @@ describe("typed config and filterable projection (issue #1360)", () => {
       config: {},
     });
     expect(resolveProperty(property("number", { filterPresets: [] }), null, undefined, "en").filterable).toBe(false);
-    expect(resolveProperty(property("number", { filterPresets: [{ key: "a" }] }), null, undefined, "en")).toMatchObject(
-      { filterable: true, config: { filterPresets: [{ key: "a" }] } },
+    expect(
+      resolveProperty(
+        property("number", { filterPresets: [{ value: 3, op: "gte", labelKey: "property.x.value.preset.3" }] }),
+        null,
+        undefined,
+        "en",
+      ),
+    ).toMatchObject({
+      filterable: true,
+      config: { filterPresets: [{ value: 3, op: "gte", label: "property.x.value.preset.3" }] },
+    });
+  });
+  it("drops stored presets that fail the shape and is unfilterable when none remains (issue #1622)", () => {
+    const resolved = resolveProperty(
+      property("number", {
+        filterPresets: [
+          { key: "a" },
+          { value: "5", op: "gte", labelKey: "k" },
+          { value: 1, op: "eq", labelKey: "k" },
+          { value: 2, op: "lte", labelKey: "k", label: "Up to two" },
+        ],
+        emptyPreset: { labelKey: "k" },
+      }),
+      null,
+      undefined,
+      "en",
     );
+    expect(resolved).toMatchObject({
+      filterable: true,
+      config: { filterPresets: [{ value: 2, op: "lte", label: "Up to two" }] },
+    });
+    expect(resolved.config.emptyPreset).toBeUndefined();
+    const none = resolveProperty(
+      property("number", { filterPresets: [{ key: "a" }], emptyPreset: { labelKey: "k", matchZero: false } }),
+      null,
+      undefined,
+      "en",
+    );
+    expect(none.filterable).toBe(false);
+    expect(none.config).toEqual({ emptyPreset: { label: "k", matchZero: false } });
   });
   it.each(["text", "longText", "url", "file"] as const)("treats %s as unfilterable with an empty config", (type) => {
     expect(resolveProperty(property(type, {}), null, undefined, "en")).toMatchObject({ filterable: false, config: {} });

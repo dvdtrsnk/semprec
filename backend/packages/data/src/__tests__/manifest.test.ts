@@ -18,6 +18,7 @@ import { withTransaction } from "../db/pool.js";
 import * as permissionManifest from "../manifest/permissionManifest.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { createDriftCheckAction, findOrphanedOwnerProcessProperties } from "../manifest/driftCheck.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -187,7 +188,9 @@ describe("permission manifest and drift check", () => {
       key: "score",
       name: "Score",
       type: "number",
-      config: { filterPresets: [{ key: "high" }] },
+      config: {
+        filterPresets: [{ value: 8, op: "gte", labelKey: "property.custom.score.preset.high", label: "High" }],
+      },
     });
     await chokePoint.createProperty({ ...base, key: "note", name: "Note", type: "text" });
     for (const key of ["a", "b", "c"]) {
@@ -237,7 +240,7 @@ describe("permission manifest and drift check", () => {
     expect(byKey.get("score")).toMatchObject({
       type: "number",
       filterable: true,
-      config: { filterPresets: [{ key: "high" }] },
+      config: { filterPresets: [{ value: 8, op: "gte", label: "High" }] },
     });
     expect(byKey.get("note")).toMatchObject({ type: "text", filterable: false, config: {} });
     for (const key of ["tasksa", "due", "start", "budget", "score", "note"]) {
@@ -619,5 +622,115 @@ describe("drift check locale in a tenant (issue #1018)", () => {
     );
 
     await runDriftCheckIn(tenantB, "en");
+  });
+});
+
+describe("number filter presets in the schema projection (issue #1622)", () => {
+  let runtimePool: Pool;
+  let tenant: string;
+
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+  });
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    tenant = await createTestTenant(pool);
+    await runInTenant(tenant, () => seedSystem(runtimePool));
+  });
+  afterAll(async () => {
+    await runtimePool?.end();
+    await pool?.end();
+  });
+
+  async function schemaProperty(locale: "cs" | "en", databaseKey: string, propertyKey: string) {
+    const registry = await loadFullModuleRegistry();
+    const schema = await runInTenant(tenant, () =>
+      withTransaction(runtimePool, (client) => generateSchemaProjection(client, registry, { locale })),
+    );
+    return schema.databases.find((db) => db.key === databaseKey)?.properties.find((p) => p.key === propertyKey);
+  }
+
+  it.each([
+    ["en", ["5 stars", "4 and up", "3 and up"], "No rating"],
+    ["cs", ["5 hvězd", "4 a víc", "3 a víc"], "Bez hodnocení"],
+  ] as const)("localizes the Books and Movies rating presets for %s", async (locale, labels, none) => {
+    for (const databaseKey of ["books", "movies"]) {
+      expect(await schemaProperty(locale, databaseKey, "rating")).toMatchObject({
+        type: "number",
+        filterable: true,
+        config: {
+          filterPresets: [5, 4, 3].map((value, index) => ({ value, op: "gte", label: labels[index] })),
+          emptyPreset: { label: none, matchZero: true },
+        },
+      });
+    }
+  });
+
+  it("prefers a literal label, falls back to the labelKey text, and drops a stored preset that fails the shape", async () => {
+    await runInTenant(tenant, async () => {
+      // A legacy or direct write the validated property writer refuses; the Library schema is locked anyway.
+      await runtimePool.query(
+        `UPDATE properties SET config = jsonb_set(config, '{filterPresets}', $1::jsonb)
+         WHERE key = 'rating' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'books')`,
+        [
+          JSON.stringify([
+            { value: 5, op: "gte", labelKey: "property.books.rating.preset.5", label: "Top" },
+            { value: 4, op: "gte", labelKey: "unknown.catalog.key" },
+            { value: 1, op: "eq", labelKey: "property.books.rating.preset.4" },
+          ]),
+        ],
+      );
+    });
+    expect((await schemaProperty("cs", "books", "rating"))?.config.filterPresets).toEqual([
+      { value: 5, op: "gte", label: "Top" },
+      { value: 4, op: "gte", label: "unknown.catalog.key" },
+    ]);
+  });
+
+  it("keeps a number property without presets unfilterable", async () => {
+    expect(await schemaProperty("en", "books", "year")).toMatchObject({
+      type: "number",
+      filterable: false,
+      config: {},
+    });
+  });
+
+  it("refuses property.create and property.patch with an eq preset, presets on text and emptyPreset alone", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(runtimePool);
+      const database = await cp.createDatabase({ name: "Recipes" });
+      const rejected = { status: 400, code: "validation_failed", details: { field: "config" } };
+      const eq = { filterPresets: [{ value: 15, op: "eq", labelKey: "k" }] };
+      await expect(
+        cp.createProperty({ databaseId: database.id, key: "prep", name: "Prep", type: "number", config: eq }),
+      ).rejects.toMatchObject(rejected);
+      await expect(
+        cp.createProperty({
+          databaseId: database.id,
+          key: "label",
+          name: "Label",
+          type: "text",
+          config: { filterPresets: [{ value: 15, op: "lte", labelKey: "k" }] },
+        }),
+      ).rejects.toMatchObject(rejected);
+      const prep = await cp.createProperty({
+        databaseId: database.id,
+        key: "prep",
+        name: "Prep",
+        type: "number",
+        config: { default: 10 },
+      });
+      for (const config of [
+        { ...eq, default: 10 },
+        { emptyPreset: { labelKey: "k", matchZero: true }, default: 10 },
+      ]) {
+        await expect(cp.updatePropertyWithDatabase(prep.id, { config })).rejects.toMatchObject(rejected);
+      }
+      expect((await cp.getProperty(prep.id))?.config).toEqual({ default: 10 });
+      const valid = { filterPresets: [{ value: 15, op: "lte", labelKey: "k", label: "Up to 15 min" }], default: 10 };
+      const { property } = await cp.updatePropertyWithDatabase(prep.id, { config: valid });
+      expect(property.config).toEqual(valid);
+    });
   });
 });

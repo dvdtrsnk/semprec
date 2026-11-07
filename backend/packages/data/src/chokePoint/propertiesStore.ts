@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { NumberFilterConfigSchema } from "@semprec/shared";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
@@ -86,9 +87,33 @@ function assertValidDefault(type: PropertyType, config: Record<string, unknown> 
   if (!valid) throw new ValidationError("Default does not match the property type or config", { field: "config" });
 }
 
+/**
+ * Issue #1622: a `number` property's `config.filterPresets` / `config.emptyPreset` must match the shared
+ * `NumberFilterConfigSchema`; `emptyPreset` without `filterPresets` fails it. Either key on any other type is
+ * refused. Other config keys are not looked at here.
+ */
+function assertValidNumberFilterConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
+  if (!config || (!Object.hasOwn(config, "filterPresets") && !Object.hasOwn(config, "emptyPreset"))) return;
+  if (type !== "number") {
+    throw new ValidationError("filterPresets and emptyPreset are allowed only on number properties", {
+      field: "config",
+    });
+  }
+  const parsed = NumberFilterConfigSchema.safeParse({
+    filterPresets: config.filterPresets,
+    emptyPreset: config.emptyPreset,
+  });
+  if (!parsed.success) {
+    throw new ValidationError("config.filterPresets/emptyPreset do not match the number filter preset shape", {
+      field: "config",
+    });
+  }
+}
+
 export function assertValidPropertyConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
   assertValidSelectOptions(type, config);
   assertValidDefault(type, config);
+  assertValidNumberFilterConfig(type, config);
 }
 
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];

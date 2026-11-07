@@ -1,6 +1,7 @@
 import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
+import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPresetsCutoverMigration.js";
 import { runSelectOptionOrderCutoverMigration } from "../seed/selectOptionOrderCutoverMigration.js";
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
 import { runThreadTasksCutoverMigration } from "../mail/threadTasksCutoverMigration.js";
@@ -84,6 +85,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPeopleRelationshipOptionsCutoverMigration(pool);
     await runSelectOptionOrderCutoverMigration(pool);
     await runSelectOptionColorsCutoverMigration(pool);
+    await runRatingFilterPresetsCutoverMigration(pool);
     await runProjectsCompletedAtCutoverMigration(pool);
     await runAreasUnplannedCutoverMigration(pool);
     await runNewEmailSenderFilterCutoverMigration(pool);

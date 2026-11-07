@@ -144,6 +144,38 @@ const relationPropertySideInputSchema = z
   })
   .strict();
 
+const nonEmptyString = z.string().min(1);
+
+/**
+ * The number-filter part of a `number` property's `config` (issue #1622): `filterPresets` are the named thresholds a
+ * filter offers, compared with `lte` or `gte` (never equality), and `emptyPreset` the optional "no value" choice,
+ * which also matches 0 when `matchZero` is set. `labelKey` is a full catalog key of the owning module; a literal
+ * `label` wins over it. Validate the picked `{ filterPresets, emptyPreset }` pair, not the whole config, which keeps
+ * its other keys. Unknown keys inside a preset are rejected.
+ */
+export const NumberFilterConfigSchema = z
+  .object({
+    filterPresets: z
+      .array(
+        z
+          .object({
+            value: z.number(),
+            op: z.enum(["lte", "gte"]),
+            labelKey: nonEmptyString,
+            label: nonEmptyString.optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(10),
+    emptyPreset: z
+      .object({ labelKey: nonEmptyString, label: nonEmptyString.optional(), matchZero: z.boolean() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type NumberFilterConfig = z.infer<typeof NumberFilterConfigSchema>;
+
 /**
  * The relation branch is the sole exception to the ban on external `locked` — its source and
  * inverse `locked` booleans are required inputs, not server-derived.
