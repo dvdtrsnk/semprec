@@ -2,14 +2,25 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  ensureMailAccountSyncState,
+  getTestPool,
+  reconcileGmailAccount,
+  resetDatabase,
+  type GmailMailClient,
+} from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
+  createDocStore,
   createHeartbeat,
   createItemWithClient,
   createPendingApprovalRequest,
@@ -27,6 +38,7 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  resolveMailModuleIds,
   sendSempMessage,
   seedSystem,
   startSempMessageTurn,
@@ -41,6 +53,7 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 describe("durable Semp thread history", () => {
+  const repeatedRunId = randomUUID();
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
@@ -325,6 +338,288 @@ describe("durable Semp thread history", () => {
     expect(remaining.jobs.rows).toEqual([]);
   });
 
+  it.each([
+    {
+      context: [{ kind: "item", itemId: randomUUID(), databaseId: randomUUID() }, { kind: "unknown" }],
+      field: "context[1]",
+    },
+    { context: Array.from({ length: 21 }, () => ({ kind: "agentRun", agentRunId: repeatedRunId })), field: "context" },
+  ])(
+    "rejects malformed or oversized context on both message routes without writes: $field",
+    async ({ context, field }) => {
+      const tenant = await createTestTenant(admin);
+      const email = `${randomUUID()}@example.test`;
+      await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+      const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+      const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+      const snapshot = () =>
+        runInTenant(tenant, async () => {
+          const threads = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_threads");
+          const messages = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages");
+          const jobs = await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+            [`semp-chat:${tenant}`],
+          );
+          return { threads: threads.rows, messages: messages.rows, jobs: jobs.rows };
+        });
+      const before = await snapshot();
+      for (const path of ["/api/semp/threads", `/api/semp/threads/${threadId}/messages`]) {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ text: "question", context }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(await snapshot()).toEqual(before);
+      }
+    },
+  );
+
+  it("accepts owned and trashed item refs and refuses foreign, random and mismatched refs without effects", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreignTenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const createFixture = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        await seedSystem(pool);
+        const databases = await withTransaction(pool, async (client) => {
+          const tasks = await getDatabaseByModuleId(client, "tasks");
+          const events = await getDatabaseByModuleId(client, "events");
+          if (!tasks || !events) throw new Error("Missing system databases");
+          return { tasks: tasks.id, events: events.id };
+        });
+        const item = await createChokePoint(pool).createItem({
+          databaseId: databases.tasks,
+          properties: { name: "Task" },
+        });
+        return { itemId: item.id, databaseId: databases.tasks, otherDatabaseId: databases.events };
+      });
+    const own = await createFixture(tenant);
+    const foreign = await createFixture(foreignTenant);
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const post = (ref: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "question", context: [ref] }),
+      });
+    expect((await post({ kind: "item", itemId: own.itemId, databaseId: own.databaseId })).status).toBe(202);
+    const snapshot = () =>
+      runInTenant(tenant, async () => {
+        const messages = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1",
+          [threadId],
+        );
+        const jobs = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+          [`semp-chat:${tenant}`],
+        );
+        return { messages: messages.rows, jobs: jobs.rows };
+      });
+    const before = await snapshot();
+    let foreignBody: unknown;
+    for (const [index, ref] of [
+      { kind: "item", itemId: foreign.itemId, databaseId: foreign.databaseId },
+      { kind: "item", itemId: randomUUID(), databaseId: randomUUID() },
+      { kind: "item", itemId: own.itemId, databaseId: own.otherDatabaseId },
+    ].entries()) {
+      const response = await post(ref);
+      expect(response.status).toBe(400);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({ error: { code: "validation_failed", details: { field: "context[0]" } } });
+      if (index === 0) foreignBody = body;
+      if (index === 1) expect(body).toEqual(foreignBody);
+      expect(await snapshot()).toEqual(before);
+    }
+    await runInTenant(tenant, () => createChokePoint(pool).softDeleteItem(own.databaseId, own.itemId));
+    expect((await post({ kind: "item", itemId: own.itemId, databaseId: own.databaseId })).status).toBe(202);
+  });
+
+  it("validates block membership and the Transcripts database through the real message route", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const fixture = await runInTenant(tenant, async () => {
+      await seedSystem(pool);
+      const items = await withTransaction(pool, async (client) => {
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        const transcripts = await getDatabaseByModuleId(client, "transcripts");
+        if (!tasks || !transcripts) throw new Error("Missing system databases");
+        const item = await createItemWithClient(client, { databaseId: tasks.id, properties: { name: "Page" } });
+        const transcript = await createItemWithClient(client, {
+          databaseId: transcripts.id,
+          properties: { name: "Transcript" },
+        });
+        return { itemId: item.id, transcriptId: transcript.id };
+      });
+      const blockId = randomUUID();
+      await createDocStore(pool).putBlock(items.itemId, { id: blockId, flavour: "paragraph" }, "user");
+      return { ...items, blockId };
+    });
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const post = (ref: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "question", context: [ref] }),
+      });
+    expect((await post({ kind: "block", itemId: fixture.itemId, blockId: fixture.blockId })).status).toBe(202);
+    expect(
+      (await post({ kind: "transcriptSegment", itemId: fixture.transcriptId, startsAt: 0, endsAt: 1 })).status,
+    ).toBe(202);
+    const counts = () =>
+      runInTenant(tenant, async () => ({
+        messages: (
+          await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+            threadId,
+          ])
+        ).rows,
+        jobs: (
+          await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+            [`semp-chat:${tenant}`],
+          )
+        ).rows,
+      }));
+    const before = await counts();
+    for (const ref of [
+      { kind: "block", itemId: fixture.itemId, blockId: randomUUID() },
+      { kind: "block", itemId: randomUUID(), blockId: fixture.blockId },
+      { kind: "transcriptSegment", itemId: fixture.itemId, startsAt: 0, endsAt: 1 },
+      { kind: "transcriptSegment", itemId: randomUUID(), startsAt: 0, endsAt: 1 },
+    ]) {
+      const response = await post(ref);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[0]" } },
+      });
+      expect(await counts()).toEqual(before);
+    }
+  });
+
+  it("accepts an ingested mail attachment and refuses an unknown attachment without effects", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semprec-ref-mail-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const tenant = await createTestTenant(admin);
+      const email = `${randomUUID()}@example.test`;
+      await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+      const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+      const attachmentId = await runInTenant(tenant, async () => {
+        await seedSystem(pool);
+        return withTransaction(pool, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const cp = createChokePoint(pool);
+          const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+          const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+          const propertyId = (properties: typeof emailProperties, key: string) => {
+            const property = properties.find((entry) => entry.key === key);
+            if (!property) throw new Error(`Missing ${key} property`);
+            return property.id;
+          };
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mailbox", provider: "gmail" },
+          });
+          await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+          const gmail: GmailMailClient = {
+            getCurrentHistoryId: async () => "1",
+            listHistorySince: async () => ({
+              invalidated: false,
+              newHistoryId: "2",
+              changedMessageIds: [],
+              removedMessageIds: [],
+            }),
+            listAllMessageIds: async () => ["message"],
+            listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+            fetchMessage: async () => ({
+              id: "message",
+              threadId: "thread",
+              labelIds: ["INBOX"],
+              message: {
+                messageId: `<${tenant}@example.test>`,
+                envelope: { from: { address: "sender@example.test" } },
+                attachments: [
+                  {
+                    filename: "note.txt",
+                    contentType: "text/plain",
+                    contentId: null,
+                    disposition: "attachment",
+                    openStream: () => Readable.from(["note"]),
+                  },
+                ],
+              },
+            }),
+            modifyMessageLabels: async () => undefined,
+          };
+          await reconcileGmailAccount(client, gmail, {
+            mailboxItemId: mailbox.id,
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            foldersDatabaseId: ids.foldersDatabaseId,
+            folderRelationPropertyId: propertyId(emailProperties, "folder"),
+            attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+            mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+            storage: new LocalFsBlobStorageWriter(directory),
+            storageKeyPrefix: "ref-test",
+          });
+          const rows = await client.query<{ id: string }>("SELECT id FROM mail_attachments");
+          if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Missing ingested attachment");
+          return rows.rows[0].id;
+        });
+      });
+      const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+      const post = (id: string) =>
+        fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ text: "question", context: [{ kind: "mailAttachment", attachmentId: id }] }),
+        });
+      expect((await post(attachmentId)).status).toBe(202);
+      const counts = () =>
+        runInTenant(tenant, async () => ({
+          messages: (
+            await pool.query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1",
+              [threadId],
+            )
+          ).rows,
+          jobs: (
+            await pool.query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+              [`semp-chat:${tenant}`],
+            )
+          ).rows,
+        }));
+      const before = await counts();
+      const response = await post(randomUUID());
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[0]" } },
+      });
+      expect(await counts()).toEqual(before);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true, force: true });
+    } catch (error) {
+      if (failed) {
+        // Preserve the original fixture failure as the primary cause; cleanup remains in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure, error], "Mail fixture and cleanup failed", { cause: failure });
+      }
+      throw error;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("Mail fixture failed", { cause: failure });
+  });
+
   it("queues chat messages while leaving an existing approval pending regardless of text", async () => {
     const tenant = await createTestTenant(admin);
     const email = `${randomUUID()}@example.test`;
@@ -430,18 +725,46 @@ describe("durable Semp thread history", () => {
     const originalJob = stored.job[0];
     if (!originalJob) throw new Error("Missing queued Semp job");
     expect(duplicate.rows).toEqual([{ id: originalJob.id, revision: originalJob.revision + 1 }]);
-    const opaqueContext = [{ kind: "futureRef", value: "opaque" }];
+    const firstRunRef = { kind: "agentRun", agentRunId: request.agentRunId, messageId: randomUUID() };
+    const approvalRef = { kind: "approvalRequest", approvalRequestId: request.id };
+    const context = [firstRunRef, approvalRef, { ...firstRunRef, messageId: randomUUID() }];
     const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ text: "context question", context: opaqueContext }),
+      body: JSON.stringify({ text: "context question", context }),
     });
     expect(withContext.status).toBe(202);
     const contextMessage = z.object({ messageId: z.string().uuid() }).parse(await withContext.json());
     const contextRows = await runInTenant(tenant, () =>
       pool.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [contextMessage.messageId]),
     );
-    expect(contextRows.rows).toEqual([{ context: opaqueContext }]);
+    expect(contextRows.rows).toEqual([{ context: [firstRunRef, approvalRef] }]);
+    const counts = () =>
+      runInTenant(tenant, async () => ({
+        messages: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages")).rows,
+        jobs: (
+          await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+            [`semp-chat:${tenant}`],
+          )
+        ).rows,
+      }));
+    const beforeRefusals = await counts();
+    for (const ref of [
+      { kind: "agentRun", agentRunId: randomUUID() },
+      { kind: "approvalRequest", approvalRequestId: randomUUID() },
+    ]) {
+      const response = await fetch(`${baseUrl}/api/semp/threads/${first.threadId}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "question", context: [ref] }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[0]" } },
+      });
+      expect(await counts()).toEqual(beforeRefusals);
+    }
   });
 
   it("reuses an item thread and refuses a current reserved or decided proposal without effects", async () => {

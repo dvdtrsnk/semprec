@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   createAgentRun,
@@ -10,8 +11,14 @@ import {
   setSessionRevokedHook,
   type AgentRunRow,
 } from "@semprec/data";
-import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { getTraceContext } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { getTraceContext, runInTenant } from "@semprec/shared";
 import { publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import {
   AgentRunCancelledError,
@@ -237,6 +244,269 @@ describe("runAgentSession", () => {
     } finally {
       listenClient.release(true);
     }
+  });
+
+  it("tags each real turn publication with its captured assistant id and leaves generic deltas untagged", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    let release!: () => void;
+    let pending: Promise<unknown> | undefined;
+    let failure: unknown;
+    let failed = false;
+    const cleanupErrors: unknown[] = [];
+    const messages: unknown[] = [];
+    const onNotification = (event: { payload?: string }) => {
+      if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
+    };
+    try {
+      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
+      listener.on("notification", onNotification);
+      const run = await runInTenant(getTenantZeroId(), () =>
+        createAgentRun(runtime, { triggeredBy: "user", task: "tagged" }),
+      );
+      const first = randomUUID();
+      const second = randomUUID();
+      let mutableId = first;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      async function* delayed(): AsyncGenerator<AgentMessage> {
+        await gate;
+        yield { kind: "turn_start" };
+        yield { kind: "message_update", text: "first" };
+        yield { kind: "message_update", text: "second" };
+        yield { kind: "message", text: "finished" };
+        yield { kind: "message_update", text: "after" };
+      }
+      async function* immediate(): AsyncGenerator<AgentMessage> {
+        yield { kind: "turn_start" };
+        yield { kind: "message_update", text: "next" };
+      }
+      pending = runInTenant(getTenantZeroId(), () =>
+        runAgentTurn(runtime, run.id, delayed(), undefined, undefined, undefined, mutableId),
+      );
+      mutableId = second;
+      release();
+      await pending;
+      await runInTenant(getTenantZeroId(), () =>
+        runAgentTurn(runtime, run.id, immediate(), undefined, undefined, undefined, mutableId),
+      );
+      await runInTenant(getTenantZeroId(), () => runAgentTurn(runtime, run.id, immediate()));
+      await vi.waitFor(() => expect(messages).toHaveLength(5));
+      const events = await runInTenant(getTenantZeroId(), () =>
+        runtime.query<{ id: string; kind: string }>(
+          "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+          [run.id],
+        ),
+      );
+      expect(messages).toEqual([
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[0]?.id,
+            deltaSequence: 1,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[0]?.id,
+            deltaSequence: 2,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: first,
+            afterEventId: events.rows[1]?.id,
+            deltaSequence: 1,
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            agentRunId: run.id,
+            sempMessageId: second,
+            afterEventId: events.rows[2]?.id,
+            deltaSequence: 1,
+          }),
+        }),
+        expect.objectContaining({ message: expect.not.objectContaining({ sempMessageId: expect.anything() }) }),
+      ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    } finally {
+      release?.();
+      const outcomes = pending ? await Promise.allSettled([pending]) : [];
+      cleanupErrors.push(
+        ...outcomes.flatMap((outcome) =>
+          outcome.status === "rejected" && (!failed || outcome.reason !== failure) ? [outcome.reason] : [],
+        ),
+      );
+      listener.removeListener("notification", onNotification);
+      try {
+        listener.release(true);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError([...(failed ? [failure] : []), ...cleanupErrors], "Turn test cleanup failed", {
+        cause: failed ? failure : cleanupErrors[0],
+      });
+    if (failed) throw failure;
+  });
+
+  it("increments the ordinal after one synthetic pre-dispatch publication failure", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    const originalDescriptor = Object.getOwnPropertyDescriptor(runtime, "query");
+    const original = runtime.query.bind(runtime);
+    const queryOutcomes: Array<Promise<PromiseSettledResult<unknown>>> = [];
+    const received: unknown[] = [];
+    const synthetic = new Error("Synthetic selected voice publication failure");
+    const messageId = randomUUID();
+    let runId = "";
+    let anchor = "";
+    let faults = 0;
+    let selected: { runId: string; messageId: string; anchor: string; ordinal: number } | undefined;
+    let failed = false;
+    let failure: unknown;
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
+      listener.on("notification", (notification) => {
+        if (!notification.payload) return;
+        try {
+          const value: unknown = JSON.parse(notification.payload);
+          received.push(value);
+        } catch (error) {
+          received.push(error);
+        }
+      });
+      const run = await runInTenant(getTenantZeroId(), () =>
+        createAgentRun(runtime, { triggeredBy: "user", task: "synthetic publication fault" }),
+      );
+      runId = run.id;
+      runtime.query = new Proxy(original, {
+        apply(target, receiver, args: unknown[]) {
+          let reject = false;
+          if (
+            typeof args[0] === "string" &&
+            args[0].includes("pg_notify") &&
+            Array.isArray(args[1]) &&
+            args[1][0] === "semprec_agent_stream" &&
+            typeof args[1][1] === "string"
+          ) {
+            const value: unknown = JSON.parse(args[1][1]);
+            if (
+              isRecord(value) &&
+              value.agentRunId === runId &&
+              value.sempMessageId === messageId &&
+              value.afterEventId === anchor &&
+              value.deltaSequence === 1 &&
+              faults === 0
+            ) {
+              selected = { runId, messageId, anchor, ordinal: 1 };
+              faults++;
+              reject = true;
+            }
+          }
+          const operation: unknown = reject ? Promise.reject(synthetic) : Reflect.apply(target, receiver, args);
+          if (!(operation instanceof Promise)) throw new Error("Expected promise-based runtime query");
+          queryOutcomes.push(
+            operation.then(
+              (value: unknown) => ({ status: "fulfilled" as const, value }),
+              (reason: unknown) => ({ status: "rejected" as const, reason }),
+            ),
+          );
+          return operation;
+        },
+      });
+      async function* messages(): AsyncGenerator<AgentMessage> {
+        yield { kind: "turn_start" };
+        yield { kind: "message_update", text: "first" };
+        yield { kind: "message_update", text: "second" };
+      }
+      await runInTenant(getTenantZeroId(), () =>
+        runAgentTurn(
+          runtime,
+          run.id,
+          messages(),
+          undefined,
+          undefined,
+          (id) => {
+            anchor = id;
+          },
+          messageId,
+        ),
+      );
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      const envelope = received[0];
+      if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid observed stream envelope");
+      expect(envelope.message).toMatchObject({
+        agentRunId: run.id,
+        sempMessageId: messageId,
+        afterEventId: anchor,
+        deltaSequence: 2,
+      });
+      expect(faults).toBe(1);
+      expect(selected).toEqual({ runId: run.id, messageId, anchor, ordinal: 1 });
+      const stored = await runInTenant(getTenantZeroId(), () =>
+        runtime.query<{ id: string; kind: string }>(
+          "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+          [run.id],
+        ),
+      );
+      expect(stored.rows).toEqual([{ id: anchor, kind: "turn_start" }]);
+      const outcomes = await Promise.all(queryOutcomes);
+      expect(outcomes.filter((entry) => entry.status === "rejected")).toEqual([
+        { status: "rejected", reason: synthetic },
+      ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const cleanupErrors: unknown[] = [];
+    try {
+      await Promise.all(queryOutcomes);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      if (originalDescriptor) Object.defineProperty(runtime, "query", originalDescriptor);
+      else if (!Reflect.deleteProperty(runtime, "query")) throw new Error("Cannot restore runtime query");
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      listener.release(true);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice publication test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
   });
 });
 

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { Socket } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
 import { runAsSystem } from "@semprec/shared";
@@ -151,7 +152,12 @@ describe("voice channel", () => {
     const ws = await connect(user.session.token);
     const ready = message(ws);
     ws.send(JSON.stringify({ type: "start", language: "cs" }));
-    expect(JSON.parse(await ready)).toEqual({ type: "ready" });
+    expect(
+      z
+        .object({ type: z.literal("ready") })
+        .strict()
+        .parse(JSON.parse(await ready) as unknown),
+    ).toEqual({ type: "ready" });
     expect(lastIdentity).toMatchObject({
       tenantId: user.tenantId,
       userId: user.user.id,
@@ -205,6 +211,48 @@ describe("voice channel", () => {
     ended = closed(ws);
     expect(await ended).toBe(1008);
   });
+  it("closes with the typed asynchronous budget failure and cleans up exactly once", async () => {
+    const user = await identity();
+    let sender: VoiceSender | undefined;
+    let closes = 0;
+    await start({
+      handler: {
+        ...handler,
+        onStart(_identity, _frame, value) {
+          sender = value;
+          value.sendControl({ type: "ready" });
+        },
+        onClose() {
+          closes += 1;
+        },
+      },
+    });
+    const ws = await connect(user.session.token);
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    expect(
+      z
+        .object({ type: z.literal("ready") })
+        .strict()
+        .parse(JSON.parse(await ready) as unknown),
+    ).toEqual({ type: "ready" });
+    if (!sender) throw new Error("Missing voice sender");
+    const error = message(ws);
+    const ended = closed(ws);
+    await Promise.resolve().then(() => {
+      sender?.fail("budgetExceeded");
+      sender?.fail("budgetExceeded");
+    });
+    expect(
+      z
+        .object({ type: z.literal("error"), code: z.literal("budgetExceeded") })
+        .strict()
+        .parse(JSON.parse(await error) as unknown),
+    ).toEqual({ type: "error", code: "budgetExceeded" });
+    expect(await ended).toBe(1008);
+    await vi.waitFor(() => expect(closes).toBe(1));
+  });
+
   it("enforces duration and microphone frame direction", async () => {
     await start({ handler, sessionTimeoutMs: 100 });
     const user = await identity();
@@ -499,81 +547,99 @@ describe("voice channel", () => {
   });
   it.each([
     ["start", "peer"],
+    ["start", "tenant"],
+    ["start", "shutdown"],
     ["audio", "tenant"],
     ["control", "shutdown"],
   ] as const)("settles an active %s before cleanup after %s", async (kind, ending) => {
-    let release: (() => void) | undefined, entered: (() => void) | undefined;
+    let release: (() => void) | undefined;
+    let entered = false;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
-    });
-    const seen = new Promise<void>((resolve) => {
-      entered = resolve;
     });
     const target = await identity(),
       other = await identity();
     let targetSender: VoiceSender | undefined,
       cleanupCount = 0;
+    let lateResults: boolean[] | undefined;
     const hold = () => {
-      entered?.();
+      entered = true;
       return gate;
     };
-    await start({
-      handler: {
-        onStart(identity, _frame, sender) {
-          if (identity.userId !== target.user.id) {
-            sender.sendControl({ type: "ready" });
-            return;
-          }
-          targetSender = sender;
-          if (kind === "start") return hold();
-          sender.sendControl({ type: "ready" });
-        },
-        onAudio(identity) {
-          if (identity.userId === target.user.id && kind === "audio") return hold();
-        },
-        onControl(identity) {
-          if (identity.userId === target.user.id && kind === "control") return hold();
-        },
-        onClose(identity) {
-          if (identity.userId === target.user.id) cleanupCount++;
-        },
-      },
-    });
-    const ws = await connect(target.session.token);
-    const ready = kind === "start" ? null : message(ws);
-    ws.send(JSON.stringify({ type: "start", language: "en" }));
-    if (ready) await ready;
-    if (kind === "audio") ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
-    if (kind === "control") ws.send(JSON.stringify({ type: "stop" }));
-    await seen;
-    const otherWs = await connect(other.session.token),
-      otherClosed = closed(otherWs);
-    otherWs.close();
-    await otherClosed;
-    const closedTarget = closed(ws);
     let shutdown: Promise<void> | undefined;
-    if (ending === "peer") ws.close();
-    else if (ending === "tenant") voice.closeTenant(target.tenantId);
-    else shutdown = voice.close();
-    await closedTarget;
-    expect(cleanupCount).toBe(0);
-    if (!targetSender) throw new Error("Missing sender");
-    expect(targetSender.sendControl({ type: "ready" })).toBe(false);
-    if (ending !== "shutdown") {
-      const duplicate = await connect(target.session.token),
-        denied = message(duplicate),
-        deniedCode = closed(duplicate);
-      expect(JSON.parse(await denied)).toEqual({ type: "error", code: "sessionLimit" });
-      expect(await deniedCode).toBe(1008);
-    }
-    release?.();
-    await vi.waitFor(() => expect(cleanupCount).toBe(1));
-    if (shutdown) await shutdown;
-    else {
-      const replacement = await connect(target.session.token),
-        done = closed(replacement);
-      replacement.close();
-      await done;
+    try {
+      await start({
+        handler: {
+          onStart(identity, _frame, sender) {
+            if (identity.userId !== target.user.id) {
+              sender.sendControl({ type: "ready" });
+              return;
+            }
+            targetSender = sender;
+            if (kind === "start")
+              return hold().then(() => {
+                lateResults = [sender.sendControl({ type: "ready" }), sender.sendAudio(Buffer.alloc(2))];
+              });
+            sender.sendControl({ type: "ready" });
+          },
+          onAudio(identity) {
+            if (identity.userId === target.user.id && kind === "audio") return hold();
+          },
+          onControl(identity) {
+            if (identity.userId === target.user.id && kind === "control") return hold();
+          },
+          onClose(identity) {
+            if (identity.userId === target.user.id) cleanupCount++;
+          },
+        },
+      });
+      const ws = await connect(target.session.token);
+      const ready = kind === "start" ? null : message(ws);
+      ws.send(JSON.stringify({ type: "start", language: "en" }));
+      if (ready) await ready;
+      if (kind === "audio") ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+      if (kind === "control") ws.send(JSON.stringify({ type: "stop" }));
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000 });
+      const otherWs = await connect(other.session.token),
+        otherClosed = closed(otherWs);
+      otherWs.close();
+      await otherClosed;
+      const closedTarget = closed(ws);
+      if (ending === "peer") ws.close();
+      else if (ending === "tenant") voice.closeTenant(target.tenantId);
+      else shutdown = voice.close();
+      await closedTarget;
+      expect(cleanupCount).toBe(0);
+      if (!targetSender) throw new Error("Missing sender");
+      await vi.waitFor(() => expect(targetSender?.signal.aborted).toBe(true));
+      expect(targetSender.sendControl({ type: "ready" })).toBe(false);
+      expect(targetSender.sendAudio(Buffer.alloc(2))).toBe(false);
+      if (ending !== "shutdown") {
+        const duplicate = await connect(target.session.token),
+          denied = message(duplicate),
+          deniedCode = closed(duplicate);
+        const deniedFrame: unknown = JSON.parse(await denied);
+        expect(
+          z.strictObject({ type: z.literal("error"), code: z.literal("sessionLimit") }).parse(deniedFrame),
+        ).toEqual({
+          type: "error",
+          code: "sessionLimit",
+        });
+        expect(await deniedCode).toBe(1008);
+      }
+      release?.();
+      await vi.waitFor(() => expect(cleanupCount).toBe(1));
+      if (kind === "start") expect(lateResults).toEqual([false, false]);
+      if (shutdown) await shutdown;
+      else {
+        const replacement = await connect(target.session.token),
+          done = closed(replacement);
+        replacement.close();
+        await done;
+      }
+    } finally {
+      release?.();
+      if (shutdown) await shutdown;
     }
   });
   it("keeps admission until delayed cleanup settles after peer close", async () => {

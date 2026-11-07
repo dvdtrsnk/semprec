@@ -13,7 +13,7 @@ import {
   type RealtimeMessage,
 } from "./pgNotifyPublisher.js";
 import { logger } from "./logger.js";
-import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
+import { createAgentRunWatchRegistry, type VoiceRunWatchInput } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
@@ -46,6 +46,7 @@ export interface SyncServerOptions {
 }
 
 export interface SyncServer {
+  subscribeVoice(input: VoiceRunWatchInput): Promise<() => Promise<void>>;
   /** Wire this to the underlying `http.Server`'s `'upgrade'` event for the `/api/sync` path. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
@@ -532,6 +533,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const onError = (err: unknown) => {
     logger.error({ err }, "Sync server LISTEN connection error");
     detachListenClient();
+    agentRunWatch.resetVoice();
     closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection lost");
     if (!closed) {
       reconnectListen().catch((reconnectErr: unknown) => {
@@ -542,6 +544,10 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   listenClient.on("error", onError);
 
   return {
+    async subscribeVoice(input) {
+      if (closed || !listenClientActive) throw new Error("Voice run watch unavailable");
+      return agentRunWatch.subscribeVoice(input);
+    },
     handleUpgrade(req, socket, head) {
       const closesBefore = tenantCloseCount;
       runAsSystem("realtime:upgrade", () => options.authenticate(req))
@@ -572,6 +578,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         });
     },
     closeTenant(tenantId) {
+      agentRunWatch.closeTenant(tenantId);
       lastTenantClose.set(tenantId, ++tenantCloseCount);
       for (const client of wss.clients) {
         const identity = identityByClient.get(client);
@@ -582,6 +589,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     },
     async close() {
       closed = true;
+      agentRunWatch.close();
       const docInvalidationsClosed = docInvalidations.close();
       detachListenClient();
       // A controlled (deploy) shutdown (issue #242's Task) sends every client a real 1012 close

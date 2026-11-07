@@ -176,7 +176,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 29 | [[backend-delivery 29/74] Implement data/library, semprec-transcribe, queue changes](../../items/sp-77c2a124-6206-4790-ae09-a222243339dc.md) | 9 | 59924 |
 | 30 | [[backend-delivery 30/74] Implement application, shared/genericOperations, data/chokePoint changes](../../items/sp-c7d74d78-a59f-4453-b2d6-3c9c31f8b235.md) | 8 | 59891 |
 | 31 | [[backend-delivery 31/74] Implement semprec-agents, data/semp, queue changes](../../items/sp-7cce8a1c-44bb-4290-9d85-64dfbac693a0.md) | 9 | 59832 |
-| 32 | [[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes](../../items/sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd.md) | 11 | 55084 |
+| 32 | [[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes](../../items/sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd.md) | 11 | 59819 |
 | 33 | [[backend-delivery 33/74] Implement data/calendar, data/chokePoint, data/views changes](../../items/sp-1385289a-c057-4dcf-a42f-b2aaded63f7b.md) | 8 | 57306 |
 | 34 | [[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes](../../items/sp-cc9b4e18-de0c-4fbd-aab3-85d5b5be52c8.md) | 10 | 56551 |
 | 35 | [[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes](../../items/sp-9f67b277-1c75-4496-8571-5686097ff725.md) | 10 | 58247 |

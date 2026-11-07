@@ -206,6 +206,34 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(seen[1]).toBe(JSON.stringify([{ type: "text", text: "again" }]));
   });
 
+  it("passes ephemeral images on fresh and continuing prompts without persisting them", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    model.input = ["text", "image"];
+    faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+    const seen: Context[] = [];
+    const wrapped: StreamFn = (m, context, options) => {
+      seen.push(structuredClone(context));
+      return streamFn(m, context, options);
+    };
+    const image = { type: "image" as const, data: "aW1hZ2U=", mimeType: "image/jpeg" };
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: wrapped,
+      tools: [],
+      systemPrompt: "base",
+    })({ task: "first", images: [image] });
+    const first = await collect(session.messages());
+    const second = await collect(session.send!("second", [], [image]));
+    for (const context of seen) {
+      expect(context.messages.at(-1)).toMatchObject({ role: "user", content: expect.arrayContaining([image]) });
+    }
+    expect(seen).toHaveLength(2);
+    expect(JSON.stringify([first, second])).not.toContain(image.data);
+    expect(first[0]).toEqual({ kind: "user_message", text: "first", context: [] });
+    expect(second[0]).toEqual({ kind: "user_message", text: "second", context: [] });
+  });
+
   it.each([
     ["unknown kind", { kind: "unknown", label: "x" }],
     ["invalid UUID", { kind: "item", itemId: "invalid", databaseId: randomUUID(), label: "x" }],

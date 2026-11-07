@@ -20,6 +20,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "semp thread create message": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread send message": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread messages": "services/semprec-api/src/sempThreadsHandler.ts",
+  "semp message speech": "services/semprec-api/src/sempSpeechHandler.ts",
   "server identity": "services/semprec-api/src/serverInfoHandler.ts",
   "shallow health check": "services/semprec-api/src/healthzHandler.ts",
   login: "services/semprec-api/src/authHandler.ts",

@@ -426,6 +426,7 @@ export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.j
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
 export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
+export { extractAttachmentText, isTextExtractableContentType } from "./mail/attachmentTextExtraction.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
 export { taskDisplayDay } from "./tasks/taskDisplayDay.js";
@@ -684,11 +685,22 @@ export {
   sendSempMessage,
 } from "./sempThreads/sempThreadsStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
+export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
+export { readSempRefContext, type SempRefContext } from "./semp/sempRefReadContext.js";
+export {
+  getMessageSpeech,
+  getMessageSpeechSource,
+  MessageSpeechCapacityError,
+  messageSpeechStagedBlobExists,
+  storeMessageSpeech,
+  withMessageSpeechGuard,
+} from "./semp/messageSpeechStore.js";
 export {
   claimSempMessage,
   finishSempMessageTurn,
   getSempMessageFrontier,
   getSempMessageToken,
+  getSempVoiceDelivery,
   repairInterruptedSempMessages,
   startSempMessageTurn,
 } from "./semp/sempMessagesStore.js";
@@ -703,3 +715,5 @@ export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutove
 export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";
 
 export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";
+
+export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inbox/inboxAgentTools.js";

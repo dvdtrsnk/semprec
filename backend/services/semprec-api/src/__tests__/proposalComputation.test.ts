@@ -1,5 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +17,8 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
+  createInboxItemWithClient,
+  setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import {
   AiGatewayFailedError,
@@ -33,6 +40,8 @@ import {
   login,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
+  getDatabaseByModuleId,
+  createDocStore,
 } from "@semprec/data";
 import { createProposalComputation } from "../proposalComputation.js";
 import { createDispatcher } from "../app.js";
@@ -229,6 +238,293 @@ describe("createProposalComputation (issue #1434)", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }
+
+  it("composes actual structured gateway, tick placement and invalid-output clarification", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const tenant = await createTestTenant(pool);
+    await createUser(pool, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const blockRoot = resolve(backend, "../shared/block-model");
+    const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/inboxProposalGateway.js");
+    const source = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/inboxProposalGateway.ts");
+    const wire = z.discriminatedUnion("type", [
+      z.strictObject({ type: z.literal("ready"), port: z.number().int().positive() }),
+      z.strictObject({
+        type: z.literal("configured"),
+        mode: z.enum(["v2", "legacy", "invalid", "unmatched", "missingHeading", "accent", "start", "end", "pageBlock"]),
+      }),
+      z.strictObject({
+        type: z.literal("observation"),
+        sequence: z.number().int().positive(),
+        v2Instructions: z.boolean(),
+        v2Schema: z.boolean(),
+      }),
+    ]);
+    type Wire = z.infer<typeof wire>;
+    const messages: Wire[] = [];
+    let child: ChildProcess | undefined;
+    let exit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
+    let exited = false;
+    let dir: string | undefined;
+    let outputBytes = 0;
+    let invalidOutput = false;
+    let failed = false;
+    let failure: unknown;
+    const cleanup: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      if ((await stat(fixture)).mtimeMs < (await stat(source)).mtimeMs)
+        throw new Error("Stale Inbox gateway fixture build");
+      dir = await mkdtemp(join(blockRoot, "node_modules/.batch09-"));
+      const args = [
+        join(backend, "node_modules/typescript/bin/tsc"),
+        "-p",
+        join(blockRoot, "tsconfig.json"),
+        "--noEmit",
+        "false",
+        "--declaration",
+        "false",
+        "--incremental",
+        "false",
+        "--outDir",
+        dir,
+      ];
+      const compiled = spawnSync(process.execPath, args, { cwd: backend, timeout: 25_000, maxBuffer: 1_000_000 });
+      process.stderr.write(
+        `inbox block compiler pid=${compiled.pid} status=${compiled.status} signal=${compiled.signal} argv=${JSON.stringify([process.execPath, ...args])}\n`,
+      );
+      if (compiled.error) throw compiled.error;
+      if (compiled.status !== 0) throw new Error("Inbox fixture block-model build failed");
+      const blockEntry = join(dir, "index.js");
+      const fixtureHash = createHash("sha256")
+        .update(await readFile(fixture))
+        .digest("hex");
+      const blockHash = createHash("sha256")
+        .update(await readFile(blockEntry))
+        .digest("hex");
+      const databaseUrl = runtime.options.connectionString;
+      if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
+      child = spawn(process.execPath, [fixture], {
+        cwd: backend,
+        detached: true,
+        env: { ...process.env, BATCH09_BLOCK_MODEL_ENTRY: blockEntry, BATCH32_GATEWAY_DATABASE_URL: databaseUrl },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+      const owned = child;
+      if (!owned.pid) throw new Error("Inbox gateway child did not start");
+      exit = new Promise((resolveExit) => {
+        let childError: Error | undefined;
+        owned.once("error", (error) => {
+          childError = error;
+        });
+        owned.once("close", (code, signal) => {
+          exited = true;
+          resolveExit({ code, signal, ...(childError ? { error: childError } : {}) });
+        });
+      });
+      const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(owned.pid)], { encoding: "utf8" }).trim());
+      if (pgid !== owned.pid) throw new Error("Unexpected Inbox gateway process group");
+      process.stderr.write(
+        `inbox gateway argv=${JSON.stringify([process.execPath, fixture])} pid=${owned.pid} pgid=${pgid} sha256=${fixtureHash} blockSha256=${blockHash}\n`,
+      );
+      for (const output of [owned.stdout, owned.stderr])
+        output?.on("data", (chunk: Buffer) => {
+          outputBytes += chunk.length;
+          if (outputBytes > 100_000) invalidOutput = true;
+        });
+      owned.on("message", (value: unknown) => {
+        const parsed = wire.safeParse(value);
+        if (!parsed.success || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+        else messages.push(parsed.data);
+      });
+      await vi.waitFor(
+        () => {
+          expect(invalidOutput).toBe(false);
+          expect(messages.some((entry) => entry.type === "ready")).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
+      const ready = messages.find((entry) => entry.type === "ready");
+      if (!ready || ready.type !== "ready") throw new Error("Missing Inbox gateway readiness");
+      await runInTenant(tenant, () => seedSystem(runtime));
+      await setTenantAiBudget(pool, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
+      await runInTenant(tenant, async () => {
+        const dbs = await withTransaction(runtime, async (client) => ({
+          inbox: await getDatabaseByModuleId(client, "inbox"),
+          types: await getDatabaseByModuleId(client, "inboxItemTypes"),
+          proposals: await getDatabaseByModuleId(client, "processingProposals"),
+          projects: await getDatabaseByModuleId(client, "projects"),
+        }));
+        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects)
+          throw new Error("Missing Inbox databases");
+        const projectId = dbs.inbox.ownerProjectItemId;
+        const cp = createChokePoint(runtime);
+        const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Reference page" } });
+        const emptyPage = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Empty page" } });
+        const headingId = randomUUID();
+        await createDocStore(runtime).putBlock(
+          project.id,
+          { id: headingId, flavour: "h2", fields: { text: "Tiles" } },
+          "user",
+        );
+        const accentHeadingId = randomUUID();
+        await createDocStore(runtime).putBlock(
+          project.id,
+          { id: accentHeadingId, flavour: "h2", fields: { text: "Dlažba" } },
+          "user",
+        );
+        const type = await cp.createItem({
+          databaseId: dbs.types.id,
+          properties: { name: "Note", emoji: "N", status: "active", processingMethod: "pageContent" },
+        });
+        const client = createHttpAiGatewayClient({ port: ready.port, token: "batch32-inbox-test-token" });
+        const tick = createSemprecTickAction(runtime, createProposalComputation({ pool: runtime, gateway: client }));
+        const modes = [
+          "v2",
+          "unmatched",
+          "missingHeading",
+          "accent",
+          "start",
+          "end",
+          "pageBlock",
+          "legacy",
+          "invalid",
+        ] as const;
+        let priorCalls = 0;
+        for (const mode of modes) {
+          const target = mode === "unmatched" ? emptyPage.id : project.id;
+          owned.send?.({ type: "configure", mode, target });
+          await vi.waitFor(
+            () => expect(messages.filter((entry) => entry.type === "configured")).toHaveLength(modes.indexOf(mode) + 1),
+            { timeout: 5000 },
+          );
+          const sourceItem = await withTransaction(runtime, (db) =>
+            createInboxItemWithClient(db, {
+              inboxDatabaseId: dbs.inbox!.id,
+              date: "2026-11-06",
+              time: "12:00",
+              text: `Fixture ${mode}`,
+              type: type.id,
+            }),
+          );
+          await tick(
+            {
+              inboxDatabaseId: dbs.inbox.id,
+              inboxItemTypesDatabaseId: dbs.types.id,
+              processingProposalsDatabaseId: dbs.proposals.id,
+            },
+            { heartbeatId: randomUUID(), projectItemId: projectId, itemId: sourceItem.id },
+          );
+          const cards = await runtime.query<{ properties: unknown }>(
+            `SELECT card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+            [dbs.proposals.id, sourceItem.id],
+          );
+          expect(cards.rows).toHaveLength(1);
+          const card = z
+            .object({ status: z.string(), proposal: z.unknown().nullable(), aiProposal: z.unknown().nullable() })
+            .passthrough()
+            .parse(cards.rows[0]?.properties);
+          if (mode === "invalid" || mode === "pageBlock")
+            expect(card).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+          else if (mode === "legacy")
+            expect(card).toMatchObject({
+              status: "proposed",
+              proposal: { target, properties: { flavour: "paragraph" } },
+            });
+          else
+            expect(card).toMatchObject({
+              status: "proposed",
+              proposal: {
+                target,
+                properties: {
+                  markdown: "Fixture page text",
+                  placement:
+                    mode === "v2"
+                      ? { afterHeading: headingId }
+                      : mode === "accent"
+                        ? { afterHeading: accentHeadingId }
+                        : mode === "start"
+                          ? "start"
+                          : "end",
+                },
+              },
+            });
+          expect(JSON.stringify(card.proposal)).not.toContain("afterHeadingText");
+          expect(JSON.stringify(card.aiProposal)).not.toContain("afterHeadingText");
+          const accounting = await runtime.query<{ status: string; operation: string }>(
+            "SELECT status, operation FROM ai_gateway_calls WHERE project_item_id = $1 AND operation = 'inbox_proposal' ORDER BY id",
+            [projectId],
+          );
+          expect(accounting.rows).toHaveLength(++priorCalls);
+          expect(accounting.rows.at(-1)).toEqual({ status: "settled", operation: "inbox_proposal" });
+          expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(priorCalls);
+        }
+        for (const entry of messages)
+          if (entry.type === "observation") expect(entry).toMatchObject({ v2Instructions: true, v2Schema: true });
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      if (child && !exited && child.connected) child.send({ type: "stop" });
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (exit) {
+      const waitForExit = async (milliseconds: number): Promise<boolean> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            exit.then(() => true),
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), milliseconds);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      try {
+        let observed = await waitForExit(20_000);
+        if (!observed && child) {
+          try {
+            if (!child.kill("SIGTERM")) cleanup.push(new Error("Could not signal inbox gateway child"));
+          } catch (error) {
+            cleanup.push(error);
+          }
+          observed = await waitForExit(5_000);
+        }
+        if (!observed) cleanup.push(new Error("Inbox gateway child exit was not observed"));
+        else {
+          const result = await exit;
+          process.stderr.write(`inbox gateway exit=${result.code} signal=${result.signal}\n`);
+          if (result.error || result.code !== 0 || result.signal !== null)
+            cleanup.push(result.error ?? new Error("Inbox gateway child failed"));
+        }
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      if (dir && exited) await rm(dir, { recursive: true, force: true });
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (failed && cleanup.length)
+      throw new AggregateError([failure, ...cleanup], "Inbox fixture and cleanup failed", { cause: failure });
+    if (failed) throw failure;
+    if (cleanup.length) throw new AggregateError(cleanup, "Inbox fixture cleanup failed", { cause: cleanup[0] });
+    expect(invalidOutput).toBe(false);
+  }, 60_000);
 
   it("calls inbox_proposal for the Semprec project with the item text in delimiters and stores a proposed card", async () => {
     const itemId = await createTaskItem("Buy milk");

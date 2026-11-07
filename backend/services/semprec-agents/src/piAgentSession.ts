@@ -1,6 +1,7 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type {
+  AgentImage,
   AgentMessage,
   AgentSession,
   CreateAgentSession,
@@ -153,6 +154,7 @@ async function* promptMessages(
   agent: Agent,
   task: string,
   context: readonly UserTurnContextRef[],
+  images: readonly AgentImage[],
   pendingSystemMessages: (() => readonly string[]) | undefined,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
@@ -181,7 +183,7 @@ async function* promptMessages(
     queue.push(message);
     notify();
   });
-  const prompt = agent.prompt(promptText).finally(() => {
+  const prompt = agent.prompt(promptText, [...images]).finally(() => {
     settled = true;
     notify();
   });
@@ -278,12 +280,17 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     // Each prompt starts with no recorded tool failure; only one runs at a time (pi refuses a
     // second `prompt()` while one is active).
-    const prompt = (task: string, context: readonly UserTurnContextRef[] = []): AsyncIterable<AgentMessage> => {
+    const prompt = (
+      task: string,
+      context: readonly UserTurnContextRef[] = [],
+      images: readonly AgentImage[] = [],
+    ): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
       return promptMessages(
         piAgent,
         task,
         context,
+        images,
         options.pendingSystemMessages,
         toolFailure,
         options.toolEventMetadata,
@@ -292,7 +299,7 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
       );
     };
     const session: AgentSession = {
-      messages: () => prompt(sessionOptions.task, sessionOptions.context),
+      messages: () => prompt(sessionOptions.task, sessionOptions.context, sessionOptions.images),
       send: prompt,
     };
     return session;

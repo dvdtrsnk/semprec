@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { writeBlock } from "@semprec/block-model";
+import { mutateDoc } from "../docs/docPersistence.js";
+import { createDocStore } from "../docs/docStore.js";
+import { getOrCreateJournalItem } from "../journal/journalStore.js";
+import { resolveModelPagePlacement } from "../inbox/inboxTickSnapshot.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,7 +57,7 @@ import {
   type ProposalEnvelope,
   type ProposalStep,
 } from "../inbox/inboxTickAction.js";
-import { confirmProposalWithClient } from "../inbox/proposalActions.js";
+import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -5745,4 +5750,370 @@ describe("aiProposalPatch and readAiProposal (issue #1471)", () => {
 
 afterAll(async () => {
   await pool?.end();
+});
+
+describe("Markdown page proposal validation", () => {
+  it("stores resolved model heading and placement variants in the real tick", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const combineFailures = (primary: unknown, cleanup: unknown) =>
+      new AggregateError([primary, cleanup], "Tick test and cleanup failed", { cause: primary });
+    let primary: { error: unknown } | undefined;
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = await createTestTenant(pool);
+      await createUser(pool, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      await runInTenant(tenant, () => seedSystem(runtime));
+      await runInTenant(tenant, async () => {
+        const dbs = await withTransaction(runtime, async (client) => ({
+          inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
+          types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
+          proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+          projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+        }));
+        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects)
+          throw new Error("Missing page proposal fixture databases");
+        const cp = createChokePoint(runtime);
+        const page = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Page" } });
+        const empty = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "No document" } });
+        const headingId = randomUUID();
+        const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
+        await mutateDoc(runtime, doc.id, "user", (ydoc) =>
+          writeBlock(ydoc, { id: headingId, type: "h2", text: "Dlažba" }),
+        );
+        const type = await withTransaction(runtime, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: dbs.types!.id,
+            name: "Page note",
+            emoji: "N",
+            processingMethod: "pageContent",
+          }),
+        );
+        const variants = [
+          { target: page.id, input: { afterHeadingText: "dlažba" }, expected: { afterHeading: headingId } },
+          { target: page.id, input: { afterHeadingText: "missing" }, expected: "end" },
+          { target: empty.id, input: { afterHeadingText: "dlažba" }, expected: "end" },
+          { target: page.id, input: "start", expected: "start" },
+          { target: page.id, input: "end", expected: "end" },
+        ];
+        for (const variant of variants) {
+          const source = await withTransaction(runtime, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: dbs.inbox!.id,
+              date: "2026-11-06",
+              time: "12:00",
+              text: "Input",
+              type: type.id,
+            }),
+          );
+          // The model result is synthetic; the tick, storage and placement reader are actual owners.
+          const tick = createSemprecTickAction(runtime, async () => ({
+            target: variant.target,
+            properties: { markdown: "Fixture text", placement: variant.input },
+          }));
+          await tick(
+            {
+              inboxDatabaseId: dbs.inbox.id,
+              inboxItemTypesDatabaseId: dbs.types.id,
+              processingProposalsDatabaseId: dbs.proposals.id,
+            },
+            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+          );
+          const cards = await runtime.query<{ properties: unknown }>(
+            `SELECT card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+             WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+            [dbs.proposals.id, source.id],
+          );
+          expect(cards.rows).toHaveLength(1);
+          const card = z
+            .object({ proposal: z.unknown(), aiProposal: z.unknown() })
+            .passthrough()
+            .parse(cards.rows[0]?.properties);
+          for (const stored of [card.proposal, card.aiProposal]) {
+            expect(stored).toMatchObject({
+              entityKind: "pageContent",
+              target: variant.target,
+              properties: { markdown: "Fixture text", placement: variant.expected },
+            });
+            expect(JSON.stringify(stored)).not.toContain("afterHeadingText");
+          }
+        }
+      });
+    } catch (error) {
+      primary = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      if (primary) throw combineFailures(primary.error, error);
+      throw error;
+    }
+    if (primary) throw primary.error;
+  });
+
+  it("accepts current real hosts and validates headings without creating documents or exposing other tenants", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const owner = await createTestTenant(pool);
+      const foreign = await createTestTenant(pool);
+      await runInTenant(owner, () => seedSystem(runtime));
+      await runInTenant(foreign, () => seedSystem(runtime));
+      const setup = (tenant: string) =>
+        runInTenant(tenant, async () => {
+          const dbs = await withTransaction(runtime, async (client) => ({
+            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+            areas: await databasesStore.getDatabaseByModuleId(client, "areas"),
+            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
+            journal: await databasesStore.getDatabaseByModuleId(client, "journal"),
+          }));
+          if (!dbs.projects || !dbs.areas || !dbs.tasks || !dbs.journal) throw new Error("Missing system database");
+          const cp = createChokePoint(runtime);
+          const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
+          const area = await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } });
+          const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
+          const day = await withTransaction(runtime, (client) =>
+            getOrCreateJournalItem(client, dbs.journal!.id, "day", new Date("2026-11-06T12:00:00Z"), "UTC"),
+          );
+          const week = await withTransaction(runtime, (client) =>
+            getOrCreateJournalItem(client, dbs.journal!.id, "week", new Date("2026-11-06T12:00:00Z"), "UTC"),
+          );
+          return { project, area, task, day, week };
+        });
+      const own = await setup(owner);
+      const other = await setup(foreign);
+      const validate = (target: string, properties: Record<string, unknown>) =>
+        runInTenant(owner, () =>
+          withTransaction(runtime, (client) =>
+            assertValidProposalEnvelope(client, { entityKind: "pageContent", target, properties }),
+          ),
+        );
+      const before = await runInTenant(owner, () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
+      );
+      for (const target of [own.project.id, own.area.id, own.day.id])
+        await expect(validate(target, { markdown: "Hello", placement: "end" })).resolves.toBeNull();
+      const after = await runInTenant(owner, () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
+      );
+      expect(after.rows).toEqual(before.rows);
+      for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
+        await expect(validate(target, { markdown: "Hello", placement: "end" })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "target" },
+        });
+      for (const properties of [
+        { markdown: " ", placement: "end" },
+        { markdown: "[Page](semprec://page/abc)", placement: "end" },
+        { markdown: "Hello", placement: "sideways" },
+        { markdown: "Hello", placement: "end", heading: "a\nb" },
+        { markdown: "Hello", placement: { afterHeading: "missing" } },
+      ])
+        await expect(validate(own.project.id, properties)).rejects.toMatchObject({
+          status: 400,
+          details: { field: "properties" },
+        });
+      const store = createDocStore(runtime);
+      const doc = await runInTenant(owner, () => store.getOrCreateDoc(own.project.id, "page"));
+      await runInTenant(owner, () =>
+        mutateDoc(runtime, doc.id, "user", (ydoc) => {
+          writeBlock(ydoc, { id: "heading", type: "h2", text: "Heading" });
+          writeBlock(ydoc, { id: "text", type: "text", text: "Paragraph" });
+        }),
+      );
+      const resolvePlacement = (target: string, properties: Record<string, unknown>) =>
+        runInTenant(owner, () =>
+          withTransaction(runtime, (client) =>
+            resolveModelPagePlacement(client, { entityKind: "pageContent", target, properties }),
+          ),
+        );
+      const modelEnvelope = { markdown: "Hello", placement: { afterHeadingText: "  HEADING " } };
+      const resolvedEnvelope = await resolvePlacement(own.project.id, modelEnvelope);
+      expect(JSON.stringify(resolvedEnvelope)).not.toContain("afterHeadingText");
+      expect(resolvedEnvelope.properties.placement).toEqual({
+        afterHeading: "heading",
+      });
+      expect(
+        (await resolvePlacement(own.project.id, { markdown: "Hello", placement: { afterHeadingText: "missing" } }))
+          .properties.placement,
+      ).toBe("end");
+      expect(
+        (await resolvePlacement(own.area.id, { markdown: "Hello", placement: { afterHeadingText: "heading" } }))
+          .properties.placement,
+      ).toBe("end");
+      expect((await resolvePlacement(own.project.id, { flavour: "paragraph" })).properties).toEqual({
+        flavour: "paragraph",
+      });
+      await expect(
+        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "heading" } }),
+      ).resolves.toBeNull();
+      await expect(
+        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "text" } }),
+      ).rejects.toMatchObject({ status: 400 });
+      await runInTenant(owner, () => createChokePoint(runtime).softDeleteItem(own.project.databaseId, own.project.id));
+      await expect(validate(own.project.id, { markdown: "Hello", placement: "start" })).rejects.toMatchObject({
+        status: 400,
+        details: { field: "target" },
+      });
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it.each(["blank", "page block", "non-heading", "foreign heading", "non-host"] as const)(
+    "keeps an invalid %s computation out of the real background tick and revise",
+    async (mode) => {
+      pool ??= getTestPool();
+      await resetDatabase(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let failed = false;
+      let failure: unknown;
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = await createTestTenant(pool);
+        const foreign = await createTestTenant(pool);
+        for (const tenantId of [tenant, foreign]) {
+          await createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+          await runInTenant(tenantId, () => seedSystem(runtime));
+        }
+        const foreignFixture = await runInTenant(foreign, async () => {
+          const db = await withTransaction(runtime, (client) =>
+            databasesStore.getDatabaseByModuleId(client, "projects"),
+          );
+          if (!db) throw new Error("Missing foreign Projects database");
+          const page = await createChokePoint(runtime).createItem({
+            databaseId: db.id,
+            properties: { name: "Foreign" },
+          });
+          const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
+          const id = randomUUID();
+          await mutateDoc(runtime, doc.id, "user", (ydoc) => writeBlock(ydoc, { id, type: "h2", text: "Foreign" }));
+          const rows = await runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1",
+            [doc.id],
+          );
+          return { id, docId: doc.id, rows: rows.rows };
+        });
+        await runInTenant(tenant, async () => {
+          const dbs = await withTransaction(runtime, async (client) => ({
+            inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
+            types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
+            proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
+          }));
+          if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects || !dbs.tasks)
+            throw new Error("Missing page proposal fixture databases");
+          const cp = createChokePoint(runtime);
+          const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
+          const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
+          const blockId = randomUUID();
+          const doc = await createDocStore(runtime).getOrCreateDoc(project.id, "page");
+          await mutateDoc(runtime, doc.id, "user", (ydoc) =>
+            writeBlock(ydoc, { id: blockId, type: "text", text: "Text" }),
+          );
+          const type = await withTransaction(runtime, (client) =>
+            createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: dbs.types!.id,
+              name: "Page note",
+              emoji: "N",
+              processingMethod: "pageContent",
+            }),
+          );
+          const source = await withTransaction(runtime, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: dbs.inbox!.id,
+              date: "2026-11-06",
+              time: "12:00",
+              text: "Input",
+              type: type.id,
+            }),
+          );
+          const target = mode === "non-host" ? task.id : project.id;
+          const properties =
+            mode === "blank"
+              ? { markdown: " ", placement: "end" }
+              : mode === "page block"
+                ? { markdown: "[Page](semprec://page/abc)", placement: "end" }
+                : mode === "non-heading"
+                  ? { markdown: "Hello", placement: { afterHeading: blockId } }
+                  : mode === "foreign heading"
+                    ? { markdown: "Hello", placement: { afterHeading: foreignFixture.id } }
+                    : { markdown: "Hello", placement: "end" };
+          let calls = 0;
+          // This is a synthetic computed result passed to the real tick owner, not a model-success claim.
+          const tick = createSemprecTickAction(runtime, async () => {
+            calls++;
+            return { target, properties };
+          });
+          await tick(
+            {
+              inboxDatabaseId: dbs.inbox.id,
+              inboxItemTypesDatabaseId: dbs.types.id,
+              processingProposalsDatabaseId: dbs.proposals.id,
+            },
+            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+          );
+          expect(calls).toBe(1);
+          const cards = await runtime.query<{ id: string; properties: unknown }>(
+            `SELECT card.id, card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+              WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+            [dbs.proposals.id, source.id],
+          );
+          expect(cards.rows).toHaveLength(1);
+          const card = cards.rows[0];
+          if (!card) throw new Error("Missing clarification card");
+          expect(card.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+          const expectedField = mode === "non-host" ? "target" : "properties";
+          await expect(
+            withTransaction(runtime, (client) =>
+              reviseProposalWithClient(client, { processingProposalsDatabaseId: dbs.proposals!.id }, card.id, {
+                message: "Revise",
+                entityKind: "pageContent",
+                target,
+                properties,
+              }),
+            ),
+          ).rejects.toMatchObject({ status: 400, details: { field: expectedField } });
+          const after = await runtime.query<{ properties: unknown }>("SELECT properties FROM items WHERE id = $1", [
+            card.id,
+          ]);
+          expect(after.rows).toEqual([{ properties: card.properties }]);
+        });
+        const foreignAfter = await runInTenant(foreign, () =>
+          runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [
+            foreignFixture.docId,
+          ]),
+        );
+        expect(foreignAfter.rows).toEqual(foreignFixture.rows);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      let cleanupFailure: unknown;
+      let cleanupFailed = false;
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailed = true;
+        cleanupFailure = error;
+      }
+      if (failed && cleanupFailed)
+        throw new AggregateError([failure, cleanupFailure], "Tick test and cleanup failed", { cause: failure });
+      if (failed) throw failure;
+      if (cleanupFailed) throw cleanupFailure;
+    },
+  );
 });

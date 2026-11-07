@@ -6,6 +6,7 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import type { SempThreadMessage } from "@semprec/shared";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
+import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
 
 interface ThreadRow {
   id: string;
@@ -77,12 +78,13 @@ export async function insertSempUserTurn(
   threadId: string,
   text: string,
   context: unknown,
+  trusted?: { source: "voice" },
 ): Promise<{ threadId: string; messageId: string; assistantMessageId: string }> {
   requireManagedTransaction(client);
   const userTimestamp = await allocateSempMessageTimestamp(client, threadId);
   const user = await client.query<{ id: string }>(
-    "INSERT INTO semp_messages (thread_id, role, text, context, created_at) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz) RETURNING id",
-    [threadId, text, JSON.stringify(context), userTimestamp],
+    "INSERT INTO semp_messages (thread_id, role, text, context, created_at, source) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz, $5) RETURNING id",
+    [threadId, text, JSON.stringify(context), userTimestamp, trusted?.source ?? null],
   );
   const messageId = requireSingleRow(user.rows, "inserting Semp user message").id;
   const assistantTimestamp = await allocateSempMessageTimestamp(client, threadId);
@@ -109,6 +111,7 @@ export async function sendSempMessage(
     context: unknown;
     hasContext: boolean;
   },
+  trusted?: { source: "voice" },
 ) {
   requireManagedTransaction(client);
   let threadId = input.threadId;
@@ -164,7 +167,7 @@ export async function sendSempMessage(
   if (kind !== "chat" && input.hasContext) {
     throw new ValidationError("Context is only supported for chat threads", { field: "context" });
   }
-  return insertSempUserTurn(client, threadId, input.text, input.context);
+  return insertSempUserTurn(client, threadId, input.text, input.context, trusted);
 }
 
 export async function getSempThread(client: PoolClient, id: string) {
@@ -204,14 +207,18 @@ export async function listSempThreadMessages(
   );
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
+  const contexts = await resolveSempHistoryContexts(
+    client,
+    page.map((row) => row.context),
+  );
   const last = page.at(-1);
   return {
-    rows: page.map((row): SempThreadMessage => ({
+    rows: page.map((row, index): SempThreadMessage => ({
       id: row.id,
       role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
       text: row.text,
       system: row.system_key === null ? null : { key: row.system_key, params: row.system_params },
-      context: row.context,
+      context: contexts[index],
       replyToMessageId: row.reply_to_message_id,
       agentRunId: row.agent_run_id,
       eventFromId: row.event_from_id,

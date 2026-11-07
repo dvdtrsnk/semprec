@@ -54,6 +54,21 @@ const proposalStepSchema = z.object({
 
 export type ProposalStep = z.infer<typeof proposalStepSchema>;
 
+/** Validated only for Markdown page-content envelopes; legacy block properties stay unchanged. */
+export const pageContentV2Schema = z
+  .object({
+    markdown: z.string().refine((value) => value.trim().length > 0),
+    placement: z.union([z.literal("start"), z.literal("end"), z.object({ afterHeading: z.string().min(1) }).strict()]),
+    heading: z
+      .string()
+      .max(200)
+      .regex(/^[^\r\n\u2028\u2029]*$/)
+      .optional(),
+  })
+  .strict();
+
+export type PageContentV2 = z.infer<typeof pageContentV2Schema>;
+
 export const proposalEnvelopeSchema = z.object({
   entityKind: z.enum(["pageContent", "database", "relation"]),
   target: z.string().min(1),

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
@@ -28,6 +28,8 @@ import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { registerItemPreWriteTransform } from "../../chokePoint/hooks.js";
+import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
+import { storeMessageSpeech } from "../../semp/messageSpeechStore.js";
 
 /** In-memory storage that enforces `maxBytes` like the real writer and records deletes. */
 class FakeStorage implements BlobStorageWriter {
@@ -659,6 +661,271 @@ describe("standalone blobs (issue #1401)", () => {
   });
 
   describe("sweepUnreferencedBlobs", () => {
+    it("cascades one deleted message's speech row while preserving shared and foreign bytes", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "semprec-speech-message-cascade-"));
+      const storage = new LocalFsBlobStorageWriter(dir);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const tenant = getTenantZeroId();
+      const foreign = await createTestTenant(pool);
+      let failure: unknown;
+      let failed = false;
+      try {
+        const role = await runInTenant(tenant, () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const makeSpeech = async (owner: string, text: string, bytes: Buffer) => {
+          const key = `${owner}/blobs/${randomUUID()}`;
+          await storage.writeStream(key, Readable.from([bytes]), { maxBytes: bytes.length });
+          return runInTenant(owner, () =>
+            withTransaction(runtime, async (client) => {
+              const turn = await sendSempMessage(client, { text, context: [], hasContext: false });
+              const speech = await storeMessageSpeech(client, {
+                threadId: turn.threadId,
+                messageId: turn.messageId,
+                text,
+                voice: "alloy",
+                storageKey: key,
+                byteSize: bytes.length,
+              });
+              return { ...turn, blobId: speech.blob.id, key };
+            }),
+          );
+        };
+        const target = await makeSpeech(tenant, "Target speech", Buffer.from("AB"));
+        const control = await makeSpeech(tenant, "Control speech", Buffer.from("CD"));
+        const foreignControl = await makeSpeech(foreign, "Foreign speech", Buffer.from("EF"));
+        const cp = createChokePoint(runtime);
+        const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Message cascade references" }));
+        await runInTenant(tenant, () =>
+          cp.createProperty({ databaseId: database.id, key: "photo", name: "Photo", type: "image" }),
+        );
+        const item = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: database.id, properties: { photo: { blobId: target.blobId } } }),
+        );
+        // No production message-delete workflow exists; remove only the paired assistant to satisfy the reply FK.
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const removed = await client.query<{ id: string }>(
+              "DELETE FROM semp_messages WHERE id = $1 AND thread_id = $2 AND role = 'assistant' RETURNING id",
+              [target.assistantMessageId, target.threadId],
+            );
+            expect(removed.rowCount).toBe(1);
+            expect(removed.rows).toEqual([{ id: target.assistantMessageId }]);
+          }),
+        );
+        const ownSnapshot = () =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => ({
+              threads: (
+                await client.query<{ id: string }>(
+                  "SELECT id FROM semp_threads WHERE id = ANY($1::uuid[]) ORDER BY id",
+                  [[target.threadId, control.threadId]],
+                )
+              ).rows,
+              messages: (
+                await client.query<{ id: string; role: string; thread_id: string }>(
+                  "SELECT id, role, thread_id FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY id",
+                  [[target.messageId, control.messageId, control.assistantMessageId]],
+                )
+              ).rows,
+              cache: (
+                await client.query<{ message_id: string; blob_id: string }>(
+                  "SELECT message_id, blob_id FROM semp_message_speech WHERE message_id = ANY($1::uuid[]) ORDER BY message_id",
+                  [[target.messageId, control.messageId]],
+                )
+              ).rows,
+              blobs: (
+                await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = ANY($1::uuid[]) ORDER BY id", [
+                  [target.blobId, control.blobId],
+                ])
+              ).rows,
+              item: (
+                await client.query<{ row: unknown }>("SELECT to_jsonb(i) AS row FROM items i WHERE i.id = $1", [
+                  item.id,
+                ])
+              ).rows,
+              jobs: (
+                await client.query<{ key: string }>(
+                  "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+                  [[`sempMessage:${target.assistantMessageId}`, `sempMessage:${control.assistantMessageId}`]],
+                )
+              ).rows,
+            })),
+          );
+        const foreignSnapshot = () =>
+          runInTenant(foreign, () =>
+            withTransaction(runtime, async (client) => ({
+              message: (
+                await client.query<{ id: string }>("SELECT id FROM semp_messages WHERE id = $1", [
+                  foreignControl.messageId,
+                ])
+              ).rows,
+              cache: (
+                await client.query<{ message_id: string; blob_id: string }>(
+                  "SELECT message_id, blob_id FROM semp_message_speech WHERE message_id = $1",
+                  [foreignControl.messageId],
+                )
+              ).rows,
+              blob: (await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1", [foreignControl.blobId]))
+                .rows,
+            })),
+          );
+        const before = await ownSnapshot();
+        const foreignBefore = await foreignSnapshot();
+        expect(before.threads).toHaveLength(2);
+        expect(before.messages).toHaveLength(3);
+        expect(before.cache).toHaveLength(2);
+        expect(before.blobs).toHaveLength(2);
+        expect(before.item).toHaveLength(1);
+        expect(before.jobs).toHaveLength(2);
+        expect(foreignBefore).toEqual({
+          message: [{ id: foreignControl.messageId }],
+          cache: [{ message_id: foreignControl.messageId, blob_id: foreignControl.blobId }],
+          blob: [{ id: foreignControl.blobId }],
+        });
+        const refusedForeign = await runInTenant(foreign, () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ id: string }>("DELETE FROM semp_messages WHERE id = $1 RETURNING id", [target.messageId]),
+          ),
+        );
+        const refusedRandom = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ id: string }>("DELETE FROM semp_messages WHERE id = $1 RETURNING id", [randomUUID()]),
+          ),
+        );
+        expect(refusedForeign.rowCount).toBe(0);
+        expect(refusedForeign.rows).toEqual([]);
+        expect(refusedRandom.rowCount).toBe(0);
+        expect(refusedRandom.rows).toEqual([]);
+        expect(await ownSnapshot()).toEqual(before);
+        expect(await foreignSnapshot()).toEqual(foreignBefore);
+        // No production message-delete endpoint exists; exercise the registered message FK directly.
+        const deleted = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ id: string }>(
+              "DELETE FROM semp_messages WHERE id = $1 AND thread_id = $2 AND role = 'user' RETURNING id",
+              [target.messageId, target.threadId],
+            ),
+          ),
+        );
+        expect(deleted.rowCount).toBe(1);
+        expect(deleted.rows).toEqual([{ id: target.messageId }]);
+        const after = await ownSnapshot();
+        expect(after.threads).toEqual(before.threads);
+        expect(after.messages.map((row) => row.id).sort()).toEqual(
+          [control.messageId, control.assistantMessageId].sort(),
+        );
+        expect(after.cache).toEqual([{ message_id: control.messageId, blob_id: control.blobId }]);
+        expect(after.blobs).toEqual(before.blobs);
+        expect(after.item).toEqual(before.item);
+        expect(after.jobs).toEqual(before.jobs);
+        expect(await foreignSnapshot()).toEqual(foreignBefore);
+        expect(await readFile(join(dir, target.key))).toEqual(Buffer.from("AB"));
+        expect(await readFile(join(dir, control.key))).toEqual(Buffer.from("CD"));
+        expect(await readFile(join(dir, foreignControl.key))).toEqual(Buffer.from("EF"));
+        const future = new Date("9999-01-01T00:00:00Z");
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(0);
+        expect(await readFile(join(dir, target.key))).toEqual(Buffer.from("AB"));
+        await runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { photo: null } }),
+        );
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(1);
+        await expect(readFile(join(dir, target.key))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readFile(join(dir, control.key))).toEqual(Buffer.from("CD"));
+        expect(await readFile(join(dir, foreignControl.key))).toEqual(Buffer.from("EF"));
+        const final = await ownSnapshot();
+        expect(final.cache).toEqual([{ message_id: control.messageId, blob_id: control.blobId }]);
+        expect(final.blobs).toEqual([{ id: control.blobId }]);
+        expect(await foreignSnapshot()).toEqual(foreignBefore);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      const cleanup = await Promise.allSettled([runtime.end(), rm(dir, { recursive: true, force: true })]);
+      const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (failed || errors.length)
+        throw new AggregateError([...(failed ? [failure] : []), ...errors], "Message cascade or cleanup failed", {
+          cause: failed ? failure : errors[0],
+        });
+    });
+
+    it("keeps speech and shared item bytes until their last reference is removed", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "semprec-speech-collection-"));
+      const storage = new LocalFsBlobStorageWriter(dir);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const tenant = getTenantZeroId();
+      let failure: unknown;
+      let failed = false;
+      try {
+        const role = await runInTenant(tenant, () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const key = `${tenant}/blobs/${randomUUID()}`;
+        await storage.writeStream(key, Readable.from([Buffer.from("AB")]), { maxBytes: 2 });
+        const fixture = await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const turn = await sendSempMessage(client, { text: "speech", context: [], hasContext: false });
+            const speech = await storeMessageSpeech(client, {
+              threadId: turn.threadId,
+              messageId: turn.messageId,
+              text: "speech",
+              voice: "alloy",
+              storageKey: key,
+              byteSize: 2,
+            });
+            return { ...turn, blobId: speech.blob.id };
+          }),
+        );
+        const cp = createChokePoint(runtime);
+        const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Speech references" }));
+        await runInTenant(tenant, () =>
+          cp.createProperty({ databaseId: database.id, key: "photo", name: "Photo", type: "image" }),
+        );
+        const item = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: database.id, properties: { photo: { blobId: fixture.blobId } } }),
+        );
+        const future = new Date("9999-01-01T00:00:00Z");
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(0);
+        expect(await readFile(join(dir, key))).toEqual(Buffer.from("AB"));
+        // No production thread-deletion entry point exists yet; exercise the registered cascade directly.
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const deleted = await client.query<Record<string, never>>("DELETE FROM semp_threads WHERE id = $1", [
+              fixture.threadId,
+            ]);
+            expect(deleted.rowCount).toBe(1);
+          }),
+        );
+        const cache = await runInTenant(tenant, () =>
+          runtime.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM semp_message_speech WHERE message_id = $1",
+            [fixture.messageId],
+          ),
+        );
+        expect(cache.rows).toEqual([{ count: 0 }]);
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(0);
+        expect(await readFile(join(dir, key))).toEqual(Buffer.from("AB"));
+        await runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { photo: null } }),
+        );
+        expect(await runInTenant(tenant, () => sweepUnreferencedBlobs(runtime, storage, future))).toBe(1);
+        await expect(readFile(join(dir, key))).rejects.toMatchObject({ code: "ENOENT" });
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      const cleanup = await Promise.allSettled([runtime.end(), rm(dir, { recursive: true, force: true })]);
+      const errors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (failed || errors.length)
+        throw new AggregateError([...(failed ? [failure] : []), ...errors], "Speech collection or cleanup failed");
+    });
+
     it("removes a stale unreferenced standalone blob and its bytes, keeping referenced and fresh ones", async () => {
       const storage = new FakeStorage();
       const database = await recipesDatabaseWithImageProperty();

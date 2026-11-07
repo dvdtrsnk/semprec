@@ -7,7 +7,11 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
+import {
+  assertRelationCreatableWithClient,
+  createRelationIfAbsentWithClient,
+  createRelationWithClient,
+} from "../chokePoint/relationOps.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
@@ -425,12 +429,23 @@ export async function confirmProposalWithClient(
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
   if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
+  if (envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown")) {
+    if (proposal.properties.kind === "transcript")
+      throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
+    throw new ConflictError("Markdown page proposals cannot yet be confirmed");
+  }
   const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
   let resultLabel: string;
   let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
   let blockIds: string[] = [];
+  const addedRelations: Array<{
+    edgeId: string;
+    relationPropertyId: string;
+    callerItemId: string;
+    targetItemId: string;
+  }> = [];
   const reusedFileRefs = new Set<string>();
   if (envelope.entityKind === "database") {
     if (credential) {
@@ -543,6 +558,35 @@ export async function confirmProposalWithClient(
     resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
   }
 
+  if (transcriptCardEdge?.role === "speaker") {
+    const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
+    if (!transcript) throw new Error("Source transcript disappeared during confirm");
+    const eventProperty = await requireRelationPropertyId(client, transcript.databaseId, TRANSCRIPT_EVENT_PROPERTY_KEY);
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, eventProperty);
+    if (!definition) throw new NotFoundError("Transcript event relation not found");
+    const events = await relationsStore.listRelationsForItem(client, definition.id, transcript.id);
+    if (events.length > 1) throw new ConflictError("Transcript has multiple linked events");
+    const event = events[0] ? relationsStore.otherSide(events[0], transcript.id) : null;
+    if (event) {
+      const eventsDatabase = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
+      const relationPropertyId = await requireRelationPropertyId(client, eventsDatabase, "people");
+      const added = await createRelationIfAbsentWithClient(
+        client,
+        { relationPropertyId, callerItemId: event, targetItemId: resultItemId },
+        undefined,
+        CONFIRMING_USER_WRITER,
+        actingUserId,
+      );
+      if (added.inserted)
+        addedRelations.push({
+          edgeId: added.edge.id,
+          relationPropertyId,
+          callerItemId: event,
+          targetItemId: resultItemId,
+        });
+    }
+  }
+
   const idsByRef = new Map(stepResults.map((step) => [step.ref, step.itemId]));
   const results: ConfirmationResult[] = [];
   for (const written of stepResults) {
@@ -639,7 +683,12 @@ export async function confirmProposalWithClient(
         resultItemId,
         resultLabel,
         results,
-        history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user"),
+        history: appendHistoryEntry(
+          proposal.properties.history,
+          "Confirmed by user.",
+          "user",
+          addedRelations.length ? { addedRelations } : undefined,
+        ),
       },
     },
     {

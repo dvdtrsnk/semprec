@@ -1,13 +1,30 @@
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
+import sharp from "sharp";
+import {
+  closeIdleThreadSessions,
+  createBoundedSempHistory,
+  SempConversation,
+  type SempSendOptions,
+  type SempThread,
+  type SempTurnResult,
+} from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
+  createChokePoint,
   createAgentRun,
+  createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
   createUser,
@@ -17,22 +34,36 @@ import {
   finishSempMessageTurn,
   getDatabaseByModuleId,
   insertAgentRunEvent,
+  ingestUploadedBlob,
   loadFullModuleRegistry,
+  listPropertiesByDatabase,
+  LocalFsBlobStorageWriter,
+  readSempRefContext,
+  resolveMailModuleIds,
   seedSystem,
   sendSempMessage,
   startTenantDeactivationListener,
   startSempMessageTurn,
   suspendAccount,
+  validateSempMessageRefs,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  ensureFolderItem,
+  getTestPool,
+  ingestEmailMessage,
+  resetDatabase,
+  setTenantAiBudget,
+} from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { REALTIME_CHANNEL, publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask } from "../agentRunTasks.js";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
-import type { GatewayModel } from "../modelComposition.js";
+import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
 import { createGracefulShutdown } from "../shutdown.js";
@@ -44,6 +75,322 @@ let tenant: string;
 let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
+let imageLifecycleUnsafe = false;
+
+type QuerySchemaObservation = {
+  count: number;
+  bytes: number;
+  nestedDefinitions: boolean;
+  rootDefinitions: boolean;
+  refs: number;
+  allResolved: boolean;
+};
+
+function isQuerySchemaObservation(value: unknown): value is QuerySchemaObservation {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 6)
+    return false;
+  return (
+    "count" in value &&
+    typeof value.count === "number" &&
+    Number.isInteger(value.count) &&
+    value.count >= 0 &&
+    value.count <= 200 &&
+    "bytes" in value &&
+    typeof value.bytes === "number" &&
+    Number.isInteger(value.bytes) &&
+    value.bytes >= 0 &&
+    value.bytes <= 4 * 1024 * 1024 &&
+    "nestedDefinitions" in value &&
+    typeof value.nestedDefinitions === "boolean" &&
+    "rootDefinitions" in value &&
+    typeof value.rootDefinitions === "boolean" &&
+    "refs" in value &&
+    typeof value.refs === "number" &&
+    Number.isInteger(value.refs) &&
+    value.refs >= 0 &&
+    value.refs <= 100_000 &&
+    "allResolved" in value &&
+    typeof value.allResolved === "boolean"
+  );
+}
+
+type RefFixtureIdentity = { tenantId: string | null; agentRunId: string | null; sempMessageId: string | null };
+type RefFixtureMessage =
+  | { type: "ready"; port: number }
+  | ({ type: "gatewayArrival"; sequence: number } & RefFixtureIdentity)
+  | ({ type: "gatewayRequest"; sequence: number; bodyBytes: number | null } & RefFixtureIdentity)
+  | ({ type: "gatewayResult"; sequence: number; status: number } & RefFixtureIdentity)
+  | {
+      type: "observation";
+      sequence: number;
+      owner: boolean;
+      foreign: boolean;
+      mailFirst: boolean;
+      mailReply: boolean;
+      block: boolean;
+      sibling: boolean;
+      unavailable: boolean;
+      imageCount: number;
+      imageMimes: string[];
+      providerSerializedBytes: number;
+      querySchemas: { database: QuerySchemaObservation; view: QuerySchemaObservation };
+    };
+
+function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (!("type" in value)) return null;
+  const uuidOrNull = (input: unknown): input is string | null =>
+    input === null || (typeof input === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input));
+  if (
+    value.type === "ready" &&
+    Object.keys(value).length === 2 &&
+    "port" in value &&
+    typeof value.port === "number" &&
+    Number.isInteger(value.port) &&
+    value.port >= 1 &&
+    value.port <= 65535
+  )
+    return { type: "ready", port: value.port };
+  if (
+    value.type === "gatewayArrival" &&
+    Object.keys(value).length === 5 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
+  )
+    return {
+      type: "gatewayArrival",
+      sequence: value.sequence,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
+  if (
+    value.type === "gatewayRequest" &&
+    Object.keys(value).length === 6 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "bodyBytes" in value &&
+    (value.bodyBytes === null ||
+      (typeof value.bodyBytes === "number" &&
+        Number.isInteger(value.bodyBytes) &&
+        value.bodyBytes > 0 &&
+        value.bodyBytes <= 4 * 1024 * 1024)) &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
+  )
+    return {
+      type: "gatewayRequest",
+      sequence: value.sequence,
+      bodyBytes: value.bodyBytes,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
+  if (
+    value.type === "gatewayResult" &&
+    Object.keys(value).length === 6 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "status" in value &&
+    typeof value.status === "number" &&
+    Number.isInteger(value.status) &&
+    value.status >= 100 &&
+    value.status <= 599 &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
+  )
+    return {
+      type: "gatewayResult",
+      sequence: value.sequence,
+      status: value.status,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
+  if (
+    value.type === "observation" &&
+    Object.keys(value).length === 13 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "owner" in value &&
+    typeof value.owner === "boolean" &&
+    "foreign" in value &&
+    typeof value.foreign === "boolean" &&
+    "mailFirst" in value &&
+    typeof value.mailFirst === "boolean" &&
+    "mailReply" in value &&
+    typeof value.mailReply === "boolean" &&
+    "block" in value &&
+    typeof value.block === "boolean" &&
+    "sibling" in value &&
+    typeof value.sibling === "boolean" &&
+    "unavailable" in value &&
+    typeof value.unavailable === "boolean" &&
+    "imageCount" in value &&
+    typeof value.imageCount === "number" &&
+    Number.isInteger(value.imageCount) &&
+    value.imageCount >= 0 &&
+    value.imageCount <= 100_000 &&
+    "imageMimes" in value &&
+    Array.isArray(value.imageMimes) &&
+    value.imageMimes.length <= 4 &&
+    value.imageMimes.every(
+      (mime: unknown): mime is string =>
+        typeof mime === "string" && ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime),
+    ) &&
+    "querySchemas" in value &&
+    typeof value.querySchemas === "object" &&
+    value.querySchemas !== null &&
+    !Array.isArray(value.querySchemas) &&
+    Object.keys(value.querySchemas).length === 2 &&
+    "database" in value.querySchemas &&
+    isQuerySchemaObservation(value.querySchemas.database) &&
+    "view" in value.querySchemas &&
+    isQuerySchemaObservation(value.querySchemas.view) &&
+    "providerSerializedBytes" in value &&
+    typeof value.providerSerializedBytes === "number" &&
+    Number.isInteger(value.providerSerializedBytes) &&
+    value.providerSerializedBytes > 0 &&
+    value.providerSerializedBytes <= 4 * 1024 * 1024
+  )
+    return {
+      type: "observation",
+      sequence: value.sequence,
+      owner: value.owner,
+      foreign: value.foreign,
+      mailFirst: value.mailFirst,
+      mailReply: value.mailReply,
+      block: value.block,
+      sibling: value.sibling,
+      unavailable: value.unavailable,
+      imageCount: value.imageCount,
+      imageMimes: value.imageMimes,
+      providerSerializedBytes: value.providerSerializedBytes,
+      querySchemas: { database: value.querySchemas.database, view: value.querySchemas.view },
+    };
+  return null;
+}
+
+type ImageCaptureSend = (
+  this: SempConversation,
+  task: string,
+  thread: SempThread,
+  options?: SempSendOptions,
+) => Promise<SempTurnResult>;
+
+function isImageCaptureSend(value: unknown): value is ImageCaptureSend {
+  return typeof value === "function";
+}
+
+function observeImageConversations(tenantId: string, threadId: string) {
+  const prototype = SempConversation.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "send");
+  const original: unknown = descriptor?.value;
+  if (
+    !descriptor ||
+    !isImageCaptureSend(original) ||
+    original !== Reflect.get(prototype, "send") ||
+    !descriptor.configurable ||
+    !descriptor.writable
+  )
+    throw new Error("Image conversation observer unavailable");
+  const trustedOriginal = original;
+  const instances = new Set<SempConversation>();
+  const cleared = new Set<SempConversation>();
+  const latest = new Map<"last", SempConversation>();
+  let fault = false;
+  let expectedCount = 1;
+  function send(this: SempConversation, ...args: Parameters<ImageCaptureSend>): ReturnType<ImageCaptureSend> {
+    const result = trustedOriginal.apply(this, args);
+    try {
+      const scope = currentTenantScope();
+      if (scope?.kind === "tenant" && scope.tenantId === tenantId && args[1].threadId === threadId) {
+        if (!instances.has(this) && instances.size >= 2) fault = true;
+        else {
+          instances.add(this);
+          latest.set("last", this);
+        }
+      }
+    } catch {
+      fault = true;
+    }
+    return result;
+  }
+  Object.defineProperty(prototype, "send", { ...descriptor, value: send });
+  function verify(): void {
+    if (fault || instances.size !== expectedCount || !latest.has("last"))
+      throw new Error("Image conversation capture unavailable");
+  }
+  return {
+    current() {
+      verify();
+      return latest.get("last");
+    },
+    clear(instance: SempConversation) {
+      verify();
+      if (!instances.has(instance) || cleared.has(instance)) throw new Error("Image conversation clear unavailable");
+      instance.clear();
+      cleared.add(instance);
+    },
+    expectReplacement() {
+      expectedCount = 2;
+    },
+    clearCaptured() {
+      verify();
+      const errors: unknown[] = [];
+      for (const instance of instances) {
+        if (cleared.has(instance)) continue;
+        try {
+          instance.clear();
+          cleared.add(instance);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, "Image conversation cleanup failed", { cause: errors[0] });
+    },
+    restore() {
+      Object.defineProperty(prototype, "send", descriptor);
+      const restored = Object.getOwnPropertyDescriptor(prototype, "send");
+      if (
+        !restored ||
+        restored.value !== descriptor.value ||
+        restored.writable !== descriptor.writable ||
+        restored.enumerable !== descriptor.enumerable ||
+        restored.configurable !== descriptor.configurable
+      )
+        throw new Error("Image conversation observer restoration failed");
+    },
+  };
+}
+
+type ImageConversationObserver = ReturnType<typeof observeImageConversations>;
 
 describe("queued Semp messages", () => {
   beforeAll(async () => {
@@ -67,22 +414,890 @@ describe("queued Semp messages", () => {
   afterAll(async () => {
     const errors: unknown[] = [];
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image runtime settlement not established");
       await runtime?.stop();
     } catch (error) {
       errors.push(error);
     }
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image conversation cleanup not established");
       await pool?.end();
     } catch (error) {
       errors.push(error);
     }
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image resources require settlement");
       await admin?.end();
     } catch (error) {
       errors.push(error);
     }
     if (errors.length) throw new AggregateError(errors, "Semp test cleanup failed", { cause: errors[0] });
   });
+
+  it.each([
+    {
+      name: "expands tenant references through the registered worker and real gateway without persisting content",
+      images: false,
+    },
+    { name: "replays fresh and continuing images through the registered worker and real gateway", images: true },
+  ])(
+    "$name",
+    async ({ images }) => {
+      await runtime?.stop();
+      runtime = undefined;
+      const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+      const blockRoot = resolve(backend, "../shared/block-model");
+      const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/refExpansionGateway.js");
+      const fixtureSource = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/refExpansionGateway.ts");
+      const messages: RefFixtureMessage[] = [];
+      let invalidOutput = false;
+      let outputBytes = 0;
+      let child: ChildProcess | undefined;
+      let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
+      let exited = false;
+      let stopSettled = true;
+      let blockDir: string | undefined;
+      let mailRoot: string | undefined;
+      let workerSettled: boolean;
+      let failed = false;
+      let failure: unknown;
+      let imageObserver: ImageConversationObserver | undefined;
+      let imageRuntimeStarting = false;
+      let imageRuntimeStopUnsettled = false;
+      let coldInstance: SempConversation | undefined;
+      const cleanupFailures: unknown[] = [];
+      try {
+        if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
+          throw new Error("Stale reference gateway fixture build");
+        blockDir = await mkdtemp(join(blockRoot, "node_modules/.batch09-"));
+        const args = [
+          join(backend, "node_modules/typescript/bin/tsc"),
+          "-p",
+          join(blockRoot, "tsconfig.json"),
+          "--noEmit",
+          "false",
+          "--declaration",
+          "false",
+          "--incremental",
+          "false",
+          "--outDir",
+          blockDir,
+        ];
+        const compiled = spawnSync(process.execPath, args, { cwd: backend, timeout: 25_000, maxBuffer: 1_000_000 });
+        process.stderr.write(
+          `ref block compiler pid=${compiled.pid} status=${compiled.status} signal=${compiled.signal} argv=${JSON.stringify([process.execPath, ...args])}\n`,
+        );
+        if (compiled.error) throw compiled.error;
+        if (compiled.status !== 0) throw new Error("Reference fixture block-model build failed");
+        const blockEntry = join(blockDir, "index.js");
+        const fixtureHash = createHash("sha256")
+          .update(await readFile(fixture))
+          .digest("hex");
+        const blockHash = createHash("sha256")
+          .update(await readFile(blockEntry))
+          .digest("hex");
+        const databaseUrl = pool.options.connectionString;
+        if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
+        child = spawn(process.execPath, [fixture], {
+          cwd: backend,
+          detached: true,
+          env: { ...process.env, BATCH09_BLOCK_MODEL_ENTRY: blockEntry, BATCH32_GATEWAY_DATABASE_URL: databaseUrl },
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        const owned = child;
+        if (!owned.pid) throw new Error("Reference gateway child did not start");
+        childExit = new Promise((resolveExit) => {
+          let childError: Error | undefined;
+          owned.once("error", (error) => {
+            childError = error;
+          });
+          owned.once("close", (code, signal) => {
+            exited = true;
+            resolveExit({ code, signal, ...(childError ? { error: childError } : {}) });
+          });
+        });
+        const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(owned.pid)], { encoding: "utf8" }).trim());
+        if (pgid !== owned.pid) throw new Error("Unexpected reference gateway process group");
+        process.stderr.write(
+          `ref gateway argv=${JSON.stringify([process.execPath, fixture])} pid=${owned.pid} pgid=${pgid} sha256=${fixtureHash} blockSha256=${blockHash}\n`,
+        );
+        for (const output of [owned.stdout, owned.stderr])
+          output?.on("data", (chunk: Buffer) => {
+            outputBytes += chunk.length;
+            if (outputBytes > 100_000) invalidOutput = true;
+          });
+        owned.on("message", (value: unknown) => {
+          const parsed = parseRefFixtureMessage(value);
+          if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+          else messages.push(parsed);
+        });
+        await vi.waitFor(
+          () => {
+            expect(invalidOutput).toBe(false);
+            expect(messages.some((entry) => entry.type === "ready")).toBe(true);
+          },
+          { timeout: 10_000 },
+        );
+        const ready = messages.find((entry) => entry.type === "ready");
+        if (!ready || ready.type !== "ready") throw new Error("Missing reference gateway readiness");
+        await setTenantAiBudget(admin, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
+        const foreign = await createTestTenant(admin);
+        await runInTenant(foreign, () => seedSystem(pool));
+        const ids = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const database = await getDatabaseByModuleId(client, "areas");
+            if (!database) throw new Error("Missing areas database");
+            const item = await createItemWithClient(client, {
+              databaseId: database.id,
+              properties: { name: "Reference", note: "REF_OWNER_SENTINEL_32" },
+            });
+            return { databaseId: database.id, itemId: item.id };
+          }),
+        );
+        mailRoot = await mkdtemp(join(tmpdir(), "semp-ref-worker-mail-"));
+        const mailStorage = new LocalFsBlobStorageWriter(join(mailRoot, "mail"));
+        const fileStorage = new LocalFsBlobStorageWriter(join(mailRoot, "files"));
+        const mail = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const mailIds = await resolveMailModuleIds(client);
+            const emailProperties = await listPropertiesByDatabase(client, mailIds.emailsDatabaseId);
+            const folderProperties = await listPropertiesByDatabase(client, mailIds.foldersDatabaseId);
+            const attachments = emailProperties.find((property) => property.key === "attachments");
+            const folder = emailProperties.find((property) => property.key === "folder");
+            const mailbox = folderProperties.find((property) => property.key === "mailbox");
+            if (!attachments || !folder || !mailbox) throw new Error("Missing mail fixture relations");
+            const mailboxItem = await createItemWithClient(client, {
+              databaseId: mailIds.mailboxesDatabaseId,
+              properties: { name: "Reference mailbox" },
+            });
+            const folderId = await ensureFolderItem(client, {
+              foldersDatabaseId: mailIds.foldersDatabaseId,
+              mailboxItemId: mailboxItem.id,
+              mailboxRelationPropertyId: mailbox.id,
+              providerId: "INBOX",
+              name: "Inbox",
+              behavior: "folder",
+              specialPurpose: "inbox",
+            });
+            const messageId = `<${randomUUID()}@example.test>`;
+            const common = {
+              emailsDatabaseId: mailIds.emailsDatabaseId,
+              filesDatabaseId: mailIds.filesDatabaseId,
+              folderRelationPropertyId: folder.id,
+              attachmentsRelationPropertyId: attachments.id,
+              folderItemId: folderId,
+              mailboxItemId: mailboxItem.id,
+              subject: "Reference thread",
+              envelope: {},
+              attachments: [],
+              storage: mailStorage,
+              storageKeyPrefix: "reference-worker",
+            };
+            const first = await ingestEmailMessage(client, {
+              ...common,
+              messageId,
+              bodyText: "REF_MAIL_FIRST_SENTINEL_32",
+            });
+            const reply = await ingestEmailMessage(client, {
+              ...common,
+              messageId: `<${randomUUID()}@example.test>`,
+              inReplyTo: messageId,
+              references: [messageId],
+              bodyText: "REF_MAIL_REPLY_SENTINEL_32",
+            });
+            const threads = await client.query<{ item_id: string; thread_id: string | null }>(
+              "SELECT item_id, thread_id FROM mail_message_meta WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+              [[first.itemId, reply.itemId]],
+            );
+            expect(threads.rows).toHaveLength(2);
+            expect(threads.rows[0]?.thread_id).toBeTruthy();
+            expect(threads.rows[0]?.thread_id).toBe(threads.rows[1]?.thread_id);
+            return { databaseId: mailIds.emailsDatabaseId, itemId: first.itemId };
+          }),
+        );
+        const blockId = randomUUID();
+        const siblingId = randomUUID();
+        const parentId = randomUUID();
+        await runInTenant(tenant, async () => {
+          const docs = createDocStore(pool);
+          await docs.putBlock(
+            ids.itemId,
+            { id: blockId, flavour: "paragraph", fields: { text: "REF_BLOCK_SENTINEL_32" } },
+            "user",
+          );
+          await docs.putBlock(
+            ids.itemId,
+            { id: siblingId, flavour: "paragraph", fields: { text: "REF_SIBLING_SENTINEL_32" } },
+            "user",
+          );
+          await docs.putBlock(ids.itemId, { id: parentId, flavour: "page", children: [blockId, siblingId] }, "user");
+        });
+        const imageRefs: Array<{ kind: "item"; databaseId: string; itemId: string }> = [];
+        let unavailable: { ref: { kind: "item"; databaseId: string; itemId: string }; key: string } | undefined;
+        if (images) {
+          const imageBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#2376af" } })
+            .png()
+            .toBuffer();
+          const fileDatabase = await runInTenant(tenant, () =>
+            withTransaction(pool, (client) => getDatabaseByModuleId(client, "files")),
+          );
+          if (!fileDatabase) throw new Error("Missing Files database");
+          const availableKeys = new Set<string>();
+          for (let index = 0; index < 10; index += 1) {
+            const image = await runInTenant(tenant, async () => {
+              const upload = await ingestUploadedBlob(pool, {
+                mimeType: "image/png",
+                source: Readable.from([imageBytes]),
+                maxBytes: imageBytes.length + 1,
+                storage: fileStorage,
+              });
+              const item = await createChokePoint(pool).createItem({
+                databaseId: fileDatabase.id,
+                properties: { name: `Reference image ${index}`, file: { blobId: upload.blob.id } },
+              });
+              return { item, key: upload.blob.storageKey };
+            });
+            availableKeys.add(image.key);
+            imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.item.id });
+          }
+          const missingBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#a34257" } })
+            .png()
+            .toBuffer();
+          unavailable = await runInTenant(tenant, async () => {
+            const upload = await ingestUploadedBlob(pool, {
+              mimeType: "image/png",
+              source: Readable.from([missingBytes]),
+              maxBytes: missingBytes.length + 1,
+              storage: fileStorage,
+            });
+            const item = await createChokePoint(pool).createItem({
+              databaseId: fileDatabase.id,
+              properties: { name: "Unavailable image", file: { blobId: upload.blob.id } },
+            });
+            return {
+              ref: { kind: "item" as const, databaseId: fileDatabase.id, itemId: item.id },
+              key: upload.blob.storageKey,
+            };
+          });
+          expect(availableKeys.has(unavailable.key)).toBe(false);
+        }
+        const foreignIds = await runInTenant(foreign, () =>
+          withTransaction(pool, async (client) => {
+            const database = await getDatabaseByModuleId(client, "areas");
+            if (!database) throw new Error("Missing foreign areas database");
+            const item = await createItemWithClient(client, {
+              databaseId: database.id,
+              properties: { name: "REF_FOREIGN_SENTINEL_32" },
+            });
+            return { databaseId: database.id, itemId: item.id };
+          }),
+        );
+        const refs = [
+          { kind: "item" as const, ...ids },
+          { kind: "item" as const, ...mail },
+          { kind: "block" as const, itemId: ids.itemId, blockId },
+          ...imageRefs.slice(0, 9),
+          ...(unavailable ? [unavailable.ref] : []),
+        ];
+        await expect(
+          withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
+        ).rejects.toThrow();
+        expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(0);
+        const refused = [
+          { kind: "item" as const, ...foreignIds },
+          { kind: "item" as const, databaseId: ids.databaseId, itemId: randomUUID() },
+        ];
+        const countMessages = () =>
+          runInTenant(tenant, () => pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"));
+        const beforeRefusal = await countMessages();
+        const jobsBeforeRefusal = await admin.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+        );
+        for (const ref of refused) {
+          await expect(
+            runInTenant(tenant, () => withTransaction(pool, (client) => validateSempMessageRefs(client, [ref]))),
+          ).rejects.toThrow();
+          expect(
+            await runInTenant(tenant, () => withTransaction(pool, (client) => readSempRefContext(client, ref))),
+          ).toBeNull();
+        }
+        expect((await countMessages()).rows).toEqual(beforeRefusal.rows);
+        expect(
+          (await admin.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+        ).toEqual(jobsBeforeRefusal.rows);
+        const turn = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) =>
+            sendSempMessage(client, {
+              text: "Question",
+              context: await validateSempMessageRefs(client, refs),
+              hasContext: true,
+            }),
+          ),
+        );
+        // Synthetic unavailable bytes: remove only this fixture's unique owned object after admission.
+        if (unavailable) await fileStorage.delete(unavailable.key);
+        const gateway = createGatewayModel({
+          AI_GATEWAY_BASE_URL: `http://127.0.0.1:${ready.port}/internal/pi`,
+          AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
+          AGENT_MODEL: "claude-haiku-4-5",
+        });
+        if (images) {
+          imageObserver = observeImageConversations(tenant, turn.threadId);
+          imageRuntimeStarting = true;
+        }
+        runtime = await createAgentsQueueRuntime(pool, registry, {
+          sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
+            files: fileStorage,
+            mailAttachments: mailStorage,
+          }),
+        });
+        imageRuntimeStarting = false;
+        let runId = "";
+        try {
+          await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [turn.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              runId = result.rows[0]?.agent_run_id ?? "";
+              expect(runId).not.toBe("");
+            },
+            { timeout: 20_000 },
+          );
+        } catch (error) {
+          try {
+            const observed = await runInTenant(tenant, async () => {
+              const target = await pool.query<{
+                assistant_status: string;
+                assistant_error_code: string | null;
+                agent_run_id: string | null;
+                run_id: string | null;
+                run_status: string | null;
+                run_error_code: string | null;
+              }>(
+                `SELECT m.status AS assistant_status, m.error_code AS assistant_error_code, m.agent_run_id,
+                        r.id AS run_id, r.status AS run_status, r.error_code AS run_error_code
+                   FROM semp_messages m LEFT JOIN agent_runs r ON r.tenant_id=m.tenant_id AND r.id=m.agent_run_id
+                  WHERE m.id=$1 AND m.thread_id=$2 AND m.role='assistant'`,
+                [turn.assistantMessageId, turn.threadId],
+              );
+              const calls = await pool.query<{ status: string }>(
+                "SELECT status FROM ai_gateway_calls WHERE semp_message_id=$1 ORDER BY at, id",
+                [turn.assistantMessageId],
+              );
+              const row = target.rows[0];
+              const arrivals = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayArrival" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
+              );
+              const requests = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayRequest" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
+              );
+              const results = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayResult" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
+              );
+              return {
+                targetCount: target.rows.length,
+                assistantDone: row?.assistant_status === "done",
+                assistantError: row?.assistant_status === "error",
+                assistantInterrupted: row?.assistant_error_code === "interrupted",
+                assistantErrorCodePresent:
+                  row?.assistant_error_code !== null && row?.assistant_error_code !== undefined,
+                hasAssociatedRun: row?.run_id !== null && row?.run_id !== undefined,
+                runRunning: row?.run_status === "running",
+                runDone: row?.run_status === "done",
+                runError: row?.run_status === "error",
+                runModelError: row?.run_error_code === "modelError",
+                runErrorCodePresent: row?.run_error_code !== null && row?.run_error_code !== undefined,
+                callCount: calls.rows.length,
+                settledCount: calls.rows.filter((call) => call.status === "settled").length,
+                gatewayArrivalCount: arrivals.length,
+                gatewayRequestCount: requests.length,
+                gateway2xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 200 && entry.status < 300,
+                ).length,
+                gateway4xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 400 && entry.status < 500,
+                ).length,
+                gateway5xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 500 && entry.status < 600,
+                ).length,
+                providerObservationCount: messages.filter((entry) => entry.type === "observation").length,
+              };
+            });
+            process.stderr.write(`reference target observation ${JSON.stringify(observed)}\n`);
+          } catch {
+            process.stderr.write("reference target observation unavailable\n");
+          }
+          throw error;
+        }
+        if (images) {
+          if (!imageObserver) throw new Error("Missing image conversation observer");
+          coldInstance = imageObserver.current();
+          if (!coldInstance) throw new Error("Missing cold image conversation");
+        }
+        await vi.waitFor(
+          () =>
+            expect(messages.filter((entry) => entry.type === "observation")).toEqual([
+              expect.objectContaining({
+                type: "observation",
+                sequence: 1,
+                owner: true,
+                foreign: false,
+                mailFirst: true,
+                mailReply: true,
+                block: true,
+                sibling: true,
+                unavailable: images,
+                imageCount: images ? 9 : 0,
+                imageMimes: images ? ["image/jpeg"] : [],
+                providerSerializedBytes: expect.any(Number),
+              }),
+            ]),
+          { timeout: 5000 },
+        );
+        if (!images) {
+          const providerObservation = messages.find((entry) => entry.type === "observation" && entry.sequence === 1);
+          if (!providerObservation || providerObservation.type !== "observation")
+            throw new Error("Missing provider observation");
+          for (const schema of Object.values(providerObservation.querySchemas)) {
+            expect(schema).toMatchObject({
+              count: 1,
+              nestedDefinitions: true,
+              rootDefinitions: false,
+              allResolved: true,
+            });
+            expect(schema.bytes).toBeGreaterThan(0);
+            expect(schema.bytes).toBeLessThan(20_000);
+            expect(schema.refs).toBeGreaterThan(0);
+          }
+        }
+        const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
+        expect(requestObservations).toHaveLength(1);
+        expect(requestObservations[0]?.bodyBytes).toEqual(expect.any(Number));
+        expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+        expect(requestObservations[0]).toMatchObject({
+          sequence: 1,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        expect(messages).toContainEqual({
+          type: "gatewayArrival",
+          sequence: 1,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        expect(messages).toContainEqual({
+          type: "gatewayResult",
+          sequence: 1,
+          status: 200,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        const evidence = await runInTenant(tenant, async () => {
+          const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
+          const events = await pool.query<{ payload: unknown }>(
+            "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+            [runId],
+          );
+          const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+            "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1",
+            [runId],
+          );
+          const storedMessages = await pool.query<{ id: string; context: unknown; reply_to_message_id: string | null }>(
+            "SELECT id, context, reply_to_message_id FROM semp_messages WHERE id = ANY($1::uuid[])",
+            [[turn.messageId, turn.assistantMessageId]],
+          );
+          return { run: run.rows, events: events.rows, calls: calls.rows, messages: storedMessages.rows };
+        });
+        expect(evidence.run).toEqual([{ task: "Question" }]);
+        expect(evidence.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: turn.messageId, context: refs }),
+            expect.objectContaining({ id: turn.assistantMessageId, reply_to_message_id: turn.messageId }),
+          ]),
+        );
+        expect(JSON.stringify(evidence.events)).not.toContain("REF_OWNER_SENTINEL_32");
+        expect(JSON.stringify(evidence.events)).not.toContain("REF_FOREIGN_SENTINEL_32");
+        for (const sentinel of [
+          "REF_MAIL_FIRST_SENTINEL_32",
+          "REF_MAIL_REPLY_SENTINEL_32",
+          "REF_BLOCK_SENTINEL_32",
+          "REF_SIBLING_SENTINEL_32",
+        ]) {
+          expect(JSON.stringify(evidence.events)).not.toContain(sentinel);
+          expect(JSON.stringify(evidence.run)).not.toContain(sentinel);
+          expect(JSON.stringify(evidence.messages)).not.toContain(sentinel);
+        }
+        expect(evidence.events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              payload: expect.objectContaining({
+                kind: "user_message",
+                context: expect.arrayContaining([
+                  expect.objectContaining({ ...refs[0], label: "Reference" }),
+                  expect.objectContaining({ ...refs[1], label: "Reference thread" }),
+                  expect.objectContaining({ ...refs[2], label: "Reference" }),
+                  ...imageRefs
+                    .slice(0, 9)
+                    .map((ref, index) => expect.objectContaining({ ...ref, label: `Reference image ${index}` })),
+                  ...(unavailable ? [expect.objectContaining({ ...unavailable.ref, label: "Unavailable image" })] : []),
+                ]),
+              }),
+            }),
+          ]),
+        );
+        expect(evidence.calls).toEqual([
+          { status: "settled", agent_run_id: runId, semp_message_id: turn.assistantMessageId },
+        ]);
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("image/jpeg");
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("base64");
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("Attachment unavailable.");
+
+        if (images) {
+          const lastImage = imageRefs[9];
+          if (!lastImage) throw new Error("Missing final image fixture");
+          const continued = await runInTenant(tenant, () =>
+            withTransaction(pool, async (client) =>
+              sendSempMessage(client, {
+                threadId: turn.threadId,
+                text: "Continue with an image",
+                context: await validateSempMessageRefs(client, [lastImage]),
+                hasContext: true,
+              }),
+            ),
+          );
+          const continuedRun = await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [continued.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              expect(result.rows[0]?.agent_run_id).toBe(runId);
+              return result.rows[0]?.agent_run_id;
+            },
+            { timeout: 20_000 },
+          );
+          expect(continuedRun).toBe(runId);
+          if (!imageObserver || !coldInstance) throw new Error("Missing cold image conversation");
+          expect(imageObserver.current()).toBe(coldInstance);
+          await vi.waitFor(
+            () => {
+              const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"], unavailable: true });
+              const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
+              if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
+              expect(request.bodyBytes).toEqual(expect.any(Number));
+              expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+              expect(request).toMatchObject({
+                tenantId: tenant,
+                agentRunId: runId,
+                sempMessageId: continued.assistantMessageId,
+              });
+              expect(messages).toContainEqual({
+                type: "gatewayResult",
+                sequence: 2,
+                status: 200,
+                tenantId: tenant,
+                agentRunId: runId,
+                sempMessageId: continued.assistantMessageId,
+              });
+            },
+            { timeout: 5000 },
+          );
+          const continuedCalls = await runInTenant(tenant, () =>
+            pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+              "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+              [runId, continued.assistantMessageId],
+            ),
+          );
+          expect(continuedCalls.rows).toEqual([
+            { status: "settled", agent_run_id: runId, semp_message_id: continued.assistantMessageId },
+          ]);
+          const previousRuntime = runtime;
+          if (!previousRuntime) throw new Error("Missing image runtime");
+          imageRuntimeStopUnsettled = true;
+          await previousRuntime.stop();
+          imageRuntimeStopUnsettled = false;
+          runtime = undefined;
+          try {
+            imageObserver.clear(coldInstance);
+          } catch (error) {
+            imageLifecycleUnsafe = true;
+            throw error;
+          }
+          const closed = await closeIdleThreadSessions(pool);
+          expect(closed.closedRunIds).toContain(runId);
+          imageObserver.expectReplacement();
+          imageRuntimeStarting = true;
+          runtime = await createAgentsQueueRuntime(pool, registry, {
+            sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
+              files: fileStorage,
+              mailAttachments: mailStorage,
+            }),
+          });
+          imageRuntimeStarting = false;
+          const wake = await runInTenant(tenant, () =>
+            withTransaction(pool, (client) =>
+              sendSempMessage(client, {
+                threadId: turn.threadId,
+                text: "Wake the image history",
+                context: [],
+                hasContext: false,
+              }),
+            ),
+          );
+          const wakeRun = await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [wake.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              expect(result.rows[0]?.agent_run_id).toBeTruthy();
+              return result.rows[0]?.agent_run_id;
+            },
+            { timeout: 20_000 },
+          );
+          if (!wakeRun) throw new Error("Missing wake run");
+          expect(wakeRun).not.toBe(runId);
+          expect(imageObserver.current()).not.toBe(coldInstance);
+          await vi.waitFor(
+            () => {
+              const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"], unavailable: true });
+              const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
+              if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
+              expect(request.bodyBytes).toEqual(expect.any(Number));
+              expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+              expect(request).toMatchObject({
+                tenantId: tenant,
+                agentRunId: wakeRun,
+                sempMessageId: wake.assistantMessageId,
+              });
+              expect(messages).toContainEqual({
+                type: "gatewayResult",
+                sequence: 3,
+                status: 200,
+                tenantId: tenant,
+                agentRunId: wakeRun,
+                sempMessageId: wake.assistantMessageId,
+              });
+            },
+            { timeout: 5000 },
+          );
+          const wakeEvidence = await runInTenant(tenant, async () => {
+            const runs = await pool.query<{ id: string; task: string }>(
+              "SELECT id, task FROM agent_runs WHERE id = ANY($1::uuid[])",
+              [[runId, wakeRun]],
+            );
+            const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+              "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+              [wakeRun, wake.assistantMessageId],
+            );
+            const events = await pool.query<{ payload: unknown }>(
+              "SELECT payload FROM agent_run_events WHERE agent_run_id = ANY($1::uuid[]) ORDER BY id",
+              [[runId, wakeRun]],
+            );
+            const messages = await pool.query<{ id: string; context: unknown }>(
+              "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
+              [[turn.messageId, continued.messageId, wake.messageId]],
+            );
+            return { runs: runs.rows, calls: calls.rows, events: events.rows, messages: messages.rows };
+          });
+          expect(wakeEvidence.runs).toHaveLength(2);
+          expect(wakeEvidence.runs).toEqual(
+            expect.arrayContaining([
+              { id: runId, task: "Question" },
+              { id: wakeRun, task: "Wake the image history" },
+            ]),
+          );
+          expect(JSON.stringify(wakeEvidence.runs)).not.toContain("image/jpeg");
+          expect(JSON.stringify(wakeEvidence.runs)).not.toContain("base64");
+          expect(wakeEvidence.calls).toEqual([
+            { status: "settled", agent_run_id: wakeRun, semp_message_id: wake.assistantMessageId },
+          ]);
+          expect(wakeEvidence.messages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ id: turn.messageId, context: refs }),
+              expect.objectContaining({ id: continued.messageId, context: [lastImage] }),
+              expect.objectContaining({ id: wake.messageId, context: [] }),
+            ]),
+          );
+          expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("image/jpeg");
+          expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("base64");
+        }
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      try {
+        if (imageRuntimeStopUnsettled || imageRuntimeStarting) {
+          imageLifecycleUnsafe = true;
+          throw new Error("Image runtime settlement unavailable");
+        }
+        const active = runtime;
+        runtime = undefined;
+        await active?.stop();
+        workerSettled = true;
+      } catch (error) {
+        workerSettled = false;
+        if (imageObserver) imageLifecycleUnsafe = true;
+        cleanupFailures.push(error);
+      }
+      if (imageObserver) {
+        const runtimeStopped = workerSettled;
+        let capturedCleared = false;
+        let descriptorRestored = false;
+        if (workerSettled && !imageLifecycleUnsafe) {
+          try {
+            imageObserver.clearCaptured();
+            capturedCleared = true;
+          } catch (error) {
+            imageLifecycleUnsafe = true;
+            workerSettled = false;
+            cleanupFailures.push(error);
+          }
+        }
+        try {
+          imageObserver.restore();
+          descriptorRestored = true;
+        } catch (error) {
+          imageLifecycleUnsafe = true;
+          workerSettled = false;
+          cleanupFailures.push(error);
+        }
+        try {
+          process.stderr.write(
+            `image lifecycle cleanup ${JSON.stringify({ runtimeStopped, capturedCleared, descriptorRestored })}\n`,
+          );
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (!imageLifecycleUnsafe) {
+        try {
+          await closeIdleThreadSessions(pool);
+        } catch (error) {
+          workerSettled = false;
+          cleanupFailures.push(error);
+        }
+      }
+      if (child && childExit && !exited && !imageLifecycleUnsafe) {
+        let stopOperation: Promise<void> | undefined;
+        try {
+          const owned = child;
+          if (!owned.connected) throw new Error("Reference gateway IPC disconnected before stop");
+          const exit = childExit;
+          stopSettled = false;
+          stopOperation = (async () => {
+            await new Promise<void>((resolveSend, reject) =>
+              owned.send({ type: "stop" }, (error) => (error ? reject(error) : resolveSend())),
+            );
+            await exit;
+          })();
+          void stopOperation
+            .finally(() => {
+              stopSettled = true;
+            })
+            .catch(() => {});
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              stopOperation,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("Reference gateway stop timed out")), 10_000);
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        } catch (error) {
+          cleanupFailures.push(error);
+          try {
+            if (!child.kill("SIGKILL")) cleanupFailures.push(new Error("Reference gateway signal was not accepted"));
+          } catch (killError) {
+            cleanupFailures.push(killError);
+          }
+          let exitTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const settlement = await Promise.race([
+              Promise.allSettled(stopOperation ? [childExit, stopOperation] : [childExit]),
+              new Promise<never>((_, reject) => {
+                exitTimer = setTimeout(() => reject(new Error("Reference gateway exit not observed")), 5000);
+              }),
+            ]);
+            for (const result of settlement)
+              if (result.status === "rejected" && result.reason !== error) cleanupFailures.push(result.reason);
+          } catch (exitError) {
+            cleanupFailures.push(exitError);
+          } finally {
+            if (exitTimer) clearTimeout(exitTimer);
+          }
+          if (!stopSettled) cleanupFailures.push(new Error("Reference gateway stop IPC did not settle"));
+        }
+      }
+      if (childExit && exited) {
+        try {
+          const outcome = await childExit;
+          process.stderr.write(`ref gateway exit=${outcome.code} signal=${outcome.signal}\n`);
+          if (outcome.error) throw outcome.error;
+          if (outcome.code !== 0 || outcome.signal !== null) throw new Error("Reference gateway did not exit cleanly");
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (blockDir && (!child || exited) && workerSettled && stopSettled) {
+        try {
+          await rm(blockDir, { recursive: true });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (mailRoot && (!child || exited) && workerSettled && stopSettled) {
+        try {
+          await rm(mailRoot, { recursive: true });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (failed && cleanupFailures.length)
+        throw new AggregateError([failure, ...cleanupFailures], "Reference worker test and cleanup failed", {
+          cause: failure,
+        });
+      if (failed)
+        throw failure instanceof Error ? failure : new Error("Reference worker test failed", { cause: failure });
+      if (cleanupFailures.length)
+        throw new AggregateError(cleanupFailures, "Reference worker cleanup failed", { cause: cleanupFailures[0] });
+    },
+    60_000,
+  );
 
   it("refuses Semp enqueue outside a tenant scope without creating a job", async () => {
     const payload = { threadId: randomUUID(), assistantMessageId: randomUUID() };

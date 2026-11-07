@@ -21,7 +21,7 @@ import {
   withTransaction,
 } from "../db/pool.js";
 import { notifyInvalidation, type InvalidationEvent } from "../realtimeHook.js";
-import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
+import { CardinalityViolationError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import * as databasesStore from "./databasesStore.js";
@@ -381,6 +381,66 @@ export async function createRelationWithClient(
     });
     await announceRelation(client, edgeContext, input, "put", input.actingUserId ?? actingUserId);
     return edge;
+  });
+}
+
+/** Insert an absent edge using the ordinary relation guards, leaving existing metadata intact. */
+export async function createRelationIfAbsentWithClient(
+  client: PoolClient,
+  input: CreateRelationInput,
+  context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
+): Promise<{ edge: RelationEdge; inserted: boolean }> {
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
+  const hooks = (lockMode?: "nowait") =>
+    runRelationEdgeWriteHooks({
+      client,
+      edgeContext,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+      metadata: input.metadata,
+      writer,
+      lockMode,
+    });
+  const { itemA, itemB } = normalizeRelationSides(
+    edgeContext.reldef,
+    input.relationPropertyId,
+    input.callerItemId,
+    input.targetItemId,
+  );
+  return runRelationMutation(client, edgeContext, context, input, true, hooks, async () => {
+    const inserted = await relationsStore.insertItemRelationIfAbsent(client, {
+      relationDefinitionId: edgeContext.reldef.id,
+      itemA,
+      itemB,
+      metadata: input.metadata,
+    });
+    if (!inserted) {
+      const existing = await relationsStore.getItemRelationByTuple(client, edgeContext.reldef.id, itemA, itemB);
+      if (!existing) throw new ConflictError("Relation changed while confirming", { field: edgeContext.property.key });
+      return { edge: existing, inserted: false };
+    }
+    await breakValueLinksForRelationEdge(client, {
+      reldef: edgeContext.reldef,
+      itemA,
+      itemB,
+      writerKind: writer.writerKind,
+      actingUserId: input.actingUserId ?? actingUserId,
+    });
+    await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    await runRelationEdgeChangedHooks({
+      client,
+      op: "create",
+      relationDefinitionId: inserted.relationDefinitionId,
+      propertyId: edgeContext.property.id,
+      itemA: inserted.itemA,
+      itemB: inserted.itemB,
+      metadata: inserted.metadata,
+      writer,
+    });
+    await announceRelation(client, edgeContext, input, "put", input.actingUserId ?? actingUserId);
+    return { edge: inserted, inserted: true };
   });
 }
 

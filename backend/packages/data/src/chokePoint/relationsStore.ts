@@ -163,6 +163,38 @@ export async function createItemRelationReportingInsert(
   }
 }
 
+/** Insert the normalized tuple only when absent; never replace a concurrent edge's metadata. */
+export async function insertItemRelationIfAbsent(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<ItemRelationRow | null> {
+  const definition = await getRelationDefinition(client, input.relationDefinitionId);
+  if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
+  try {
+    const { rows } = await client.query<ItemRelationDbRow>(
+      `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (relation_definition_id, item_a, item_b) DO NOTHING
+       RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+      [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
+    );
+    return rows[0] ? mapItemRelationRow(rows[0]) : null;
+  } catch (err) {
+    if (isCardinalityViolation(err)) {
+      throw new CardinalityViolationError(
+        `Relation ${input.relationDefinitionId} (${definition.cardinality}) rejected item_a=${input.itemA}/item_b=${input.itemB}: cardinality violation`,
+        {
+          relationDefinitionId: input.relationDefinitionId,
+          cardinality: definition.cardinality,
+          itemA: input.itemA,
+          itemB: input.itemB,
+        },
+      );
+    }
+    throw err;
+  }
+}
+
 /** Full-replacement metadata update for an existing edge; returns `null` if the normalized tuple has no row (never merges JSON). */
 export async function updateItemRelationMetadata(
   client: PoolClient,

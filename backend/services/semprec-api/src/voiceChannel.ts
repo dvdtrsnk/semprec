@@ -45,8 +45,10 @@ export interface VoiceIdentity {
   sessionId: string;
 }
 export interface VoiceSender {
+  readonly signal: AbortSignal;
   sendControl(frame: Outbound): boolean;
   sendAudio(pcm: Buffer): boolean;
+  fail(code: Extract<Outbound, { type: "error" }>["code"]): void;
 }
 export interface VoiceSessionHandler {
   onStart(
@@ -56,7 +58,12 @@ export interface VoiceSessionHandler {
   ): void | Promise<void>;
   onAudio(identity: VoiceIdentity, pcm: Buffer): void | boolean | Promise<void | boolean>;
   onControl(identity: VoiceIdentity, frame: Extract<Control, { type: "stop" | "end" }>): void | Promise<void>;
-  onClose(identity: VoiceIdentity): void | Promise<void>;
+  onClose(
+    identity: VoiceIdentity,
+  ):
+    | void
+    | { readonly operationFailures: readonly unknown[] }
+    | Promise<void | { readonly operationFailures: readonly unknown[] }>;
 }
 export interface VoiceChannel {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
@@ -87,6 +94,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
   interface Slot {
     ws: WebSocket;
     identity: VoiceIdentity;
+    controller: AbortController;
     active: Promise<void> | null;
     cleanupStarted: boolean;
     failures: Array<"operation" | "cleanup">;
@@ -118,7 +126,16 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
-    const slot: Slot = { ws, identity, active: null, cleanupStarted: false, failures: [], settled, resolveSettled };
+    const slot: Slot = {
+      ws,
+      identity,
+      controller: new AbortController(),
+      active: null,
+      cleanupStarted: false,
+      failures: [],
+      settled,
+      resolveSettled,
+    };
     users.set(identity.userId, slot);
     slots.add(slot);
     let started = false,
@@ -129,6 +146,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       if (ws.readyState !== WebSocket.OPEN) return false;
       const size = typeof payload === "string" ? Buffer.byteLength(payload) : payload.length;
       if (ws.bufferedAmount + size > 256 * 1024) {
+        slot.controller.abort();
         const errorFrame = JSON.stringify({ type: "error", code: "overloaded" });
         if (ws.bufferedAmount + Buffer.byteLength(errorFrame) <= 256 * 1024) sendWithBackpressure(ws, errorFrame);
         ws.close(BACKPRESSURE_CLOSE_CODE, "overloaded");
@@ -138,21 +156,29 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       return ws.readyState === WebSocket.OPEN;
     };
     const sender: VoiceSender = {
+      signal: slot.controller.signal,
       sendControl(frame) {
+        if (slot.controller.signal.aborted) return false;
         const parsed = outboundSchema.safeParse(frame);
         if (!parsed.success) throw new Error("Invalid voice server control");
         const payload = JSON.stringify(parsed.data);
         if (Buffer.byteLength(payload) > 4096) throw new Error("Voice server control exceeds frame limit");
         return send(payload);
       },
+      fail(code) {
+        fail(code, 1008);
+      },
       sendAudio(pcm) {
+        if (slot.controller.signal.aborted) return false;
         if (!Buffer.isBuffer(pcm) || pcm.length === 0 || pcm.length > 4800 || pcm.length % 2 !== 0)
           throw new Error("Invalid voice speech frame");
         return send(Buffer.concat([Buffer.from([2]), pcm]));
       },
     };
     const fail = (code: Extract<Outbound, { type: "error" }>["code"], closeCode: number) => {
-      sender.sendControl({ type: "error", code });
+      if (slot.controller.signal.aborted) return;
+      slot.controller.abort();
+      send(JSON.stringify({ type: "error", code }));
       if (ws.readyState === WebSocket.OPEN) ws.close(closeCode, code);
     };
     const resetIdle = () => {
@@ -166,14 +192,20 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       runAsSystem("voice:revalidate", () => revalidate(identity.sessionId))
         .then(
           (active) => {
-            if (!active && ws.readyState === WebSocket.OPEN) ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+            if (!active && ws.readyState === WebSocket.OPEN) {
+              slot.controller.abort();
+              ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+            }
           },
           (err: unknown) => {
             logger.warn(
               { errorName: err instanceof Error ? err.name : typeof err },
               "Voice session revalidation failed",
             );
-            if (ws.readyState === WebSocket.OPEN) ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+            if (ws.readyState === WebSocket.OPEN) {
+              slot.controller.abort();
+              ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+            }
           },
         )
         .finally(() => {
@@ -181,10 +213,12 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
         });
     }, options.revalidateIntervalMs ?? 30_000);
     resetIdle();
-    ws.on("error", (err: unknown) =>
-      logger.warn({ errorName: err instanceof Error ? err.name : typeof err }, "Voice socket error"),
-    );
+    ws.on("error", (err: unknown) => {
+      slot.controller.abort();
+      logger.warn({ errorName: err instanceof Error ? err.name : typeof err }, "Voice socket error");
+    });
     ws.on("close", () => {
+      slot.controller.abort();
       clearTimeout(idleTimer);
       clearTimeout(duration);
       clearInterval(heartbeat);
@@ -268,6 +302,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
         if (accepted === false) fail("overloaded", BACKPRESSURE_CLOSE_CODE);
         else if (ending) {
           sender.sendControl({ type: "end" });
+          slot.controller.abort();
           ws.close(1000, "end");
         }
       };
@@ -349,15 +384,18 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
     },
     closeTenant(tenantId) {
       tenantClosures.set(tenantId, ++generation);
-      for (const [ws, identity] of identities)
-        if (identity.tenantId === tenantId && ws.readyState === WebSocket.OPEN)
-          ws.close(SESSION_REVOKED_CLOSE_CODE, "account deactivated");
+      for (const slot of slots) {
+        if (slot.identity.tenantId !== tenantId) continue;
+        slot.controller.abort();
+        if (slot.ws.readyState === WebSocket.OPEN) slot.ws.close(SESSION_REVOKED_CLOSE_CODE, "account deactivated");
+      }
     },
     close() {
       if (closing) return closing;
       closed = true;
       for (const socket of pending) socket.destroy();
       pending.clear();
+      for (const slot of slots) slot.controller.abort();
       for (const ws of wss.clients) if (ws.readyState === WebSocket.OPEN) ws.close(1012, "server shutting down");
       const owned = [...slots];
       closing = new Promise<void>((resolve, rejectClose) => {

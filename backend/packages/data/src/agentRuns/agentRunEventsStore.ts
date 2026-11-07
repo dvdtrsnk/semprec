@@ -126,13 +126,45 @@ export async function listAgentRunEventsAfter(
   client: Pool | PoolClient,
   agentRunId: string,
   afterEventId: string,
+  rowLimit?: number,
+  scope?: { threadId: string; sempMessageId: string; throughEventId?: string },
 ): Promise<AgentRunEventRow[]> {
+  if (rowLimit !== undefined && (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 257)) {
+    throw new ValidationError("Invalid agent run event row limit");
+  }
+  if (scope !== undefined) {
+    validateSempEventScope(scope);
+    if (
+      scope.throughEventId !== undefined &&
+      (typeof scope.throughEventId !== "string" ||
+        !/^[1-9][0-9]{0,18}$/.test(scope.throughEventId) ||
+        BigInt(scope.throughEventId) > 9_223_372_036_854_775_807n)
+    )
+      throw new ValidationError("Invalid agent run event upper bound");
+    const params: unknown[] = [agentRunId, afterEventId, scope.threadId, scope.sempMessageId];
+    if (scope.throughEventId !== undefined) params.push(scope.throughEventId);
+    if (rowLimit !== undefined) params.push(rowLimit);
+    const { rows } = await client.query<AgentRunEventDbRow>(
+      `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
+       FROM agent_run_events e
+       JOIN semp_messages m ON m.tenant_id = e.tenant_id AND m.agent_run_id = e.agent_run_id
+         AND m.thread_id = $3::uuid AND m.id = $4::uuid AND m.role = 'assistant'
+       WHERE e.agent_run_id = $1 AND e.id > $2::bigint AND m.event_from_id IS NOT NULL
+         AND e.id >= m.event_from_id
+         AND ((m.status = 'running' AND m.event_to_id IS NULL)
+           OR (m.status IN ('done', 'error') AND m.event_to_id IS NOT NULL AND e.id <= m.event_to_id))
+         ${scope.throughEventId === undefined ? "" : "AND e.id <= $5::bigint"}
+       ORDER BY e.id ASC${rowLimit === undefined ? "" : ` LIMIT $${scope.throughEventId === undefined ? 5 : 6}`}`,
+      params,
+    );
+    return rows.map(mapRow);
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
      WHERE agent_run_id = $1 AND id > $2::bigint
-     ORDER BY id ASC`,
-    [agentRunId, afterEventId],
+     ORDER BY id ASC${rowLimit === undefined ? "" : " LIMIT $3"}`,
+    rowLimit === undefined ? [agentRunId, afterEventId] : [agentRunId, afterEventId, rowLimit],
   );
   return rows.map(mapRow);
 }
@@ -142,7 +174,23 @@ export async function getAgentRunEventById(
   client: Pool | PoolClient,
   agentRunId: string,
   eventId: string,
+  scope?: { threadId: string; sempMessageId: string },
 ): Promise<AgentRunEventRow | null> {
+  if (scope !== undefined) {
+    validateSempEventScope(scope);
+    const { rows } = await client.query<AgentRunEventDbRow>(
+      `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
+       FROM agent_run_events e
+       JOIN semp_messages m ON m.tenant_id = e.tenant_id AND m.agent_run_id = e.agent_run_id
+         AND m.thread_id = $3::uuid AND m.id = $4::uuid AND m.role = 'assistant'
+       WHERE e.agent_run_id = $1 AND e.id = $2::bigint AND m.event_from_id IS NOT NULL
+         AND e.id >= m.event_from_id
+         AND ((m.status = 'running' AND m.event_to_id IS NULL)
+           OR (m.status IN ('done', 'error') AND m.event_to_id IS NOT NULL AND e.id <= m.event_to_id))`,
+      [agentRunId, eventId, scope.threadId, scope.sempMessageId],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
@@ -150,6 +198,18 @@ export async function getAgentRunEventById(
     [agentRunId, eventId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+function validateSempEventScope(scope: { threadId: string; sempMessageId: string }): void {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (
+    !scope ||
+    typeof scope.threadId !== "string" ||
+    typeof scope.sempMessageId !== "string" ||
+    !uuid.test(scope.threadId) ||
+    !uuid.test(scope.sempMessageId)
+  )
+    throw new ValidationError("Invalid Semp event scope");
 }
 
 /**

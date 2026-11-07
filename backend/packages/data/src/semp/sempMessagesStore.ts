@@ -1,5 +1,6 @@
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { requireAffectedRows, requireManagedTransaction } from "../db/pool.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
 import { currentTenantScope } from "@semprec/shared";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
@@ -9,6 +10,28 @@ const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 
   'context', context, 'systemKey', system_key, 'systemParams', system_params,
   'replyTo', reply_to_message_id, 'run', agent_run_id, 'from', event_from_id, 'to', event_to_id,
   'errorCode', error_code, 'createdAt', created_at, 'updatedAt', updated_at)::text`;
+
+/** Reads the queued assistant for one thread turn under the current tenant. */
+export async function getSempVoiceDelivery(client: Pool | PoolClient, threadId: string, assistantMessageId: string) {
+  const { rows } = await client.query<{
+    status: string;
+    agent_run_id: string | null;
+    event_from_id: string | null;
+    event_to_id: string | null;
+  }>(
+    `SELECT status, agent_run_id, event_from_id, event_to_id FROM semp_messages
+     WHERE thread_id = $1 AND id = $2 AND role = 'assistant'`,
+    [threadId, assistantMessageId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    status: assertKnownValue(["queued", "running", "done", "error"] as const, row.status, "message status"),
+    runId: row.agent_run_id,
+    firstEventId: row.event_from_id,
+    lastEventId: row.event_to_id,
+  };
+}
 
 export async function getSempMessageToken(client: PoolClient, messageId: string): Promise<string | null> {
   const { rows } = await client.query<{ token: string }>(

@@ -70,7 +70,7 @@ function isInheritanceEntry(value: unknown): boolean {
   );
 }
 
-function assertDescriptionShape(value: unknown): ApprovalDescription | null {
+export function assertDescriptionShape(value: unknown): ApprovalDescription | null {
   if (value === null) return null;
   assertShape(
     isRecord(value) &&

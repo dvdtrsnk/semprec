@@ -7,6 +7,8 @@ export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
+// Test-only: exercises the existing mail-ingest owner from cross-package integration fixtures.
+export { ingestEmailMessage } from "../mail/ingest.js";
 export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 export {
   bindToTenantZero,
@@ -100,3 +102,6 @@ export async function resetDatabase(pool: Pool): Promise<void> {
 }
 
 export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+
+export { createInboxItemWithClient } from "../inbox/inboxStore.js";
+export { reviseProposalWithClient } from "../inbox/proposalActions.js";

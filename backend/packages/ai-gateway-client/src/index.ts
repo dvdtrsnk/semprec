@@ -2,6 +2,7 @@ export {
   createHttpAiGatewayClient,
   openSttStream,
   synthesizeSpeech,
+  SpeechSynthesisCapacityError,
   type SynthesizeSpeechOptions,
   type HttpAiGatewayClientConfig,
   type OpenSttStreamOptions,

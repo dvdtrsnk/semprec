@@ -3,6 +3,8 @@ import {
   assertRuntimeRole,
   createPool,
   loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
+  resolveBlobStorageDir,
   startProcessHeartbeat,
   startTenantDeactivationListener,
 } from "@semprec/data";
@@ -66,7 +68,10 @@ const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
   runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway, inFlightAgentRuns),
   agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
   delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
-  sempMessageTask: createSempMessageTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
+  sempMessageTask: createSempMessageTask(pool, moduleRegistry, gateway, inFlightAgentRuns, {
+    files: new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
+    mailAttachments: new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")),
+  }),
 });
 
 // A run already executing when its tenant leaves `active` is aborted here and closes as `error`;

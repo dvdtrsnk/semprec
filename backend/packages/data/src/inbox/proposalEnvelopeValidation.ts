@@ -9,6 +9,73 @@ import type { PropertyRow } from "../types.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { ValidationError } from "../errors.js";
 import { assertRelationTargetLinkableWithClient } from "../chokePoint/relationOps.js";
+import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { readPageSummary } from "../docs/pageSummary.js";
+import { parseJournalPeriodKey } from "../journal/journalPeriods.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import { pageContentV2Schema } from "./proposalEnvelope.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+
+const PAGE_TARGET_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function requireProposalPageTarget(client: PoolClient, target: string): Promise<ItemRow> {
+  if (!PAGE_TARGET_UUID.test(target)) {
+    throw new ValidationError(`Proposal envelope target '${target}' is not a page id`, { field: "target" });
+  }
+  const [targetPage] = await getItemsByIds(client, [target]);
+  if (!targetPage) {
+    throw new ValidationError(`Proposal envelope target '${target}' is not an existing page`, { field: "target" });
+  }
+  return targetPage;
+}
+
+export async function assertValidV2PageContent(
+  client: PoolClient,
+  targetPage: ItemRow,
+  input: Record<string, unknown>,
+): Promise<void> {
+  const parsed = pageContentV2Schema.safeParse(input);
+  if (!parsed.success) throw new ValidationError("Invalid Markdown page proposal", { field: "properties" });
+  try {
+    parseMarkdown(parsed.data.markdown, { allowPage: false });
+  } catch (error) {
+    if (error instanceof BlockInputError)
+      throw new ValidationError("Invalid Markdown page proposal", { field: "properties" });
+    throw error;
+  }
+  const database = await databasesStore.getDatabase(client, targetPage.databaseId);
+  let host = database?.ownerModuleId === "projects" || database?.ownerModuleId === "areas";
+  if (
+    database?.ownerModuleId === "journal" &&
+    targetPage.properties.type === "day" &&
+    typeof targetPage.properties.period === "string"
+  ) {
+    try {
+      parseJournalPeriodKey("day", targetPage.properties.period);
+      host = true;
+    } catch (error) {
+      if (!(error instanceof ValidationError)) throw error;
+    }
+  }
+  if (database?.system && database.key === "pages" && database.ownerModuleId === "pages") {
+    const properties = await propertiesStore.listPropertiesByDatabase(client, database.id);
+    const parent = properties.find((property) => property.key === "parentItemId");
+    host =
+      parent?.type === "text" &&
+      parent.owner === "system" &&
+      parent.ownerProcess === "pages" &&
+      typeof targetPage.properties.parentItemId === "string" &&
+      PAGE_TARGET_UUID.test(targetPage.properties.parentItemId);
+  }
+  if (!host) throw new ValidationError("Proposal target is not a page host", { field: "target" });
+  if (typeof parsed.data.placement === "object") {
+    const afterHeading = parsed.data.placement.afterHeading;
+    const summary = await readPageSummary(client, targetPage.id, "en");
+    if (!summary.headings.some((heading) => heading.id === afterHeading))
+      throw new ValidationError("Proposal heading is unavailable", { field: "properties" });
+  }
+}
 
 /** Checks a `'database'` envelope's `relations`: each key a relation property of the target database, unique target ids, every target linkable. */
 export async function assertValidEnvelopeRelations(

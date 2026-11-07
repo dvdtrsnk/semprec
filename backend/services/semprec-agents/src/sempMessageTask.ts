@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { SempConversation, type SempThread, type SempTurnStart } from "@semprec/agent-runtime";
-import { currentTenantScope, labeledSempMessageRefSchema } from "@semprec/shared";
+import { currentTenantScope } from "@semprec/shared";
 import {
   claimSempMessage,
   enqueueSempThreadTitleIfFirst,
@@ -17,6 +17,7 @@ import {
   startSempMessageTurn,
   withTransaction,
   type AgentQueueTaskHandler,
+  type BlobStorageWriter,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentSessionFactoryForRun } from "./agentSessionComposition.js";
@@ -25,6 +26,7 @@ import type { InFlightAgentRuns } from "./inFlightAgentRuns.js";
 import type { GatewayModel } from "./modelComposition.js";
 import { createSempHistoryReconstruction } from "./sempHistoryReconstruction.js";
 import { logger } from "./logger.js";
+import { expandSempRefs } from "./refExpansion.js";
 
 function parsePayload(payload: unknown): { threadId: string; assistantMessageId: string } {
   if (
@@ -53,6 +55,7 @@ export function createSempMessageTask(
   registry: ModuleRegistry,
   gateway: GatewayModel,
   inFlight: InFlightAgentRuns,
+  roots?: { files: BlobStorageWriter; mailAttachments: BlobStorageWriter },
 ): AgentQueueTaskHandler {
   const conversation = new SempConversation(pool, {
     resolveProjectItemId: () =>
@@ -62,7 +65,7 @@ export function createSempMessageTask(
         return inbox.ownerProjectItemId;
       }),
     createAgentSessionForRun: (run, current) => createAgentSessionFactoryForRun(pool, registry, gateway, run, current),
-    reconstructHistory: createSempHistoryReconstruction(),
+    reconstructHistory: createSempHistoryReconstruction(roots),
   });
 
   return (payload) =>
@@ -91,7 +94,7 @@ export function createSempMessageTask(
           try {
             const turn = claimed.turn;
             if (!turn || turn.text === null) throw new Error("Semp source message is unavailable");
-            const context = labeledSempMessageRefSchema.array().parse(turn.context);
+            const expanded = await expandSempRefs(pool, turn.context, roots, signal);
             await conversation.ensureFresh(threadId, claimed.frontier);
             let thread: SempThread;
             if (turn.kind === "tick" && turn.projectItemId)
@@ -116,9 +119,10 @@ export function createSempMessageTask(
               return `Current date and time: ${now}; timezone: ${zone}.${tick}`;
             });
             const result = await conversation.send(turn.text, thread, {
-              context,
+              context: expanded.context,
+              images: expanded.images,
               signal,
-              modelPrefix: prefix,
+              modelPrefix: expanded.text ? `${prefix}\n\n${expanded.text}` : prefix,
               messageId: assistantMessageId,
               onFailurePersistenceError: () => {
                 runPersistenceFailed = true;

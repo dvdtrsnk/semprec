@@ -1,3 +1,7 @@
+import type { PoolClient } from "pg";
+import { z } from "zod";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { readPageSummary } from "../docs/pageSummary.js";
 import type { ItemRow } from "../types.js";
 import type { ProcessingMethod } from "./inboxTypesStore.js";
 import type { RecognitionType, RecognitionCandidate } from "./inboxRecognition.js";
@@ -105,4 +109,28 @@ export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalCo
       `Proposal computation for Inbox item ${snapshot.item.id} (entityKind 'pageContent') did not return a 'target'`,
     );
   return { entityKind: "pageContent", target: result.target, properties: result.properties };
+}
+
+/** Resolve model-only heading text after the source fingerprint is revalidated. */
+export async function resolveModelPagePlacement(
+  client: PoolClient,
+  envelope: ProposalEnvelope,
+): Promise<ProposalEnvelope> {
+  if (envelope.entityKind !== "pageContent" || !Object.hasOwn(envelope.properties, "markdown")) return envelope;
+  const placement = z.object({ afterHeadingText: z.string() }).strict().safeParse(envelope.properties.placement);
+  if (!placement.success) return envelope;
+  const target = z.string().uuid().safeParse(envelope.target);
+  const item = target.success ? (await getItemsByIds(client, [target.data]))[0] : undefined;
+  let afterHeading: string | undefined;
+  if (item) {
+    const page = await readPageSummary(client, item.id, "en");
+    const sought = placement.data.afterHeadingText.trim().toLowerCase();
+    afterHeading = sought
+      ? page.headings.find((heading) => heading.text.trim().toLowerCase() === sought)?.id
+      : undefined;
+  }
+  return {
+    ...envelope,
+    properties: { ...envelope.properties, placement: afterHeading ? { afterHeading } : "end" },
+  };
 }

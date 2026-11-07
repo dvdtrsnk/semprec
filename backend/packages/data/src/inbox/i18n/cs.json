@@ -70,6 +70,7 @@
   "editor.mcp.credential.label": "Přihlašovací údaje",
   "editor.mcp.credential.placeholder": "API klíč nebo token",
   "editor.mcp.mcpProjects.label": "Projekty",
+  "agentTool.inbox.proposal.get.label": "Zobrazit návrh Inboxu",
   "inbox.recognition.chooseType": "Vyberte typ položky.",
   "inbox.recognition.typeShortage": "Jsou dostupné méně než dva platné aktivní typy.",
   "inbox.recognition.changed": "Vybraný typ nebo cíl není dostupný nebo se změnil. Prosím upřesněte zadání."

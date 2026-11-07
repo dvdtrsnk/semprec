@@ -1,4 +1,4 @@
-import { WebSocket } from "ws";
+import { WebSocket, type ClientOptions } from "ws";
 import {
   AudioProviderCallError,
   type StreamingTranscriptionOpenRequest,
@@ -51,14 +51,17 @@ export class Pcm16To24kResampler {
 }
 
 /** OpenAI's streaming transcription (`gpt-4o-transcribe`) through the realtime transcription interface. */
-export function createOpenAiStreamingTranscriptionProvider(apiKey: string): StreamingTranscriptionProvider {
+export function createOpenAiStreamingTranscriptionProvider(
+  apiKey: string,
+  openSocket: (url: string, options: ClientOptions) => WebSocket = (url, options) => new WebSocket(url, options),
+): StreamingTranscriptionProvider {
   return {
     id: "openai",
     model: OPENAI_STT_MODEL,
     open(request: StreamingTranscriptionOpenRequest): Promise<StreamingTranscriptionSession> {
       const { events } = request;
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(OPENAI_REALTIME_TRANSCRIPTION_URL, {
+        const ws = openSocket(OPENAI_REALTIME_TRANSCRIPTION_URL, {
           headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" },
           maxPayload: MAX_PROVIDER_MESSAGE_BYTES,
           handshakeTimeout: OPEN_TIMEOUT_MS,

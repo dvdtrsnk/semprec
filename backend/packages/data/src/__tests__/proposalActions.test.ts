@@ -7,7 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -896,6 +897,147 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]);
     expect(rows[0].n).toBe(1);
+  });
+
+  it("revises a Markdown proposal and refuses confirmation without changing its card or page", async () => {
+    const proposal = await createDatabaseProposal("Page proposal");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      const projectsId = await databaseIdFor("projects");
+      const project = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          createItemWithClient(client, { databaseId: projectsId, properties: { name: "Project" } }),
+        ),
+      );
+      const revise = (properties: Record<string, unknown>) =>
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+              message: "Revise",
+              entityKind: "pageContent",
+              target: project.id,
+              properties,
+            }),
+          ),
+        );
+      const revised = await revise({ markdown: "Hello", placement: "end" });
+      expect(revised.properties.proposal).toMatchObject({
+        entityKind: "pageContent",
+        target: project.id,
+        properties: { markdown: "Hello", placement: "end" },
+      });
+      await expect(revise({ markdown: " ", placement: "end" })).rejects.toMatchObject({
+        status: 400,
+        details: { field: "properties" },
+      });
+      const readCard = () =>
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => itemsStore.getItemById(client, proposalsId, proposal.id)),
+        );
+      const before = await readCard();
+      const docsBefore = await runInTenant(tenant, () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [project.id]),
+      );
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+          ),
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(await readCard()).toEqual(before);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [
+              project.id,
+            ]),
+          )
+        ).rows,
+      ).toEqual(docsBefore.rows);
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it("refuses a Markdown page revision on a real transcript proposal without effects", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      await runInTenant(getTenantZeroId(), async () => {
+        const databases = await withTransaction(runtime, async (client) => ({
+          transcripts: await databasesStore.getDatabaseByModuleId(client, "transcripts"),
+          projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
+          proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
+        }));
+        if (!databases.transcripts || !databases.projects || !databases.proposals)
+          throw new Error("Missing fixture databases");
+        const transcript = await withTransaction(runtime, (client) =>
+          createItemWithClient(
+            client,
+            {
+              databaseId: databases.transcripts!.id,
+              properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" },
+            },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        );
+        const outcome = await withTransaction(runtime, (client) =>
+          matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 }),
+        );
+        expect(outcome).toBe("suggested");
+        const cards = await runtime.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+          [databases.proposals.id],
+        );
+        expect(cards.rows).toHaveLength(1);
+        const cardId = cards.rows[0]?.id;
+        if (!cardId) throw new Error("Missing actual transcript proposal");
+        const project = await withTransaction(runtime, (client) =>
+          createItemWithClient(client, { databaseId: databases.projects!.id, properties: { name: "Project" } }),
+        );
+        const snapshot = () =>
+          runtime.query<{ card: unknown; docs: number; edges: number }>(
+            "SELECT (SELECT row_to_json(card) FROM (SELECT properties, updated_at FROM items WHERE id = $1) card) AS card, (SELECT count(*)::int FROM docs WHERE item_id = $2) AS docs, (SELECT count(*)::int FROM item_relations) AS edges",
+            [cardId, project.id],
+          );
+        const before = await snapshot();
+        await expect(
+          withTransaction(runtime, (client) =>
+            reviseProposalWithClient(client, { processingProposalsDatabaseId: databases.proposals!.id }, cardId, {
+              message: "Revise",
+              entityKind: "pageContent",
+              target: project.id,
+              properties: { markdown: "A paragraph", placement: "end" },
+            }),
+          ),
+        ).rejects.toMatchObject({ status: 400, details: { field: "entityKind" } });
+        expect((await snapshot()).rows).toEqual(before.rows);
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Transcript proposal test and cleanup failed", {
+          // Preserve the original test failure; the cleanup failure remains in errors.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
+        });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
   });
 
   it("confirm on a 'pageContent' proposal appends the block and locks confirmed", async () => {

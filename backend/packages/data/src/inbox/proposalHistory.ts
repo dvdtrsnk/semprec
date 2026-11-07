@@ -16,7 +16,7 @@ const PROPOSAL_HISTORY_KINDS = [
 
 export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
 
-const proposalHistoryEntrySchema = z.object({
+export const proposalHistoryEntrySchema = z.object({
   author: z.enum(["ai", "user"]),
   message: z.string(),
   at: z.string(),
@@ -25,6 +25,16 @@ const proposalHistoryEntrySchema = z.object({
   keys: z.array(z.string()).optional(),
   threadId: z.string().optional(),
   messageId: z.string().optional(),
+  addedRelations: z
+    .array(
+      z.object({
+        edgeId: z.string().uuid(),
+        relationPropertyId: z.string().uuid(),
+        callerItemId: z.string().uuid(),
+        targetItemId: z.string().uuid(),
+      }),
+    )
+    .optional(),
 });
 
 export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
@@ -39,7 +49,7 @@ export function appendHistoryEntry(
   history: unknown,
   message: string,
   author: "ai" | "user" = "ai",
-  extra?: Pick<ProposalHistoryEntry, "kind" | "keys" | "threadId" | "messageId">,
+  extra?: Pick<ProposalHistoryEntry, "kind" | "keys" | "threadId" | "messageId" | "addedRelations">,
 ): ProposalHistoryEntry[] {
   const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
   const existing = parsed.success ? parsed.data : [];

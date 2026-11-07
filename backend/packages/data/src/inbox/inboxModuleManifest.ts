@@ -7,6 +7,7 @@ import {
 } from "../seed/inboxPipelineKeys.js";
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
+export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inboxAgentTools.js";
 export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "./inboxRouteHandlers.js";
 
 /**
@@ -23,8 +24,7 @@ export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from 
  * this module contributes, so it is not declared under `heartbeatRuleKinds` either. There is
  * no dedicated agent tool for confirm/reject/revise (issue #105) — those go through the
  * generic item-update choke point, the same "single path" every other module uses — so
- * `agentTools` stays empty. Authoring this manifest changes no behavior, and neither does the
- * `editorSchemas` declaration below.
+ * the read-only `inbox.proposal.get` tool is limited to the calling run's own thread.
  *
  * Ownership handoff for Processing proposals
  * (`docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md`, superseding
@@ -46,7 +46,15 @@ export const manifest: ModuleManifest = {
     { key: PROCESSING_PROPOSALS_MODULE_ID, name: "Processing proposals" },
   ],
   capabilities: [],
-  agentTools: [],
+  agentTools: [
+    {
+      name: "inbox.proposal.get",
+      handlerExport: "createInboxProposalGetTool",
+      argumentSchemaExport: "inboxProposalGetArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+  ],
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
   heartbeatActions: [SEMPREC_TICK_ACTION_ID],
   migrations: ["0010_inbox_type_processing.sql"],

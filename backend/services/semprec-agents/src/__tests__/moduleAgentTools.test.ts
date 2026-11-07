@@ -1,14 +1,25 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createInboxItemWithClient,
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
   createHeartbeat,
+  createSemprecTickAction,
+  getDatabaseByModuleId,
+  loadFullModuleRegistry,
+  sendSempMessage,
   createUser,
   generatePermissionManifest,
   manualHeartbeatFireJobKey,
@@ -43,6 +54,102 @@ describe("module agent tools under project ownership", () => {
     await pool.end();
     await admin.end();
   });
+  it("resolves the actual Inbox tool for its tick-produced clarification card and refuses other tenants and cards", async () => {
+    const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    const foreign = await createTestTenant(admin);
+    const make = async (owner: string) => {
+      await createUser(admin, { tenantId: owner, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      return runInTenant(owner, async () => {
+        await seedSystem(pool);
+        const dbs = await withTransaction(pool, async (client) => ({
+          inbox: await getDatabaseByModuleId(client, "inbox"),
+          types: await getDatabaseByModuleId(client, "inboxItemTypes"),
+          proposals: await getDatabaseByModuleId(client, "processingProposals"),
+        }));
+        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals) throw new Error("Missing Inbox setup");
+        const projectId = dbs.inbox.ownerProjectItemId;
+        const source = await withTransaction(pool, (client) =>
+          createInboxItemWithClient(client, {
+            inboxDatabaseId: dbs.inbox!.id,
+            date: "2026-11-06",
+            time: "12:00",
+            text: "",
+          }),
+        );
+        const tick = createSemprecTickAction(pool, async () => {
+          throw new Error("Unexpected model computation");
+        });
+        await tick(
+          {
+            inboxDatabaseId: dbs.inbox.id,
+            inboxItemTypesDatabaseId: dbs.types.id,
+            processingProposalsDatabaseId: dbs.proposals.id,
+          },
+          { heartbeatId: randomUUID(), projectItemId: projectId, itemId: source.id },
+        );
+        const cards = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+          [dbs.proposals.id],
+        );
+        if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing clarification card");
+        const cardId = cards.rows[0].id;
+        const sent = await withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            subject: { inboxItemId: source.id, proposalId: cardId },
+            text: "Question",
+            context: [],
+            hasContext: false,
+          }),
+        );
+        const run = await createAgentRun(pool, {
+          projectItemId: projectId,
+          threadId: sent.threadId,
+          triggeredBy: "user",
+          unit: "session",
+          task: "Question",
+        });
+        return { projectId, source, cardId, run, proposalsId: dbs.proposals.id };
+      });
+    };
+    const own = await make(tenant);
+    const other = await make(foreign);
+    await runInTenant(tenant, async () => {
+      const registry = await loadFullModuleRegistry();
+      const tools = await resolveModuleAgentToolsForRun(pool, registry, own.run.id, own.projectId);
+      const tool = tools.find((entry) => entry.name === "inbox.proposal.get");
+      if (!tool) throw new Error("Inbox proposal tool missing from registry");
+      expect(tool.acceptsArguments({ proposalId: own.cardId, extra: true })).toBe(false);
+      const before = await pool.query<{ items: number; edges: number; events: number; attachments: number }>(
+        "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
+      );
+      const result = await tool.invoke({ proposalId: own.cardId });
+      expect(result.error).toBe(false);
+      const decoded: unknown = JSON.parse(result.result);
+      if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded))
+        throw new Error("Invalid tool result");
+      expect(decoded).toMatchObject({
+        captureText: "",
+        attachments: [],
+        envelope: null,
+        status: "needsClarification",
+      });
+      const denied = await tool.invoke({ proposalId: other.cardId });
+      const missing = await tool.invoke({ proposalId: randomUUID() });
+      expect(denied).toEqual(missing);
+      expect(denied).toEqual({ error: true, result: "Proposal not found" });
+      expect(
+        (
+          await pool.query<{ items: number; edges: number; events: number; attachments: number }>(
+            "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM item_relations) AS edges, (SELECT count(*)::int FROM agent_run_events) AS events, (SELECT count(*)::int FROM inbox_attachments) AS attachments",
+          )
+        ).rows,
+      ).toEqual(before.rows);
+    });
+  });
+
   it("admits a module only when every declared database belongs to this project and composes callable tools", async () =>
     runInTenant(tenant, async () => {
       await seedSystem(pool);

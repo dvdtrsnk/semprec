@@ -10,3 +10,4 @@ export * from "./tenantScope.js";
 export * from "./sempMessageRef.js";
 export type { SempThreadMessage } from "./sempThreadMessage.js";
 export { normalizeWhisperLanguage } from "./whisperLanguageCodes.js";
+export { settleBlobReadStream, BlobReadCleanupError, type BlobReadCleanupBudget } from "./settleBlobReadStream.js";

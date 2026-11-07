@@ -86,6 +86,92 @@ describe("reconstructConversationHistory", () => {
     expect(result).toBeNull();
   });
 
+  it("removes synthetic persisted checkpoint image fields without changing legacy metadata or stored rows", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = getTenantZeroId();
+      const foreign = await createTestTenant(pool);
+      const ref = { kind: "item", itemId: randomUUID(), databaseId: randomUUID(), label: "Reference" };
+      // Synthetic historical payload; this is not evidence that an old binary wrote images.
+      const payload = [
+        {
+          id: "one",
+          parentId: null,
+          seq: 0,
+          timestamp: 1,
+          message: { kind: "user_message", text: "first", context: [ref] },
+          images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/jpeg" }],
+          legacy: { retained: true },
+        },
+        {
+          id: "two",
+          parentId: "one",
+          seq: 1,
+          timestamp: 2,
+          message: { kind: "user_message", text: "second", context: [] },
+          images: "malformed",
+          legacy: "retained",
+        },
+      ];
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, {
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "checkpoint",
+          });
+          await insertAgentRunEvent(client, run.id, "compaction", payload);
+          await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "tail" });
+          return { threadId, runId: run.id };
+        }),
+      );
+      const stored = () =>
+        runInTenant(tenant, () =>
+          runtime.query<{ payload: unknown }>(
+            "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+            [fixture.runId],
+          ),
+        );
+      const before = await stored();
+      const generic = await runInTenant(tenant, () =>
+        reconstructConversationHistory(
+          runtime,
+          { threadId: fixture.threadId, triggeredBy: "user", parentRunId: null },
+          noopCompaction,
+        ),
+      );
+      const bounded = await runInTenant(tenant, () => reconstructBoundedThreadHistory(runtime, fixture.threadId));
+      for (const result of [generic, bounded]) {
+        expect(result?.entries).toHaveLength(3);
+        expect(result?.entries[0]).toMatchObject({
+          id: "one",
+          legacy: { retained: true },
+          message: { text: "first", context: [ref] },
+        });
+        expect(result?.entries[1]).toMatchObject({
+          id: "two",
+          parentId: "one",
+          legacy: "retained",
+          message: { text: "second" },
+        });
+        expect(result?.entries[2]?.message).toMatchObject({ text: "tail" });
+        expect(result?.entries[0]).not.toHaveProperty("images");
+        expect(result?.entries[1]).not.toHaveProperty("images");
+      }
+      expect((await stored()).rows).toEqual(before.rows);
+      expect(before.rows[0]?.payload).toEqual(payload);
+      expect(await runInTenant(foreign, () => reconstructBoundedThreadHistory(runtime, fixture.threadId))).toBeNull();
+    } finally {
+      await runtime.end();
+    }
+  });
+
   it("bounds stored rows and expanded checkpoints with tenant-scoped complete replay", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {

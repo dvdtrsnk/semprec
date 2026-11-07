@@ -8,6 +8,7 @@ import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedTyp
 import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
+  resolveModelPagePlacement,
   type TickSnapshot,
   type ProposalComputationResult,
   type ComputeSemprecProposalFn,
@@ -31,7 +32,12 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
 import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
 export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
-import { assertValidEnvelopeRelations, assertWritableProposalPropertyKeys } from "./proposalEnvelopeValidation.js";
+import {
+  assertValidEnvelopeRelations,
+  assertValidV2PageContent,
+  assertWritableProposalPropertyKeys,
+  requireProposalPageTarget,
+} from "./proposalEnvelopeValidation.js";
 import {
   proposalEnvelopeSchema,
   type ComputedProposalEntityKind,
@@ -382,14 +388,10 @@ export async function assertValidProposalEnvelope(
     return null;
   }
 
-  if (!UUID_RE.test(envelope.target)) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a page id`, { field: "target" });
-  }
-  const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
-  if (!targetPage) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, {
-      field: "target",
-    });
+  const targetPage = await requireProposalPageTarget(client, envelope.target);
+  if (Object.hasOwn(envelope.properties, "markdown")) {
+    await assertValidV2PageContent(client, targetPage, envelope.properties);
+    return null;
   }
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
     throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", {
@@ -911,6 +913,7 @@ async function writeTickResult(
   try {
     if (!envelope) throw new ValidationError("Page target needs clarification");
     if (invalidProposal) throw new ValidationError("Proposal needs clarification");
+    envelope = await resolveModelPagePlacement(client, envelope);
     envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {

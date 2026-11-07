@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
-import { synthesizeSpeech } from "../httpAiGatewayClient.js";
+import { SpeechSynthesisCapacityError, synthesizeSpeech } from "../httpAiGatewayClient.js";
+import * as publicClient from "../index.js";
 
 const TENANT_ID = "6f1e2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
 
@@ -39,6 +40,14 @@ afterEach(async () => {
 });
 
 describe("synthesizeSpeech", () => {
+  it("exports exactly the client runtime surface including the capacity subtype", () => {
+    expect(Object.keys(publicClient).sort()).toEqual([
+      "SpeechSynthesisCapacityError",
+      "createHttpAiGatewayClient",
+      "openSttStream",
+      "synthesizeSpeech",
+    ]);
+  });
   it("posts the text and voice with the token and tenant, and yields the audio chunks", async () => {
     const port = await serve((_req, res) => {
       res.writeHead(200, { "content-type": "audio/L16; rate=24000; channels=1" });
@@ -80,6 +89,64 @@ describe("synthesizeSpeech", () => {
 
     expect(error).toBeInstanceOf(AiGatewayFailedError);
     expect((error as AiGatewayFailedError).reason).toBe("http");
+  });
+
+  it("classifies only a complete bounded TTS capacity refusal as the compatible subtype", async () => {
+    const prefix = JSON.stringify({ code: "tts_capacity_exhausted", padding: "" });
+    const body = JSON.stringify({
+      code: "tts_capacity_exhausted",
+      padding: "x".repeat(4096 - Buffer.byteLength(prefix)),
+    });
+    expect(Buffer.byteLength(body)).toBe(4096);
+    const port = await serve((_req, res) => {
+      res.writeHead(503);
+      res.end(body);
+    });
+    const error = await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova" }).catch(
+      (value: unknown) => value,
+    );
+    expect(error).toBeInstanceOf(SpeechSynthesisCapacityError);
+    expect(error).toBeInstanceOf(AiGatewayFailedError);
+    expect(error).toMatchObject({ reason: "http", name: "SpeechSynthesisCapacityError" });
+  });
+
+  it.each([
+    { status: 503, body: "" },
+    { status: 503, body: "{" },
+    { status: 503, body: JSON.stringify({ code: "other" }) },
+    { status: 502, body: JSON.stringify({ code: "tts_capacity_exhausted" }) },
+    { status: 503, body: JSON.stringify({ code: "tts_capacity_exhausted", padding: "x".repeat(4096) }) },
+  ])("keeps nonmatching or invalid refusal generic: $status", async ({ status, body }) => {
+    const port = await serve((_req, res) => {
+      res.writeHead(status);
+      res.end(body);
+    });
+    const error = await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova" }).catch(
+      (value: unknown) => value,
+    );
+    expect(error).toBeInstanceOf(AiGatewayFailedError);
+    expect(error).not.toBeInstanceOf(SpeechSynthesisCapacityError);
+    expect(error).toMatchObject({ reason: "http" });
+  });
+
+  it("aborts and settles an incomplete capacity error body", async () => {
+    let closed = false;
+    const port = await serve((_req, res) => {
+      res.writeHead(503);
+      res.write("{");
+      res.on("close", () => {
+        closed = true;
+      });
+    });
+    const controller = new AbortController();
+    const pending = synthesizeSpeech(
+      { port, token: "t" },
+      { text: "Hello.", voice: "nova", signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(seen).toBeDefined());
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ reason: "http" });
+    await vi.waitFor(() => expect(closed).toBe(true));
   });
 
   it("cancels the request when the reader stops early", async () => {

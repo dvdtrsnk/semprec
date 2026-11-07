@@ -2,7 +2,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createGatewayModel } from "../modelComposition.js";
+import { boundGatewayImagePayload, createGatewayModel } from "../modelComposition.js";
 
 const COMPLETE_ENV = {
   AI_GATEWAY_BASE_URL: "http://127.0.0.1:1/internal/pi",
@@ -18,6 +18,10 @@ afterEach(async () => {
 });
 
 describe("createGatewayModel (issue #647)", () => {
+  it("declares both text and image input to pi", () => {
+    expect(createGatewayModel(COMPLETE_ENV).model.input).toEqual(["text", "image"]);
+  });
+
   it.each(["AI_GATEWAY_BASE_URL", "AI_GATEWAY_INTERNAL_TOKEN", "AGENT_MODEL"])(
     "refuses to build without %s",
     (name) => {
@@ -214,5 +218,49 @@ describe("createGatewayModel (issue #647)", () => {
       expect(gateway.isBudgetRefusal(refused)).toBe(true);
       expect(gateway.isBudgetRefusal(failed)).toBe(false);
     });
+  });
+});
+
+describe("serialized gateway image budget", () => {
+  it("replaces the oldest image first without mutating the original or unrelated payload", () => {
+    const first = { type: "image", data: "a".repeat(2_100_000), mimeType: "image/jpeg" };
+    const second = { type: "image", data: "b".repeat(2_100_000), mimeType: "image/jpeg" };
+    const input = {
+      model: "test",
+      context: {
+        systemPrompt: "System",
+        tools: [{ name: "tool" }],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "First" }, first] },
+          { role: "user", content: [{ type: "text", text: "Second" }, second] },
+        ],
+      },
+      options: { temperature: 0.2 },
+    };
+    const output = boundGatewayImagePayload(input);
+    expect(output).toEqual({
+      ...input,
+      context: {
+        ...input.context,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "First" },
+              { type: "text", text: "[image omitted: request size limit]" },
+            ],
+          },
+          input.context.messages[1],
+        ],
+      },
+    });
+    expect(input.context.messages[0]?.content[1]).toBe(first);
+    expect(Buffer.byteLength(JSON.stringify(output), "utf8")).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it("refuses an oversized non-image body using UTF-8 bytes", () => {
+    expect(() =>
+      boundGatewayImagePayload({ context: { messages: [{ role: "user", content: "😀".repeat(1_048_576) }] } }),
+    ).toThrow("Gateway request exceeds the size limit");
   });
 });

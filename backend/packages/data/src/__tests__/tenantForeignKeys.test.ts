@@ -174,6 +174,30 @@ interface Reference {
 const REFERENCES: Reference[] = [
   {
     parent: "Semp message",
+    constraint: "semp_message_speech_message_fkey",
+    table: "semp_message_speech",
+    column: "message_id",
+    parentId: (p) => p.sempMessageId,
+    insert: (client, id, own) =>
+      client.query<Record<string, never>>(
+        "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
+        [id, own.blobId],
+      ),
+  },
+  {
+    parent: "speech blob",
+    constraint: "semp_message_speech_blob_fkey",
+    table: "semp_message_speech",
+    column: "blob_id",
+    parentId: (p) => p.blobId,
+    insert: (client, id, own) =>
+      client.query<Record<string, never>>(
+        "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
+        [own.sempMessageId, id],
+      ),
+  },
+  {
+    parent: "Semp message",
     constraint: "ai_gateway_calls_semp_message_id_tenant_fkey",
     table: "ai_gateway_calls",
     column: "semp_message_id",

@@ -1,10 +1,12 @@
 import type { Pool } from "pg";
 import { z } from "zod";
+import { sempMessageRefSchema } from "@semprec/shared";
 import {
   getSempThread,
   listSempThreadMessages,
   NotFoundError,
   sendSempMessage,
+  validateSempMessageRefs,
   ValidationError,
   withTransaction,
 } from "@semprec/data";
@@ -28,7 +30,16 @@ function parseMessageInput(value: unknown) {
   const body = requireJsonObjectBody(value);
   const text = requireStringField(body, "text");
   if (!text.trim()) throw new ValidationError("'text' must not be whitespace", { field: "text" });
-  return { text, context: body.context === undefined ? [] : body.context, hasContext: "context" in body };
+  const submitted = body.context === undefined ? [] : body.context;
+  if (!Array.isArray(submitted) || submitted.length > 20) {
+    throw new ValidationError("Invalid 'context'", { field: "context" });
+  }
+  const context = submitted.map((value: unknown, index: number) => {
+    const parsed = sempMessageRefSchema.safeParse(value);
+    if (!parsed.success) throw new ValidationError("Invalid reference", { field: `context[${index}]` });
+    return parsed.data;
+  });
+  return { text, context, hasContext: "context" in body };
 }
 
 function parseCursor(value: string | null): { createdAt: string; id: string } | null {
@@ -80,7 +91,13 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
               : assertUuid(requireStringField(value, "proposalId"), "proposalId");
           subject = { inboxItemId, ...(proposalId === undefined ? {} : { proposalId }) };
         }
-        const result = await withTransaction(pool, (client) => sendSempMessage(client, { ...message, subject }));
+        const result = await withTransaction(pool, async (client) =>
+          sendSempMessage(client, {
+            ...message,
+            subject,
+            context: await validateSempMessageRefs(client, message.context),
+          }),
+        );
         return { status: 202, body: result };
       },
     },
@@ -90,7 +107,13 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
       handler: async (ctx) => {
         const threadId = requireUuidParam(ctx.params, "id");
         const message = parseMessageInput(ctx.body);
-        const result = await withTransaction(pool, (client) => sendSempMessage(client, { ...message, threadId }));
+        const result = await withTransaction(pool, async (client) =>
+          sendSempMessage(client, {
+            ...message,
+            threadId,
+            context: await validateSempMessageRefs(client, message.context),
+          }),
+        );
         return { status: 202, body: result };
       },
     },

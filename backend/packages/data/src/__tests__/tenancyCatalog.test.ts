@@ -82,6 +82,7 @@ const TENANT_TABLES = [
   "semp_problem_occurrences",
   "semp_threads",
   "semp_messages",
+  "semp_message_speech",
   "value_links",
   "value_link_sources",
   "item_origins",

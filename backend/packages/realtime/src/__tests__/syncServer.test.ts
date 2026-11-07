@@ -9,12 +9,16 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import {
   createPool,
+  claimSempMessage,
   withTransaction,
   createAgentRun,
   createUser,
+  finishSempMessageTurn,
   hashPassword,
   insertAndNotifyAgentRunEvent,
   insertAgentRunEvent,
+  sendSempMessage,
+  startSempMessageTurn,
   publishSempThreadInvalidation,
   writeNotification,
   createChokePoint,
@@ -1638,6 +1642,1329 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       return event;
     });
   }
+
+  // State-only fixture: production message and lifecycle writers establish the real association.
+  async function voiceTarget(runId: string, firstEventId: string) {
+    return runInTenant(tenantA, () =>
+      withTransaction(runtimePool, async (client) => {
+        const turn = await sendSempMessage(client, { text: "voice target", context: [], hasContext: false });
+        expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+        await startSempMessageTurn(client, turn.assistantMessageId, runId, firstEventId);
+        return { threadId: turn.threadId, sempMessageId: turn.assistantMessageId };
+      }),
+    );
+  }
+
+  it("bounds voice replay before delivery and scopes callbacks to the authenticated run actor", async () => {
+    const role = await runAsSystem("test:role", () =>
+      runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    const run = await createRunIn(tenantA, userA);
+    const inserted: string[] = [];
+    for (let i = 0; i < 256; i++) inserted.push((await silentEventIn(tenantA, run.id)).id);
+    const target = await voiceTarget(run.id, inserted[0]!);
+    const received: string[] = [];
+    const errors: unknown[] = [];
+    const input = {
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: "0",
+      onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
+        if (frame.type === "event") received.push(frame.event.id);
+        return true;
+      },
+      onFailure(error: unknown) {
+        errors.push(error);
+      },
+    };
+    const dispose = await tenantServer.subscribeVoice(input);
+    expect(received).toEqual(inserted);
+    const live = await announcedEventIn(tenantA, run.id);
+    await vi.waitFor(() => expect(received.at(-1)).toBe(live.id));
+    await dispose();
+    await dispose();
+    await announcedEventIn(tenantA, run.id);
+    await settle();
+    expect(received).toHaveLength(257);
+    expect(errors).toEqual([]);
+    const refused: string[] = [];
+    const refusalCauses: Array<string | undefined> = [];
+    await expect(
+      tenantServer.subscribeVoice({
+        ...input,
+        afterEventId: inserted[0]!,
+        onFrame: (frame) => {
+          if (frame.type === "event") refused.push(frame.event.id);
+          return true;
+        },
+        onFailure: (_error, cause) => {
+          refusalCauses.push(cause);
+        },
+      }),
+    ).rejects.toThrow("replay exceeds");
+    expect(refused).toEqual([]);
+    expect(refusalCauses).toEqual(["overloaded"]);
+    for (const other of [
+      { tenantId: tenantB },
+      { userId: randomUUID() },
+      { runId: randomUUID() },
+      { threadId: randomUUID() },
+      { sempMessageId: randomUUID() },
+      { sempMessageId: "invalid" },
+    ])
+      await expect(tenantServer.subscribeVoice({ ...input, ...other })).rejects.toThrow("unavailable");
+  });
+
+  it("hands off voice replay to live notifications and aborts an in-flight replay", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("voice-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return result;
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    const received: string[] = [];
+    let registration: Promise<() => Promise<void>> | undefined;
+    let disposed = false;
+    let primary: { error: unknown } | undefined;
+    const cleanup: unknown[] = [];
+    try {
+      const input = {
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        onFrame(frame: import("../agentRunWatch.js").VoiceRunFrame) {
+          if (frame.type === "event") received.push(frame.event.id);
+          return true;
+        },
+        onFailure(error: unknown) {
+          throw error;
+        },
+      };
+      registration = tenantServer.subscribeVoice(input);
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
+      const live = await announcedEventIn(tenantA, run.id);
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      release();
+      const dispose = await registration;
+      expect(received).toEqual([first.id, live.id]);
+      disposed = true;
+      await dispose();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      release();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+          if (outcome?.status === "rejected" && (primary === undefined || outcome.reason !== primary.error))
+            cleanup.push(outcome.reason);
+        }
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice barrier cleanup failed", {
+        cause: primary ? primary.error : cleanup[0],
+      });
+    if (primary) throw primary.error;
+
+    let releaseAbort!: () => void;
+    let observedAbort!: () => void;
+    const abortGate = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    const abortQueried = new Promise<void>((resolve) => {
+      observedAbort = resolve;
+    });
+    let abortHeld = false;
+    const abortObserver = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !abortHeld &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        abortHeld = true;
+        observedAbort();
+        await abortGate;
+      }
+      return result;
+    };
+    const abortQueryImplementation = abortObserver as unknown as () => void;
+    const abortSpy = vi.spyOn(runtimePool, "query").mockImplementation(abortQueryImplementation);
+    const controller = new AbortController();
+    const afterAbort: string[] = [];
+    let abortRegistration: Promise<() => Promise<void>> | undefined;
+    let abortPrimary: { error: unknown } | undefined;
+    let observedAbortRejection = false;
+    const abortCleanup: unknown[] = [];
+    try {
+      abortRegistration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        signal: controller.signal,
+        onFrame(frame) {
+          if (frame.type === "event") afterAbort.push(frame.event.id);
+          return true;
+        },
+        onFailure() {},
+      });
+      void abortRegistration.catch(() => {});
+      await waitForVoiceBarrier(abortQueried, abortRegistration);
+      controller.abort();
+      releaseAbort();
+      await expect(abortRegistration).rejects.toThrow();
+      observedAbortRejection = true;
+      expect(afterAbort).toEqual([]);
+    } catch (error) {
+      abortPrimary = { error };
+    } finally {
+      controller.abort();
+      releaseAbort();
+      try {
+        if (abortRegistration) {
+          const [outcome] = await Promise.allSettled([abortRegistration]);
+          if (outcome?.status === "fulfilled") await outcome.value();
+          if (
+            outcome?.status === "rejected" &&
+            !observedAbortRejection &&
+            (abortPrimary === undefined || outcome.reason !== abortPrimary.error)
+          )
+            abortCleanup.push(outcome.reason);
+        }
+      } catch (error) {
+        abortCleanup.push(error);
+      }
+      try {
+        abortSpy.mockRestore();
+      } catch (error) {
+        abortCleanup.push(error);
+      }
+    }
+    if (abortCleanup.length)
+      throw new AggregateError(
+        abortPrimary ? [abortPrimary.error, ...abortCleanup] : abortCleanup,
+        "Voice abort cleanup failed",
+        { cause: abortPrimary ? abortPrimary.error : abortCleanup[0] },
+      );
+    if (abortPrimary) throw abortPrimary.error;
+  });
+
+  it("settles and disposes a real pending registration after an early test failure", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("voice-early-failure-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return result;
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    const frames: string[] = [];
+    const failures: unknown[] = [];
+    const earlyFailure = new Error("Synthetic early test failure");
+    let primary: unknown;
+    let registration: Promise<() => Promise<void>> | undefined;
+    try {
+      registration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        onFrame(frame) {
+          if (frame.type === "event") frames.push(frame.event.id);
+          return true;
+        },
+        onFailure(error) {
+          failures.push(error);
+        },
+      });
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
+      throw earlyFailure;
+    } catch (error) {
+      primary = error;
+    } finally {
+      release();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled") await outcome.value();
+          else if (outcome?.status === "rejected") failures.push(outcome.reason);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      expect(primary).toBe(earlyFailure);
+      if (failures.length)
+        throw new AggregateError([primary, ...failures], "Early voice registration cleanup failed", { cause: primary });
+      const delivered = [...frames];
+      await announcedEventIn(tenantA, run.id);
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      expect(frames).toEqual(delivered);
+    } finally {
+      sentinel.close();
+    }
+  });
+
+  async function waitForVoiceBarrier(barrier: Promise<void>, operation?: Promise<unknown>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        barrier,
+        ...(operation
+          ? [
+              operation.then(() => {
+                throw new Error("Voice operation completed before barrier");
+              }),
+            ]
+          : []),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Voice barrier timed out")), 3000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  it("drops malformed stream envelopes while historical unanchored deltas remain socket-only", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: unknown[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        failures.push(error);
+      },
+    });
+    const socket = await connectAs("voice-invalid-sentinel", tenantA, userA);
+    const wire = collectFrames(socket);
+    socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+    await settle();
+    const base = {
+      type: "agent_run_delta",
+      agentRunId: run.id,
+      sempMessageId: target.sempMessageId,
+      delta: { text: "historical" },
+    };
+    const invalid = [
+      { ...base, agentRunId: "invalid" },
+      { ...base, sempMessageId: "invalid" },
+      { ...base, afterEventId: "0", deltaSequence: 1 },
+      { ...base, afterEventId: first.id, deltaSequence: 0 },
+      {
+        ...base,
+        afterEventId: first.id,
+        deltaSequence: 1,
+        delta: "abc",
+        chunk: { id: "x", index: -1, total: 1, encoding: "base64json" },
+      },
+    ];
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let scopedReads = 0;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (typeof args[0] === "string" && args[0].includes("JOIN semp_messages")) scopedReads++;
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    let failed = false;
+    let failure: unknown;
+    try {
+      // Synthetic malformed NOTIFY payloads exercise the actual tenant-stamped LISTEN boundary.
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, async (client) => {
+          for (const raw of [
+            "not-json",
+            JSON.stringify({ tenantId: "invalid", message: base }),
+            JSON.stringify({ tenantId: tenantA, message: null }),
+          ])
+            await client.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_agent_stream", raw]);
+          for (const message of [...invalid, base])
+            await client.query<{ pg_notify: string }>(
+              "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
+              ["semprec_agent_stream", JSON.stringify(message)],
+            );
+        }),
+      );
+      await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta")).toHaveLength(1));
+      expect(wire[0]).toMatchObject({ type: "agent:delta", delta: { text: "historical" } });
+      expect(frames).toEqual([]);
+      expect(failures).toEqual([]);
+      expect(scopedReads).toBe(0);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const socketClosed = waitForClose(socket);
+    socket.close();
+    const closeSocket = async () => {
+      try {
+        await waitForVoiceBarrier(socketClosed.then(() => {}));
+      } catch (error) {
+        socket.terminate();
+        await socketClosed;
+        throw error;
+      }
+    };
+    const cleanup = await Promise.allSettled([dispose(), closeSocket()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice parser test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("reports overloaded when an admitted chunk exceeds the retained fragment bound", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: Array<{ error: unknown; cause: string | undefined }> = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error, cause) {
+        failures.push({ error, cause });
+      },
+    });
+    let failed = false;
+    let failure: unknown;
+    try {
+      const message = {
+        type: "agent_run_delta",
+        agentRunId: run.id,
+        sempMessageId: target.sempMessageId,
+        afterEventId: first.id,
+        deltaSequence: 1,
+        delta: "A".repeat(7001),
+        chunk: { id: randomUUID(), index: 0, total: 2, encoding: "base64json" },
+      };
+      // A synthetic bounded transport fault crosses the real tenant-stamped LISTEN path.
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ pg_notify: string }>(
+            "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
+            ["semprec_agent_stream", JSON.stringify(message)],
+          ),
+        ),
+      );
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]?.cause).toBe("overloaded");
+      expect(frames).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const cleanup = await Promise.allSettled([dispose()]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice overload test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("reports unavailable for an admitted malformed chunk and preserves a callback failure", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: Array<{ error: unknown; cause: string | undefined }> = [];
+    const callbackError = new Error("synthetic callback failure");
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error, cause) {
+        failures.push({ error, cause });
+        throw callbackError;
+      },
+    });
+    let failed = false;
+    let failure: unknown;
+    try {
+      const message = {
+        type: "agent_run_delta",
+        agentRunId: run.id,
+        sempMessageId: target.sempMessageId,
+        afterEventId: first.id,
+        deltaSequence: 1,
+        delta: "e30=",
+        chunk: { id: "not-a-uuid", index: 0, total: 1, encoding: "base64json" },
+      };
+      // This syntactically valid inner shape reaches the voice buffer, where the chunk id is refused.
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ pg_notify: string }>(
+            "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
+            ["semprec_agent_stream", JSON.stringify(message)],
+          ),
+        ),
+      );
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]?.cause).toBe("unavailable");
+      expect(frames).toEqual([]);
+      const result: unknown = await dispose().catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw new Error("Missing combined voice failure");
+      expect(result.errors).toEqual([failures[0]?.error, callbackError]);
+      expect(result.cause).toBe(failures[0]?.error);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    if (failed) {
+      const cleanup = await Promise.allSettled([dispose()]);
+      const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      throw new AggregateError([failure, ...cleanupErrors], "Voice malformed-chunk test or cleanup failed", {
+        cause: failure,
+      });
+    }
+  });
+
+  it("ignores a valid stale anchor and refuses an out-of-interval stale anchor", async () => {
+    const otherRun = await createRunIn(tenantA, userA);
+    const alien = await silentEventIn(tenantA, otherRun.id);
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const failures: Array<{ error: unknown; cause: string | undefined }> = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error, cause) {
+        failures.push({ error, cause });
+      },
+    });
+    let failed = false;
+    let failure: unknown;
+    try {
+      const event = await announcedEventIn(tenantA, run.id);
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual(
+          expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
+        ),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "stale" }, target.sempMessageId, first.id, 1),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "alien" }, target.sempMessageId, alien.id, 1),
+      );
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]?.cause).toBe("unavailable");
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const cleanup = await Promise.allSettled([dispose()]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice anchor test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("orders a next-cycle delta behind a held real durable event read", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (!held && typeof args[0] === "string" && args[0].includes("AND e.id <= $5::bigint")) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    let failed = false;
+    let failure: unknown;
+    try {
+      const event = await announcedEventIn(tenantA, run.id);
+      await waitForVoiceBarrier(waiting);
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "next cycle" }, target.sempMessageId, event.id, 1),
+      );
+      expect(frames).toEqual([]);
+      release();
+      await vi.waitFor(() => expect(frames).toHaveLength(2));
+      expect(frames[0]).toMatchObject({ type: "event", event: { id: event.id } });
+      expect(frames[1]).toMatchObject({
+        type: "delta",
+        message: { afterEventId: event.id, delta: { text: "next cycle" } },
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    const cleanup = await Promise.allSettled([dispose()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Ordered voice test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("expires an incomplete live delta and recovers only through the durable event", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-expiry-sentinel", tenantA, userA);
+    const wire = collectFrames(socket);
+    socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let chunks = 0;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (
+        typeof args[0] === "string" &&
+        args[0].includes("pg_notify") &&
+        Array.isArray(args[1]) &&
+        args[1][0] === "semprec_agent_stream"
+      ) {
+        chunks++;
+        if (chunks === 2) {
+          observed();
+          await gate;
+        }
+      }
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    let publication: Promise<void> | undefined;
+    let failed = false;
+    let failure: unknown;
+    try {
+      publication = runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId, first.id, 1),
+      );
+      await waitForVoiceBarrier(waiting, publication);
+      await vi.waitFor(() =>
+        expect(
+          wire.some((frame) => frame.type === "agent:delta" && isRecord(frame.chunk) && frame.chunk.index === 0),
+        ).toBe(true),
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 5100));
+      release();
+      await publication;
+      await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta").length).toBeGreaterThan(1));
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+      const event = await announcedEventIn(tenantA, run.id);
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual(
+          expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
+        ),
+      );
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    const socketClosed = waitForClose(socket);
+    socket.close();
+    const closeSocket = async () => {
+      try {
+        await waitForVoiceBarrier(socketClosed.then(() => {}));
+      } catch (error) {
+        socket.terminate();
+        await socketClosed;
+        throw error;
+      }
+    };
+    const cleanup = await Promise.allSettled([publication, dispose(), closeSocket()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice expiry test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  }, 15_000);
+
+  it("lets a durable message supersede an incomplete live chunk before later chunks arrive", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-supersede-sentinel", tenantA, userA);
+    const wire = collectFrames(socket);
+    socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let chunks = 0;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (
+        typeof args[0] === "string" &&
+        args[0].includes("pg_notify") &&
+        Array.isArray(args[1]) &&
+        args[1][0] === "semprec_agent_stream"
+      ) {
+        chunks++;
+        if (chunks === 2) {
+          observed();
+          await gate;
+        }
+      }
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    let publication: Promise<void> | undefined;
+    let failed = false;
+    let failure: unknown;
+    try {
+      publication = runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId, first.id, 1),
+      );
+      await waitForVoiceBarrier(waiting, publication);
+      await vi.waitFor(() =>
+        expect(
+          wire.some((frame) => frame.type === "agent:delta" && isRecord(frame.chunk) && frame.chunk.index === 0),
+        ).toBe(true),
+      );
+      const event = await announcedEventIn(tenantA, run.id);
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual(
+          expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
+        ),
+      );
+      release();
+      await publication;
+      await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta").length).toBeGreaterThan(1));
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    const socketClosed = waitForClose(socket);
+    socket.close();
+    const closeSocket = async () => {
+      try {
+        await waitForVoiceBarrier(socketClosed.then(() => {}));
+      } catch (error) {
+        socket.terminate();
+        await socketClosed;
+        throw error;
+      }
+    };
+    const cleanup = await Promise.allSettled([publication, dispose(), closeSocket()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice supersession test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("waits for a held durable read on disposal and emits nothing afterward", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (!held && typeof args[0] === "string" && args[0].includes("AND e.id <= $5::bigint")) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    let failed = false;
+    let failure: unknown;
+    let disposing: Promise<void> | undefined;
+    try {
+      await announcedEventIn(tenantA, run.id);
+      await waitForVoiceBarrier(waiting);
+      let settled = false;
+      disposing = dispose().then(() => {
+        settled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      release();
+      await disposing;
+      expect(frames).toEqual([]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    release();
+    const cleanup = await Promise.allSettled([disposing, dispose()]);
+    spy.mockRestore();
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...cleanupErrors],
+        "Voice disposal test or cleanup failed",
+        { cause: failed ? failure : cleanupErrors[0] },
+      );
+  });
+
+  it("suppresses live deltas after an ordinal gap and delivers the durable recovery event", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        frames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-gap-sentinel", tenantA, userA);
+    const wire = collectFrames(socket);
+    socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+    await settle();
+    let failed = false;
+    let failure: unknown;
+    try {
+      for (const sequence of [1, 3, 4])
+        await runInTenant(tenantA, () =>
+          publishAgentRunDelta(
+            runtimePool,
+            run.id,
+            { kind: "message_update", type: "text_delta", delta: sequence === 1 ? "Hello. " : "untrusted later text" },
+            target.sempMessageId,
+            first.id,
+            sequence,
+          ),
+        );
+      await vi.waitFor(() => expect(wire.filter((frame) => frame.type === "agent:delta")).toHaveLength(3));
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1));
+      // Synthetic state-only lifecycle event: it does not claim that a model generated this message.
+      const event = await runInTenant(tenantA, async () => {
+        const value = await insertAgentRunEvent(runtimePool, run.id, "message", {
+          kind: "message",
+          text: "Hello. world.",
+        });
+        await publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: value.id });
+        return value;
+      });
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual(
+          expect.objectContaining({ type: "event", event: expect.objectContaining({ id: event.id }) }),
+        ),
+      );
+      expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1);
+      expect(frames[0]).toMatchObject({
+        type: "delta",
+        message: { delta: { kind: "message_update", type: "text_delta", delta: "Hello. " } },
+      });
+      expect(frames.at(-1)).toMatchObject({
+        type: "event",
+        event: { payload: { kind: "message", text: "Hello. world." } },
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    const socketClosed = waitForClose(socket);
+    socket.close();
+    const closeSocket = async () => {
+      try {
+        await waitForVoiceBarrier(socketClosed.then(() => {}));
+      } catch (error) {
+        socket.terminate();
+        await socketClosed;
+        throw error;
+      }
+    };
+    const cleanup = await Promise.allSettled([dispose(), closeSocket()]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed || cleanupErrors.length)
+      throw new AggregateError([...(failed ? [failure] : []), ...cleanupErrors], "Voice gap test or cleanup failed", {
+        cause: failed ? failure : cleanupErrors[0],
+      });
+  });
+
+  it("filters tagged voice deltas by message while keeping socket frames unchanged", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const voiceFrames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    const dispose = await tenantServer.subscribeVoice({
+      tenantId: tenantA,
+      userId: userA,
+      runId: run.id,
+      ...target,
+      afterEventId: first.id,
+      onFrame(frame) {
+        voiceFrames.push(frame);
+        return true;
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    const socket = await connectAs("voice-wire", tenantA, userA);
+    const wire = collectFrames(socket);
+    try {
+      socket.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: first.id }));
+      await settle();
+      await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "untagged" }));
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "other" }, randomUUID(), first.id, 1),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "owned" }, target.sempMessageId, first.id, 1),
+      );
+      await vi.waitFor(() => expect(voiceFrames.filter((frame) => frame.type === "delta")).toHaveLength(1));
+      expect(voiceFrames[0]).toMatchObject({
+        type: "delta",
+        message: { sempMessageId: target.sempMessageId, delta: { text: "owned" } },
+      });
+      const before = voiceFrames.length;
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "x".repeat(12000) }, target.sempMessageId, first.id, 2),
+      );
+      await vi.waitFor(() => expect(voiceFrames.length).toBe(before + 1));
+      const chunks = voiceFrames.slice(before);
+      expect(
+        chunks.every(
+          (frame) =>
+            frame.type === "delta" &&
+            frame.message.sempMessageId === target.sempMessageId &&
+            !("chunk" in frame.message),
+        ),
+      ).toBe(true);
+      await vi.waitFor(() => expect(wire.length).toBeGreaterThanOrEqual(4));
+      expect(wire.every((frame) => frame.type === "agent:delta" && !("sempMessageId" in frame))).toBe(true);
+      await expect(
+        runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { text: "invalid" }, "not-a-uuid")),
+      ).rejects.toThrow();
+      expect(
+        parseAgentStreamEnvelope({
+          tenantId: tenantA,
+          message: {
+            type: "agent_run_delta",
+            agentRunId: run.id,
+            sempMessageId: "invalid",
+            delta: {},
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      await dispose();
+      socket.close();
+    }
+  });
+
+  it("keeps a delayed replay and later live deltas within their assistant turn", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const last = await silentEventIn(tenantA, run.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("correlation-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("JOIN semp_messages") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return original(...args);
+    };
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
+    const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
+    let registration: Promise<() => Promise<void>> | undefined;
+    let disposed = false;
+    let primary: { error: unknown } | undefined;
+    const cleanup: unknown[] = [];
+    try {
+      registration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        onFrame(frame) {
+          frames.push(frame);
+          return true;
+        },
+        onFailure(error) {
+          throw error;
+        },
+      });
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) =>
+          finishSempMessageTurn(client, target.sempMessageId, {
+            status: "done",
+            text: "first answer",
+            lastEventId: last.id,
+          }),
+        ),
+      );
+      const secondFirst = await silentEventIn(tenantA, run.id);
+      const second = await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, async (client) => {
+          const turn = await sendSempMessage(client, {
+            threadId: target.threadId,
+            text: "next",
+            context: [],
+            hasContext: false,
+          });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, secondFirst.id);
+          return turn;
+        }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next while replay held" },
+          second.assistantMessageId,
+          secondFirst.id,
+          1,
+        ),
+      );
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      release();
+      const dispose = await registration;
+      expect(frames.filter((frame) => frame.type === "event").map((frame) => frame.event.id)).toEqual([
+        first.id,
+        last.id,
+      ]);
+      expect(frames.filter((frame) => frame.type === "delta")).toEqual([]);
+      await runInTenant(tenantA, () =>
+        publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: secondFirst.id }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next after replay" },
+          second.assistantMessageId,
+          secondFirst.id,
+          2,
+        ),
+      );
+      await runInTenant(tenantA, () =>
+        publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: run.id, eventId: last.id }),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "first delayed" }, target.sempMessageId, last.id, 1),
+      );
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(1));
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { text: "first before next" }, target.sempMessageId, last.id, 2),
+      );
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(
+          runtimePool,
+          run.id,
+          { text: "next after first" },
+          second.assistantMessageId,
+          secondFirst.id,
+          3,
+        ),
+      );
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 2);
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "delta")).toHaveLength(2));
+      expect(frames.filter((frame) => frame.type === "event").map((frame) => frame.event.id)).toEqual([
+        first.id,
+        last.id,
+      ]);
+      expect(frames.at(-1)).toMatchObject({ type: "delta", message: { sempMessageId: target.sempMessageId } });
+      disposed = true;
+      await dispose();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      release();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+          if (outcome?.status === "rejected" && (primary === undefined || outcome.reason !== primary.error))
+            cleanup.push(outcome.reason);
+        }
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice replay cleanup failed", {
+        cause: primary ? primary.error : cleanup[0],
+      });
+    if (primary) throw primary.error;
+  });
 
   it("delivers nothing to a socket of another tenant watching a run, as for an unknown run id", async () => {
     const run = await createRunIn(tenantA, userA);
