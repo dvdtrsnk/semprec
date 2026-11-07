@@ -35,25 +35,39 @@ import { createActionRegistry } from "../scheduler/actions.js";
 async function withQueryRestored<T>(
   client: PoolClient,
   descriptor: PropertyDescriptor | undefined,
+  queries: Promise<unknown>[],
   work: () => Promise<T>,
 ): Promise<T> {
   const outcome = await work().then(
     (value) => ({ ok: true as const, value }),
     (error: unknown) => ({ ok: false as const, error }),
   );
+  const queryOutcomes = await Promise.allSettled(queries);
+  const queryFailures = queryOutcomes.flatMap((result) =>
+    result.status === "rejected" && (outcome.ok || result.reason !== outcome.error) ? [result.reason] : [],
+  );
   let restoration: { error: unknown } | undefined;
   try {
     if (descriptor) Object.defineProperty(client, "query", descriptor);
     else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
   } catch (error) {
-    restoration = { error };
+    try {
+      await client.end();
+      restoration = { error };
+    } catch (endError) {
+      restoration = {
+        error: new AggregateError([error, endError], "Observer restoration and client retirement failed", {
+          cause: error,
+        }),
+      };
+    }
   }
-  if (!outcome.ok && restoration)
-    throw new AggregateError([outcome.error, restoration.error], "History read and observer restoration failed", {
-      cause: outcome.error,
-    });
+  const failures: unknown[] = [...(!outcome.ok ? [outcome.error] : []), ...queryFailures];
+  if (restoration) failures.push(restoration.error);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "History read and observer cleanup failed", { cause: failures[0] });
   if (!outcome.ok) throw outcome.error;
-  if (restoration) throw restoration.error;
   return outcome.value;
 }
 describe("Semp history reference resolution", () => {
@@ -124,6 +138,7 @@ describe("Semp history reference resolution", () => {
         withTransaction(runtime, async (client) => {
           /* eslint-disable @typescript-eslint/unbound-method */
           const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+          const queries: Promise<unknown>[] = [];
           const query = client.query;
           client.query = new Proxy(query, {
             apply(target, receiver, args: unknown[]) {
@@ -131,11 +146,16 @@ describe("Semp history reference resolution", () => {
                 const values: unknown = args[1];
                 if (Array.isArray(values) && Array.isArray(values[0])) batchSizes.push(values[0].length);
               }
-              return Reflect.apply(target, receiver, args);
+              const result: unknown = Reflect.apply(target, receiver, args);
+              if (result instanceof Promise) {
+                queries.push(result);
+                void result.catch(() => {});
+              }
+              return result;
             },
           });
           /* eslint-enable @typescript-eslint/unbound-method */
-          return withQueryRestored(client, descriptor, async () => {
+          return withQueryRestored(client, descriptor, queries, async () => {
             return await listSempThreadMessages(client, sent.threadId, 50, null);
           });
         }),
@@ -350,16 +370,22 @@ describe("Semp history reference resolution", () => {
       withTransaction(runtime, async (client) => {
         /* eslint-disable @typescript-eslint/unbound-method */
         const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+        const queries: Promise<unknown>[] = [];
         const query = client.query;
         client.query = new Proxy(query, {
           apply(target, receiver, args: unknown[]) {
             if (typeof args[0] === "string" && args[0].includes("AS r(item_id, database_id, ordinal)"))
               resolverQueries += 1;
-            return Reflect.apply(target, receiver, args);
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (result instanceof Promise) {
+              queries.push(result);
+              void result.catch(() => {});
+            }
+            return result;
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
-        return withQueryRestored(client, descriptor, async () => {
+        return withQueryRestored(client, descriptor, queries, async () => {
           return await listSempThreadMessages(client, first.threadId, 50, null);
         });
       }),
@@ -557,15 +583,21 @@ describe("Semp history reference resolution", () => {
           withTransaction(runtime, async (client) => {
             /* eslint-disable @typescript-eslint/unbound-method */
             const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+            const queries: Promise<unknown>[] = [];
             const query = client.query;
             client.query = new Proxy(query, {
               apply(target, receiver, args: unknown[]) {
                 if (typeof args[0] === "string" && args[0].includes(fixture.query)) resolverQueries += 1;
-                return Reflect.apply(target, receiver, args);
+                const result: unknown = Reflect.apply(target, receiver, args);
+                if (result instanceof Promise) {
+                  queries.push(result);
+                  void result.catch(() => {});
+                }
+                return result;
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
-            return withQueryRestored(client, descriptor, async () => {
+            return withQueryRestored(client, descriptor, queries, async () => {
               const page = await listSempThreadMessages(client, first.threadId, 50, null);
               const stored = await client.query<{ id: string; context: unknown }>(
                 "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
@@ -683,6 +715,7 @@ describe("Semp history reference resolution", () => {
       withTransaction(runtime, async (client) => {
         /* eslint-disable @typescript-eslint/unbound-method */
         const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+        const queries: Promise<unknown>[] = [];
         const query = client.query;
         client.query = new Proxy(query, {
           apply(target, receiver, args: unknown[]) {
@@ -690,11 +723,16 @@ describe("Semp history reference resolution", () => {
               runQueries += 1;
             if (typeof args[0] === "string" && args[0].includes("LEFT JOIN approval_requests a ON a.id = r.id"))
               approvalQueries += 1;
-            return Reflect.apply(target, receiver, args);
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (result instanceof Promise) {
+              queries.push(result);
+              void result.catch(() => {});
+            }
+            return result;
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
-        return withQueryRestored(client, descriptor, async () => {
+        return withQueryRestored(client, descriptor, queries, async () => {
           return await listSempThreadMessages(client, sent.threadId, 50, null);
         });
       }),
@@ -811,16 +849,22 @@ describe("Semp history reference resolution", () => {
           withTransaction(runtime, async (client) => {
             /* eslint-disable @typescript-eslint/unbound-method */
             const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+            const queries: Promise<unknown>[] = [];
             const query = client.query;
             client.query = new Proxy(query, {
               apply(target, receiver, args: unknown[]) {
                 if (typeof args[0] === "string" && args[0].includes("LEFT JOIN mail_attachments a ON a.id = r.id"))
                   attachmentQueries += 1;
-                return Reflect.apply(target, receiver, args);
+                const result: unknown = Reflect.apply(target, receiver, args);
+                if (result instanceof Promise) {
+                  queries.push(result);
+                  void result.catch(() => {});
+                }
+                return result;
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
-            return withQueryRestored(client, descriptor, async () => {
+            return withQueryRestored(client, descriptor, queries, async () => {
               return await listSempThreadMessages(client, sent.threadId, 50, null);
             });
           }),
