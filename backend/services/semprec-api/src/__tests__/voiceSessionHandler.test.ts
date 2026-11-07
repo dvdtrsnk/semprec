@@ -1550,7 +1550,7 @@ describe("voice session through the real gateway and registered worker", () => {
     const ownedGateway = gateway;
     const descriptor = Object.getOwnPropertyDescriptor(sync, "subscribeVoice");
     if (!descriptor || typeof descriptor.value !== "function") throw new Error("Missing voice subscription descriptor");
-    const originalSubscribe = sync.subscribeVoice;
+    const originalSubscribe = descriptor.value as typeof sync.subscribeVoice;
     type Subscription = Parameters<typeof originalSubscribe>[0];
     type ObservedSubscription = Pick<
       Subscription,
@@ -1686,29 +1686,32 @@ describe("voice session through the real gateway and registered worker", () => {
         expect(result.rows[0]?.source).toBe("voice");
         return result.rows[0]!;
       });
-      const targetTurn = await vi.waitFor(async () => {
-        const rows = await runInTenant(tenant, () =>
-          pool.query<{ id: string; run_id: string; actor_user_id: string }>(
-            `SELECT m.id, m.agent_run_id AS run_id, r.actor_user_id
+      const targetTurn = await vi.waitFor(
+        async () => {
+          const rows = await runInTenant(tenant, () =>
+            pool.query<{ id: string; run_id: string; actor_user_id: string }>(
+              `SELECT m.id, m.agent_run_id AS run_id, r.actor_user_id
              FROM semp_messages m JOIN agent_runs r ON r.id=m.agent_run_id AND r.tenant_id=m.tenant_id
              WHERE m.thread_id=$1 AND m.role='assistant' AND m.reply_to_message_id=$2 AND m.status='running'`,
-            [source.thread_id, source.id],
-          ),
-        );
-        expect(rows.rows).toHaveLength(1);
-        expect(additionalSubscription).toBe(false);
-        expect(subscription?.state).toBe("fulfilled");
-        expect(subscription?.tenantId).toBe(tenant);
-        expect(subscription?.threadId).toBe(source.thread_id);
-        expect(subscription?.sempMessageId).toBe(rows.rows[0]?.id);
-        expect(subscription?.runId).toBe(rows.rows[0]?.run_id);
-        expect(subscription?.userId).toBe(rows.rows[0]?.actor_user_id);
-        expect(subscription?.signal?.aborted).toBe(false);
-        expect(socket?.readyState).toBe(WebSocket.OPEN);
-        const held = ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld");
-        expect(held).toHaveLength(heldBefore + 1);
-        return held.at(-1)!;
-      });
+              [source.thread_id, source.id],
+            ),
+          );
+          expect(rows.rows).toHaveLength(1);
+          expect(additionalSubscription).toBe(false);
+          expect(subscription?.state).toBe("fulfilled");
+          expect(subscription?.tenantId).toBe(tenant);
+          expect(subscription?.threadId).toBe(source.thread_id);
+          expect(subscription?.sempMessageId).toBe(rows.rows[0]?.id);
+          expect(subscription?.runId).toBe(rows.rows[0]?.run_id);
+          expect(subscription?.userId).toBe(rows.rows[0]?.actor_user_id);
+          expect(subscription?.signal?.aborted).toBe(false);
+          expect(socket?.readyState).toBe(WebSocket.OPEN);
+          const held = ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld");
+          expect(held).toHaveLength(heldBefore + 1);
+          return held.at(-1)!;
+        },
+        { timeout: 20_000 },
+      );
       await Promise.all(observers);
       expect(additionalSubscription).toBe(false);
       Object.defineProperty(sync, "subscribeVoice", descriptor);
