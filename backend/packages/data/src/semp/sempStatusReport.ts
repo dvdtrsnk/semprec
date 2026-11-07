@@ -32,7 +32,12 @@ const kinds = new Set([
 const causes = new Set(["budgetExceeded", "modelError", "cancelled", "interrupted", "internal"]);
 type StatusAction = { kind: string; target: string | { threadId: string; messageId: string } };
 
-export async function getSempStatusReport(pool: Pool) {
+/**
+ * The Semp status report of the current tenant (issue #1555), together with the stored `kind` of
+ * every problem it lists, keyed by problem id. The summary (issue #1631) derives its banner from this
+ * same read, so the count, the order and the rendered text have one source.
+ */
+export async function readSempStatusReport(pool: Pool) {
   const catalogs = await loadModuleCatalogs(import.meta.url);
   const mailCatalogs = await loadModuleCatalogs(new URL("../mail/mailModuleManifest.js", import.meta.url).href);
   return withTransaction(pool, async (client) => {
@@ -207,7 +212,7 @@ export async function getSempStatusReport(pool: Pool) {
         detail: backupDetail,
       },
     ];
-    return {
+    const report = {
       activeCount: problems.length,
       services,
       problems: problems.map((problem) => {
@@ -269,5 +274,10 @@ export async function getSempStatusReport(pool: Pool) {
         };
       }),
     };
+    return { report, problemKinds: new Map(problems.map((problem) => [problem.id, problem.kind])) };
   });
+}
+
+export async function getSempStatusReport(pool: Pool) {
+  return (await readSempStatusReport(pool)).report;
 }

@@ -26,12 +26,14 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
+export { createProjectGuidanceDriftReadRouteHandler } from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
 
 export {
   createCreateTranscriptionRouteHandler,
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
   createTranscriptDetailRouteHandler,
+  createTranscriptListRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -246,6 +248,15 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "listProjectGuidanceDrift",
+      method: "GET",
+      path: "/api/projects/:id/agent-guidance/drift",
+      handlerExport: "createProjectGuidanceDriftReadRouteHandler",
+      // Serves the AGENT page's drift cards: the project's active findings together with the
+      // guidance version they are resolved against, which no generic item read returns.
+      justification: "single-consumer-read",
+    },
+    {
       name: "ensureJournalPeriodDoc",
       method: "PUT",
       path: "/api/journal/periods/:type/:period/doc",
@@ -276,6 +287,15 @@ export const manifest: ModuleManifest = {
       // The `locked` check and the enqueue must commit together (issue #186: a locked row is never
       // rerun), and the route writes no item, so the generic item-write endpoint can't express it.
       justification: "transactional-semantics",
+    },
+    {
+      name: "listTranscripts",
+      method: "GET",
+      path: "/api/transcripts",
+      handlerExport: "createTranscriptListRouteHandler",
+      // Shaped for exactly one consumer, the recordings lists: one statement joins each transcript with
+      // its event, pairing card, open speaker cards and automation state, which the generic query cannot.
+      justification: "single-consumer-read",
     },
     {
       name: "getTranscript",

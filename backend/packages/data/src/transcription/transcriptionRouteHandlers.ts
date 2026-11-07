@@ -15,6 +15,7 @@ import {
 } from "./transcriptionJob.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 import { labelTranscriptSpeakers, readTranscriptDetail } from "./transcriptDetail.js";
+import { listTranscriptsPage, TRANSCRIPT_PAIRINGS, type TranscriptListCursor } from "./transcriptListQuery.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -185,5 +186,75 @@ export function createTranscriptDetailRouteHandler(pool: Pool) {
         readTranscriptDetail(client, parsedId.data, ctx.identity.user.locale),
       ),
     };
+  };
+}
+
+const transcriptListCursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }).nullable(), id: z.uuid() }).strict();
+
+/** The request context of `GET /api/transcripts`: its query string is read from the request URL. */
+interface TranscriptListRouteRequestContext {
+  req: { url?: string };
+}
+
+function readTranscriptListCursor(raw: string | null): TranscriptListCursor | null {
+  if (raw === null) return null;
+  if (raw.length > 256 || !/^[A-Za-z0-9_-]+$/.test(raw))
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  let decoded: unknown;
+  try {
+    const bytes = Buffer.from(raw, "base64url");
+    if (bytes.toString("base64url") !== raw) throw new Error("Invalid encoding");
+    decoded = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  }
+  const parsed = transcriptListCursorSchema.safeParse(decoded);
+  if (!parsed.success) throw new ValidationError("Invalid cursor", { field: "cursor" });
+  return parsed.data;
+}
+
+/**
+ * `GET /api/transcripts` (issue #1636): the lightweight recordings list, `limit` (1-200, default 50)
+ * transcripts per page with a keyset `nextCursor`. `eventId`, `personId` (a speaker or a participant,
+ * issue #1581), `projectId` (issue #1581) and `pairing` filter it;
+ * `order=asc` sorts by date ascending (default `desc`). A filter id that is unknown, foreign or not a
+ * live item of its database matches nothing, so the list is empty rather than an error.
+ */
+export function createTranscriptListRouteHandler(pool: Pool) {
+  return async (ctx: TranscriptListRouteRequestContext): Promise<CustomRouteResult> => {
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const rawLimit = url.searchParams.get("limit");
+    if (rawLimit !== null && !/^[0-9]{1,3}$/.test(rawLimit))
+      throw new ValidationError("Invalid limit", { field: "limit" });
+    const limit = rawLimit === null ? 50 : Number(rawLimit);
+    if (limit < 1 || limit > 200) throw new ValidationError("Invalid limit", { field: "limit" });
+    const cursor = readTranscriptListCursor(url.searchParams.get("cursor"));
+    const rawOrder = url.searchParams.get("order") ?? "desc";
+    if (rawOrder !== "asc" && rawOrder !== "desc") throw new ValidationError("Invalid order", { field: "order" });
+    const uuidParam = (field: string) => {
+      const value = url.searchParams.get(field);
+      if (value !== null && !z.uuid().safeParse(value).success)
+        throw new ValidationError(`Invalid ${field}`, { field });
+      return value;
+    };
+    const eventId = uuidParam("eventId");
+    const personId = uuidParam("personId");
+    const projectId = uuidParam("projectId");
+    const rawPairing = url.searchParams.get("pairing");
+    const pairing = rawPairing === null ? null : TRANSCRIPT_PAIRINGS.find((value) => value === rawPairing);
+    if (pairing === undefined) throw new ValidationError("Invalid pairing", { field: "pairing" });
+    const rows = await withTransaction(pool, (client) =>
+      listTranscriptsPage(client, {
+        limit,
+        order: rawOrder,
+        cursor,
+        filters: { eventId, personId, projectId, pairing },
+      }),
+    );
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    const nextCursor =
+      rows.length > limit && last ? Buffer.from(JSON.stringify(last.cursor)).toString("base64url") : null;
+    return { status: 200, body: { transcripts: page.map((row) => row.transcript), nextCursor } };
   };
 }

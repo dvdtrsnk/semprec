@@ -76,7 +76,7 @@ export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
 export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
-export { createSempStatusRouteHandler } from "./semp/sempStatusRouteHandler.js";
+export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "./semp/sempStatusRouteHandler.js";
 
 export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";
@@ -217,7 +217,10 @@ export {
 } from "./transcription/transcriptionActions.js";
 export * from "./library/libraryMetadataActions.js";
 export * from "./mail/personLinkingActions.js";
-export { createRerunTranscriptionRouteHandler } from "./transcription/transcriptionRouteHandlers.js";
+export {
+  createRerunTranscriptionRouteHandler,
+  createTranscriptListRouteHandler,
+} from "./transcription/transcriptionRouteHandlers.js";
 export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
 export {
   proposeSpeakerMappings,
@@ -439,6 +442,7 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "./projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
+export { createProjectGuidanceDriftReadRouteHandler } from "./guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
@@ -679,7 +683,7 @@ export { registerItemReadProjection, projectItemForRead, type ItemReadProjection
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
 
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
-export { createMailThreadListRouteHandler } from "./mail/mailThreadRoutes.js";
+export { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } from "./mail/mailThreadRoutes.js";
 
 export { getSelfPersonId, setSelfPersonId } from "./selfPerson.js";
 export {

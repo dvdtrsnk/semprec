@@ -1,6 +1,7 @@
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mailboxRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
-export { createMailThreadListRouteHandler } from "./mailThreadRoutes.js";
+export { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } from "./mailThreadRoutes.js";
+export { createMailAutonomousSendProjectsRouteHandler } from "./mailAutonomousSendRouteHandlers.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
@@ -82,6 +83,24 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/mail/threads",
       handlerExport: "createMailThreadListRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailThreadDetail",
+      method: "GET",
+      path: "/api/mail/threads/:threadId",
+      handlerExport: "createMailThreadDetailRouteHandler",
+      // Shaped for exactly one consumer, the Mail detail: the thread's list-row header with every
+      // message, sanitized at read time, and its attachments' blobs and Files items.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailAutonomousSendProjects",
+      method: "GET",
+      path: "/api/mail/autonomous-send-projects",
+      handlerExport: "createMailAutonomousSendProjectsRouteHandler",
+      // Read only: the account detail's list of projects allowed to send without confirmation. The
+      // permission is switched on per project on the server; the app offers no way to change it.
       justification: "single-consumer-read",
     },
     {

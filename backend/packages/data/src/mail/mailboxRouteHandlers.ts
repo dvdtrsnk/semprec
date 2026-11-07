@@ -4,6 +4,7 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { defaultSyncModeForProvider, MAIL_SYNC_FAILURE_KINDS, SYNC_MODES } from "./mailAccountSyncStateStore.js";
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
+import { listAutonomousSendProjects } from "./mailAutonomousSendRouteHandlers.js";
 
 const mailboxRow = z.object({
   id: z.uuid(),
@@ -26,6 +27,9 @@ async function readMailboxes(client: PoolClient, id: string | null) {
       ORDER BY i.id`,
     [id],
   );
+  // Issue #1635: the permission is per project, not per mailbox, so every mailbox shows the length of
+  // the same list `GET /api/mail/autonomous-send-projects` returns.
+  const autonomousSendProjectCount = (await listAutonomousSendProjects(client)).length;
   return result.rows.map((raw) => {
     const row = mailboxRow.parse(raw);
     const p = row.properties;
@@ -58,6 +62,7 @@ async function readMailboxes(client: PoolClient, id: string | null) {
         default: defaultLimit,
         applies: syncMode === "imap",
       },
+      autonomousSendProjectCount,
     };
   });
 }

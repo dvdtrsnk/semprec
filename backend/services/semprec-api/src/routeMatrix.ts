@@ -91,14 +91,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
-  {
-    name: "project guidance read",
-    method: "GET",
-    path: `/api/projects/${EXAMPLE_ID}/agent-guidance`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
+  // prettier-ignore
+  { name: "project guidance read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance`, surface: "api", public: false, tenancy: "tenant" },
   {
     name: "project guidance save",
     method: "PUT",
@@ -107,6 +101,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "project guidance drift read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance/drift`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "semp thread create message", method: "POST", path: "/api/semp/threads", surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
@@ -328,6 +324,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "semp status summary", method: "GET", path: "/api/semp-status/summary", surface: "api", public: false, tenancy: "tenant" },
   {
     name: "schema projection",
     method: "GET",
@@ -400,6 +398,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "transcript list", method: "GET", path: "/api/transcripts", surface: "api", public: false, tenancy: "tenant" },
   {
     name: "transcript detail",
     method: "GET",
@@ -918,6 +918,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "mail autonomous send projects", method: "GET", path: "/api/mail/autonomous-send-projects", surface: "api", public: false, tenancy: "tenant" },
   {
     name: "mail contacts",
     method: "GET",
@@ -934,6 +936,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "mail thread detail", method: "GET", path: `/api/mail/threads/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
   {
     name: "mailbox removal impact",
     method: "GET",
