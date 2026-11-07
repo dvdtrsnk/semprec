@@ -1903,6 +1903,96 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     if (abortPrimary) throw abortPrimary.error;
   });
 
+  it("settles and disposes a real pending registration after an early test failure", async () => {
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+    const target = await voiceTarget(run.id, first.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("voice-early-failure-sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+    let release!: () => void;
+    let observed!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queried = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const original = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const observer = async (...args: unknown[]): Promise<unknown> => {
+      const result = await original(...args);
+      if (
+        !held &&
+        typeof args[0] === "string" &&
+        args[0].includes("FROM agent_run_events") &&
+        args[0].includes("LIMIT $5")
+      ) {
+        held = true;
+        observed();
+        await gate;
+      }
+      return result;
+    };
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const frames: string[] = [];
+    const failures: unknown[] = [];
+    const earlyFailure = new Error("Synthetic early test failure");
+    let primary: unknown;
+    let registration: Promise<() => Promise<void>> | undefined;
+    try {
+      registration = tenantServer.subscribeVoice({
+        tenantId: tenantA,
+        userId: userA,
+        runId: run.id,
+        ...target,
+        afterEventId: "0",
+        onFrame(frame) {
+          if (frame.type === "event") frames.push(frame.event.id);
+          return true;
+        },
+        onFailure(error) {
+          failures.push(error);
+        },
+      });
+      void registration.catch(() => {});
+      await waitForVoiceBarrier(queried, registration);
+      throw earlyFailure;
+    } catch (error) {
+      primary = error;
+    } finally {
+      release();
+      try {
+        if (registration) {
+          const [outcome] = await Promise.allSettled([registration]);
+          if (outcome?.status === "fulfilled") await outcome.value();
+          else if (outcome?.status === "rejected") failures.push(outcome.reason);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      expect(primary).toBe(earlyFailure);
+      if (failures.length)
+        throw new AggregateError([primary, ...failures], "Early voice registration cleanup failed", { cause: primary });
+      const delivered = [...frames];
+      await announcedEventIn(tenantA, run.id);
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      expect(frames).toEqual(delivered);
+    } finally {
+      sentinel.close();
+    }
+  });
+
   async function waitForVoiceBarrier(barrier: Promise<void>, operation?: Promise<unknown>): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
