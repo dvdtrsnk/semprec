@@ -531,6 +531,17 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "project", name: "Project" },
   });
+  // Events <-> Files: files attached to an event (issue #1588). Populated installs get the same pair from
+  // `blobs/eventsFilesRelationCutoverMigration.ts`.
+  await relate({
+    sourceDatabaseId: events.id,
+    key: "files",
+    name: "Files",
+    targetDatabaseId: files.id,
+    cardinality: "many_to_many",
+    owner: "user",
+    inverse: { key: "events", name: "Events", owner: "user" },
+  });
   // Events -> People: one-directional only (People's own relation list doesn't name Events).
   await relate({
     sourceDatabaseId: events.id,

@@ -342,6 +342,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "ensureJournalPeriodDoc",
   "eventEnd",
   "executeMcpInvocation",
+  "expandAreaFilter",
   "extractAttachmentText",
   "failGatewayCall",
   "failHeartbeatOccurrence",

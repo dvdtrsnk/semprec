@@ -667,6 +667,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
                   databaseId: z.string(),
                   properties: z.record(z.string(), z.unknown()),
                   computed: z.record(z.string(), z.unknown()),
+                  createdAt: z.string(),
                   updatedAt: z.string(),
                   deletedAt: z.string().nullable(),
                 })

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CAPABILITY_IDS } from "@semprec/shared";
 import {
   moduleManifestSchema,
+  type AreaFilterTemplate,
   type CustomRouteMethod,
   type EditorSchemaDescriptor,
   type ModuleLinkRuleDescriptor,
@@ -34,6 +35,7 @@ export interface ModuleDatabaseProjection {
   overviewOrder?: number | null;
   switcherOrder?: number | null;
   clientVisible?: boolean;
+  areaFilter?: AreaFilterTemplate;
 }
 
 export interface ModuleAgentToolProjection {
@@ -527,6 +529,7 @@ export class ModuleRegistry {
         ...(db.overviewOrder !== undefined ? { overviewOrder: db.overviewOrder } : {}),
         ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
+        ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
       })),
     );
   }

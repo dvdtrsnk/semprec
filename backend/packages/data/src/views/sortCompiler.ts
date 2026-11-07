@@ -1,7 +1,7 @@
 import { ValidationError } from "../errors.js";
 import type { PropertyRow } from "../types.js";
 import { parseRollupConfig } from "../rollup/config.js";
-import type { SortSpec } from "./sortSpec.js";
+import type { SortSpec, SystemSortField } from "./sortSpec.js";
 
 /** What the sort compiler needs to know about one sortable property, keyed by property key. */
 export type SortProperties = Map<string, Pick<PropertyRow, "type" | "config">>;
@@ -48,31 +48,51 @@ function collateClause(property: Pick<PropertyRow, "type">, collation: SortColla
   return COLLATED_TYPES.has(property.type) ? ` COLLATE "${collation}"` : "";
 }
 
-function lookupSortProperty(sort: SortSpec, properties: SortProperties): Pick<PropertyRow, "type" | "config"> {
+/** The `items` column a system sort key orders by; both are `timestamptz NOT NULL`. */
+const SYSTEM_SORT_COLUMNS: Readonly<Record<SystemSortField, string>> = {
+  createdAt: "created_at",
+  updatedAt: "updated_at",
+};
+
+/**
+ * A system key's SQL expression: its column truncated to milliseconds. An item's `createdAt`/`updatedAt`
+ * (and so a cursor built from it) is that column read through a JavaScript `Date`, which keeps exactly
+ * the whole milliseconds (the microseconds are dropped, never rounded up), so the cursor value equals
+ * this expression for its row. Comparing the untruncated column would skip or repeat rows that share a
+ * millisecond. The column name comes only from `SYSTEM_SORT_COLUMNS`.
+ */
+function systemSortExpression(field: SystemSortField): string {
+  return `date_trunc('milliseconds', ${SYSTEM_SORT_COLUMNS[field]})`;
+}
+
+/** One sort key resolved against the database: a system timestamp, or a property with its type and config. */
+type ResolvedSortKey =
+  | { kind: "system"; field: SystemSortField }
+  | { kind: "property"; key: string; property: Pick<PropertyRow, "type" | "config"> };
+
+function resolveSortKey(sort: SortSpec, properties: SortProperties): ResolvedSortKey {
+  if (sort.system !== undefined) return { kind: "system", field: sort.system };
   const property = properties.get(sort.property);
   if (!property) {
     throw new ValidationError(`Sort references unknown property '${sort.property}'`, { field: sort.property });
   }
-  return property;
+  return { kind: "property", key: sort.property, property };
 }
 
 /**
- * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` —
- * shared by `compileSort` and `compileSortKeyset` so the `ORDER BY` and the keyset
- * predicate that resumes it can never compare different expressions. A rollup's value
+ * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` for a property, the
+ * truncated column for a system key — shared by `compileSort` and `compileSortKeyset` so the `ORDER BY`
+ * and the keyset predicate that resumes it can never compare different expressions. A rollup's value
  * lives in `items.computed` (the recompute worker's column), every other property's in
- * `items.properties`. Pushes the property key onto `params`.
+ * `items.properties`. Pushes a property key onto `params`; a system key pushes nothing.
  */
-function sortKeyExpression(
-  sort: SortSpec,
-  property: Pick<PropertyRow, "type" | "config">,
-  params: unknown[],
-  collation: SortCollation,
-): string {
+function sortKeyExpression(key: ResolvedSortKey, params: unknown[], collation: SortCollation): string {
+  if (key.kind === "system") return systemSortExpression(key.field);
+  const { property } = key;
   const optionKeys = selectOptionKeys(property);
   if (optionKeys) params.push(optionKeys);
   const keysIndex = params.length;
-  params.push(sort.property);
+  params.push(key.key);
   if (optionKeys) return optionPosition(keysIndex, `properties ->> $${params.length}`);
   const column = property.type === "rollup" ? "computed" : "properties";
   return `${castSortKey(`${column} ->> $${params.length}`, sortKeyCast(property))}${collateClause(property, collation)}`;
@@ -118,7 +138,7 @@ export function compileSort(
 ): string {
   const clauses = sorts.map((sort) => {
     const dir = sort.direction === "asc" ? "ASC" : "DESC";
-    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params, collation)} ${dir} NULLS LAST`;
+    return `${sortKeyExpression(resolveSortKey(sort, properties), params, collation)} ${dir} NULLS LAST`;
   });
   return clauses.join(", ");
 }
@@ -142,15 +162,18 @@ export function compileSortKeyset(
   collation: SortCollation = DEFAULT_SORT_COLLATION,
 ): string {
   const keys = sorts.map((sort, index) => {
-    const property = lookupSortProperty(sort, properties);
-    const expression = sortKeyExpression(sort, property, params, collation);
-    const optionKeys = selectOptionKeys(property);
+    const key = resolveSortKey(sort, properties);
+    const expression = sortKeyExpression(key, params, collation);
+    const optionKeys = key.kind === "property" ? selectOptionKeys(key.property) : undefined;
     const rawValue = cursor.values[index] ?? null;
     const value = optionKeys && rawValue !== null ? cursorOptionText(rawValue, optionKeys) : rawValue;
     if (value === null) return { after: "FALSE", same: `${expression} IS NULL` };
     params.push(JSON.stringify(value));
     const boundText = `$${params.length}::jsonb #>> '{}'`;
-    let bound = `${castSortKey(boundText, sortKeyCast(property))}${collateClause(property, collation)}`;
+    let bound =
+      key.kind === "system"
+        ? `(${boundText})::timestamptz`
+        : `${castSortKey(boundText, sortKeyCast(key.property))}${collateClause(key.property, collation)}`;
     if (optionKeys) {
       params.push(optionKeys);
       bound = optionPosition(params.length, boundText);

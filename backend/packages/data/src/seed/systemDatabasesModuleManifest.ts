@@ -1,5 +1,5 @@
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { AreaFilterTemplate, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -33,6 +33,25 @@ export {
   createTranscriptSpeakersRouteHandler,
   createTranscriptDetailRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
+
+const AREA_VALUE = { areaValue: true } as const;
+
+/** Items with their own `area` relation pointing at the area (issue #1597). */
+const OWN_AREA_FILTER: AreaFilterTemplate = { type: "relation_contains", property: "area", value: AREA_VALUE };
+
+/**
+ * Items whose project is in the area, and, when they have no live project, items whose own area is it
+ * (issue #1597). `projectKey` is the database's relation to Projects.
+ */
+function projectOrOwnAreaFilter(projectKey: string): AreaFilterTemplate {
+  return {
+    type: "or",
+    nodes: [
+      { type: "relation_path_contains", path: [projectKey, "area"], value: AREA_VALUE },
+      { type: "and", nodes: [{ type: "relation_is_empty", property: projectKey }, OWN_AREA_FILTER] },
+    ],
+  };
+}
 
 /**
  * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
@@ -101,6 +120,7 @@ export const manifest: ModuleManifest = {
       color: "#007AFF",
       overviewOrder: 1,
       switcherOrder: 1,
+      areaFilter: OWN_AREA_FILTER,
     },
     {
       key: TASKS_MODULE_ID,
@@ -110,6 +130,8 @@ export const manifest: ModuleManifest = {
       color: "#34C759",
       overviewOrder: null,
       switcherOrder: 2,
+      // A task has no area of its own: only its project's area counts, so a task without a project never matches.
+      areaFilter: { type: "relation_path_contains", path: ["project", "area"], value: AREA_VALUE },
     },
     {
       key: PEOPLE_MODULE_ID,
@@ -141,6 +163,7 @@ export const manifest: ModuleManifest = {
       color: "#8E8E93",
       overviewOrder: 5,
       switcherOrder: 7,
+      areaFilter: projectOrOwnAreaFilter("projects"),
     },
     {
       key: EVENTS_MODULE_ID,
@@ -150,6 +173,7 @@ export const manifest: ModuleManifest = {
       color: "#FF3B30",
       overviewOrder: 2,
       switcherOrder: 3,
+      areaFilter: projectOrOwnAreaFilter("project"),
     },
     {
       key: HEALTH_RECORDS_MODULE_ID,
@@ -159,6 +183,7 @@ export const manifest: ModuleManifest = {
       color: "#FF2D55",
       overviewOrder: 6,
       switcherOrder: 8,
+      areaFilter: projectOrOwnAreaFilter("projects"),
     },
     {
       key: COMPANIES_MODULE_ID,
@@ -168,6 +193,7 @@ export const manifest: ModuleManifest = {
       color: "#5AC8FA",
       overviewOrder: 4,
       switcherOrder: 6,
+      areaFilter: OWN_AREA_FILTER,
     },
     {
       key: TRANSCRIPTS_MODULE_ID,
@@ -188,6 +214,7 @@ export const manifest: ModuleManifest = {
       color: "#AF52DE",
       overviewOrder: null,
       switcherOrder: 4,
+      areaFilter: OWN_AREA_FILTER,
     },
   ],
   capabilities: [],

@@ -97,6 +97,8 @@ export interface ItemRow {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /** When the row was inserted (`items.created_at`, set by the database); no write changes it. */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
   /** Set by item reads and queries only: true when the item was created from an Inbox proposal. Absent on write results. */

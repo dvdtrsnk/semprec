@@ -138,6 +138,8 @@ export interface Item {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /** When the item was created (ISO 8601), set by the database and never changed by a write. */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
   /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */

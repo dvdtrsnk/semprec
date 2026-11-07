@@ -113,6 +113,7 @@
   "property.files.projects.name": "Projects",
   "property.files.healthRecords.name": "Health records",
   "property.files.companies.name": "Companies",
+  "property.files.events.name": "Events",
 
   "database.events.name": "Events",
   "database.events.searchPlaceholder": "Search events",
@@ -136,6 +137,7 @@
   "property.events.transcript.name": "Transcript",
   "property.events.actionItems.name": "Action items",
   "property.events.company.name": "Company",
+  "property.events.files.name": "Files",
 
   "database.healthRecords.name": "Health records",
   "database.healthRecords.searchPlaceholder": "Search records",

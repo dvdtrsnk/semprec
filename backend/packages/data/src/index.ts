@@ -82,6 +82,7 @@ export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";
 export * from "./views/sortSpec.js";
 export { compileSort } from "./views/sortCompiler.js";
+export { expandAreaFilter } from "./views/areaFilter.js";
 export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
 export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";

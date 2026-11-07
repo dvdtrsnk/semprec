@@ -103,9 +103,10 @@ export async function expandItemRelations(
     database_id: string;
     properties: unknown;
     computed: unknown;
+    created_at: Date;
     updated_at: Date;
   }>(
-    `SELECT i.id,i.database_id,i.properties,i.computed,i.updated_at FROM items i
+    `SELECT i.id,i.database_id,i.properties,i.computed,i.created_at,i.updated_at FROM items i
      JOIN databases db ON db.id=i.database_id AND db.archived_at IS NULL
      WHERE i.id=ANY($1::uuid[]) AND i.database_id=ANY($2::uuid[]) AND i.deleted_at IS NULL`,
     [[...new Set(edgeRows.map((e) => e.target_id))], targetDbIds],
@@ -117,6 +118,7 @@ export async function expandItemRelations(
         databaseId: row.database_id,
         properties: jsonObject.parse(row.properties),
         computed: jsonObject.parse(row.computed),
+        createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
         deletedAt: null,
       },

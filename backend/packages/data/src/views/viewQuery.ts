@@ -82,6 +82,8 @@ function encodeSortCursor(
     // Written only for `desc`, so tokens issued before `groupDirection` existed stay valid under the default.
     ...(groupDirection === "desc" ? { g: groupDirection } : {}),
     v: sortSpecs.map((sort) => {
+      // A system key's value is the item's own ISO timestamp, the millisecond its sort expression orders by.
+      if (sort.system !== undefined) return sort.system === "createdAt" ? item.createdAt : item.updatedAt;
       const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
       return source[sort.property] ?? null;
     }),
@@ -112,6 +114,18 @@ function castableTo(cast: ReturnType<typeof sortKeyCast>, value: unknown): boole
   return true;
 }
 
+const SYSTEM_CURSOR_VALUE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * Whether a decoded cursor value is one `encodeSortCursor` can produce for a system key: the exact
+ * `Date#toISOString` form of a valid instant. The column is `NOT NULL`, so `null` is foreign too.
+ */
+function isSystemCursorValue(value: unknown): boolean {
+  if (typeof value !== "string" || !SYSTEM_CURSOR_VALUE_RE.test(value)) return false;
+  const instant = new Date(value);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === value;
+}
+
 /** Decodes and validates a sorted query's cursor — the decode is the validation, so anything that is not a token `encodeSortCursor` could have produced for these sort keys is rejected. */
 function decodeSortCursor(
   raw: string,
@@ -133,6 +147,7 @@ function decodeSortCursor(
   if (!Array.isArray(v) || v.length !== sortSpecs.length) throw invalid;
   if (typeof id !== "string" || !UUID_RE.test(id)) throw invalid;
   const castable = sortSpecs.every((sort, index) => {
+    if (sort.system !== undefined) return isSystemCursorValue(v[index]);
     const property = properties.get(sort.property);
     return property === undefined || castableTo(sortKeyCast(property), v[index]);
   });

@@ -41,6 +41,7 @@ const SAMPLE_ITEM: ItemRow = {
   databaseId: "22222222-2222-2222-2222-222222222222",
   properties: { title: "Hello" },
   computed: {},
+  createdAt: "2026-09-11T00:00:00.000Z",
   updatedAt: "2026-09-11T00:00:00.000Z",
   deletedAt: null,
 };

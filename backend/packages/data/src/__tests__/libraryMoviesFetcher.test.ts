@@ -19,6 +19,7 @@ const item: ItemRow = {
   databaseId: "movies",
   properties: { name: "Duna: Část druhá", year: 2024 },
   computed: {},
+  createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
   deletedAt: null,
 };

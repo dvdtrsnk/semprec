@@ -46,7 +46,20 @@ export function createSchemaRequestListener(
         const projection = await withTransaction(pool, (client) =>
           generateSchemaProjection(client, moduleRegistry, { locale }),
         );
-        sendJson(res, 200, projection);
+        // Issue #1597: each system database's declared area filter template, so a client substitutes an
+        // area id instead of assembling the per-database rule itself. Omitted for a database without one.
+        const areaFilters = new Map(
+          (await moduleRegistry.getDatabases()).flatMap((db) =>
+            db.areaFilter ? [[db.key, db.areaFilter] as const] : [],
+          ),
+        );
+        sendJson(res, 200, {
+          ...projection,
+          databases: projection.databases.map((db) => {
+            const areaFilter = db.key === null ? undefined : areaFilters.get(db.key);
+            return areaFilter === undefined ? db : { ...db, areaFilter };
+          }),
+        });
       });
     } catch (err) {
       if (err instanceof ChokePointError) {

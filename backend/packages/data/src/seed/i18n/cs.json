@@ -113,6 +113,7 @@
   "property.files.projects.name": "Projekty",
   "property.files.healthRecords.name": "Zdravotní záznamy",
   "property.files.companies.name": "Firmy",
+  "property.files.events.name": "Události",
 
   "database.events.name": "Události",
   "database.events.searchPlaceholder": "Hledat v Událostech",
@@ -136,6 +137,7 @@
   "property.events.transcript.name": "Přepis",
   "property.events.actionItems.name": "Akční položky",
   "property.events.company.name": "Firma",
+  "property.events.files.name": "Soubory",
 
   "database.healthRecords.name": "Zdravotní záznamy",
   "database.healthRecords.searchPlaceholder": "Hledat v záznamech",
