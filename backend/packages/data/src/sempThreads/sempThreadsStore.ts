@@ -3,7 +3,9 @@ import { requireAffectedRows, requireManagedTransaction, requireSingleRow } from
 import { enqueueSempMessage } from "../semp/sempMessageQueue.js";
 import { allocateSempMessageTimestamp } from "../semp/sempMessageOrder.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import type { SempThreadMessage } from "@semprec/shared";
+import type { SempThreadDetail, SempThreadMessage, SempTickThreadHeartbeat } from "@semprec/shared";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { isOnItemEventRule, parseHeartbeatRule } from "../scheduler/rule.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
@@ -16,6 +18,12 @@ interface ThreadRow {
   subject_proposal_id: string | null;
   created_at: Date;
   last_activity_at: Date;
+  /** The `project_heartbeats` columns of a tick thread's heartbeat; all null without one. */
+  heartbeat_row_id: string | null;
+  heartbeat_name: string | null;
+  heartbeat_rule: unknown;
+  heartbeat_enabled: boolean | null;
+  heartbeat_project_item_id: string | null;
 }
 
 interface MessageRow {
@@ -170,16 +178,63 @@ export async function sendSempMessage(
   return insertSempUserTurn(client, threadId, input.text, input.context, trusted);
 }
 
-export async function getSempThread(client: PoolClient, id: string) {
+/**
+ * The automation header and the running run of a tick thread (issue #1562). The heartbeat comes from a
+ * left join, so a thread whose heartbeat row is gone reports `heartbeat: null` instead of failing; the
+ * project name is read only from a live project item.
+ */
+async function readTickThreadHeader(
+  client: PoolClient,
+  row: ThreadRow,
+): Promise<Pick<SempThreadDetail, "heartbeat" | "activeRun">> {
+  let heartbeat: SempTickThreadHeartbeat | null = null;
+  if (row.heartbeat_project_item_id !== null && row.heartbeat_row_id !== null) {
+    const rule = parseHeartbeatRule(row.heartbeat_rule, new Map());
+    const [project] = await getItemsByIds(client, [row.heartbeat_project_item_id]);
+    const projectName = project?.properties.name;
+    heartbeat = {
+      id: row.heartbeat_row_id,
+      name: requireValue(row.heartbeat_name, "heartbeat name"),
+      rule,
+      enabled: requireValue(row.heartbeat_enabled, "heartbeat enabled"),
+      projectItemId: row.heartbeat_project_item_id,
+      projectName: typeof projectName === "string" ? projectName : null,
+      canTrigger: row.heartbeat_enabled === true && !isOnItemEventRule(rule),
+    };
+  }
+  // The latest running run, so the choice is deterministic should more than one be running.
+  const runs = await client.query<{ id: string; started_at: Date }>(
+    `SELECT id, started_at FROM agent_runs WHERE thread_id = $1 AND status = 'running'
+      ORDER BY started_at DESC, id DESC LIMIT 1`,
+    [row.id],
+  );
+  const run = runs.rows[0];
+  return { heartbeat, activeRun: run ? { agentRunId: run.id, startedAt: run.started_at.toISOString() } : null };
+}
+
+function requireValue<T>(value: T | null, label: string): T {
+  if (value === null) throw new Error(`Joined ${label} is missing`);
+  return value;
+}
+
+/**
+ * The detail of one Semp thread of the current tenant, or null when it is not visible. A tick thread
+ * also carries its heartbeat header and active run (issue #1562); other kinds carry neither key.
+ */
+export async function getSempThread(client: PoolClient, id: string): Promise<SempThreadDetail | null> {
   const { rows } = await client.query<ThreadRow>(
-    `SELECT id, kind, title, subject_inbox_item_id, subject_proposal_id, created_at, last_activity_at
-       FROM semp_threads WHERE id = $1`,
+    `SELECT t.id, t.kind, t.title, t.subject_inbox_item_id, t.subject_proposal_id, t.created_at, t.last_activity_at,
+            h.id AS heartbeat_row_id, h.name AS heartbeat_name, h.rule AS heartbeat_rule,
+            h.enabled AS heartbeat_enabled, h.project_item_id AS heartbeat_project_item_id
+       FROM semp_threads t
+       LEFT JOIN project_heartbeats h ON h.tenant_id = t.tenant_id AND h.id = t.heartbeat_id
+      WHERE t.id = $1`,
     [id],
   );
   const row = rows[0];
   if (!row) return null;
   const kind = assertKnownValue(["chat", "item", "tick"] as const, row.kind, "thread kind");
-  return {
+  const detail: SempThreadDetail = {
     id: row.id,
     kind,
     title: row.title,
@@ -187,6 +242,7 @@ export async function getSempThread(client: PoolClient, id: string) {
     createdAt: row.created_at.toISOString(),
     lastActivityAt: row.last_activity_at.toISOString(),
   };
+  return kind === "tick" ? { ...detail, ...(await readTickThreadHeader(client, row)) } : detail;
 }
 
 export async function listSempThreadMessages(

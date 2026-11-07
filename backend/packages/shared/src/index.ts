@@ -8,6 +8,11 @@ export * from "./traceContext.js";
 export * from "./genericOperations/index.js";
 export * from "./tenantScope.js";
 export * from "./sempMessageRef.js";
-export type { SempThreadMessage } from "./sempThreadMessage.js";
+export type {
+  SempThreadActiveRun,
+  SempThreadDetail,
+  SempThreadMessage,
+  SempTickThreadHeartbeat,
+} from "./sempThreadMessage.js";
 export { normalizeWhisperLanguage } from "./whisperLanguageCodes.js";
 export { settleBlobReadStream, BlobReadCleanupError, type BlobReadCleanupBudget } from "./settleBlobReadStream.js";
