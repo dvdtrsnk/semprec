@@ -401,14 +401,11 @@ function observeWakeSend(tenantId: string) {
       if (expected) throw new Error("Image wake observer already bound");
       expected = { threadId, assistantId };
     },
-    async settle() {
-      while (pending.size) await Promise.all(pending);
-    },
     snapshot() {
-      return { calls, failures, caught, observerFault };
+      return { calls, failures, caught, observerFault, pending: pending.size };
     },
-    async restore() {
-      await this.settle();
+    restore() {
+      if (pending.size || observerFault) throw new Error("Image wake observer unsettled");
       Object.defineProperty(prototype, "send", descriptor);
       const restored = Object.getOwnPropertyDescriptor(prototype, "send");
       if (
@@ -437,7 +434,9 @@ async function captureImageWakeFailure(options: {
   sensitive: string[];
 }): Promise<string> {
   requireImageWakeEnvironment();
-  await options.observer.settle();
+  const observed = options.observer.snapshot();
+  if (observed.pending > 0) return "observer-unsettled";
+  if (observed.observerFault) return "observer-unavailable";
   const target = await runInTenant(options.tenantId, () =>
     pool.query<{
       assistant_status: string;
@@ -455,7 +454,6 @@ async function captureImageWakeFailure(options: {
   );
   const row = target.rows[0];
   if (target.rows.length !== 1 || !row || row.assistant_status !== "error") return "target-unavailable";
-  const observed = options.observer.snapshot();
   let category = "unavailable";
   let code = "unavailable";
   let messageState = "unavailable";
@@ -1398,10 +1396,16 @@ describe("queued Semp messages", () => {
       }
       if (wakeObserver) {
         try {
-          await wakeObserver.restore();
+          if (!workerSettled) throw new Error("Image wake worker settlement unavailable");
+          wakeObserver.restore();
+          const state = wakeObserver.snapshot();
+          process.stderr.write(
+            `image wake observer ${JSON.stringify({ restored: true, calls: state.calls, failures: state.failures, pending: state.pending, observerFault: state.observerFault })}\n`,
+          );
         } catch {
           imageObserverUnsafe = true;
           workerSettled = false;
+          process.stderr.write("image wake observer restoration-unestablished\n");
           cleanupFailures.push(new Error("Image wake observer did not settle or restore"));
         }
       }
