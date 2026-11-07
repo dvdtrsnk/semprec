@@ -69,9 +69,11 @@ let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 
+type RefFixtureIdentity = { tenantId: string | null; agentRunId: string | null; sempMessageId: string | null };
 type RefFixtureMessage =
   | { type: "ready"; port: number }
-  | { type: "gatewayRequest"; sequence: number; bodyBytes: number }
+  | ({ type: "gatewayRequest"; sequence: number; bodyBytes: number } & RefFixtureIdentity)
+  | ({ type: "gatewayResult"; sequence: number; status: number } & RefFixtureIdentity)
   | {
       type: "observation";
       sequence: number;
@@ -90,6 +92,8 @@ type RefFixtureMessage =
 function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   if (!("type" in value)) return null;
+  const uuidOrNull = (input: unknown): input is string | null =>
+    input === null || (typeof input === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input));
   if (
     value.type === "ready" &&
     Object.keys(value).length === 2 &&
@@ -102,7 +106,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     return { type: "ready", port: value.port };
   if (
     value.type === "gatewayRequest" &&
-    Object.keys(value).length === 3 &&
+    Object.keys(value).length === 6 &&
     "sequence" in value &&
     typeof value.sequence === "number" &&
     Number.isInteger(value.sequence) &&
@@ -112,9 +116,50 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     typeof value.bodyBytes === "number" &&
     Number.isInteger(value.bodyBytes) &&
     value.bodyBytes > 0 &&
-    value.bodyBytes <= 4 * 1024 * 1024
+    value.bodyBytes <= 4 * 1024 * 1024 &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
   )
-    return { type: "gatewayRequest", sequence: value.sequence, bodyBytes: value.bodyBytes };
+    return {
+      type: "gatewayRequest",
+      sequence: value.sequence,
+      bodyBytes: value.bodyBytes,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
+  if (
+    value.type === "gatewayResult" &&
+    Object.keys(value).length === 6 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "status" in value &&
+    typeof value.status === "number" &&
+    Number.isInteger(value.status) &&
+    value.status >= 100 &&
+    value.status <= 599 &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
+  )
+    return {
+      type: "gatewayResult",
+      sequence: value.sequence,
+      status: value.status,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
   if (
     value.type === "observation" &&
     Object.keys(value).length === 12 &&
@@ -509,20 +554,74 @@ describe("queued Semp messages", () => {
         }),
       });
       let runId = "";
-      await vi.waitFor(
-        async () => {
-          const result = await runInTenant(tenant, () =>
-            pool.query<{ status: string; agent_run_id: string | null }>(
-              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+      try {
+        await vi.waitFor(
+          async () => {
+            const result = await runInTenant(tenant, () =>
+              pool.query<{ status: string; agent_run_id: string | null }>(
+                "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                [turn.assistantMessageId],
+              ),
+            );
+            expect(result.rows[0]?.status).toBe("done");
+            runId = result.rows[0]?.agent_run_id ?? "";
+            expect(runId).not.toBe("");
+          },
+          { timeout: 20_000 },
+        );
+      } catch (error) {
+        try {
+          const observed = await runInTenant(tenant, async () => {
+            const target = await pool.query<{ status: string; error_code: string | null; agent_run_id: string | null }>(
+              "SELECT status, error_code, agent_run_id FROM semp_messages WHERE id=$1 AND thread_id=$2",
+              [turn.assistantMessageId, turn.threadId],
+            );
+            const calls = await pool.query<{ status: string }>(
+              "SELECT status FROM ai_gateway_calls WHERE semp_message_id=$1 ORDER BY at, id",
               [turn.assistantMessageId],
-            ),
-          );
-          expect(result.rows[0]?.status).toBe("done");
-          runId = result.rows[0]?.agent_run_id ?? "";
-          expect(runId).not.toBe("");
-        },
-        { timeout: 20_000 },
-      );
+            );
+            const row = target.rows[0];
+            const requests = messages.filter(
+              (entry) =>
+                entry.type === "gatewayRequest" &&
+                entry.sempMessageId === turn.assistantMessageId &&
+                entry.tenantId === tenant &&
+                entry.agentRunId === row?.agent_run_id,
+            );
+            const results = messages.filter(
+              (entry) =>
+                entry.type === "gatewayResult" &&
+                entry.sempMessageId === turn.assistantMessageId &&
+                entry.tenantId === tenant &&
+                entry.agentRunId === row?.agent_run_id,
+            );
+            return {
+              targetCount: target.rows.length,
+              statusDone: row?.status === "done",
+              statusError: row?.status === "error",
+              modelError: row?.error_code === "modelError",
+              hasRun: row?.agent_run_id !== null && row?.agent_run_id !== undefined,
+              callCount: calls.rows.length,
+              settledCount: calls.rows.filter((call) => call.status === "settled").length,
+              gatewayRequestCount: requests.length,
+              gateway2xx: results.filter(
+                (entry) => entry.type === "gatewayResult" && entry.status >= 200 && entry.status < 300,
+              ).length,
+              gateway4xx: results.filter(
+                (entry) => entry.type === "gatewayResult" && entry.status >= 400 && entry.status < 500,
+              ).length,
+              gateway5xx: results.filter(
+                (entry) => entry.type === "gatewayResult" && entry.status >= 500 && entry.status < 600,
+              ).length,
+              providerObservationCount: messages.filter((entry) => entry.type === "observation").length,
+            };
+          });
+          process.stderr.write(`reference target observation ${JSON.stringify(observed)}\n`);
+        } catch {
+          process.stderr.write("reference target observation unavailable\n");
+        }
+        throw error;
+      }
       await vi.waitFor(
         () =>
           expect(messages.filter((entry) => entry.type === "observation")).toEqual([
@@ -546,6 +645,20 @@ describe("queued Semp messages", () => {
       const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
       expect(requestObservations).toHaveLength(1);
       expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+      expect(requestObservations[0]).toMatchObject({
+        sequence: 1,
+        tenantId: tenant,
+        agentRunId: runId,
+        sempMessageId: turn.assistantMessageId,
+      });
+      expect(messages).toContainEqual({
+        type: "gatewayResult",
+        sequence: 1,
+        status: 200,
+        tenantId: tenant,
+        agentRunId: runId,
+        sempMessageId: turn.assistantMessageId,
+      });
       const evidence = await runInTenant(tenant, async () => {
         const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
         const events = await pool.query<{ payload: unknown }>(
@@ -640,6 +753,19 @@ describe("queued Semp messages", () => {
           const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
           if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
           expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+          expect(request).toMatchObject({
+            tenantId: tenant,
+            agentRunId: runId,
+            sempMessageId: continued.assistantMessageId,
+          });
+          expect(messages).toContainEqual({
+            type: "gatewayResult",
+            sequence: 2,
+            status: 200,
+            tenantId: tenant,
+            agentRunId: runId,
+            sempMessageId: continued.assistantMessageId,
+          });
         },
         { timeout: 5000 },
       );
@@ -686,6 +812,19 @@ describe("queued Semp messages", () => {
           const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
           if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
           expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+          expect(request).toMatchObject({
+            tenantId: tenant,
+            agentRunId: wakeRun,
+            sempMessageId: wake.assistantMessageId,
+          });
+          expect(messages).toContainEqual({
+            type: "gatewayResult",
+            sequence: 3,
+            status: 200,
+            tenantId: tenant,
+            agentRunId: wakeRun,
+            sempMessageId: wake.assistantMessageId,
+          });
         },
         { timeout: 5000 },
       );

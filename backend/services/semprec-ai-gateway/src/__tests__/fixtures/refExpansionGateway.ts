@@ -164,6 +164,16 @@ const dispatcher = createDispatcher(
 let gatewayRequests = 0;
 const gateway = createServer((request, response) => {
   if (request.method === "POST" && request.url === "/internal/pi/messages") {
+    const sequence = ++gatewayRequests;
+    const uuidHeader = (name: string): string | null => {
+      const parsed = z.string().uuid().safeParse(request.headers[name]);
+      return parsed.success ? parsed.data : null;
+    };
+    const identity = {
+      tenantId: uuidHeader("x-semprec-tenant-id"),
+      agentRunId: uuidHeader("x-semprec-agent-run-id"),
+      sempMessageId: uuidHeader("x-semprec-semp-message-id"),
+    };
     let bytes = 0;
     let valid = true;
     request.on("data", (chunk: unknown) => {
@@ -173,11 +183,14 @@ const gateway = createServer((request, response) => {
       if (bytes > 4 * 1024 * 1024) valid = false;
     });
     request.once("end", () => {
-      if (!valid || ++gatewayRequests > 20) {
+      if (!valid || sequence > 20) {
         process.exitCode = 1;
         return;
       }
-      process.send?.({ type: "gatewayRequest", sequence: gatewayRequests, bodyBytes: bytes });
+      process.send?.({ type: "gatewayRequest", sequence, bodyBytes: bytes, ...identity });
+    });
+    response.once("finish", () => {
+      if (sequence <= 20) process.send?.({ type: "gatewayResult", sequence, status: response.statusCode, ...identity });
     });
   }
   dispatcher(request, response);
