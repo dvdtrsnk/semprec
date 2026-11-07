@@ -49,6 +49,10 @@ const provider = createServer((request, response) => {
       sequence: calls,
       owner: body.includes("REF_OWNER_SENTINEL_32"),
       foreign: body.includes("REF_FOREIGN_SENTINEL_32"),
+      mailFirst: body.includes("REF_MAIL_FIRST_SENTINEL_32"),
+      mailReply: body.includes("REF_MAIL_REPLY_SENTINEL_32"),
+      block: body.includes("REF_BLOCK_SENTINEL_32"),
+      sibling: body.includes("REF_SIBLING_SENTINEL_32"),
     });
     const events = [
       {

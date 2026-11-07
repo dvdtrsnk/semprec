@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -13,6 +14,7 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
   createAgentRun,
+  createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
   createUser,
@@ -23,18 +25,24 @@ import {
   getDatabaseByModuleId,
   insertAgentRunEvent,
   loadFullModuleRegistry,
+  listPropertiesByDatabase,
+  LocalFsBlobStorageWriter,
   readSempRefContext,
+  resolveMailModuleIds,
   seedSystem,
   sendSempMessage,
   startTenantDeactivationListener,
   startSempMessageTurn,
   suspendAccount,
+  validateSempMessageRefs,
   withTransaction,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  ensureFolderItem,
   getTestPool,
+  ingestEmailMessage,
   resetDatabase,
   setTenantAiBudget,
 } from "@semprec/data/testSupport";
@@ -58,7 +66,17 @@ let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 
 type RefFixtureMessage =
-  { type: "ready"; port: number } | { type: "observation"; sequence: number; owner: boolean; foreign: boolean };
+  | { type: "ready"; port: number }
+  | {
+      type: "observation";
+      sequence: number;
+      owner: boolean;
+      foreign: boolean;
+      mailFirst: boolean;
+      mailReply: boolean;
+      block: boolean;
+      sibling: boolean;
+    };
 
 function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -75,7 +93,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     return { type: "ready", port: value.port };
   if (
     value.type === "observation" &&
-    Object.keys(value).length === 4 &&
+    Object.keys(value).length === 8 &&
     "sequence" in value &&
     typeof value.sequence === "number" &&
     Number.isInteger(value.sequence) &&
@@ -84,9 +102,26 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     "owner" in value &&
     typeof value.owner === "boolean" &&
     "foreign" in value &&
-    typeof value.foreign === "boolean"
+    typeof value.foreign === "boolean" &&
+    "mailFirst" in value &&
+    typeof value.mailFirst === "boolean" &&
+    "mailReply" in value &&
+    typeof value.mailReply === "boolean" &&
+    "block" in value &&
+    typeof value.block === "boolean" &&
+    "sibling" in value &&
+    typeof value.sibling === "boolean"
   )
-    return { type: "observation", sequence: value.sequence, owner: value.owner, foreign: value.foreign };
+    return {
+      type: "observation",
+      sequence: value.sequence,
+      owner: value.owner,
+      foreign: value.foreign,
+      mailFirst: value.mailFirst,
+      mailReply: value.mailReply,
+      block: value.block,
+      sibling: value.sibling,
+    };
   return null;
 }
 
@@ -143,6 +178,8 @@ describe("queued Semp messages", () => {
     let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
     let exited = false;
     let blockDir: string | undefined;
+    let mailRoot: string | undefined;
+    let workerSettled = false;
     let failed = false;
     let failure: unknown;
     const cleanupFailures: unknown[] = [];
@@ -234,6 +271,83 @@ describe("queued Semp messages", () => {
           return { databaseId: database.id, itemId: item.id };
         }),
       );
+      mailRoot = await mkdtemp(join(tmpdir(), "semp-ref-worker-mail-"));
+      const mailStorage = new LocalFsBlobStorageWriter(mailRoot);
+      const mail = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const mailIds = await resolveMailModuleIds(client);
+          const emailProperties = await listPropertiesByDatabase(client, mailIds.emailsDatabaseId);
+          const folderProperties = await listPropertiesByDatabase(client, mailIds.foldersDatabaseId);
+          const attachments = emailProperties.find((property) => property.key === "attachments");
+          const folder = emailProperties.find((property) => property.key === "folder");
+          const mailbox = folderProperties.find((property) => property.key === "mailbox");
+          if (!attachments || !folder || !mailbox) throw new Error("Missing mail fixture relations");
+          const mailboxItem = await createItemWithClient(client, {
+            databaseId: mailIds.mailboxesDatabaseId,
+            properties: { name: "Reference mailbox" },
+          });
+          const folderId = await ensureFolderItem(client, {
+            foldersDatabaseId: mailIds.foldersDatabaseId,
+            mailboxItemId: mailboxItem.id,
+            mailboxRelationPropertyId: mailbox.id,
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          const messageId = `<${randomUUID()}@example.test>`;
+          const common = {
+            emailsDatabaseId: mailIds.emailsDatabaseId,
+            filesDatabaseId: mailIds.filesDatabaseId,
+            folderRelationPropertyId: folder.id,
+            attachmentsRelationPropertyId: attachments.id,
+            folderItemId: folderId,
+            mailboxItemId: mailboxItem.id,
+            subject: "Reference thread",
+            envelope: {},
+            attachments: [],
+            storage: mailStorage,
+            storageKeyPrefix: "reference-worker",
+          };
+          const first = await ingestEmailMessage(client, {
+            ...common,
+            messageId,
+            bodyText: "REF_MAIL_FIRST_SENTINEL_32",
+          });
+          const reply = await ingestEmailMessage(client, {
+            ...common,
+            messageId: `<${randomUUID()}@example.test>`,
+            inReplyTo: messageId,
+            references: [messageId],
+            bodyText: "REF_MAIL_REPLY_SENTINEL_32",
+          });
+          const threads = await client.query<{ item_id: string; thread_id: string | null }>(
+            "SELECT item_id, thread_id FROM mail_message_meta WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+            [[first.itemId, reply.itemId]],
+          );
+          expect(threads.rows).toHaveLength(2);
+          expect(threads.rows[0]?.thread_id).toBeTruthy();
+          expect(threads.rows[0]?.thread_id).toBe(threads.rows[1]?.thread_id);
+          return { databaseId: mailIds.emailsDatabaseId, itemId: first.itemId };
+        }),
+      );
+      const blockId = randomUUID();
+      const siblingId = randomUUID();
+      const parentId = randomUUID();
+      await runInTenant(tenant, async () => {
+        const docs = createDocStore(pool);
+        await docs.putBlock(
+          ids.itemId,
+          { id: blockId, flavour: "paragraph", fields: { text: "REF_BLOCK_SENTINEL_32" } },
+          "user",
+        );
+        await docs.putBlock(
+          ids.itemId,
+          { id: siblingId, flavour: "paragraph", fields: { text: "REF_SIBLING_SENTINEL_32" } },
+          "user",
+        );
+        await docs.putBlock(ids.itemId, { id: parentId, flavour: "page", children: [blockId, siblingId] }, "user");
+      });
       const foreignIds = await runInTenant(foreign, () =>
         withTransaction(pool, async (client) => {
           const database = await getDatabaseByModuleId(client, "areas");
@@ -246,18 +360,43 @@ describe("queued Semp messages", () => {
         }),
       );
       const refs = [
-        { kind: "item", ...ids },
-        { kind: "item", ...foreignIds },
-        { kind: "item", databaseId: ids.databaseId, itemId: randomUUID() },
+        { kind: "item" as const, ...ids },
+        { kind: "item" as const, ...mail },
+        { kind: "block" as const, itemId: ids.itemId, blockId },
       ];
       await expect(
         withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
       ).rejects.toThrow();
       expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(0);
-      // Synthetic historical refs include foreign and random IDs; the reader must not expand them.
+      const refused = [
+        { kind: "item" as const, ...foreignIds },
+        { kind: "item" as const, databaseId: ids.databaseId, itemId: randomUUID() },
+      ];
+      const countMessages = () =>
+        runInTenant(tenant, () => pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"));
+      const beforeRefusal = await countMessages();
+      const jobsBeforeRefusal = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+      );
+      for (const ref of refused) {
+        await expect(
+          runInTenant(tenant, () => withTransaction(pool, (client) => validateSempMessageRefs(client, [ref]))),
+        ).rejects.toThrow();
+        expect(
+          await runInTenant(tenant, () => withTransaction(pool, (client) => readSempRefContext(client, ref))),
+        ).toBeNull();
+      }
+      expect((await countMessages()).rows).toEqual(beforeRefusal.rows);
+      expect(
+        (await admin.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+      ).toEqual(jobsBeforeRefusal.rows);
       const turn = await runInTenant(tenant, () =>
-        withTransaction(pool, (client) =>
-          sendSempMessage(client, { text: "Question", context: refs, hasContext: true }),
+        withTransaction(pool, async (client) =>
+          sendSempMessage(client, {
+            text: "Question",
+            context: await validateSempMessageRefs(client, refs),
+            hasContext: true,
+          }),
         ),
       );
       const gateway = createGatewayModel({
@@ -286,7 +425,16 @@ describe("queued Semp messages", () => {
       await vi.waitFor(
         () =>
           expect(messages.filter((entry) => entry.type === "observation")).toEqual([
-            { type: "observation", sequence: 1, owner: true, foreign: false },
+            {
+              type: "observation",
+              sequence: 1,
+              owner: true,
+              foreign: false,
+              mailFirst: true,
+              mailReply: true,
+              block: true,
+              sibling: true,
+            },
           ]),
         { timeout: 5000 },
       );
@@ -300,17 +448,41 @@ describe("queued Semp messages", () => {
           "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1",
           [runId],
         );
-        return { run: run.rows, events: events.rows, calls: calls.rows };
+        const storedMessages = await pool.query<{ id: string; context: unknown; reply_to_message_id: string | null }>(
+          "SELECT id, context, reply_to_message_id FROM semp_messages WHERE id = ANY($1::uuid[])",
+          [[turn.messageId, turn.assistantMessageId]],
+        );
+        return { run: run.rows, events: events.rows, calls: calls.rows, messages: storedMessages.rows };
       });
       expect(evidence.run).toEqual([{ task: "Question" }]);
+      expect(evidence.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: turn.messageId, context: refs }),
+          expect.objectContaining({ id: turn.assistantMessageId, reply_to_message_id: turn.messageId }),
+        ]),
+      );
       expect(JSON.stringify(evidence.events)).not.toContain("REF_OWNER_SENTINEL_32");
       expect(JSON.stringify(evidence.events)).not.toContain("REF_FOREIGN_SENTINEL_32");
+      for (const sentinel of [
+        "REF_MAIL_FIRST_SENTINEL_32",
+        "REF_MAIL_REPLY_SENTINEL_32",
+        "REF_BLOCK_SENTINEL_32",
+        "REF_SIBLING_SENTINEL_32",
+      ]) {
+        expect(JSON.stringify(evidence.events)).not.toContain(sentinel);
+        expect(JSON.stringify(evidence.run)).not.toContain(sentinel);
+        expect(JSON.stringify(evidence.messages)).not.toContain(sentinel);
+      }
       expect(evidence.events).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             payload: expect.objectContaining({
               kind: "user_message",
-              context: expect.arrayContaining([expect.objectContaining({ ...refs[0], label: "Reference" })]),
+              context: expect.arrayContaining([
+                expect.objectContaining({ ...refs[0], label: "Reference" }),
+                expect.objectContaining({ ...refs[1], label: "Reference thread" }),
+                expect.objectContaining({ ...refs[2], label: "Reference" }),
+              ]),
             }),
           }),
         ]),
@@ -326,12 +498,15 @@ describe("queued Semp messages", () => {
       const active = runtime;
       runtime = undefined;
       await active?.stop();
+      workerSettled = true;
     } catch (error) {
+      workerSettled = false;
       cleanupFailures.push(error);
     }
     try {
       await closeIdleThreadSessions(pool);
     } catch (error) {
+      workerSettled = false;
       cleanupFailures.push(error);
     }
     if (child && childExit && !exited) {
@@ -368,9 +543,16 @@ describe("queued Semp messages", () => {
         cleanupFailures.push(error);
       }
     }
-    if (blockDir && (!child || exited)) {
+    if (blockDir && (!child || exited) && workerSettled) {
       try {
         await rm(blockDir, { recursive: true });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    if (mailRoot && (!child || exited) && workerSettled) {
+      try {
+        await rm(mailRoot, { recursive: true });
       } catch (error) {
         cleanupFailures.push(error);
       }
