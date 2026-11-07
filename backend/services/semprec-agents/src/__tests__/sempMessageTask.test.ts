@@ -1,26 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat } from "node:fs/promises";
-import { constants } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import sharp from "sharp";
-import {
-  closeIdleThreadSessions,
-  createBoundedSempHistory,
-  SempConversation,
-  type SempSendOptions,
-  type SempThread,
-  type SempTurnResult,
-} from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
   createChokePoint,
@@ -76,7 +68,6 @@ let tenant: string;
 let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
-let imageObserverUnsafe = false;
 
 type QuerySchemaObservation = {
   count: number;
@@ -298,302 +289,6 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   return null;
 }
 
-const imageWakeSdkEnvironment = [
-  "ANTHROPIC_CUSTOM_HEADERS",
-  "ANTHROPIC_WEBHOOK_SIGNING_KEY",
-  "ANTHROPIC_LOG",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-] as const;
-
-function requireImageWakeEnvironment(): void {
-  if (imageWakeSdkEnvironment.some((name) => Object.hasOwn(process.env, name)))
-    throw new Error("Image wake diagnostic environment unavailable");
-}
-
-async function imageWakeDirectory(): Promise<{ directory: string; sourcePin: string }> {
-  const directory = process.env.BATCH32_IMAGE_WAKE_PRIVATE_DIR;
-  const sourcePin = process.env.BATCH32_SOURCE_PIN;
-  if (!directory || !sourcePin || !/^[0-9a-f]{40}$/.test(sourcePin))
-    throw new Error("Image wake diagnostic configuration unavailable");
-  const root = await realpath("/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-32-run");
-  const info = await lstat(directory);
-  if (
-    !info.isDirectory() ||
-    info.isSymbolicLink() ||
-    (info.mode & 0o7777) !== 0o700 ||
-    info.uid !== process.getuid?.() ||
-    dirname(resolve(directory)) !== root ||
-    (await realpath(directory)) !== resolve(directory) ||
-    !/^image-wake-private-[a-zA-Z0-9_-]+$/.test(basename(directory))
-  )
-    throw new Error("Image wake diagnostic directory unavailable");
-  return { directory, sourcePin };
-}
-
-type WakeSend = (
-  this: SempConversation,
-  task: string,
-  thread: SempThread,
-  options?: SempSendOptions,
-) => Promise<SempTurnResult>;
-
-function isWakeSend(value: unknown): value is WakeSend {
-  return typeof value === "function";
-}
-
-function observeWakeSend(tenantId: string) {
-  const prototype = SempConversation.prototype;
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, "send");
-  const original: unknown = descriptor?.value;
-  if (
-    !descriptor ||
-    !isWakeSend(original) ||
-    original !== Reflect.get(prototype, "send") ||
-    !descriptor.configurable ||
-    !descriptor.writable
-  )
-    throw new Error("Image wake observer unavailable");
-  const trustedOriginal = original;
-  let expected: { threadId: string; assistantId: string } | undefined;
-  let calls = 0;
-  let failures = 0;
-  let caught: unknown;
-  let observerFault = false;
-  const pending = new Set<Promise<void>>();
-  function send(this: SempConversation, ...args: Parameters<WakeSend>): ReturnType<WakeSend> {
-    const result = trustedOriginal.apply(this, args);
-    try {
-      const scope = currentTenantScope();
-      const matched =
-        expected !== undefined &&
-        scope?.kind === "tenant" &&
-        scope.tenantId === tenantId &&
-        args[1].threadId === expected.threadId &&
-        args[2]?.messageId === expected.assistantId;
-      if (!matched) return result;
-      calls = Math.min(calls + 1, 2);
-      const observation = result.then(
-        () => {
-          pending.delete(observation);
-        },
-        (error: unknown) => {
-          try {
-            failures = Math.min(failures + 1, 2);
-            if (failures === 1) caught = error;
-          } catch {
-            observerFault = true;
-          } finally {
-            pending.delete(observation);
-          }
-        },
-      );
-      pending.add(observation);
-    } catch {
-      observerFault = true;
-    }
-    return result;
-  }
-  Object.defineProperty(prototype, "send", { ...descriptor, value: send });
-  return {
-    bind(threadId: string, assistantId: string) {
-      if (expected) throw new Error("Image wake observer already bound");
-      expected = { threadId, assistantId };
-    },
-    snapshot() {
-      return { calls, failures, caught, observerFault, pending: pending.size };
-    },
-    restore() {
-      if (pending.size || observerFault) throw new Error("Image wake observer unsettled");
-      Object.defineProperty(prototype, "send", descriptor);
-      const restored = Object.getOwnPropertyDescriptor(prototype, "send");
-      if (
-        !restored ||
-        restored.value !== descriptor.value ||
-        restored.writable !== descriptor.writable ||
-        restored.enumerable !== descriptor.enumerable ||
-        restored.configurable !== descriptor.configurable ||
-        pending.size ||
-        observerFault
-      )
-        throw new Error("Image wake observer restoration failed");
-    },
-  };
-}
-
-type WakeObserver = ReturnType<typeof observeWakeSend>;
-
-async function captureImageWakeFailure(options: {
-  directory: string;
-  sourcePin: string;
-  tenantId: string;
-  threadId: string;
-  assistantId: string;
-  observer: WakeObserver;
-  sensitive: string[];
-}): Promise<string> {
-  requireImageWakeEnvironment();
-  const observed = options.observer.snapshot();
-  if (observed.pending > 0) return "observer-unsettled";
-  if (observed.observerFault) return "observer-unavailable";
-  const target = await runInTenant(options.tenantId, () =>
-    pool.query<{
-      assistant_status: string;
-      associated_run_id: string | null;
-      run_id: string | null;
-      run_status: string | null;
-      run_error_code: string | null;
-    }>(
-      `SELECT m.status AS assistant_status, m.agent_run_id AS associated_run_id,
-              r.id AS run_id, r.status AS run_status, r.error_code AS run_error_code
-       FROM semp_messages m LEFT JOIN agent_runs r ON r.id = m.agent_run_id AND r.tenant_id = m.tenant_id
-      WHERE m.id = $1 AND m.thread_id = $2 AND m.tenant_id = $3 AND m.role = 'assistant'`,
-      [options.assistantId, options.threadId, options.tenantId],
-    ),
-  );
-  const row = target.rows[0];
-  if (target.rows.length !== 1 || !row || row.assistant_status !== "error") return "target-unavailable";
-  let category = "unavailable";
-  let code = "unavailable";
-  let messageState = "unavailable";
-  let message: string | undefined;
-  let truncated = false;
-  try {
-    if (observed.failures === 1 && observed.caught instanceof Error) {
-      category =
-        observed.caught instanceof AggregateError
-          ? "aggregateError"
-          : observed.caught instanceof TypeError
-            ? "typeError"
-            : observed.caught instanceof RangeError
-              ? "rangeError"
-              : "error";
-      const codeDescriptor = Object.getOwnPropertyDescriptor(observed.caught, "code");
-      if (
-        codeDescriptor &&
-        "value" in codeDescriptor &&
-        typeof codeDescriptor.value === "string" &&
-        ["ENOENT", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ABORT_ERR"].includes(codeDescriptor.value)
-      )
-        code = codeDescriptor.value;
-      const descriptor = Object.getOwnPropertyDescriptor(observed.caught, "message");
-      if (descriptor && "value" in descriptor && typeof descriptor.value === "string") {
-        const raw = descriptor.value;
-        if (Buffer.byteLength(raw, "utf8") > 1024) messageState = "oversize";
-        else if (
-          /["'](?:messages|system|content|prompt|headers|body|image|data)["']\s*:/i.test(raw) ||
-          /data:\s*image\/|base64\s*[,;:]|\n\s*at\s/i.test(raw)
-        )
-          messageState = "structured-unavailable";
-        else {
-          let redacted = raw;
-          for (const value of options.sensitive.filter(Boolean).sort((a, b) => b.length - a.length))
-            redacted = redacted.split(value).join("[redacted]");
-          redacted = redacted
-            .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[uri]")
-            .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+/g, "[email]")
-            .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[uuid]")
-            .replace(
-              /\b(?:authorization|api[-_ ]?key|token)["']?\s*[=:]\s*["']?(?:bearer\s+)?[^\s,;"'}]+/gi,
-              "[credential]",
-            )
-            .replace(/\bbearer\s+[^\s,;"'}]+/gi, "[credential]")
-            .replace(/[A-Za-z0-9+/]{64,}={0,2}/g, "[base64]");
-          let bounded = "";
-          for (const character of redacted) {
-            if (Buffer.byteLength(bounded + character, "utf8") > 512) break;
-            bounded += character;
-          }
-          message = bounded;
-          truncated = bounded !== redacted;
-          messageState = "redacted";
-        }
-      }
-    }
-  } catch {
-    category = "unavailable";
-    code = "unavailable";
-    messageState = "unavailable";
-    message = undefined;
-    truncated = false;
-  }
-  const runStatus =
-    row.run_status !== null && ["queued", "running", "done", "error"].includes(row.run_status)
-      ? row.run_status
-      : row.run_status === null
-        ? row.associated_run_id === null
-          ? "absent"
-          : "unavailable"
-        : "other";
-  const runError =
-    row.run_id === null
-      ? row.associated_run_id === null
-        ? "absent"
-        : "unavailable"
-      : row.run_error_code === null
-        ? "absent"
-        : row.run_error_code === "modelError"
-          ? "modelError"
-          : row.run_error_code === "interrupted"
-            ? "interrupted"
-            : "other";
-  const document = JSON.stringify({
-    version: 1,
-    sourcePin: options.sourcePin,
-    tenantId: options.tenantId,
-    threadId: options.threadId,
-    assistantId: options.assistantId,
-    assistantStatus: "error",
-    associatedRunIdPresent: row.associated_run_id !== null,
-    associatedRunRowPresent: row.run_id !== null,
-    runId: row.run_id,
-    runStatus,
-    runError,
-    targetCallsCappedAtTwo: observed.calls,
-    targetFailuresCappedAtTwo: observed.failures,
-    observerFault: observed.observerFault,
-    returnedOriginalPromise: observed.calls > 0,
-    originalRejectionPreserved: observed.failures > 0,
-    category,
-    code,
-    messageState,
-    truncated,
-    ...(message === undefined ? {} : { message }),
-  });
-  if (Buffer.byteLength(document, "utf8") > 2048) throw new Error("Image wake diagnostic artifact too large");
-  const tenantDirectory = join(options.directory, options.tenantId);
-  await mkdir(tenantDirectory, { mode: 0o700 });
-  const handle = await open(
-    join(tenantDirectory, "failure.json"),
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600,
-  );
-  let failed = false;
-  let failure: unknown;
-  try {
-    await handle.writeFile(document, "utf8");
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  let closeFailed = false;
-  let closeFailure: unknown;
-  try {
-    await handle.close();
-  } catch (error) {
-    closeFailed = true;
-    closeFailure = error;
-  }
-  if (failed && closeFailed)
-    throw new AggregateError([failure, closeFailure], "Image wake diagnostic write and close failed", {
-      cause: failure,
-    });
-  if (failed) throw failure;
-  if (closeFailed) throw closeFailure;
-  return `${basename(options.directory)}/${options.tenantId}/failure.json`;
-}
-
 describe("queued Semp messages", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -621,7 +316,6 @@ describe("queued Semp messages", () => {
       errors.push(error);
     }
     try {
-      if (imageObserverUnsafe) throw new Error("Image wake observer not safely restored");
       await pool?.end();
     } catch (error) {
       errors.push(error);
@@ -643,14 +337,6 @@ describe("queued Semp messages", () => {
   ])(
     "$name",
     async ({ images }) => {
-      let imageDirectory: Awaited<ReturnType<typeof imageWakeDirectory>> | undefined;
-      if (images) {
-        try {
-          imageDirectory = await imageWakeDirectory();
-        } catch {
-          throw new Error("Image wake diagnostic configuration unavailable");
-        }
-      }
       await runtime?.stop();
       runtime = undefined;
       const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -669,7 +355,6 @@ describe("queued Semp messages", () => {
       let workerSettled: boolean;
       let failed = false;
       let failure: unknown;
-      let wakeObserver: WakeObserver | undefined;
       const cleanupFailures: unknown[] = [];
       try {
         if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
@@ -703,7 +388,6 @@ describe("queued Semp messages", () => {
           .digest("hex");
         const databaseUrl = pool.options.connectionString;
         if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
-        if (images) requireImageWakeEnvironment();
         child = spawn(process.execPath, [fixture], {
           cwd: backend,
           detached: true,
@@ -1234,85 +918,30 @@ describe("queued Semp messages", () => {
           ]);
           const closed = await closeIdleThreadSessions(pool);
           expect(closed.closedRunIds).toContain(runId);
-          wakeObserver = observeWakeSend(tenant);
-          const observer = wakeObserver;
           const wake = await runInTenant(tenant, () =>
-            withTransaction(pool, async (client) => {
-              const created = await sendSempMessage(client, {
+            withTransaction(pool, (client) =>
+              sendSempMessage(client, {
                 threadId: turn.threadId,
                 text: "Wake the image history",
                 context: [],
                 hasContext: false,
-              });
-              observer.bind(turn.threadId, created.assistantMessageId);
-              return created;
-            }),
+              }),
+            ),
           );
-          let wakeRun: string | null | undefined;
-          try {
-            wakeRun = await vi.waitFor(
-              async () => {
-                const result = await runInTenant(tenant, () =>
-                  pool.query<{ status: string; agent_run_id: string | null }>(
-                    "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
-                    [wake.assistantMessageId],
-                  ),
-                );
-                expect(result.rows[0]?.status).toBe("done");
-                expect(result.rows[0]?.agent_run_id).toBeTruthy();
-                return result.rows[0]?.agent_run_id;
-              },
-              { timeout: 20_000 },
-            );
-          } catch (error) {
-            if (imageDirectory) {
-              try {
-                const artifact = await captureImageWakeFailure({
-                  ...imageDirectory,
-                  tenantId: tenant,
-                  threadId: turn.threadId,
-                  assistantId: wake.assistantMessageId,
-                  observer,
-                  sensitive: [
-                    databaseUrl,
-                    backend,
-                    blockRoot,
-                    blockDir,
-                    mailRoot,
-                    unavailable?.key,
-                    process.execPath,
-                    tmpdir(),
-                    homedir(),
-                    "batch32-ref-test-token",
-                    "fixture-key",
-                    "REF_OWNER_SENTINEL_32",
-                    "REF_FOREIGN_SENTINEL_32",
-                    "REF_MAIL_FIRST_SENTINEL_32",
-                    "REF_MAIL_REPLY_SENTINEL_32",
-                    "REF_BLOCK_SENTINEL_32",
-                    "REF_SIBLING_SENTINEL_32",
-                    "Reference mailbox",
-                    "Reference thread",
-                    "reference-worker",
-                    "Reference",
-                    "Fixture response.",
-                    "Question",
-                    "Continue with an image",
-                    "Wake the image history",
-                    "Unavailable image",
-                    "Reference image",
-                    "INBOX",
-                    "Inbox",
-                  ].filter((value): value is string => typeof value === "string"),
-                });
-                process.stderr.write(`image wake private diagnostic ${artifact}\n`);
-              } catch {
-                process.stderr.write("image wake private diagnostic unavailable\n");
-                cleanupFailures.push(new Error("Image wake diagnostic failed"));
-              }
-            }
-            throw error;
-          }
+          const wakeRun = await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [wake.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              expect(result.rows[0]?.agent_run_id).toBeTruthy();
+              return result.rows[0]?.agent_run_id;
+            },
+            { timeout: 20_000 },
+          );
           if (!wakeRun) throw new Error("Missing wake run");
           expect(wakeRun).not.toBe(runId);
           await vi.waitFor(
@@ -1391,23 +1020,7 @@ describe("queued Semp messages", () => {
         workerSettled = true;
       } catch (error) {
         workerSettled = false;
-        if (wakeObserver) imageObserverUnsafe = true;
         cleanupFailures.push(error);
-      }
-      if (wakeObserver) {
-        try {
-          if (!workerSettled) throw new Error("Image wake worker settlement unavailable");
-          wakeObserver.restore();
-          const state = wakeObserver.snapshot();
-          process.stderr.write(
-            `image wake observer ${JSON.stringify({ restored: true, calls: state.calls, failures: state.failures, pending: state.pending, observerFault: state.observerFault })}\n`,
-          );
-        } catch {
-          imageObserverUnsafe = true;
-          workerSettled = false;
-          process.stderr.write("image wake observer restoration-unestablished\n");
-          cleanupFailures.push(new Error("Image wake observer did not settle or restore"));
-        }
       }
       try {
         await closeIdleThreadSessions(pool);
