@@ -1003,21 +1003,29 @@ describe("voice session through the real gateway and registered worker", () => {
           { timeout: 20_000 },
         );
       } catch (error) {
-        const state = await runInTenant(tenant, () =>
-          pool.query<{ status: string; has_run: boolean; source: string | null }>(
-            "SELECT status, agent_run_id IS NOT NULL AS has_run, source FROM semp_messages WHERE thread_id=$1 AND role='assistant' AND reply_to_message_id=$2",
-            [source.thread_id, source.id],
-          ),
-        );
-        const calls = await runInTenant(tenant, () =>
-          pool.query<{ operation: string; status: string }>(
-            "SELECT operation, status FROM ai_gateway_calls WHERE semp_message_id=(SELECT id FROM semp_messages WHERE thread_id=$1 AND role='assistant' AND reply_to_message_id=$2) ORDER BY at",
-            [source.thread_id, source.id],
-          ),
-        );
-        process.stderr.write(
-          `voice target observation ${JSON.stringify({ state: state.rows, calls: calls.rows, providerModelCalls: gateway.messages.filter((entry) => entry.type === "modelCall").length, audioFrames })}\n`,
-        );
+        try {
+          const state = await runInTenant(tenant, () =>
+            pool.query<{ status: string; has_run: boolean; source: string | null }>(
+              "SELECT status, agent_run_id IS NOT NULL AS has_run, source FROM semp_messages WHERE thread_id=$1 AND role='assistant' AND reply_to_message_id=$2",
+              [source.thread_id, source.id],
+            ),
+          );
+          const calls = await runInTenant(tenant, () =>
+            pool.query<{ operation: string; status: string }>(
+              "SELECT operation, status FROM ai_gateway_calls WHERE semp_message_id=(SELECT id FROM semp_messages WHERE thread_id=$1 AND role='assistant' AND reply_to_message_id=$2) ORDER BY at",
+              [source.thread_id, source.id],
+            ),
+          );
+          process.stderr.write(
+            `voice target observation ${JSON.stringify({ state: state.rows, calls: calls.rows, providerModelCalls: gateway.messages.filter((entry) => entry.type === "modelCall").length, audioFrames })}\n`,
+          );
+        } catch (diagnosticError) {
+          throw new AggregateError([error, diagnosticError], "Voice target observation failed", {
+            // The original assertion remains primary; the diagnostic failure is retained separately.
+            // eslint-disable-next-line preserve-caught-error
+            cause: error,
+          });
+        }
         throw error;
       }
       expect(assistantId).not.toBe("");
