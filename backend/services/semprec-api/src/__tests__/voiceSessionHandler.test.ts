@@ -362,6 +362,50 @@ describe("voice session through the real gateway and registered worker", () => {
         if (!relayAddress || typeof relayAddress === "string") throw new Error("Missing relay address");
         let startSignal: AbortSignal | undefined;
         let closedSessions = 0;
+        const classify = (error: unknown, depth = 0): Record<string, unknown> => {
+          const isError = error instanceof Error;
+          const name =
+            isError && ["Error", "AggregateError", "AbortError", "AiGatewayFailedError"].includes(error.name)
+              ? error.name
+              : "other";
+          const message = isError ? error.message : "";
+          const known = [
+            "Voice handler operation failed",
+            "Voice handler cleanup failed",
+            "Voice shutdown timed out with unsettled work",
+            "ERR_SERVER_NOT_RUNNING",
+          ];
+          const code =
+            typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+              ? error.code
+              : "";
+          const flags = known.map((value) => message === value || code === value);
+          const result: Record<string, unknown> = {
+            isError,
+            isAggregate: error instanceof AggregateError,
+            name,
+            flags,
+          };
+          if (isError && !flags.some(Boolean)) {
+            result.otherLength = message.length;
+            result.otherSha256First4096 = createHash("sha256").update(message.slice(0, 4096)).digest("hex");
+          }
+          if (error instanceof AggregateError) {
+            const members: unknown = error.errors;
+            if (Array.isArray(members)) {
+              result.count = members.length;
+              if (depth < 2) result.members = members.slice(0, 8).map((entry: unknown) => classify(entry, depth + 1));
+            }
+          }
+          if (isError && error.cause !== undefined && depth < 2) result.cause = classify(error.cause, depth + 1);
+          return result;
+        };
+        const observeFailure = (phase: "start" | "cleanup" | "shutdown", error: unknown): void => {
+          if (ending === "server")
+            process.stderr.write(
+              `${JSON.stringify({ diagnostic: "voice-start-server", phase, signalAborted: startSignal?.aborted ?? false, error: classify(error) })}\n`,
+            );
+        };
         const actualHandler = createVoiceSessionHandler(
           pool,
           { port: relayAddress.port, token: "batch32-test-token" },
@@ -372,10 +416,23 @@ describe("voice session through the real gateway and registered worker", () => {
             ...actualHandler,
             onStart(identity, frame, sender) {
               startSignal = sender.signal;
-              return actualHandler.onStart(identity, frame, sender);
+              try {
+                return Promise.resolve(actualHandler.onStart(identity, frame, sender)).catch((error: unknown) => {
+                  observeFailure("start", error);
+                  throw error;
+                });
+              } catch (error) {
+                observeFailure("start", error);
+                throw error;
+              }
             },
             async onClose(identity) {
-              await actualHandler.onClose(identity);
+              try {
+                await actualHandler.onClose(identity);
+              } catch (error) {
+                observeFailure("cleanup", error);
+                throw error;
+              }
               closedSessions++;
             },
           },
@@ -426,7 +483,9 @@ describe("voice session through the real gateway and registered worker", () => {
           else if (ending === "tenant") actualChannel.closeTenant(tenant);
           else {
             shutdown = actualChannel.close();
-            void shutdown.catch(() => {});
+            void shutdown.catch((error: unknown) => {
+              observeFailure("shutdown", error);
+            });
           }
           await vi.waitFor(() => expect(peerClosed).toBe(true), { timeout: 5000 });
           expect(startSignal?.aborted).toBe(true);
