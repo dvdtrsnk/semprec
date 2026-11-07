@@ -360,29 +360,39 @@ function observeWakeSend(tenantId: string) {
   let calls = 0;
   let failures = 0;
   let caught: unknown;
+  let observerFault = false;
   const pending = new Set<Promise<void>>();
   function send(this: SempConversation, ...args: Parameters<WakeSend>): ReturnType<WakeSend> {
-    const scope = currentTenantScope();
-    const matched =
-      expected !== undefined &&
-      scope?.kind === "tenant" &&
-      scope.tenantId === tenantId &&
-      args[1].threadId === expected.threadId &&
-      args[2]?.messageId === expected.assistantId;
     const result = trustedOriginal.apply(this, args);
-    if (!matched) return result;
-    calls = Math.min(calls + 1, 2);
-    const observation = result.then(
-      () => {},
-      (error: unknown) => {
-        failures = Math.min(failures + 1, 2);
-        if (failures === 1) caught = error;
-      },
-    );
-    pending.add(observation);
-    void observation.then(() => {
-      pending.delete(observation);
-    });
+    try {
+      const scope = currentTenantScope();
+      const matched =
+        expected !== undefined &&
+        scope?.kind === "tenant" &&
+        scope.tenantId === tenantId &&
+        args[1].threadId === expected.threadId &&
+        args[2]?.messageId === expected.assistantId;
+      if (!matched) return result;
+      calls = Math.min(calls + 1, 2);
+      const observation = result.then(
+        () => {
+          pending.delete(observation);
+        },
+        (error: unknown) => {
+          try {
+            failures = Math.min(failures + 1, 2);
+            if (failures === 1) caught = error;
+          } catch {
+            observerFault = true;
+          } finally {
+            pending.delete(observation);
+          }
+        },
+      );
+      pending.add(observation);
+    } catch {
+      observerFault = true;
+    }
     return result;
   }
   Object.defineProperty(prototype, "send", { ...descriptor, value: send });
@@ -395,7 +405,7 @@ function observeWakeSend(tenantId: string) {
       while (pending.size) await Promise.all(pending);
     },
     snapshot() {
-      return { calls, failures, caught };
+      return { calls, failures, caught, observerFault };
     },
     async restore() {
       await this.settle();
@@ -407,7 +417,8 @@ function observeWakeSend(tenantId: string) {
         restored.writable !== descriptor.writable ||
         restored.enumerable !== descriptor.enumerable ||
         restored.configurable !== descriptor.configurable ||
-        pending.size
+        pending.size ||
+        observerFault
       )
         throw new Error("Image wake observer restoration failed");
     },
@@ -543,6 +554,7 @@ async function captureImageWakeFailure(options: {
     runError,
     targetCallsCappedAtTwo: observed.calls,
     targetFailuresCappedAtTwo: observed.failures,
+    observerFault: observed.observerFault,
     returnedOriginalPromise: observed.calls > 0,
     originalRejectionPreserved: observed.failures > 0,
     category,
