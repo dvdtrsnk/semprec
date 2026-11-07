@@ -2,9 +2,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
+import { CORE_TASK_NAMES } from "@semprec/queue";
+import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import {
+  insertValueLink,
+  listValueLinkSourcesByLinkIds,
+  listValueLinksByItemIds,
+} from "../chokePoint/valueLinksStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
@@ -12,6 +20,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
 import type { TaskRecurrenceMode, TaskRecurrenceRule } from "../tasks/taskRecurrenceRule.js";
+import type { ItemRelationRow } from "../types.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -56,6 +65,121 @@ async function occurrencesOf(tenantId: string, seriesId: string): Promise<z.infe
     );
     return rows.map((row) => occurrenceRow.parse(row));
   });
+}
+
+const pidResult = z.object({ rows: z.tuple([z.object({ pid: z.number() })]) });
+const blockersResult = z.object({ rows: z.tuple([z.object({ blockers: z.array(z.number()) })]) });
+const countResult = z.object({ rows: z.tuple([z.object({ n: z.number() })]) });
+const queryText = z.union([z.string(), z.object({ text: z.string() }).transform((query) => query.text)]);
+
+/**
+ * A dedicated runtime-role pool for one participant of a concurrency test. Each client it hands out reads its own
+ * backend PID once (`pg_backend_pid()`) and runs `before` ahead of every statement; every statement is still sent to
+ * the server unchanged and its real result returned. The client's own `query` is restored before the pool takes it
+ * back.
+ */
+async function observedPool(
+  before?: (sql: string, values: readonly unknown[]) => Promise<void>,
+): Promise<{ pool: Pool; pids: Set<number> }> {
+  const observed = await createRuntimeRolePool(admin, "semprec_data");
+  const pids = new Set<number>();
+  const restore = new Map<object, PropertyDescriptor | undefined>();
+  observed.on("acquire", (client) => {
+    const delegate: unknown = Reflect.get(client, "query");
+    if (typeof delegate !== "function") throw new Error("A pg client without query");
+    restore.set(client, Object.getOwnPropertyDescriptor(client, "query"));
+    let identified = false;
+    Object.defineProperty(client, "query", {
+      configurable: true,
+      writable: true,
+      value: async (...args: unknown[]) => {
+        if (!identified) {
+          identified = true;
+          const own = pidResult.parse(await Reflect.apply(delegate, client, ["SELECT pg_backend_pid() AS pid"]));
+          pids.add(own.rows[0].pid);
+        }
+        await before?.(queryText.parse(args[0]), Array.isArray(args[1]) ? args[1] : []);
+        return Reflect.apply(delegate, client, args);
+      },
+    });
+  });
+  observed.on("release", (_error, client) => {
+    const own = restore.get(client);
+    restore.delete(client);
+    if (own) Object.defineProperty(client, "query", own);
+    else Reflect.deleteProperty(client, "query");
+  });
+  return { pool: observed, pids };
+}
+
+/** Rejects when `promise` has not settled within `ms`, naming what the test waited for. */
+async function bounded<T>(promise: Promise<T>, label: string, ms = 10_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Polls, at most 200 times 25 ms apart, until every participant has a backend whose blocking PIDs are not empty and
+ * all belong to this test (`owned`). Waits are matched by PID, never by a role-wide count.
+ */
+async function waitUntilBlocked(participants: ReadonlyArray<ReadonlySet<number>>, owned: () => ReadonlySet<number>) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const ours = owned();
+    let blocked = 0;
+    for (const pids of participants) {
+      for (const pid of pids) {
+        const result = blockersResult.parse(await admin.query("SELECT pg_blocking_pids($1) AS blockers", [pid]));
+        const { blockers } = result.rows[0];
+        if (blockers.length > 0 && blockers.every((blocker) => ours.has(blocker))) {
+          blocked++;
+          break;
+        }
+      }
+    }
+    if (blocked === participants.length) return;
+    await sleep(25);
+  }
+  throw new Error("The test's participants did not all wait on the test's own backends");
+}
+
+/** Waits for every started participant and ends every owned pool; the test's own failure is rethrown first. */
+async function settle(failure: { error: unknown } | undefined, started: Promise<unknown>[], pools: Pool[]) {
+  await Promise.allSettled(started);
+  const cleanup: unknown[] = [];
+  for (const owned of pools) {
+    try {
+      await owned.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+  }
+  if (failure && cleanup.length > 0) throw new AggregateError([failure.error, ...cleanup], "Test and cleanup failed");
+  if (failure) throw failure.error;
+  if (cleanup.length > 0) throw new AggregateError(cleanup, "Owned pool cleanup failed");
+}
+
+/** The count of every core queue task, by identifier: a complete view of the jobs a write may have enqueued. */
+async function jobCounts(): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const identifier of Object.values(CORE_TASK_NAMES))
+    counts[identifier] = await countJobsByIdentifier(admin, identifier);
+  return counts;
+}
+
+async function notificationCount(tenantId: string): Promise<number> {
+  return runInTenant(
+    tenantId,
+    async () => countResult.parse(await pool.query("SELECT count(*)::int AS n FROM notifications")).rows[0].n,
+  );
 }
 
 /** A `task_recurrence` row in the shape releases before issue #1605 wrote; the series store can no longer write it. */
@@ -180,7 +304,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
             runInTenant(id, async () => ({
               recurrence: await recurrenceRows(id),
               items: (
-                await pool.query(
+                await pool.query<{ id: string; properties: unknown; updated_at: Date }>(
                   "SELECT id, properties, updated_at FROM items WHERE database_id = ANY($1) ORDER BY id",
                   [[tasks, otherTasks]],
                 )
@@ -266,6 +390,158 @@ describe("recurring task series (issues #1605, #1670)", () => {
           active: true,
         },
       ]);
+    });
+
+    it("fails a tenant's cutover unchanged when an eligible row's date is not a calendar day", async () => {
+      const tasks = await tasksDatabaseId(tenant);
+      const otherTasks = await tasksDatabaseId(other);
+      const cp = createChokePoint(pool);
+      const create = (properties: Record<string, unknown>) =>
+        runInTenant(tenant, () => cp.createItem({ databaseId: tasks, properties }));
+      const valid = await create({ name: "Weekly review", date: "2026-10-12" });
+      const invalid = await create({ name: "Leap day", date: "2026-10-13" });
+      // A stored date from before the Tasks date rule: the transform refuses 2026-02-30, so no writer can store it now.
+      await runInTenant(tenant, () =>
+        pool.query(`UPDATE items SET properties = jsonb_set(properties, '{date}', '"2026-02-30"') WHERE id = $1`, [
+          invalid.id,
+        ]),
+      );
+      for (const item of [valid, invalid]) await insertLegacyRecurrence(tenant, item.id, "fixed", weeklyMonday);
+      const foreign = await runInTenant(other, () =>
+        cp.createItem({ databaseId: otherTasks, properties: { name: "Other tenant", date: "2026-10-12" } }),
+      );
+      await insertLegacyRecurrence(other, foreign.id, "fixed", weeklyMonday);
+      const state = () =>
+        runInTenant(tenant, async () => ({
+          recurrence: await recurrenceRows(tenant),
+          items: (
+            await pool.query<{ id: string; properties: unknown; updated_at: Date }>(
+              "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
+              [tasks],
+            )
+          ).rows,
+        }));
+      const before = await state();
+
+      const failure = await runAsSystem("test cutover", () => runTenantCutoverMigrations(pool)).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(AggregateError);
+      const errors = failure instanceof AggregateError ? failure.errors : [];
+      expect(errors).toHaveLength(1);
+      const message = errors[0] instanceof Error ? errors[0].message : "";
+      expect(message).toContain(invalid.id);
+      expect(message).not.toContain(valid.id);
+      expect(await state()).toEqual(before);
+      const [foreignRow] = await recurrenceRows(other);
+      expect(foreignRow?.series_id).toEqual(expect.any(String));
+    });
+
+    it("converts 501 rows in committed batches of 500, keeps the first batch when the second fails its locked re-check, and resumes", async () => {
+      const tasks = await tasksDatabaseId(tenant);
+      const cp = createChokePoint(pool);
+      const created: string[] = [];
+      for (let start = 0; start < 501; start += 20) {
+        const chunk = Array.from({ length: Math.min(20, 501 - start) }, (_unused, offset) => start + offset);
+        const items = await Promise.all(
+          chunk.map((index) =>
+            runInTenant(tenant, () =>
+              cp.createItem({ databaseId: tasks, properties: { name: `Chore ${index}`, date: "2026-10-12" } }),
+            ),
+          ),
+        );
+        created.push(...items.map((item) => item.id));
+      }
+      // 501 rows in the shape releases before issue #1605 wrote, in one statement.
+      await runInTenant(tenant, () =>
+        pool.query(
+          "INSERT INTO task_recurrence (item_id, mode, rule, active) SELECT id, 'fixed', $2::jsonb, true FROM unnest($1::uuid[]) AS id",
+          [created, JSON.stringify(weeklyMonday)],
+        ),
+      );
+      const ordered = [...created].sort();
+      const last = ordered.at(-1);
+      if (last === undefined) throw new Error("No candidates were created");
+      const converted = async () =>
+        runInTenant(
+          tenant,
+          async () =>
+            countResult.parse(
+              await pool.query("SELECT count(*)::int AS n FROM task_recurrence WHERE series_id IS NOT NULL"),
+            ).rows[0].n,
+        );
+
+      let reached!: () => void;
+      const atSecondBatch = new Promise<void>((resolve) => (reached = resolve));
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      // Holds the second conversion transaction after its candidate read and before it locks its one candidate.
+      const observed = await observedPool(async (sql, values) => {
+        const ids = values[1];
+        if (
+          sql.includes("FROM items") &&
+          sql.includes("ORDER BY id FOR UPDATE") &&
+          Array.isArray(ids) &&
+          ids[0] === last
+        ) {
+          reached();
+          await released;
+        }
+      });
+      const started: Promise<unknown>[] = [];
+      let failure: { error: unknown } | undefined;
+      try {
+        const run = runInTenant(tenant, () => runTaskRecurrenceSeriesCutoverMigration(observed.pool)).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        started.push(run);
+        await bounded(atSecondBatch, "the second conversion transaction");
+        expect(await converted()).toBe(500);
+        // The Tasks owner clears the last candidate's date after the preflight checked it.
+        await runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: tasks, itemId: last, propertiesPatch: { date: null } }),
+        );
+        release();
+        const error = await bounded(run, "the cutover run");
+        expect(error).toBeInstanceOf(Error);
+        expect(error instanceof Error ? error.message : "").toContain(last);
+
+        const rows = new Map((await recurrenceRows(tenant)).map((row) => [row.item_id, row]));
+        expect(ordered.slice(0, 500).every((id) => typeof rows.get(id)?.series_id === "string")).toBe(true);
+        expect(rows.get(last)).toMatchObject({ series_id: null, anchor_date: null, template: null, active: true });
+        const lastItem = await runInTenant(tenant, () => cp.getItem(tasks, last));
+        expect(lastItem?.properties.seriesId).toBeUndefined();
+        expect(lastItem?.properties.date ?? null).toBeNull();
+
+        await runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: tasks, itemId: last, propertiesPatch: { date: "2026-10-12" } }),
+        );
+        await runInTenant(tenant, () => runTaskRecurrenceSeriesCutoverMigration(pool));
+        expect(await converted()).toBe(501);
+        expect((await runInTenant(tenant, () => cp.getItem(tasks, last)))?.properties).toMatchObject({
+          seriesId: expect.any(String),
+          occurrenceDate: "2026-10-12",
+        });
+        const snapshot = () =>
+          runInTenant(tenant, async () => ({
+            recurrence: await recurrenceRows(tenant),
+            items: (
+              await pool.query<{ id: string; properties: unknown; updated_at: Date }>(
+                "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
+                [tasks],
+              )
+            ).rows,
+          }));
+        const complete = await snapshot();
+        await runInTenant(tenant, () => runTaskRecurrenceSeriesCutoverMigration(pool));
+        expect(await snapshot()).toEqual(complete);
+      } catch (error) {
+        failure = { error };
+      }
+      release();
+      await settle(failure, started, [observed.pool]);
     });
 
     it("returns the series fields on read and refuses a client write of each of them with 403 owner_violation", async () => {
@@ -439,7 +715,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       ]);
     });
 
-    it("a template without a usable name creates the next instance without a name", async () => {
+    it("a template without a name creates the next instance without a name", async () => {
       const task = await runInTenant(tenant, () =>
         cp.createItem({ databaseId: tasks, properties: { date: "2026-10-12" } }),
       );
@@ -453,39 +729,265 @@ describe("recurring task series (issues #1605, #1670)", () => {
       expect(nextItem?.properties.occurrenceDate).toBe("2026-10-19");
     });
 
+    it("refuses to complete when the template's stored title is blank and leaves every effect as it was", async () => {
+      for (const blank of ["", " \t "]) {
+        const task = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: tasks, properties: { name: "Recurring", date: "2026-10-12" } }),
+        );
+        // A template the series cutover copied from a stored blank title, written before the Tasks title rule.
+        const seriesId = await runInTenant(tenant, () =>
+          startTaskSeries(pool, {
+            databaseId: tasks,
+            itemId: task.id,
+            mode: "fixed",
+            rule: weeklyMonday,
+            template: { name: blank },
+          }),
+        );
+        const effects = async () => ({
+          occurrences: await occurrencesOf(tenant, seriesId),
+          task: await runInTenant(tenant, () => cp.getItem(tasks, task.id)),
+          recurrence: (await recurrenceRows(tenant)).filter((row) => row.series_id === seriesId),
+          jobs: await jobCounts(),
+          notifications: await notificationCount(tenant),
+        });
+        const before = await effects();
+        expect(before.recurrence).toEqual([
+          expect.objectContaining({ item_id: task.id, template: expect.objectContaining({ name: blank }) }),
+        ]);
+        await expect(setStatus(task.id, { status: "done" })).rejects.toMatchObject({
+          code: "validation_failed",
+          details: { field: "name" },
+        });
+        expect(await effects()).toEqual(before);
+      }
+    });
+
+    it("takes name, times, notifications and persistence from the template and flag and description from the completed item", async () => {
+      const task = await runInTenant(tenant, () =>
+        cp.createItem({
+          databaseId: tasks,
+          properties: {
+            name: "Current name",
+            date: "2026-10-12",
+            timeFrom: "11:00",
+            timeTo: "12:00",
+            notifications: false,
+            persistent: false,
+            flagged: true,
+            description: "Current notes",
+          },
+        }),
+      );
+      const seriesId = await runInTenant(tenant, () =>
+        startTaskSeries(pool, {
+          databaseId: tasks,
+          itemId: task.id,
+          mode: "fixed",
+          rule: weeklyMonday,
+          template: {
+            name: "Template name",
+            timeFrom: "09:00",
+            timeTo: "10:30",
+            notifications: true,
+            persistent: true,
+            flagged: false,
+            description: "Template notes",
+          },
+        }),
+      );
+      await setStatus(task.id, { status: "done" });
+      const next = (await occurrencesOf(tenant, seriesId)).find((o) => o.id !== task.id);
+      if (!next) throw new Error("No next occurrence");
+      expect((await runInTenant(tenant, () => cp.getItem(tasks, next.id)))?.properties).toMatchObject({
+        name: "Template name",
+        timeFrom: "09:00",
+        timeTo: "10:30",
+        notifications: true,
+        persistent: true,
+        flagged: true,
+        description: "Current notes",
+        date: "2026-10-19",
+        occurrenceDate: "2026-10-19",
+        status: "notDone",
+      });
+    });
+
+    describe("an older occurrence written again on a later day", () => {
+      /** A recurring task with a project edge and a file whose value link is sourced from the task. */
+      async function linkedRecurringTask(date: string) {
+        const task = await recurringTask(date, "fixed", weeklyMonday);
+        const databaseOf = async (moduleId: string) => {
+          const { rows } = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]),
+          );
+          if (!rows[0]) throw new Error(`Missing ${moduleId} database`);
+          return rows[0].id;
+        };
+        const projects = await databaseOf("projects");
+        const files = await databaseOf("files");
+        const { rows } = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasks]),
+        );
+        if (!rows[0]) throw new Error("Missing Tasks.project");
+        const relationPropertyId = rows[0].id;
+        const project = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: projects, properties: { name: "Home" } }),
+        );
+        await runInTenant(tenant, () =>
+          cp.createRelation({ relationPropertyId, callerItemId: task.id, targetItemId: project.id }),
+        );
+        const file = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: files, properties: { name: "Plan.pdf" } }),
+        );
+        // The value-link store's own write; no manifest declares a Tasks-sourced link rule yet.
+        await runInTenant(tenant, () =>
+          withTransaction(pool, (client) =>
+            insertValueLink(client, {
+              itemId: file.id,
+              propertyKey: "projects",
+              ruleKey: "test.taskProjectToFiles",
+              sources: [{ kind: "item", sourceItemId: task.id, sourcePropertyKey: "project" }],
+            }),
+          ),
+        );
+        return { ...task, fileId: file.id };
+      }
+
+      /** Every occurrence, the series row, every edge of every occurrence and the file's value-link sources. */
+      async function seriesState(seriesId: string, fileId: string) {
+        const occurrences = await occurrencesOf(tenant, seriesId);
+        const recurrence = (await recurrenceRows(tenant)).filter((row) => row.series_id === seriesId);
+        const linked = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const edges = new Map<string, ItemRelationRow>();
+            for (const occurrence of occurrences) {
+              for (const edge of await relationsStore.listAllRelationsForItem(client, occurrence.id)) {
+                edges.set(edge.id, edge);
+              }
+            }
+            const links = await listValueLinksByItemIds(client, [fileId]);
+            const sources = await listValueLinkSourcesByLinkIds(
+              client,
+              links.map((l) => l.id),
+            );
+            return {
+              edges: [...edges.values()]
+                .map((edge) => `${edge.itemA} ${edge.itemB} ${JSON.stringify(edge.metadata)}`)
+                .sort(),
+              sources: sources
+                .map((source) =>
+                  source.kind === "item"
+                    ? `item ${source.sourceItemId} ${source.sourcePropertyKey}`
+                    : `${source.kind} ${source.domain} ${source.sourcePropertyKey}`,
+                )
+                .sort(),
+            };
+          }),
+        );
+        return { occurrences, recurrence, ...linked };
+      }
+
+      it("a second wontDo of the 19 October occurrence on 27 October creates nothing and leaves pointer, edges and links", async () => {
+        const task = await linkedRecurringTask("2026-10-19");
+        await setStatus(task.id, { status: "wontDo" });
+        const advanced = await seriesState(task.seriesId, task.fileId);
+        expect(advanced.occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
+          ["2026-10-19", "wontDo"],
+          ["2026-10-26", "notDone"],
+        ]);
+        const next = advanced.occurrences[1]!;
+        expect(advanced.recurrence).toEqual([expect.objectContaining({ item_id: next.id })]);
+        expect(advanced.sources).toEqual([`item ${next.id} project`]);
+        vi.setSystemTime(new Date("2026-10-27T10:00:00Z"));
+        await setStatus(task.id, { status: "wontDo" });
+        expect(await seriesState(task.seriesId, task.fileId)).toEqual(advanced);
+      });
+
+      it("done, reopen and done of the 12 October occurrence on 20 October creates nothing and leaves the pointer", async () => {
+        const task = await linkedRecurringTask("2026-10-12");
+        await setStatus(task.id, { status: "done" });
+        await setStatus(task.id, { status: "notDone" });
+        const reopened = await seriesState(task.seriesId, task.fileId);
+        expect(reopened.occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
+          ["2026-10-12", "notDone"],
+          ["2026-10-19", "notDone"],
+        ]);
+        expect(reopened.recurrence).toEqual([expect.objectContaining({ item_id: reopened.occurrences[1]!.id })]);
+        vi.setSystemTime(new Date("2026-10-20T10:00:00Z"));
+        await setStatus(task.id, { status: "done" });
+        const after = await seriesState(task.seriesId, task.fileId);
+        expect(after.occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
+          ["2026-10-12", "done"],
+          ["2026-10-19", "notDone"],
+        ]);
+        expect({ ...after, occurrences: [] }).toEqual({ ...reopened, occurrences: [] });
+      });
+
+      it("wontDo of the 19 October occurrence on 16 October, then done on 27 October, creates nothing more", async () => {
+        const task = await linkedRecurringTask("2026-10-19");
+        await setStatus(task.id, { status: "wontDo" });
+        const advanced = await seriesState(task.seriesId, task.fileId);
+        vi.setSystemTime(new Date("2026-10-27T10:00:00Z"));
+        await setStatus(task.id, { status: "done" });
+        const after = await seriesState(task.seriesId, task.fileId);
+        expect(after.occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
+          ["2026-10-19", "done"],
+          ["2026-10-26", "notDone"],
+        ]);
+        expect({ ...after, occurrences: [] }).toEqual({ ...advanced, occurrences: [] });
+      });
+    });
+
     it("two concurrent completions of the same occurrence create exactly one next instance", async () => {
       const task = await recurringTask("2026-10-12", "fixed", weeklyMonday);
+      const holder = await observedPool();
+      const first = await observedPool();
+      const second = await observedPool();
       let release!: () => void;
       const released = new Promise<void>((resolve) => (release = resolve));
       let locked!: () => void;
       const holding = new Promise<void>((resolve) => (locked = resolve));
-      const blocker = runInTenant(tenant, () =>
-        withTransaction(pool, async (client) => {
-          await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [task.id]);
-          locked();
-          await released;
-        }),
-      );
-      await holding;
-      const completions = [setStatus(task.id, { status: "done" }), setStatus(task.id, { status: "done" })];
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting < 2; attempt++) {
-        const { rows } = await admin.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = 'semprec_data' AND wait_event_type = 'Lock'",
+      const started: Promise<unknown>[] = [];
+      let failure: { error: unknown } | undefined;
+      try {
+        const blocker = runInTenant(tenant, () =>
+          withTransaction(holder.pool, async (client) => {
+            await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [task.id]);
+            locked();
+            await released;
+          }),
         );
-        waiting = rows[0]?.n ?? 0;
-        if (waiting < 2) await sleep(25);
+        started.push(blocker);
+        await bounded(holding, "the holder's item lock");
+        const completions = [first, second].map((participant) =>
+          runInTenant(tenant, () =>
+            createChokePoint(participant.pool).updateItem({
+              databaseId: tasks,
+              itemId: task.id,
+              propertiesPatch: { status: "done" },
+            }),
+          ),
+        );
+        started.push(...completions);
+        await waitUntilBlocked(
+          [first.pids, second.pids],
+          () => new Set([...holder.pids, ...first.pids, ...second.pids]),
+        );
+        release();
+        await bounded(blocker, "the holder");
+        await bounded(Promise.all(completions), "both completions");
+        const occurrences = await occurrencesOf(tenant, task.seriesId);
+        expect(occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
+          ["2026-10-12", "done"],
+          ["2026-10-19", "notDone"],
+        ]);
+        expect(await recurrenceRows(tenant)).toEqual([expect.objectContaining({ item_id: occurrences[1]!.id })]);
+      } catch (error) {
+        failure = { error };
       }
-      expect(waiting).toBe(2);
       release();
-      await blocker;
-      await Promise.all(completions);
-      const occurrences = await occurrencesOf(tenant, task.seriesId);
-      expect(occurrences.map((o) => [o.occurrence_date, o.status])).toEqual([
-        ["2026-10-12", "done"],
-        ["2026-10-19", "notDone"],
-      ]);
-      expect(await recurrenceRows(tenant)).toHaveLength(1);
+      await settle(failure, started, [holder.pool, first.pool, second.pool]);
     });
   });
 });

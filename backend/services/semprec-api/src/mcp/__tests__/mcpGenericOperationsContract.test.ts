@@ -1186,6 +1186,8 @@ describe("generic operation MCP contract (issue #220)", () => {
       const ownBefore = await snapshot(ownTenant);
       const foreignBefore = await snapshot(foreignTenant);
 
+      const invalidations: InvalidationEvent[] = [];
+      setInvalidationHook((event) => invalidations.push(event));
       for (const [name, targetItemId] of [
         ["semprec.relation.put", own.standup.id],
         ["semprec.relation.delete", own.linked.id],
@@ -1194,6 +1196,8 @@ describe("generic operation MCP contract (issue #220)", () => {
         expect(refused.result).toBeUndefined();
         expect(refused.error).toMatchObject({ code: -32000, data: { code: "owner_violation" } });
       }
+      setInvalidationHook(() => {});
+      expect(invalidations).toEqual([]);
       expect(await snapshot(ownTenant)).toEqual(ownBefore);
       expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
 
@@ -1233,6 +1237,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     } catch (error) {
       failure = { error };
     } finally {
+      setInvalidationHook(() => {});
       if (server?.listening) {
         const ownedServer = server;
         try {

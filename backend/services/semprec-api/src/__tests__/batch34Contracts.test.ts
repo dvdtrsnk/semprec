@@ -423,4 +423,38 @@ describe("batch 34 entry-point contracts", () => {
     expect(stored.prep?.config).toEqual(patched);
     expect(stored.notes?.config).toEqual({});
   });
+
+  it("gh-1622: retyping a number property with presets is refused without a replacement config and accepted with one", async () => {
+    const own = await tenantWithUser();
+    const database = await runInTenant(own.id, () => createChokePoint(runtime).createDatabase({ name: "Recipes" }));
+    const presets = { filterPresets: [{ value: 15, op: "lte", labelKey: "k" }], default: 10 };
+    const created = await call("POST", `/api/databases/${database.id}/properties`, own.headers, {
+      key: "prep",
+      name: "Prep",
+      type: "number",
+      config: presets,
+    });
+    expect(created.status).toBe(201);
+    const prep = propertyEnvelope.parse(created.json);
+    const stored = () => runInTenant(own.id, () => createChokePoint(runtime).getProperty(prep.id));
+    const before = await stored();
+    invalidations = [];
+
+    const refused = await call("PATCH", `/api/properties/${prep.id}`, own.headers, { type: "text" });
+    expect(refused.status).toBe(400);
+    expect(errorBody.parse(refused.json).error).toMatchObject({
+      code: "validation_failed",
+      details: { field: "config" },
+    });
+    expect(await stored()).toEqual(before);
+    expect(invalidations).toEqual([]);
+
+    const retyped = await call("PATCH", `/api/properties/${prep.id}`, own.headers, { type: "text", config: {} });
+    expect(retyped.status).toBe(200);
+    expect(z.object({ type: z.string(), config: z.record(z.string(), z.unknown()) }).parse(retyped.json)).toEqual({
+      type: "text",
+      config: {},
+    });
+    expect(await stored()).toMatchObject({ type: "text", config: {} });
+  });
 });

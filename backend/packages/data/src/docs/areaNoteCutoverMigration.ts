@@ -82,18 +82,25 @@ function convertNote(ydoc: Y.Doc, note: string): void {
 }
 
 /**
- * Converts one area's note in its own transaction. The note is re-read inside it; a trashed area or an empty note is
- * left without a doc. The page doc is ensured, then the document lock shared by document writes (the `doc_snapshots`
- * row) and the `docs` row are taken with `FOR UPDATE`, in that order, before the doc is read, so a concurrent second
- * run waits for this one and then reads its marker.
+ * Converts one area's note in its own transaction (docs/adr/2026-11-07-area-note-cutover-reserves-source-without-waiting.md).
+ * An unlocked read decides only whether to go on: a trashed area or an empty note is left without a doc. The page doc
+ * is then ensured and the document lock shared by document writes (the `doc_snapshots` row) and the `docs` row are
+ * taken with `FOR UPDATE`, in that order, so a concurrent second run waits for this one and then reads its marker.
+ * Only after that is the area row reserved with `lockItemByIdNowait`, and the note converted is the one read from that
+ * reserved row, never the unlocked read: a note written while this run waited for the document lock is the one it
+ * converts. A row another transaction holds raises PostgreSQL's lock-not-available error instead of waiting while the
+ * document locks are held; it rolls this area back and reaches the caller. When the reserved row is trashed or its
+ * note is empty by then, nothing is converted, and the page doc ensured in this transaction is kept empty.
  */
 async function convertArea(client: PoolClient, databaseId: string, areaId: string): Promise<void> {
-  const area = await itemsStore.getItemById(client, databaseId, areaId);
-  const note = area && !area.deletedAt ? noteOf(area.properties) : null;
-  if (note === null) return;
+  const discovered = await itemsStore.getItemById(client, databaseId, areaId);
+  if (!discovered || discovered.deletedAt || noteOf(discovered.properties) === null) return;
   const doc = await getOrCreateDoc(client, areaId, "page");
   await client.query("SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [doc.id]);
   await client.query("SELECT id FROM docs WHERE id = $1 FOR UPDATE", [doc.id]);
+  const area = await itemsStore.lockItemByIdNowait(client, databaseId, areaId);
+  const note = area && !area.deletedAt ? noteOf(area.properties) : null;
+  if (note === null) return;
   await mutateDocWithClient(client, doc.id, "system", (ydoc) => convertNote(ydoc, note));
 }
 
@@ -103,9 +110,10 @@ async function convertArea(client: PoolClient, databaseId: string, areaId: strin
  * once, and reconciles later edits that old clients make to `note`. The `note` property is never modified, and an
  * area with an empty or absent note gets no doc. A tenant without an Areas database is a no-op.
  *
- * Each area runs in its own transaction, so one area failing neither rolls back nor stops the others. Every failure
- * is logged with the area id and, after all areas ran, rethrown together as one `AggregateError`, so the tenant's
- * cutover reports it.
+ * Each area runs in its own transaction, so one area failing neither rolls back nor stops the others. Every failure,
+ * a lock-not-available error on an area row another transaction holds included, is logged with the area id and,
+ * after all areas ran, rethrown together as one `AggregateError` carrying the original errors, so the tenant's cutover
+ * reports it. Nothing is retried; the next run converts what is left.
  */
 export async function runAreaNoteCutoverMigration(pool: Pool): Promise<void> {
   const areaIds = await withTransaction(pool, async (client) => {

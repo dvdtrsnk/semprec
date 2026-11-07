@@ -85,7 +85,9 @@ describe("projectTaskOccurrences (issue #1672)", () => {
 
   it("12 to 18 October of a daily series gives done, done, done, missed, open, virtual, virtual", async () => {
     const { tasks, seriesId, firstId } = await seriesStartingOn(tenant, "2026-10-12");
-    for (const date of ["2026-10-13", "2026-10-14"]) await occurrence(tenant, tasks, seriesId, date, "done");
+    const done = [];
+    for (const date of ["2026-10-13", "2026-10-14"]) done.push(await occurrence(tenant, tasks, seriesId, date, "done"));
+    const missed = await occurrence(tenant, tasks, seriesId, "2026-10-15", "missed");
     const open = await occurrence(tenant, tasks, seriesId, "2026-10-16", "notDone");
     // Completing the 12 October occurrence on 16 October finds today's occurrence already stored.
     await runInTenant(tenant, () =>
@@ -97,10 +99,18 @@ describe("projectTaskOccurrences (issue #1672)", () => {
       "2026-10-12 done",
       "2026-10-13 done",
       "2026-10-14 done",
-      "2026-10-15 virtual:missed",
+      "2026-10-15 missed",
       "2026-10-16 notDone",
       "2026-10-17 virtual:notDone",
       "2026-10-18 virtual:notDone",
+    ]);
+    expect(projected.map((o) => (o.virtual ? o.id : o.item.id))).toEqual([
+      firstId,
+      ...done,
+      missed,
+      open,
+      `${seriesId}@2026-10-17`,
+      `${seriesId}@2026-10-18`,
     ]);
     const stored = projected.find((o) => o.occurrenceDate === "2026-10-16");
     expect(stored).toMatchObject({ virtual: false, seriesId, item: { id: open } });
@@ -177,6 +187,39 @@ describe("projectTaskOccurrences (issue #1672)", () => {
       "2026-10-14 done",
       "2026-10-19 virtual:notDone",
     ]);
+  });
+
+  it("projects a floating series from its anchor in whole intervals, with a stored off-rule occurrence kept", async () => {
+    const tasks = await tasksDatabaseId(tenant);
+    const first = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks, properties: { name: "Water plants", date: "2026-10-12" } }),
+    );
+    const seriesId = await runInTenant(tenant, () =>
+      startTaskSeries(pool, { databaseId: tasks, itemId: first.id, mode: "floating", rule: { unit: "days", n: 3 } }),
+    );
+    const offRule = await occurrence(tenant, tasks, seriesId, "2026-10-14", "done");
+    const projected = await project(tenant, "2026-10-10", "2026-10-20", "2026-10-16");
+    expect(summary(projected)).toEqual([
+      "2026-10-12 notDone",
+      "2026-10-14 done",
+      "2026-10-15 virtual:missed",
+      "2026-10-18 virtual:notDone",
+    ]);
+    expect(projected.map((o) => (o.virtual ? o.id : o.item.id))).toEqual([
+      first.id,
+      offRule,
+      `${seriesId}@2026-10-15`,
+      `${seriesId}@2026-10-18`,
+    ]);
+  });
+
+  it("generates no virtual date before the anchor but returns a stored occurrence dated before it", async () => {
+    const { tasks, seriesId, firstId } = await seriesStartingOn(tenant, "2026-10-12");
+    // A materialized fixture dated before the anchor; no delivered writer produces one (#1720 is not built).
+    const early = await occurrence(tenant, tasks, seriesId, "2026-10-10", "done");
+    const projected = await project(tenant, "2026-10-09", "2026-10-13", "2026-10-16");
+    expect(summary(projected)).toEqual(["2026-10-10 done", "2026-10-12 notDone", "2026-10-13 virtual:missed"]);
+    expect(projected.map((o) => (o.virtual ? o.id : o.item.id))).toEqual([early, firstId, `${seriesId}@2026-10-13`]);
   });
 
   it("a turned-off series produces nothing after its last materialized occurrence", async () => {

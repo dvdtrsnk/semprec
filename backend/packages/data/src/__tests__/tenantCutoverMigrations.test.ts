@@ -9,6 +9,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPresetsCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -1311,6 +1312,39 @@ describe("rating filter presets tenant cutover (issue #1622)", () => {
     const before = await snapshot();
     await runCutovers(dataPool);
     expect(await snapshot()).toEqual(before);
+  });
+
+  it("skips a missing Movies database and still adds the Books presets", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    const movies = await runInTenant(zero, async () => {
+      await seedSystem(dataPool, createViewTypeRegistry());
+      const database = await withTransaction(dataPool, (client) => getDatabaseByModuleId(client, "movies"));
+      if (!database) throw new Error("Movies database missing");
+      // A tenant installed before the Movies database had its module id: the cutover cannot find it by module.
+      const detached = await dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE id = $1", [database.id]);
+      expect(detached.rowCount).toBe(1);
+      await dataPool.query(
+        `UPDATE properties SET config = config - 'filterPresets' - 'emptyPreset'
+         WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'books')`,
+      );
+      return database.id;
+    });
+    const moviesRating = () =>
+      runInTenant(zero, async () => {
+        const { rows } = await dataPool.query<{ config: Record<string, unknown> }>(
+          "SELECT config FROM properties WHERE database_id = $1 AND key = 'rating'",
+          [movies],
+        );
+        return rows;
+      });
+    const moviesBefore = await moviesRating();
+    expect(moviesBefore).toHaveLength(1);
+    await runInTenant(zero, () => runRatingFilterPresetsCutoverMigration(dataPool));
+    const configs = await ratingConfigs(zero);
+    expect(Object.keys(configs)).toEqual(["books"]);
+    expect(configs.books).toMatchObject({ filterPresets: expect.any(Array), emptyPreset: expect.any(Object) });
+    expect(await moviesRating()).toEqual(moviesBefore);
   });
 
   it("skips a missing rating property", async () => {

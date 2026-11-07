@@ -35,7 +35,7 @@ async function definitionRows(propertyId: string) {
 
 const schemaSnapshot = async () =>
   (
-    await admin.query(
+    await admin.query<{ property: unknown; definition: unknown }>(
       `SELECT to_jsonb(p) AS property, to_jsonb(r) AS definition FROM properties p
        LEFT JOIN relation_definitions r ON r.property_id_a = p.id OR r.property_id_b = p.id
        WHERE p.database_id = $1 ORDER BY p.id`,

@@ -6,6 +6,7 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
+import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
@@ -97,13 +98,48 @@ describe("Journal events relation (issue #1609)", () => {
     expect(await runInTenant(tenant, () => createChokePoint(pool).getItem(journal, day.id))).toEqual(dayBefore);
 
     const snapshot = async () =>
-      (await admin.query("SELECT to_jsonb(p) AS row FROM properties p WHERE database_id = $1 ORDER BY id", [journal]))
-        .rows;
+      (
+        await admin.query<{ row: unknown }>(
+          "SELECT to_jsonb(p) AS row FROM properties p WHERE database_id = $1 ORDER BY id",
+          [journal],
+        )
+      ).rows;
     const before = await snapshot();
     await runAsSystem("test:journal-events-replay", () => runTenantCutoverMigrations(pool));
     expect(await snapshot()).toEqual(before);
     expect(await eventsProperty(tenant)).toEqual(migrated);
   });
+
+  for (const [present, missing] of [
+    ["journal", "Events"],
+    ["events", "Journal"],
+  ] as const) {
+    it(`leaves a tenant without ${missing} unchanged`, async () => {
+      const bare = await createTestTenant(admin);
+      const database = await runInTenant(bare, () => createChokePoint(pool).createDatabase({ name: present }));
+      // A tenant with only one of the two databases: no writer creates a system database on its own.
+      await runInTenant(bare, async () => {
+        const marked = await pool.query("UPDATE databases SET owner_module_id = $2 WHERE id = $1", [
+          database.id,
+          present,
+        ]);
+        expect(marked.rowCount).toBe(1);
+      });
+      const state = () =>
+        runInTenant(bare, async () => ({
+          properties: (
+            await pool.query<{ id: string; database_id: string; key: string; config: unknown }>(
+              "SELECT id, database_id, key, config FROM properties ORDER BY id",
+            )
+          ).rows,
+          definitions: (await pool.query<{ id: string }>("SELECT id FROM relation_definitions ORDER BY id")).rows,
+        }));
+      const before = await state();
+      expect(before.properties.some((property) => property.key === "events")).toBe(false);
+      await runInTenant(bare, () => runJournalEventsCutoverMigration(pool));
+      expect(await state()).toEqual(before);
+    });
+  }
 
   it("refuses the generic relation endpoint with 403 owner_violation and lets the journalEventLinks process link a day", async () => {
     const cp = createChokePoint(pool);

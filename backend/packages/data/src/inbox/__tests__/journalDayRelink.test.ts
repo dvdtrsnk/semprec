@@ -63,6 +63,27 @@ async function dayOf(tenantId: string, inboxId: string, itemIds: string[]): Prom
   );
 }
 
+/** Every relation edge of the tenant, every relation included, as stored. */
+async function edgeSet(tenantId: string) {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await pool.query<{
+      id: string;
+      relation_definition_id: string;
+      item_a: string;
+      item_b: string;
+      metadata: unknown;
+    }>("SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations ORDER BY id");
+    return rows;
+  });
+}
+
+async function notificationCount(tenantId: string): Promise<number> {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM notifications");
+    return rows[0]?.n ?? 0;
+  });
+}
+
 /** Drains the queued Inbox recompute jobs with the production API task list. */
 async function runRecomputeJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[recomputeTask];
@@ -183,20 +204,30 @@ describe("re-linking a trashed day's Inbox items to its new Journal entry (issue
   });
 
   it("writes no edge and queues nothing for a day with no trashed entry, or whose trashed entry has no Inbox items", async () => {
+    const elsewhere = await capture(tenant, ids.inbox!, "2026-10-15", "Another day");
+    const effects = async () => ({
+      edges: await edgeSet(tenant),
+      recomputeJobs: await countJobsByIdentifier(admin, recomputeTask),
+      notifications: await notificationCount(tenant),
+    });
+    const before = await effects();
+    expect(before.edges.some((edge) => edge.item_a === elsewhere.id || edge.item_b === elsewhere.id)).toBe(true);
+    invalidations = [];
     await runInTenant(tenant, () => withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", DAY)));
+    expect(await effects()).toEqual(before);
     expect(invalidations.filter((event) => event.scope === "relation")).toEqual([]);
-    expect(await countJobsByIdentifier(admin, recomputeTask)).toBe(0);
 
     const empty = await runInTenant(tenant, () =>
       withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-17")),
     );
     await runInTenant(tenant, () => cp.softDeleteItem(ids.journal!, empty.itemId));
+    const beforeEmpty = await effects();
     invalidations = [];
     await runInTenant(tenant, () =>
       withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-17")),
     );
+    expect(await effects()).toEqual(beforeEmpty);
     expect(invalidations.filter((event) => event.scope === "relation")).toEqual([]);
-    expect(await countJobsByIdentifier(admin, recomputeTask)).toBe(0);
   });
 
   it("does not re-run the re-link when the create is an idempotent replay", async () => {
@@ -205,6 +236,14 @@ describe("re-linking a trashed day's Inbox items to its new Journal entry (issue
       withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", DAY)),
     );
     await insertEdgeToTrashedDay(tenant, ids.inbox!, items[0]!, oldDay);
+    const linkedBefore = await dayOf(tenant, ids.inbox!, items);
+    expect(Object.values(linkedBefore)).toEqual([[oldDay], ...items.slice(1).map(() => [created.itemId])]);
+    const effects = async () => ({
+      edges: await edgeSet(tenant),
+      recomputeJobs: await countJobsByIdentifier(admin, recomputeTask),
+      notifications: await notificationCount(tenant),
+    });
+    const before = await effects();
     invalidations = [];
     const replayed = await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
@@ -212,7 +251,8 @@ describe("re-linking a trashed day's Inbox items to its new Journal entry (issue
       ),
     );
     expect(replayed.id).toBe(created.itemId);
-    expect((await dayOf(tenant, ids.inbox!, [items[0]!]))[items[0]!]).toEqual([oldDay]);
+    expect(await dayOf(tenant, ids.inbox!, items)).toEqual(linkedBefore);
+    expect(await effects()).toEqual(before);
     expect(invalidations.filter((event) => event.scope === "relation")).toEqual([]);
   });
 

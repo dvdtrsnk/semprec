@@ -282,24 +282,47 @@ describe("carrying Tasks fields and relations to the next recurring instance (is
     const { task, seriesId } = await recurringTask();
     const project = await create("projects", { name: "Household" });
     await link(["tasks", "project"], task.id, project.id);
-    // Fault injection: the series row move runs after the next instance was inserted.
-    await admin.query(
-      `CREATE FUNCTION test_fail_series_move() RETURNS trigger LANGUAGE plpgsql AS $$
-       BEGIN RAISE EXCEPTION 'injected series move failure'; END $$`,
-    );
-    await admin.query(
-      "CREATE TRIGGER test_fail_series_move BEFORE UPDATE OF item_id ON task_recurrence FOR EACH ROW EXECUTE FUNCTION test_fail_series_move()",
-    );
+    // Fault injection: the series row move runs after the next instance was inserted. Each instrument is dropped
+    // only when it was created, each drop is attempted on its own, and the test's own failure is reported first.
+    let functionCreated = false;
+    let triggerCreated = false;
+    let failure: { error: unknown } | undefined;
     try {
+      await admin.query(
+        `CREATE FUNCTION test_fail_series_move() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN RAISE EXCEPTION 'injected series move failure'; END $$`,
+      );
+      functionCreated = true;
+      await admin.query(
+        "CREATE TRIGGER test_fail_series_move BEFORE UPDATE OF item_id ON task_recurrence FOR EACH ROW EXECUTE FUNCTION test_fail_series_move()",
+      );
+      triggerCreated = true;
       await expect(
         runInTenant(tenant, () =>
           cp.updateItem({ databaseId: databases.tasks!, itemId: task.id, propertiesPatch: { status: "done" } }),
         ),
       ).rejects.toThrow(/injected series move failure/);
-    } finally {
-      await admin.query("DROP TRIGGER test_fail_series_move ON task_recurrence");
-      await admin.query("DROP FUNCTION test_fail_series_move()");
+    } catch (error) {
+      failure = { error };
     }
+    const cleanup: unknown[] = [];
+    if (triggerCreated) {
+      try {
+        await admin.query("DROP TRIGGER test_fail_series_move ON task_recurrence");
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (functionCreated) {
+      try {
+        await admin.query("DROP FUNCTION test_fail_series_move()");
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (failure && cleanup.length > 0) throw new AggregateError([failure.error, ...cleanup], "Test and cleanup failed");
+    if (failure) throw failure.error;
+    if (cleanup.length > 0) throw new AggregateError(cleanup, "Fault-injection cleanup failed");
     const { rows } = await runInTenant(tenant, () =>
       pool.query<{ id: string; status: string }>(
         "SELECT id, properties->>'status' AS status FROM items WHERE properties->>'seriesId' = $1",

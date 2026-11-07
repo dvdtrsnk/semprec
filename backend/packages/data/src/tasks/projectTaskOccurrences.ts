@@ -63,8 +63,8 @@ function requireCalendarDate(value: string, field: keyof ProjectTaskOccurrencesI
  * Projects the occurrences of every recurring task series over `[from, to]` (issue #1672). For each date its rule
  * gives in the range, not before the series' `anchor_date`, it returns the non-deleted item with that `seriesId` and
  * `occurrenceDate` when one exists, else a virtual occurrence whose properties are the series template plus `date`
- * and `status` (`missed` before `today`, `notDone` from `today`). A materialized occurrence in the range is returned
- * even when its date is not a rule date. A series that was turned off (`active` false) produces no virtual
+ * and `status` (`missed` before `today`, `notDone` from `today`). The anchor bounds virtual dates only: a materialized
+ * occurrence in the range is returned even when its date is not a rule date or lies before the anchor. A series that was turned off (`active` false) produces no virtual
  * occurrence after its last materialized occurrence, and none at all when it has none.
  *
  * Reads with at most two queries whatever the range: one for the series rows (with the last materialized occurrence

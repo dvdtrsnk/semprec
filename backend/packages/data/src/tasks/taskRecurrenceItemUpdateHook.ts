@@ -11,8 +11,8 @@ const ADVANCING_STATUSES: readonly unknown[] = ["done", "wontDo"];
  * The choke point's item-update hook for Tasks (registered by `../domainWriteHooks.ts`): setting a recurring
  * task occurrence to `done` or `wontDo` advances its series in this same transaction, so the status write and
  * the next occurrence commit or roll back together. The choke point locked the item row before this hook runs,
- * and the advance locks the series row after it. A repeated or alternating transition of the same occurrence
- * creates no second occurrence for the same date. See
+ * and the advance locks the series row after it. Only the series' current occurrence advances it, so a repeated,
+ * alternating or later transition of an older occurrence creates nothing, and no date gets a second occurrence. See
  * docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md.
  */
 export const taskRecurrenceItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {

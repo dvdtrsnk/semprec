@@ -61,6 +61,10 @@ function isCalendarDate(value: unknown): value is string {
  *
  * - An item without a `seriesId`, or whose series row is missing or inactive, is a no-op.
  * - Locks the item first, then the series row (docs/adr/2026-10-25-task-and-event-recurrence-model.md).
+ * - Only the occurrence the locked series row points at (its current open instance) advances the series. Any other
+ *   occurrence of the series, an older one set to `done` or `wontDo` again on a later day included, is a no-op: its
+ *   own status write still commits, but it creates no occurrence, moves no pointer and carries no edges or value-link
+ *   sources (issue #1670).
  * - The next date is `firstOccurrenceAfter(rule, occurrenceDate, today)`, today being the server's day in
  *   `input.timezone`. A floating rule counts from the occurrence's `completedOn`, or from today when it has none
  *   (a `wontDo` occurrence, issue #1544).
@@ -87,7 +91,7 @@ export async function advanceTaskRecurrenceWithClient(
   if (typeof seriesId !== "string") return null;
 
   const series = await getTaskRecurrenceBySeriesId(client, seriesId, true);
-  if (!series || !series.active) return null;
+  if (!series || !series.active || series.itemId !== current.id) return null;
   const occurrenceDate = current.properties.occurrenceDate;
   if (!isCalendarDate(occurrenceDate) || series.template === null) {
     throw new Error(`Task ${input.itemId} of series ${seriesId} has no valid occurrenceDate or template`);
@@ -127,12 +131,14 @@ export async function advanceTaskRecurrenceWithClient(
 }
 
 /**
- * The next instance's properties taken from the series template: an explicit allowlist of template keys. A `name`
- * that is not a non-blank string is left out rather than written as an invalid title.
+ * The next instance's properties taken from the series template: an explicit allowlist of template keys. A null
+ * `name` is left out. Any string `name`, an empty or whitespace-only one included, is passed on unchanged, so the
+ * Tasks pre-write transform refuses a blank title and the completion rolls back
+ * (docs/adr/2026-10-29-tasks-date-and-time-rules-in-pre-write-transform.md).
  */
 function templateProperties(template: TaskRecurrenceTemplate): Record<string, unknown> {
   return {
-    ...(template.name !== null && template.name.trim() !== "" ? { name: template.name } : {}),
+    ...(template.name !== null ? { name: template.name } : {}),
     timeFrom: template.timeFrom,
     timeTo: template.timeTo,
     notifications: template.notifications,
