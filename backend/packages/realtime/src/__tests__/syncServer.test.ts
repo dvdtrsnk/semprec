@@ -1758,6 +1758,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const received: string[] = [];
     let registration: Promise<() => Promise<void>> | undefined;
     let disposed = false;
+    let primary: { error: unknown } | undefined;
     try {
       const input = {
         tenantId: tenantA,
@@ -1782,19 +1783,38 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       release();
       const dispose = await registration;
       expect(received).toEqual([first.id, live.id]);
-      await dispose();
       disposed = true;
+      await dispose();
+    } catch (error) {
+      primary = { error };
+      throw error;
     } finally {
       release();
+      const cleanup: unknown[] = [];
       try {
         if (registration) {
           const [outcome] = await Promise.allSettled([registration]);
           if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+          if (outcome?.status === "rejected" && (primary === undefined || outcome.reason !== primary.error))
+            cleanup.push(outcome.reason);
         }
-      } finally {
-        spy.mockRestore();
-        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
       }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      if (cleanup.length)
+        throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice barrier cleanup failed", {
+          cause: primary ? primary.error : cleanup[0],
+        });
     }
 
     let releaseAbort!: () => void;
@@ -1825,6 +1845,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const controller = new AbortController();
     const afterAbort: string[] = [];
     let abortRegistration: Promise<() => Promise<void>> | undefined;
+    let abortPrimary: { error: unknown } | undefined;
+    let observedAbortRejection = false;
     try {
       abortRegistration = tenantServer.subscribeVoice({
         tenantId: tenantA,
@@ -1844,17 +1866,40 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       controller.abort();
       releaseAbort();
       await expect(abortRegistration).rejects.toThrow();
+      observedAbortRejection = true;
       expect(afterAbort).toEqual([]);
+    } catch (error) {
+      abortPrimary = { error };
+      throw error;
     } finally {
+      controller.abort();
       releaseAbort();
+      const cleanup: unknown[] = [];
       try {
         if (abortRegistration) {
           const [outcome] = await Promise.allSettled([abortRegistration]);
           if (outcome?.status === "fulfilled") await outcome.value();
+          if (
+            outcome?.status === "rejected" &&
+            !observedAbortRejection &&
+            (abortPrimary === undefined || outcome.reason !== abortPrimary.error)
+          )
+            cleanup.push(outcome.reason);
         }
-      } finally {
-        abortSpy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
       }
+      try {
+        abortSpy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      if (cleanup.length)
+        throw new AggregateError(
+          abortPrimary ? [abortPrimary.error, ...cleanup] : cleanup,
+          "Voice abort cleanup failed",
+          { cause: abortPrimary ? abortPrimary.error : cleanup[0] },
+        );
     }
   });
 
@@ -2694,6 +2739,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     const frames: import("../agentRunWatch.js").VoiceRunFrame[] = [];
     let registration: Promise<() => Promise<void>> | undefined;
     let disposed = false;
+    let primary: { error: unknown } | undefined;
     try {
       registration = tenantServer.subscribeVoice({
         tenantId: tenantA,
@@ -2794,19 +2840,38 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
         last.id,
       ]);
       expect(frames.at(-1)).toMatchObject({ type: "delta", message: { sempMessageId: target.sempMessageId } });
-      await dispose();
       disposed = true;
+      await dispose();
+    } catch (error) {
+      primary = { error };
+      throw error;
     } finally {
       release();
+      const cleanup: unknown[] = [];
       try {
         if (registration) {
           const [outcome] = await Promise.allSettled([registration]);
           if (outcome?.status === "fulfilled" && !disposed) await outcome.value();
+          if (outcome?.status === "rejected" && (primary === undefined || outcome.reason !== primary.error))
+            cleanup.push(outcome.reason);
         }
-      } finally {
-        spy.mockRestore();
-        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
       }
+      try {
+        spy.mockRestore();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      try {
+        sentinel.close();
+      } catch (error) {
+        cleanup.push(error);
+      }
+      if (cleanup.length)
+        throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice replay cleanup failed", {
+          cause: primary ? primary.error : cleanup[0],
+        });
     }
   });
 
