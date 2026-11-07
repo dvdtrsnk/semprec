@@ -179,7 +179,7 @@ describe("queued Semp messages", () => {
     let exited = false;
     let blockDir: string | undefined;
     let mailRoot: string | undefined;
-    let workerSettled = false;
+    let workerSettled: boolean;
     let failed = false;
     let failure: unknown;
     const cleanupFailures: unknown[] = [];
