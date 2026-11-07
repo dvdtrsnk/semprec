@@ -960,7 +960,7 @@ describe("voice session through the real gateway and registered worker", () => {
           });
         } catch (error) {
           clearTimeout(timer);
-          reject(error);
+          reject(error instanceof Error ? error : new Error("Fixture control failed", { cause: error }));
         }
       });
     }
