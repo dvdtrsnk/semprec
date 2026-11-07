@@ -605,7 +605,8 @@ describe("queued Semp messages", () => {
           const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
           expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
           const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
-          expect(request?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+          if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
+          expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
         },
         { timeout: 5000 },
       );
@@ -650,7 +651,8 @@ describe("queued Semp messages", () => {
           const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
           expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
           const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
-          expect(request?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+          if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
+          expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
         },
         { timeout: 5000 },
       );
