@@ -3308,12 +3308,12 @@
       "sequence": 34,
       "status": "proposed",
       "title": "[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes",
-      "bodyCharacters": 59810,
-      "specSha256": "dc9eed09653bbd9d28e87f638cb6d06fef48bebce02046936cad4861e7ce392d",
+      "bodyCharacters": 57426,
+      "specSha256": "29182c92ec9860719dd7ad82c7a0fab38fed6dca05cf4b6306762872c9a2e421",
       "members": [
         {
           "id": "gh-1605",
-          "specSha256": "8ae2696eb9b6a1e14b13e7d2a5a7d3754c9113cd1dfbf4f2d6d8bd43bdb00052",
+          "specSha256": "8ddbde1d8d3dde65d75424f9622e57bb1f634fb95069384f73f0b438a36141fc",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1600"
@@ -3322,7 +3322,7 @@
         },
         {
           "id": "gh-1670",
-          "specSha256": "07b1e29a5c44c75ab42b3a43cff5edad8f0b43b01f2336ca1b196bd7ce15a1a4",
+          "specSha256": "be2b48c2a0f3862f76b5da9d8f01bf7e4974e4745afad339fed18b3958968cb4",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1544",
@@ -3332,7 +3332,7 @@
         },
         {
           "id": "gh-1672",
-          "specSha256": "0fdd62767434b3cfcfc38d33f97d00aa5abc3f76d46dd14828a551c00a61686e",
+          "specSha256": "1289db5a5fdbed142cc9d1262dd78970f5788c88623b33a6007c40348bc67e3c",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1605"
@@ -3388,7 +3388,7 @@
         },
         {
           "id": "gh-1619",
-          "specSha256": "9afe4d29d642465ed8bc323e021bf02a15f3c4785e7c3799d228629c149ee65d",
+          "specSha256": "3f3f95bb7668dce7b7200167aec86b573493a23abee1c17d55464bd0ae9fdbce",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1612",

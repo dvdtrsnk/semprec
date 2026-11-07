@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.976Z"
-updatedAt: "2026-11-07T19:28:42.079Z"
+updatedAt: "2026-11-07T20:54:54.531Z"
 closedAt: null
 source: null
-approval: {"specSha256":"dc9eed09653bbd9d28e87f638cb6d06fef48bebce02046936cad4861e7ce392d","source":"repository","actor":"Owner-delegated controller: batch34 grouped seam reconciliation, exact paired owners and actual entrypoint evidence; preserve all production gates","at":"2026-11-07T19:28:42.079Z"}
+approval: {"specSha256":"29182c92ec9860719dd7ad82c7a0fab38fed6dca05cf4b6306762872c9a2e421","source":"repository","actor":"Owner-delegated controller: batch34 R1 current-instance invariant, bounded Tasks-owned historical SQL and nonblocking area source reservation; preserve release gates","at":"2026-11-07T20:54:54.531Z"}
 resolution: null
 ---
 **Blocked by:** sp-1385289a-c057-4dcf-a42f-b2aaded63f7b
@@ -51,7 +51,7 @@ Decision: tasks that were already done before the backfill stay without `seriesI
 
 Shared-file ordering: this issue also waits for #1600 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
 
-Batch 34 reconciliation: A successful cutover covers every eligible active, non-done row. A missing Tasks instance or invalid/missing date must fail the tenant transaction unchanged, not invent an anchor or report a skipped row as success. Presets use the written definitions of #1665; that route is not implemented here. Included #1670 replaces computeNextDueDate.
+Batch 34 reconciliation: Preflight eligible legacy rows in read-only keyset chunks of at most 500; an initially missing Tasks instance/database or invalid/missing date fails before any cutover write. Then convert at most 500 rows per committed transaction, locking items before recurrence rows and rechecking eligibility/date under those locks. A later failure rolls back its batch; prior valid batches remain and rerun resumes. No invented anchor, skipped-invalid success or historical event emission. The Tasks-owned SQL backfill is a narrow exception recorded by the new ADR; ordinary writes retain the choke point. Presets use the written definitions of #1665; that route is not implemented here. Included #1670 replaces computeNextDueDate.
 
 #### Task
 
@@ -76,6 +76,8 @@ Load `db-migrations`, `state-writes`, `canonical-keys` and `testing`.
 
 - backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
 - backend/packages/data/src/testSupport/taskSeriesFixtures.ts
+
+- docs/adr/2026-11-07-task-series-cutover-uses-bounded-owner-backfill.md
 
 #### Scope
 
@@ -113,7 +115,7 @@ Decision: floating rules count from `completedOn`, fixed rules from the complete
 
 Decision (product owner): `wontDo` on an occurrence advances the series the same way `done` does; it never ends the series. `wontDo` concerns only that occurrence; the user ends a series explicitly. For a floating rule the base of a `wontDo` advance is the day of the write in the tenant time zone (a `wontDo` occurrence has no `completedOn`, #1544).
 
-Batch 34 reconciliation: The template supplies the next instance except flagged/description, which included #1673 explicitly copies from the completed instance.
+Batch 34 reconciliation: Only the current item named by the locked series may advance it; stale done/wontDo transitions cannot advance again on a later day. Keep per-date deduplication. The template supplies five fields; #1673 copies flagged/description from the completed item.
 
 #### Task
 
@@ -169,7 +171,7 @@ Today no such function exists. The rule evaluation helpers are in `backend/packa
 
 Decision: a virtual occurrence dated before today has the status `missed` in the projection (the state it will have when closed), and ticking it creates a real item with status `done` through #1720. The `missed` option is added to the status select by #1668; until then the projection reports the value as a plain string.
 
-Batch 34 reconciliation: Materialized occurrences in the range remain visible off-rule. Floating virtual dates use anchor plus whole intervals; inactive series have no virtual date after their last live materialized occurrence, or any when none exists.
+Batch 34 reconciliation: The before-anchor exclusion governs virtual generation; stored occurrences in the range remain visible, including before-anchor/off-rule items. Floating virtual dates use anchor plus whole intervals; inactive series have no virtual date after their last live materialized occurrence, or any when none exists.
 
 #### Task
 
@@ -496,7 +498,7 @@ Decision: the marker lives inside the area's own doc, in a root `Y.Map` named `m
 
 Shared-file ordering: this issue also waits for #1612 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
 
-Batch 34 reconciliation: Use the existing document-write lock order: doc_snapshots before docs, then read/mutate. Process all areas; report collected failures afterward and register this step last. No accepted ADR body is edited.
+Batch 34 reconciliation: After ensuring the doc, take doc_snapshots before docs. Then reserve/re-read the source through existing lockItemByIdNowait and decide from that fresh row. On contention propagate the actual error after area rollback; continue other areas, aggregate afterward, step last. No wait on an item while holding document locks, retry loop or accepted ADR body edit.
 
 #### Task
 
@@ -511,6 +513,8 @@ Load `state-writes`, `db-migrations` and `testing`.
 - backend/packages/data/src/docs/areaNoteCutoverMigration.ts (new)
 - backend/packages/data/src/db/tenantCutoverMigrations.ts (register the step)
 - backend/packages/data/src/__tests__/areaNoteCutoverMigration.test.ts (new)
+
+- docs/adr/2026-11-07-area-note-cutover-reserves-source-without-waiting.md
 
 #### Scope
 
@@ -605,54 +609,7 @@ Load `canonical-keys`, `db-migrations`, `error-handling` and `testing`.
 
 ## Touches
 
-- backend/packages/data/src/db/migrations/NNNN_task_recurrence_series.sql (next free ordinal at commit time)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts (one registration line)
-- backend/packages/data/src/tasks/taskRecurrenceSeriesCutoverMigration.ts (new)
-- backend/packages/data/src/tasks/taskRecurrenceStore.ts
-- backend/packages/data/src/tasks/advanceTaskRecurrenceWithClient.ts
-- backend/packages/data/src/index.ts (barrel export if a new symbol is public)
-- backend/packages/data/src/__tests__/ (new tests for the cutover, advance and ownership)
-- backend/packages/data/src/tasks/nextDueDate.ts
-- backend/packages/data/src/tasks/taskRecurrenceItemUpdateHook.ts
-- backend/packages/data/src/tasks/taskRecurrenceStore.ts (lookup by item and series)
-- backend/packages/data/src/index.ts (barrel export of the two new functions)
-- backend/packages/data/src/__tests__/ (advance and date-function tests)
-- backend/packages/data/src/tasks/projectTaskOccurrences.ts (new)
-- backend/packages/data/src/tasks/nextDueDate.ts (export of the range helper, if needed)
-- backend/packages/data/src/index.ts (barrel export)
-- backend/packages/data/src/__tests__/ (new projection tests)
-- tests under backend/packages/data/src/tasks/__tests__/
-- backend/packages/data/src/seed/seedTenDatabases.ts (Journal relations block)
-- backend/packages/data/src/journal/journalOwnerProcesses.ts (new, owner process constant)
-- backend/packages/data/src/journal/journalEventsCutoverMigration.ts (new)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts (one call added)
-- backend/packages/data/src/seed/i18n/cs.json
-- backend/packages/data/src/seed/i18n/en.json
-- backend/packages/data/src/__tests__/ (cutover and seed tests)
-- backend/packages/data/src/journal/journalEventLinks.ts (new)
-- the after-document-update job delivered by #1658 (one extra call for Journal pages, next to the call of #1711)
-- backend/packages/data/src/journal/__tests__/ (event link sync tests)
-- backend/packages/data/src/domainWriteHooks.ts (hook registration line)
-- backend/packages/data/src/inbox/journalDayRelinkHook.ts (new)
-- backend/packages/data/src/inbox/__tests__/ (relink tests)
-- backend/packages/data/src/seed/seedEmailModule.ts (Threads.tasks in the shared builder)
-- backend/packages/data/src/mail/threadTasksCutoverMigration.ts (new)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts
-- backend/packages/data/src/mail/__tests__/ (new tests)
-- backend/packages/data/src/docs/areaNoteCutoverMigration.ts (new)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts (register the step)
-- backend/packages/data/src/__tests__/areaNoteCutoverMigration.test.ts (new)
-- backend/packages/shared/src/genericOperations/schemas.ts (number filter config schema)
-- backend/packages/data/src/chokePoint/propertiesStore.ts (number config validation)
-- backend/packages/data/src/manifest/catalogResolution.ts (`resolveProperty` preset projection)
-- backend/packages/data/src/seed/seedLibraryModule.ts (books and movies rating config)
-- backend/packages/data/src/library/i18n/en.json
-- backend/packages/data/src/library/i18n/cs.json
-- backend/packages/data/src/seed/ratingFilterPresetsCutoverMigration.ts (new)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts (register the new step)
-- backend/packages/data/src/chokePoint/__tests__/propertiesStore.unit.test.ts
-- backend/packages/data/src/__tests__/manifest.test.ts
-- backend/packages/data/src/__tests__/tenantCutoverMigrations.test.ts
+Exact union of the per-member Touches in the requirement snapshots above, preserving every per-path restriction. This index grants no extra path. Duplicate paths remain governed by their respective member Tasks.
 
 ## Scope
 
