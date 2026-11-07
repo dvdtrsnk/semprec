@@ -21,6 +21,7 @@ import {
   setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import {
+  createChokePoint,
   createUser,
   hashPassword,
   loadFullModuleRegistry,
@@ -106,6 +107,7 @@ const childMessage = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("audioAccepted") }),
   z.strictObject({ type: z.literal("speechCall"), sequence: z.number().int().min(1).max(100) }),
   z.strictObject({ type: z.literal("modelCall"), sequence: z.number().int().min(1).max(100) }),
+  z.strictObject({ type: z.literal("approvalReady") }),
   z.strictObject({ type: z.literal("gateArmed") }),
   z.strictObject({
     type: z.literal("gateHeld"),
@@ -139,6 +141,8 @@ describe("voice session through the real gateway and registered worker", () => {
   let gateway: OwnedChild | undefined, worker: OwnedChild | undefined;
   let workerEnvironment: NodeJS.ProcessEnv;
   let socket: WebSocket | undefined;
+  let watchSocket: WebSocket | undefined;
+  let watchServer: Server | undefined;
   const frames: unknown[] = [];
   let audioFrames = 0;
 
@@ -847,12 +851,31 @@ describe("voice session through the real gateway and registered worker", () => {
       );
   });
   afterEach(async () => {
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
-      const closed = once(socket, "close");
-      socket.terminate();
-      await closed;
+    const failures: unknown[] = [];
+    for (const current of [socket, watchSocket]) {
+      try {
+        if (current && current.readyState !== WebSocket.CLOSED) {
+          const closed = once(current, "close");
+          current.terminate();
+          await closed;
+        }
+      } catch (error) {
+        failures.push(error);
+      }
     }
     socket = undefined;
+    watchSocket = undefined;
+    if (watchServer?.listening) {
+      try {
+        await new Promise<void>((resolveClose, reject) =>
+          watchServer!.close((error) => (error ? reject(error) : resolveClose())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    watchServer = undefined;
+    if (failures.length) throw new AggregateError(failures, "Voice test socket cleanup failed", { cause: failures[0] });
   });
   afterAll(async () => {
     const failures: unknown[] = [];
@@ -928,6 +951,16 @@ describe("voice session through the real gateway and registered worker", () => {
   }, 60_000);
   it("stores a trusted voice turn and streams a real worker answer before native provider completion", async () => {
     if (!gateway || !worker) throw new Error("Missing fixture child");
+    const cp = createChokePoint(pool);
+    const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Voice approval fixture" }));
+    const target = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: {} }));
+    if (!gateway.child.connected) throw new Error("Fixture gateway disconnected");
+    await new Promise<void>((resolveSend, reject) =>
+      gateway.child.send({ type: "approvalTarget", itemId: target.id }, (error) =>
+        error ? reject(error) : resolveSend(),
+      ),
+    );
+    await vi.waitFor(() => expect(gateway?.messages.some((entry) => entry.type === "approvalReady")).toBe(true));
     socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
     socket.on("message", (data, binary) => {
       if (binary) {
@@ -945,6 +978,7 @@ describe("voice session through the real gateway and registered worker", () => {
       timeout: 10_000,
     });
     await vi.waitFor(() => expect(gateway?.messages.some((entry) => entry.type === "audioAccepted")).toBe(true));
+    send(gateway, "holdSpeech");
     send(gateway, "holdModel");
     send(gateway, "partial");
     await vi.waitFor(() =>
@@ -964,6 +998,7 @@ describe("voice session through the real gateway and registered worker", () => {
       return result.rows[0]!;
     });
     let assistantId = "";
+    let assistantRun = "";
     try {
       await vi.waitFor(
         async () => {
@@ -978,6 +1013,7 @@ describe("voice session through the real gateway and registered worker", () => {
           expect(row?.status).toBe("running");
           expect(row?.agent_run_id).toBeTruthy();
           assistantId = row?.id ?? "";
+          assistantRun = row?.agent_run_id ?? "";
           expect(audioFrames).toBeGreaterThan(0);
         },
         { timeout: 20_000 },
@@ -1001,8 +1037,71 @@ describe("voice session through the real gateway and registered worker", () => {
       throw error;
     }
     expect(assistantId).not.toBe("");
+    expect(assistantRun).not.toBe("");
+    expect(frames).toContainEqual({ type: "speaking", state: "started" });
+    const watchedFrames: unknown[] = [];
+    let watchInvalid = false;
+    watchServer = createServer();
+    watchServer.on("upgrade", (req, stream, head) => sync.handleUpgrade(req, stream, head));
+    await new Promise<void>((resolveListen) => watchServer!.listen(0, "127.0.0.1", resolveListen));
+    const watchAddress = watchServer.address();
+    if (!watchAddress || typeof watchAddress === "string") throw new Error("Missing sync listener");
+    watchSocket = new WebSocket(`ws://127.0.0.1:${watchAddress.port}/api/sync`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    watchSocket.on("error", () => {
+      watchInvalid = true;
+    });
+    watchSocket.on("message", (data, binary) => {
+      if (!binary) {
+        try {
+          const text = messageText(data);
+          if (Buffer.byteLength(text) > 256 * 1024 || watchedFrames.length >= 1024) {
+            watchInvalid = true;
+            return;
+          }
+          const value: unknown = JSON.parse(text);
+          watchedFrames.push(value);
+        } catch {
+          watchInvalid = true;
+        }
+      }
+    });
+    await once(watchSocket, "open");
+    watchSocket.send(JSON.stringify({ type: "agent:watch", runId: assistantRun, afterEventId: "0" }));
+    await vi.waitFor(() =>
+      expect(
+        watchedFrames.some(
+          (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "agent:event",
+        ),
+      ).toBe(true),
+    );
     send(gateway, "partial");
     await vi.waitFor(() => expect(frames).toContainEqual({ type: "speaking", state: "stopped" }));
+    const audioAfterBargeIn = audioFrames;
+    send(gateway, "finalSecond");
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual({ type: "transcript", text: "A second question.", final: true }),
+    );
+    const second = await vi.waitFor(async () => {
+      const result = await runInTenant(tenant, () =>
+        pool.query<{ user_id: string; source: string | null; assistant_id: string; status: string }>(
+          `SELECT u.id AS user_id, u.source, a.id AS assistant_id, a.status
+         FROM semp_messages u JOIN semp_messages a ON a.tenant_id = u.tenant_id AND a.reply_to_message_id = u.id
+         WHERE u.thread_id = $1 AND u.role = 'user' AND u.text = $2 AND a.role = 'assistant'`,
+          [source.thread_id, "A second question."],
+        ),
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({ source: "voice", status: "queued" });
+      return result.rows[0]!;
+    });
+    expect(audioFrames).toBe(audioAfterBargeIn);
+    const firstStillRunning = await runInTenant(tenant, () =>
+      pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id=$1", [assistantId]),
+    );
+    expect(firstStillRunning.rows).toEqual([{ status: "running" }]);
+    send(gateway, "releaseSpeech");
     send(gateway, "releaseModel");
     await vi.waitFor(
       async () => {
@@ -1013,6 +1112,92 @@ describe("voice session through the real gateway and registered worker", () => {
       },
       { timeout: 20_000 },
     );
+    const approval = await vi.waitFor(async () => {
+      const result = await runInTenant(tenant, () =>
+        pool.query<{ id: string; status: string; agent_run_id: string; tool_call_id: string }>(
+          "SELECT id, status, agent_run_id, tool_call_id FROM approval_requests WHERE agent_run_id=$1 AND tool_call_id=$2",
+          [assistantRun, "voice-approval-call"],
+        ),
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({
+        status: "pending",
+        agent_run_id: assistantRun,
+        tool_call_id: "voice-approval-call",
+      });
+      return result.rows[0]!;
+    });
+    await vi.waitFor(() => {
+      expect(watchInvalid).toBe(false);
+      expect(
+        watchedFrames.some(
+          (frame) =>
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            frame.type === "notification" &&
+            "notification" in frame &&
+            typeof frame.notification === "object" &&
+            frame.notification !== null &&
+            "sourceId" in frame.notification &&
+            frame.notification.sourceId === approval.id,
+        ),
+      ).toBe(true);
+      expect(
+        watchedFrames.some(
+          (frame) =>
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            frame.type === "agent:event" &&
+            "event" in frame &&
+            typeof frame.event === "object" &&
+            frame.event !== null &&
+            "payload" in frame.event &&
+            typeof frame.event.payload === "object" &&
+            frame.event.payload !== null &&
+            "toolCallId" in frame.event.payload &&
+            frame.event.payload.toolCallId === "voice-approval-call",
+        ),
+      ).toBe(true);
+    });
+    const apiAddress = server.address();
+    if (!apiAddress || typeof apiAddress === "string") throw new Error("Missing API listener");
+    const history = await fetch(`http://127.0.0.1:${apiAddress.port}/api/semp/threads/${source.thread_id}/messages`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(history.status).toBe(200);
+    const historyBody: unknown = await history.json();
+    expect(historyBody).toMatchObject({
+      rows: expect.arrayContaining([expect.objectContaining({ id: assistantId, agentRunId: assistantRun })]),
+    });
+    const targetState = await runInTenant(tenant, () =>
+      pool.query<{ deleted_at: Date | null }>("SELECT deleted_at FROM items WHERE id=$1", [target.id]),
+    );
+    expect(targetState.rows).toEqual([{ deleted_at: null }]);
+    await vi.waitFor(
+      async () => {
+        const result = await runInTenant(tenant, () =>
+          pool.query<{ status: string; agent_run_id: string | null }>(
+            "SELECT status, agent_run_id FROM semp_messages WHERE id=$1",
+            [second.assistant_id],
+          ),
+        );
+        expect(result.rows).toEqual([{ status: "done", agent_run_id: assistantRun }]);
+      },
+      { timeout: 20_000 },
+    );
+    const modelCalls = await runInTenant(tenant, () =>
+      pool.query<{ semp_message_id: string; status: string }>(
+        "SELECT semp_message_id, status FROM ai_gateway_calls WHERE agent_run_id=$1 AND operation='agent_turn' ORDER BY at, id",
+        [assistantRun],
+      ),
+    );
+    expect(modelCalls.rows).toEqual([
+      { semp_message_id: assistantId, status: "settled" },
+      { semp_message_id: assistantId, status: "settled" },
+      { semp_message_id: second.assistant_id, status: "settled" },
+    ]);
     const closed = once(socket, "close");
     socket.close();
     await closed;

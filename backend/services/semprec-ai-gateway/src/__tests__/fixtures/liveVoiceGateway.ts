@@ -36,11 +36,14 @@ const control = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("releaseSpeech") }),
   z.strictObject({ type: z.literal("holdModel") }),
   z.strictObject({ type: z.literal("releaseModel") }),
+  z.strictObject({ type: z.literal("approvalTarget"), itemId: z.string().uuid() }),
   z.strictObject({ type: z.literal("stop") }),
 ]);
 const providerSockets = new Set<WebSocket>();
 const pending = new Set<ServerResponse>();
 const pendingModel = new Set<ServerResponse>();
+const approvalByResponse = new Map<ServerResponse, string>();
+let approvalTarget: string | undefined;
 let holdSpeech = false;
 let holdModel = false;
 let speechCalls = 0;
@@ -50,10 +53,32 @@ function sse(event: object & { type: string }): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 function endModel(res: ServerResponse): void {
+  const target = approvalByResponse.get(res);
+  approvalByResponse.delete(res);
+  const toolEvents = target
+    ? [
+        {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "tool_use", id: "voice-approval-call", name: "item_delete", input: {} },
+        },
+        {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "input_json_delta", partial_json: JSON.stringify({ itemId: target }) },
+        },
+        { type: "content_block_stop", index: 1 },
+      ]
+    : [];
   res.end(
     [
       { type: "content_block_stop", index: 0 },
-      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } },
+      ...toolEvents,
+      {
+        type: "message_delta",
+        delta: { stop_reason: target ? "tool_use" : "end_turn", stop_sequence: null },
+        usage: { output_tokens: 3 },
+      },
       { type: "message_stop" },
     ]
       .map(sse)
@@ -78,6 +103,11 @@ const provider = createServer((req, res) => {
         return;
       }
       process.send?.({ type: "modelCall", sequence: modelCalls });
+      if (approvalTarget) {
+        approvalByResponse.set(res, approvalTarget);
+        approvalTarget = undefined;
+        res.once("close", () => approvalByResponse.delete(res));
+      }
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(
         [
@@ -307,6 +337,15 @@ process.on("message", (value: unknown) => {
       for (const res of pendingModel) endModel(res);
       pendingModel.clear();
       holdModel = false;
+      break;
+    case "approvalTarget":
+      if (approvalTarget) {
+        process.exitCode = 1;
+        shutdown();
+        break;
+      }
+      approvalTarget = parsed.data.itemId;
+      process.send?.({ type: "approvalReady" });
       break;
     case "stop":
       shutdown();
