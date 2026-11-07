@@ -510,12 +510,15 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
+          // An event's iCalendar UID is a system identifier (issue #1599), not searchable text (asserted below).
+          if (descriptor.key === "events" && property.key === "icalUid") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
       expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "tasks")?.searchFields).not.toContain("seriesId");
+      expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({

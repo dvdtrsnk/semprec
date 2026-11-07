@@ -113,6 +113,7 @@
   "property.files.projects.name": "Projects",
   "property.files.healthRecords.name": "Health records",
   "property.files.companies.name": "Companies",
+  "property.files.events.name": "Events",
 
   "database.events.name": "Events",
   "database.events.searchPlaceholder": "Search events",
@@ -131,11 +132,15 @@
   "property.events.description.name": "Description",
   "property.events.alertMinutes.name": "Alert (minutes before)",
   "property.events.travelMinutes.name": "Travel time (minutes)",
+  "property.events.icalUid.name": "iCalendar UID",
+  "property.events.icalSequence.name": "iCalendar sequence",
   "property.events.project.name": "Project",
   "property.events.people.name": "People",
   "property.events.transcript.name": "Transcript",
   "property.events.actionItems.name": "Action items",
   "property.events.company.name": "Company",
+  "property.events.files.name": "Files",
+  "property.events.calendar.name": "Calendar",
 
   "database.healthRecords.name": "Health records",
   "database.healthRecords.searchPlaceholder": "Search records",

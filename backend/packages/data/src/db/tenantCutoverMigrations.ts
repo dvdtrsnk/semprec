@@ -12,13 +12,17 @@ import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/t
 import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
 import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
 import type { Pool } from "pg";
+import { runItemsCreatedAtBackfillCutoverMigration } from "./itemsCreatedAtBackfillCutoverMigration.js";
 import { runEventsAreaCutoverMigration } from "../events/eventsAreaCutoverMigration.js";
+import { runEventsFilesRelationCutoverMigration } from "../blobs/eventsFilesRelationCutoverMigration.js";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
 import { runFilesTypeOptionsCutoverMigration } from "../blobs/filesTypeOptionsCutoverMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
 import { runEventTranscriptCardinalityCutoverMigration } from "../transcription/eventTranscriptCardinalityCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
+import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
+import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
@@ -43,6 +47,10 @@ import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderF
 export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
+    // First (issue #1594): a later step that writes an old row moves its `updated_at` past the ALTER's
+    // `created_at`, after which the backfill no longer matches that row. The Tasks data migration planned
+    // in #1657 rewrites `updated_at` and is ordered after this backfill for the same reason.
+    await runItemsCreatedAtBackfillCutoverMigration(pool);
     await runMailDatabaseKeysCutoverMigration(pool);
     await runThreadsDatabaseCutoverMigration(pool);
     await runPropertyDefaultsCutoverMigration(pool);
@@ -53,7 +61,10 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
+    await runEventsIcalIdentityCutoverMigration(pool);
+    await runCalendarsCutoverMigration(pool);
     await runEventsAreaCutoverMigration(pool);
+    await runEventsFilesRelationCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);
     await runProcessingProposalsCardStateCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);

@@ -5,6 +5,7 @@ import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
+import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import {
   EMAILS_MODULE_ID,
   FOLDERS_MODULE_ID,
@@ -109,6 +110,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         INBOX_ITEM_TYPES_MODULE_ID,
         INBOX_MODULE_ID,
         PROCESSING_PROPOSALS_MODULE_ID,
+        CALENDARS_MODULE_ID,
       ].sort(),
     );
 

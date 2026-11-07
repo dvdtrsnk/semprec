@@ -5,7 +5,7 @@ import {
   assertUpdateStepShape,
 } from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
-import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
+import { prepareComputedUpdates, readProposalTimezone } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
   resolveModelPagePlacement,
@@ -245,10 +245,12 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
     if (step.op === "update") {
-      const prepared =
-        Object.keys(properties).length > 0
-          ? await prepareUserItemPatch(databaseProperties, properties, database, item)
-          : { patch: {}, deferredKeys: [] };
+      // The tenant zone the preparation needs, read and validated in this transaction; an invalid stored zone
+      // propagates instead of refusing the proposal (readProposalTimezone).
+      const zone = Object.keys(properties).length > 0 ? await readProposalTimezone(client) : null;
+      const prepared = zone
+        ? await prepareUserItemPatch(databaseProperties, properties, database, item, zone)
+        : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }
     await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step), item.id);

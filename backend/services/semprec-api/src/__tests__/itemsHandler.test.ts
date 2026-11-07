@@ -2230,6 +2230,8 @@ describe("item routes (issue #241)", () => {
         databaseId: db.id,
         properties: { title: "Dune (2021)", year: 2021 },
         computed: item.computed,
+        // The creation time is the create's, unchanged by the patch (issue #1594).
+        createdAt: item.createdAt,
         updatedAt: expect.any(String),
         deletedAt: null,
       });

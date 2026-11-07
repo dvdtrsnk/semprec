@@ -8,11 +8,17 @@ import {
   registerItemUpdateHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
+  registerItemDeleteHook,
+  registerItemRestoreHook,
   runAutomationBatchReader,
+  runItemDeleteHooks,
+  runItemRestoreHooks,
   runRelationEdgeChangedHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
+  type ItemDeleteHookContext,
   type ItemPreWriteTransformContext,
+  type ItemRestoreHookContext,
   type ItemUpdateHookContext,
   type RelationEdgeChangedHookContext,
 } from "../hooks.js";
@@ -85,7 +91,7 @@ const CONTEXT: ItemUpdateHookContext = {
     color: null,
     archivedAt: null,
   },
-  item: { id: "item", databaseId: "db", properties: {}, computed: {}, updatedAt: "", deletedAt: null },
+  item: { id: "item", databaseId: "db", properties: {}, computed: {}, createdAt: "", updatedAt: "", deletedAt: null },
   propertiesPatch: {},
   writer: SYSTEM_WRITER,
 };
@@ -265,5 +271,94 @@ describe("chokePoint/hooks item pre-write transform registry", () => {
     clearHooksForTests();
 
     expect(hasItemPreWriteTransform("events")).toBe(false);
+  });
+});
+
+describe.each([
+  {
+    name: "item delete",
+    register: registerItemDeleteHook,
+    run: runItemDeleteHooks,
+    other: { register: registerItemRestoreHook, run: runItemRestoreHooks },
+  },
+  {
+    name: "item restore",
+    register: registerItemRestoreHook,
+    run: runItemRestoreHooks,
+    other: { register: registerItemDeleteHook, run: runItemDeleteHooks },
+  },
+])("chokePoint/hooks $name registry (issue #1601)", ({ register, run, other }) => {
+  const TRASH_CONTEXT: ItemDeleteHookContext & ItemRestoreHookContext = {
+    client: offlineClient,
+    database: CONTEXT.database,
+    item: { ...CONTEXT.item, deletedAt: "2026-11-07T10:00:00.000Z" },
+    rootItemId: "root",
+    deletedAt: "2026-11-07T10:00:00.000Z",
+    writerKind: "agent",
+    agentRunId: "run",
+    actingUserId: "user",
+  };
+
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("passes the exact context to each hook, in registration order", async () => {
+    const seen: Array<[string, unknown]> = [];
+    register(async (context) => {
+      seen.push(["first", context]);
+    });
+    register(async (context) => {
+      seen.push(["second", context]);
+    });
+
+    await run(TRASH_CONTEXT);
+
+    expect(seen).toEqual([
+      ["first", TRASH_CONTEXT],
+      ["second", TRASH_CONTEXT],
+    ]);
+  });
+
+  it("runs a hook registered twice only once", async () => {
+    const hook = vi.fn(async () => {});
+    register(hook);
+    register(hook);
+
+    await run(TRASH_CONTEXT);
+
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates the first rejection and runs no later hook", async () => {
+    const failure = new ValidationError("vetoed");
+    const later = vi.fn(async () => {});
+    register(async () => {
+      throw failure;
+    });
+    register(later);
+
+    await expect(run(TRASH_CONTEXT)).rejects.toBe(failure);
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it("keeps the delete and restore registries apart", async () => {
+    const hook = vi.fn(async () => {});
+    other.register(hook);
+
+    await run(TRASH_CONTEXT);
+    expect(hook).not.toHaveBeenCalled();
+    await other.run(TRASH_CONTEXT);
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  it("is cleared by clearHooksForTests", async () => {
+    const hook = vi.fn(async () => {});
+    register(hook);
+
+    clearHooksForTests();
+    await run(TRASH_CONTEXT);
+
+    expect(hook).not.toHaveBeenCalled();
   });
 });

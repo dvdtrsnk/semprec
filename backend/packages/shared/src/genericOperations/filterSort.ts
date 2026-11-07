@@ -179,10 +179,15 @@ function buildFilterNodeSchema(remainingDepth: number): z.ZodType<FilterNode> {
 
 export const filterNodeSchema: z.ZodType<FilterNode> = buildFilterNodeSchema(MAX_FILTER_DEPTH);
 
-export const sortSpecSchema = z
-  .object({
-    property: z.string().min(1),
-    direction: z.enum(["asc", "desc"]),
-  })
-  .strict();
+const sortDirection = z.enum(["asc", "desc"]);
+
+/**
+ * A property sort key, or an item system timestamp (`createdAt`/`updatedAt`, issue #1594) in its own
+ * `system` namespace. Both variants are strict, so a spec naming both `property` and `system` matches
+ * neither. `packages/data/src/views/sortSpec.ts` accepts the same two variants.
+ */
+export const sortSpecSchema = z.union([
+  z.object({ property: z.string().min(1), direction: sortDirection }).strict(),
+  z.object({ system: z.enum(["createdAt", "updatedAt"]), direction: sortDirection }).strict(),
+]);
 export type SortSpec = z.infer<typeof sortSpecSchema>;

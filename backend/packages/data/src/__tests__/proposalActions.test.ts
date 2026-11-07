@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
-import { getSystemTimezone } from "../systemSettings.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -24,6 +24,7 @@ import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
   appendHistoryEntry,
+  assertValidProposalEnvelope,
   createSemprecTickAction,
   parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
@@ -2177,7 +2178,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           const [item] = await itemsStore.getItemsByIds(client, [project]);
           if (!db || !item) throw new Error("Missing project fixture");
           const properties = await propertiesStore.listPropertiesByDatabase(client, projectsDb);
-          return { item, prepared: await prepareUserItemPatch(properties, { status: "done" }, db, item) };
+          return {
+            item,
+            prepared: await prepareUserItemPatch(properties, { status: "done" }, db, item, "Europe/Prague"),
+          };
         });
       const initial = await prepare();
       const order = initial.item.properties.pinnedOrder;
@@ -2657,6 +2661,224 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(updated?.properties).toMatchObject({
         status: "done",
         completedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      });
+    });
+
+    describe("an Event update whose date carries an offset (issues #1598, C7)", () => {
+      const offsetStep = (event: string): Step => ({
+        ref: "event",
+        op: "update",
+        itemId: event,
+        role: "primary",
+        properties: { date: "2026-10-16T08:00:00Z" },
+      });
+      const form = async (event: string) => {
+        const eventsDb = await databaseIdFor("events");
+        const step = offsetStep(event);
+        return withTransaction(pool, (client) =>
+          prepareComputedUpdates(
+            client,
+            { entityKind: "database", target: eventsDb, properties: step.properties ?? {}, operations: [step] },
+            "2026-10-16",
+          ),
+        );
+      };
+      const readEvent = async (event: string) =>
+        (await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [event])))[0];
+      const setZone = (zone: string) =>
+        withTransaction(pool, async (client) =>
+          updateItemWithClient(client, {
+            databaseId: await getSystemSettingsDatabaseId(client),
+            itemId: await getSystemSettingsItemId(client),
+            propertiesPatch: { timezone: zone },
+          }),
+        );
+
+      it("forms before/after values with the tenant zone, validates the envelope and confirms the converted values", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        expect(step.before?.properties).toEqual({ date: "2026-10-16", timeFrom: null, timeTo: null });
+        expect(step.after?.properties).toEqual({ date: "2026-10-16", timeFrom: "10:00", timeTo: "11:00" });
+        await withTransaction(pool, (client) => assertValidProposalEnvelope(client, formed));
+
+        const card = await cardWithSteps("events", [step]);
+        await confirm(card);
+        expect((await readEvent(event))?.properties).toMatchObject({
+          date: "2026-10-16",
+          timeFrom: "10:00",
+          timeTo: "11:00",
+          time: "10:00–11:00",
+        });
+        expect(await cardStatus(card)).toBe("confirmed");
+      });
+
+      it("refuses an envelope whose after values ignore the conversion, at validation and at confirmation", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        const raw: Step = {
+          ...step,
+          after: { ...step.after, properties: { date: "2026-10-16T08:00:00Z", timeFrom: null, timeTo: null } },
+        };
+        const envelope = { ...formed, operations: [raw] };
+        await expect(
+          withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope)),
+        ).rejects.toMatchObject({
+          status: 400,
+          details: { ref: "event" },
+        });
+        const before = await readEvent(event);
+        const card = await cardWithSteps("events", [raw]);
+        await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "event" } });
+        expect(await readEvent(event)).toEqual(before);
+        expect(await cardStatus(card)).toBe("proposed");
+      });
+
+      it("refuses confirmation without writes when the tenant zone changed after the proposal was formed", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        const card = await cardWithSteps("events", [step]);
+        const before = await readEvent(event);
+        await setZone("America/New_York");
+        await expect(confirm(card)).rejects.toMatchObject({
+          status: 400,
+          details: { ref: "event", field: "timeFrom" },
+        });
+        expect(await readEvent(event)).toEqual(before);
+        expect(await cardStatus(card)).toBe("proposed");
+      });
+    });
+
+    describe("an invalid stored tenant time zone during a tick (issue #1598)", () => {
+      /** Raw SQL: the settings write refuses an invalid zone, so only a corrupted settings row holds one. */
+      async function corruptTenantZone(): Promise<void> {
+        const settingsDatabaseId = await withTransaction(pool, (client) => getSystemSettingsDatabaseId(client));
+        const result = await pool.query(
+          `UPDATE items SET properties = properties || '{"timezone": "Not/AZone"}'::jsonb WHERE database_id = $1`,
+          [settingsDatabaseId],
+        );
+        expect(result.rowCount).toBe(1);
+      }
+
+      async function taskInboxItems(...texts: string[]): Promise<string[]> {
+        const type = await withTransaction(pool, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: typesId,
+            name: "Task",
+            emoji: "☑️",
+            processingMethod: "database",
+            targetDatabase: "tasks",
+          }),
+        );
+        const ids: string[] = [];
+        for (const text of texts) {
+          const item = await withTransaction(pool, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: inboxId,
+              date: "2026-08-28",
+              time: "09:00",
+              text,
+              type: type.id,
+            }),
+          );
+          ids.push(item.id);
+        }
+        return ids;
+      }
+
+      /** A two-operation answer, a new Task plus an update of an existing one, so the tick prepares an update step. */
+      const twoSteps =
+        (
+          existingTaskId: string,
+          update: Record<string, unknown> = { name: "Buy oat milk" },
+        ): ComputeSemprecProposalFn =>
+        async () => ({
+          properties: { name: "Buy milk" },
+          operations: [
+            { op: "create", database: "tasks", properties: { name: "Buy milk" } },
+            { op: "update", itemId: existingTaskId, properties: update },
+          ],
+        });
+
+      async function proposalRows() {
+        const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: string }>(
+          "SELECT id, properties, updated_at::text FROM items WHERE database_id = $1 ORDER BY id",
+          [proposalsId],
+        );
+        return rows;
+      }
+
+      const readTask = async (taskId: string) =>
+        (await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [taskId])))[0];
+
+      function expectSettingsFailure(failure: unknown): void {
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).not.toBeInstanceOf(ValidationError);
+        if (!(failure instanceof Error)) return;
+        expect(failure.message).toBe("The tenant time zone setting is invalid");
+        expect(failure.cause).toBeInstanceOf(ValidationError);
+        expect(failure.cause).toMatchObject({ details: { field: "timezone" } });
+      }
+
+      it("propagates from the computed update preparation of a tick and writes no card", async () => {
+        const existing = await createIn("tasks", { name: "Buy milk" });
+        const [control, source] = await taskInboxItems("Buy milk", "Buy milk again");
+        // With the stored zone valid the same answer becomes a proposed card.
+        await runTick(control!, twoSteps(existing));
+        expect((await findProposalForItem(control!))?.properties.status).toBe("proposed");
+
+        await corruptTenantZone();
+        const cardsBefore = await proposalRows();
+        const taskBefore = await readTask(existing);
+        const failure = await runTick(source!, twoSteps(existing)).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expectSettingsFailure(failure);
+        expect(await findProposalForItem(source!)).toBeNull();
+        expect(await proposalRows()).toEqual(cardsBefore);
+        expect(await readTask(existing)).toEqual(taskBefore);
+      });
+
+      it("propagates from the step validation that reopens a restored source's card and leaves the card as it was", async () => {
+        const existing = await createIn("tasks", { name: "Buy milk" });
+        const [source] = await taskInboxItems("Buy milk");
+        await runTick(source!, twoSteps(existing));
+        expect((await findProposalForItem(source!))?.properties.status).toBe("proposed");
+        await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, source!));
+        await runTick(source!, async () => {
+          throw new Error("computeProposal must not be called for a deleted source");
+        });
+        const invalid = await findProposalForItem(source!);
+        expect(invalid?.properties.status).toBe("invalid");
+        await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, source!));
+
+        await corruptTenantZone();
+        const cardsBefore = await proposalRows();
+        const failure = await runTick(source!, async () => {
+          throw new Error("computeProposal must not be called before the stored card is revalidated");
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expectSettingsFailure(failure);
+        expect(await findProposalForItem(source!)).toEqual(invalid);
+        expect(await proposalRows()).toEqual(cardsBefore);
+        expect(await readTask(existing)).toMatchObject({ properties: { name: "Buy milk" } });
+      });
+
+      it("still turns an invalid computed update into a clarification card while the stored zone is valid", async () => {
+        const existing = await createIn("tasks", { name: "Buy milk" });
+        const [source] = await taskInboxItems("Buy milk");
+        const taskBefore = await readTask(existing);
+        await runTick(source!, twoSteps(existing, { notAProperty: "x" }));
+        expect((await findProposalForItem(source!))?.properties.status).toBe("needsClarification");
+        expect(await readTask(existing)).toEqual(taskBefore);
       });
     });
 

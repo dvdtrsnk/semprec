@@ -9,6 +9,7 @@ const item: ItemRow = {
   databaseId: "books",
   properties: { name: "Hovory k sobě", author: "Marcus Aurelius", year: 180 },
   computed: {},
+  createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
 };

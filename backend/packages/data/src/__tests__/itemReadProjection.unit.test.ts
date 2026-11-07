@@ -6,6 +6,7 @@ const item: ItemRow = {
   databaseId: "db",
   properties: { body: "raw" },
   computed: {},
+  createdAt: "now",
   updatedAt: "now",
   deletedAt: null,
 };

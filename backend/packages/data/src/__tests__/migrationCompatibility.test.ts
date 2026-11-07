@@ -16,7 +16,6 @@ import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import {
   ensureItemAutomation,
   markItemAutomationError,
@@ -235,8 +234,20 @@ it("adds the move state table over populated mail without changing existing meta
       withTransaction(db, async (client) => {
         const mailboxDb = await createDatabase(client, { name: "Mailboxes" });
         const emailDb = await createDatabase(client, { name: "Emails" });
-        const mailbox = await createItemWithClient(client, { databaseId: mailboxDb.id, properties: {} });
-        const message = await createItemWithClient(client, { databaseId: emailDb.id, properties: {} });
+        // The current item writer returns items.created_at, which only migration 0143 adds; write the two
+        // fixture rows in the actual pre-0143 shape, in the historical tenant.
+        const mailbox = { id: randomUUID() };
+        const message = { id: randomUUID() };
+        for (const [item, databaseId] of [
+          [mailbox, mailboxDb.id],
+          [message, emailDb.id],
+        ] as const) {
+          await client.query("INSERT INTO items (id, database_id, tenant_id) VALUES ($1, $2, $3)", [
+            item.id,
+            databaseId,
+            tenantId,
+          ]);
+        }
         await upsertMailMessageMeta(client, {
           itemId: message.id,
           mailboxItemId: mailbox.id,

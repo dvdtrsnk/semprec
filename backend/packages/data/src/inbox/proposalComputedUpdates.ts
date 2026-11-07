@@ -6,9 +6,26 @@ import { getDatabase } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
+import { getCalendarClock } from "../calendarTime.js";
 import type { ProposalEnvelope, ProposalStep } from "./proposalEnvelope.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import { isWorkspaceUpdateEligible } from "./proposalWorkspaceContext.js";
+
+/**
+ * The tenant time zone an Inbox proposal preparation needs, read and validated with `getCalendarClock` in
+ * the caller's tenant transaction (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
+ * A stored zone that fails validation is a settings failure, not an invalid proposal: its `ValidationError`
+ * is rethrown as a plain `Error` with it as `cause`, so the callers' catches that turn a proposal's
+ * `ValidationError` into a clarification or a refusal let it propagate. Every other error propagates as is.
+ */
+export async function readProposalTimezone(client: PoolClient): Promise<string> {
+  try {
+    return (await getCalendarClock(client)).zone;
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error;
+    throw new Error("The tenant time zone setting is invalid", { cause: error });
+  }
+}
 
 /** Forms server-owned baselines only for freshly computed multi-step proposals. */
 export async function prepareComputedUpdates(
@@ -25,6 +42,8 @@ export async function prepareComputedUpdates(
     seen.add(step.itemId);
   }
   const updated = new Map<string, ProposalStep>();
+  // The tenant zone for the Events preparation, read and validated once in this tenant transaction.
+  let timezone: string | undefined;
   for (const step of active) {
     if (step.op !== "update" || !step.itemId) continue;
     const [item] = await getItemsByIds(client, [step.itemId]);
@@ -38,8 +57,10 @@ export async function prepareComputedUpdates(
     const patch = step.properties ?? {};
     let prepared: { patch: Record<string, unknown>; deferredKeys: string[] } = { patch: {}, deferredKeys: [] };
     if (Object.keys(patch).length > 0) {
+      // Read outside the mapping below: a settings failure is not a refused proposal and propagates.
+      timezone ??= await readProposalTimezone(client);
       try {
-        prepared = await prepareUserItemPatch(properties, patch, database, item);
+        prepared = await prepareUserItemPatch(properties, patch, database, item, timezone);
       } catch (error) {
         if (!(error instanceof ChokePointError)) throw error;
         throw new ValidationError("Proposal update cannot be prepared");

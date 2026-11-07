@@ -8,7 +8,13 @@ import {
   type HttpAiGatewayClientConfig,
   type SttStream,
 } from "@semprec/ai-gateway-client";
-import { getSempThread, getSempVoiceDelivery, sendSempMessage, withTransaction } from "@semprec/data";
+import {
+  getSempThread,
+  getSempVoiceDelivery,
+  sendSempMessage,
+  withTransaction,
+  type HeartbeatRuleKindRegistry,
+} from "@semprec/data";
 import type { SyncServer, VoiceRunFrame } from "@semprec/realtime";
 import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
 import { DEFAULT_MESSAGE_SPEECH_VOICE } from "./sempSpeechHandler.js";
@@ -133,10 +139,12 @@ export class VoiceTextState {
   }
 }
 
+/** `heartbeatRuleKinds` resolves the active modules' rule kinds for the thread detail (`resolveModuleRuleKinds`). */
 export function createVoiceSessionHandler(
   pool: Pool,
   gateway: HttpAiGatewayClientConfig,
   sync: SyncServer,
+  heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,
 ): VoiceSessionHandler {
   const sessions = new Map<string, Session>();
   function fail(session: Session, error: unknown): void {
@@ -330,8 +338,9 @@ export function createVoiceSessionHandler(
   return {
     async onStart(identity, frame, sender) {
       if (frame.threadId) {
+        const ruleKinds = await heartbeatRuleKinds();
         const thread = await runInTenant(identity.tenantId, () =>
-          withTransaction(pool, (client) => getSempThread(client, frame.threadId!)),
+          withTransaction(pool, (client) => getSempThread(client, frame.threadId!, ruleKinds)),
         );
         sender.signal.throwIfAborted();
         if (!thread) throw new Error("Voice thread unavailable");

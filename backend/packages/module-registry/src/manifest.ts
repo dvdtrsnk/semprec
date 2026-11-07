@@ -45,6 +45,24 @@ export interface ModuleRelatedOrderDescriptor {
   omit?: string[];
 }
 
+/** The slot of an area filter template that is replaced by the id of the area being filtered for. */
+export interface AreaFilterAreaValue {
+  areaValue: true;
+}
+
+/**
+ * How one database's items are filtered by an area (issue #1597), declared as data: a filter-tree
+ * template over the relation conditions an area filter needs, with `{ areaValue: true }` in every value
+ * position that takes the area id. A client substitutes the id and sends the resulting tree as an
+ * ordinary filter; `expandAreaFilter` in `@semprec/data` does the same on the server.
+ */
+export type AreaFilterTemplate =
+  | { type: "relation_contains"; property: string; value: AreaFilterAreaValue }
+  | { type: "relation_path_contains"; path: [string, string]; value: AreaFilterAreaValue }
+  | { type: "relation_is_empty"; property: string }
+  | { type: "and"; nodes: AreaFilterTemplate[] }
+  | { type: "or"; nodes: AreaFilterTemplate[] };
+
 /**
  * `defaultViewType`, when present, names the view type a database's default (system-created)
  * view uses instead of the generic `"table"` type — e.g. Journal's `temporal-switcher`
@@ -68,6 +86,8 @@ export interface ModuleDatabaseDescriptor {
   switcherOrder?: number | null;
   /** Shows a database in neither list to clients anyway; only `true` has an effect. */
   clientVisible?: boolean;
+  /** How this database's items are filtered by an area; absent means the database is not area-filterable. */
+  areaFilter?: AreaFilterTemplate;
 }
 
 /**
@@ -281,6 +301,51 @@ const moduleRelatedOrderSchema = z
     }
   });
 
+/** Bounds the template's nesting and fan-out; the declared trees are at most three levels deep. */
+const MAX_AREA_FILTER_DEPTH = 4;
+const MAX_AREA_FILTER_NODES_PER_LEVEL = 8;
+
+const areaFilterPropertyKey = z.string().min(1);
+const areaFilterAreaValueSchema = z.strictObject({ areaValue: z.literal(true) });
+
+/**
+ * Strict at every level, so a misspelled field is rejected rather than ignored, and a
+ * `relation_path_contains` path is exactly two non-empty property keys (the two-hop condition of #1363).
+ */
+function buildAreaFilterTemplateSchema(remainingDepth: number): z.ZodType<AreaFilterTemplate> {
+  const relationContains = z.strictObject({
+    type: z.literal("relation_contains"),
+    property: areaFilterPropertyKey,
+    value: areaFilterAreaValueSchema,
+  });
+  const relationPathContains = z.strictObject({
+    type: z.literal("relation_path_contains"),
+    path: z.tuple([areaFilterPropertyKey, areaFilterPropertyKey]),
+    value: areaFilterAreaValueSchema,
+  });
+  const relationIsEmpty = z.strictObject({ type: z.literal("relation_is_empty"), property: areaFilterPropertyKey });
+  if (remainingDepth <= 1) return z.union([relationContains, relationPathContains, relationIsEmpty]);
+  const child = buildAreaFilterTemplateSchema(remainingDepth - 1);
+  const nodes = z.array(child).min(1).max(MAX_AREA_FILTER_NODES_PER_LEVEL);
+  return z.union([
+    relationContains,
+    relationPathContains,
+    relationIsEmpty,
+    z.strictObject({ type: z.literal("and"), nodes }),
+    z.strictObject({ type: z.literal("or"), nodes }),
+  ]);
+}
+
+function hasAreaValueSlot(node: AreaFilterTemplate): boolean {
+  if (node.type === "and" || node.type === "or") return node.nodes.some(hasAreaValueSlot);
+  return node.type !== "relation_is_empty";
+}
+
+/** A template that never takes the area id would filter every area the same way, so it is refused. */
+const areaFilterTemplateSchema = buildAreaFilterTemplateSchema(MAX_AREA_FILTER_DEPTH).refine(hasAreaValueSlot, {
+  message: "An area filter needs at least one { areaValue: true } slot",
+});
+
 const moduleDatabaseDescriptorSchema = z.object({
   key: z.string().min(1),
   name: z.string().min(1),
@@ -298,6 +363,7 @@ const moduleDatabaseDescriptorSchema = z.object({
   overviewOrder: z.number().int().positive().nullable().optional(),
   switcherOrder: z.number().int().positive().nullable().optional(),
   clientVisible: z.boolean().optional(),
+  areaFilter: areaFilterTemplateSchema.optional(),
 });
 
 const moduleDataMigrationDescriptorSchema = z.object({

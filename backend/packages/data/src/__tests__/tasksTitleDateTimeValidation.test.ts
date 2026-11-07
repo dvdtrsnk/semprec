@@ -427,6 +427,7 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
           patch,
           database,
           before,
+          "Europe/Prague",
         );
         expect(prepared.patch).toMatchObject({ ...patch, timeFrom: "09:00", time: expectedTime });
         expect(await chokePoint.getItem(tasksDatabaseId, legacy.id)).toEqual(before);

@@ -97,6 +97,11 @@ export interface ItemRow {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /**
+   * When the row was inserted (`items.created_at`, set by the database); no item write changes it. A row
+   * that predates the column carries its `updated_at` at the time of the issue #1594 backfill instead.
+   */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
   /** Set by item reads and queries only: true when the item was created from an Inbox proposal. Absent on write results. */

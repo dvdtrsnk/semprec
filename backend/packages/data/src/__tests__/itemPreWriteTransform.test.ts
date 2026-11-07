@@ -211,7 +211,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       setInvalidationHook((event) => events.push(event));
       try {
         const patch = { title: "Updated", color: "#abcdef" };
-        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+        await expect(prepareUserItemPatch(properties, patch, database, item, "Europe/Prague")).rejects.toMatchObject({
           status: 400,
           code: "validation_failed",
           details: { field },
@@ -246,7 +246,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
         { writerKind: "user" },
       );
       const properties = await chokePoint.listProperties(database.id);
-      expect((await prepareUserItemPatch(properties, { title: "Updated" }, database, created)).patch).toMatchObject({
+      expect(
+        (await prepareUserItemPatch(properties, { title: "Updated" }, database, created, "Europe/Prague")).patch,
+      ).toMatchObject({
         title: "Prepared",
         color: "#abcdef",
       });
@@ -285,7 +287,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
       setInvalidationHook((event) => events.push(event));
       try {
-        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+        await expect(prepareUserItemPatch(properties, patch, database, item, "Europe/Prague")).rejects.toMatchObject({
           status: 400,
           code: "validation_failed",
           details: { field },
@@ -321,7 +323,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       );
       expect(item.properties.color).toBeNull();
       const properties = await chokePoint.listProperties(database.id);
-      expect((await prepareUserItemPatch(properties, { title: "Updated" }, database, item)).patch.color).toBeNull();
+      expect(
+        (await prepareUserItemPatch(properties, { title: "Updated" }, database, item, "Europe/Prague")).patch.color,
+      ).toBeNull();
       const updated = await chokePoint.updateItem(
         { databaseId: database.id, itemId: item.id, propertiesPatch: { title: "Updated" } },
         undefined,
@@ -717,7 +721,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     setInvalidationHook((event) => events.push(event));
     try {
       const patch = { title: "Changed" };
-      await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+      await expect(prepareUserItemPatch(properties, patch, database, item, "Europe/Prague")).rejects.toMatchObject({
         status,
         code,
         details: { field },
@@ -791,7 +795,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       setInvalidationHook((event) => events.push(event));
       try {
         const patch = { title: "Changed" };
-        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+        await expect(prepareUserItemPatch(properties, patch, database, item, "Europe/Prague")).rejects.toMatchObject({
           status,
           code,
           details: { field },
@@ -838,7 +842,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     );
     const patch = { title: "Changed" };
     const before = await chokePoint.getItem(databaseId, item.id);
-    expect(await prepareUserItemPatch(await chokePoint.listProperties(databaseId), patch, database, item)).toEqual({
+    expect(
+      await prepareUserItemPatch(await chokePoint.listProperties(databaseId), patch, database, item, "Europe/Prague"),
+    ).toEqual({
       patch: { title: "Changed", derived: "d", stamp: "s" },
       deferredKeys: [],
     });
@@ -868,7 +874,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     );
     const patch = { title: "Changed" };
     const before = await chokePoint.getItem(databaseId, item.id);
-    expect(await prepareUserItemPatch(await chokePoint.listProperties(databaseId), patch, database, item)).toEqual({
+    expect(
+      await prepareUserItemPatch(await chokePoint.listProperties(databaseId), patch, database, item, "Europe/Prague"),
+    ).toEqual({
       patch: { title: "Changed", derived: "d", stamp: "s" },
       deferredKeys: [],
     });

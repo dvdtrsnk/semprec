@@ -1,1 +1,23 @@
-{}
+{
+  "database.calendars.name": "Calendars",
+  "property.calendars.name.name": "Name",
+  "property.calendars.color.name": "Color",
+  "property.calendars.notify.name": "Notifications",
+  "property.calendars.hidden.name": "Hidden",
+  "property.calendars.isDefault.name": "Default",
+  "property.calendars.kind.name": "Kind",
+  "property.calendars.kind.option.own": "Own",
+  "property.calendars.kind.option.system": "System",
+  "property.calendars.kind.option.subscription": "Subscription",
+  "property.calendars.systemKey.name": "System key",
+  "property.calendars.events.name": "Events",
+  "seed.calendars.project.name": "Calendar",
+  "seed.calendars.personal.name": "Personal",
+  "seed.calendars.work.name": "Work",
+  "seed.calendars.family.name": "Family",
+  "seed.calendars.health.name": "Health",
+  "seed.calendars.birthdays.name": "Birthdays",
+  "seed.calendars.tasks.name": "Tasks",
+  "seed.calendars.sleep.name": "Sleep",
+  "seed.calendars.holidaysCz.name": "Public holidays - Czechia"
+}

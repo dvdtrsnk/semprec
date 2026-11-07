@@ -9,6 +9,7 @@ import {
   validateSempMessageRefs,
   ValidationError,
   withTransaction,
+  type HeartbeatRuleKindRegistry,
 } from "@semprec/data";
 import {
   assertUuid,
@@ -25,6 +26,25 @@ const messageRunSchema = z
     status: z.enum(["running", "done", "error"]),
   })
   .nullable();
+
+/**
+ * The tick-thread fields of `GET /api/semp/threads/:id` (issue #1562), checked before they are sent: the
+ * stored rule is JSONB and the header joins two other tables. Only a tick thread carries the two keys.
+ */
+const tickThreadHeaderSchema = z.strictObject({
+  heartbeat: z
+    .strictObject({
+      id: z.uuid(),
+      name: z.string(),
+      rule: z.object({ kind: z.string().min(1) }).passthrough(),
+      enabled: z.boolean(),
+      projectItemId: z.uuid(),
+      projectName: z.string().nullable(),
+      canTrigger: z.boolean(),
+    })
+    .nullable(),
+  activeRun: z.strictObject({ agentRunId: z.uuid(), startedAt: z.iso.datetime() }).nullable(),
+});
 
 function parseMessageInput(value: unknown) {
   const body = requireJsonObjectBody(value);
@@ -73,7 +93,11 @@ function parseCursor(value: string | null): { createdAt: string; id: string } | 
   }
 }
 
-export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
+/** `heartbeatRuleKinds` resolves the active modules' rule kinds per request (`resolveModuleRuleKinds`). */
+export function createSempThreadRoutes(
+  pool: Pool,
+  heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,
+): RouteDefinition[] {
   return [
     {
       method: "POST",
@@ -122,8 +146,14 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/semp/threads/:id",
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
-        const thread = await withTransaction(pool, (client) => getSempThread(client, id));
+        const ruleKinds = await heartbeatRuleKinds();
+        const thread = await withTransaction(pool, (client) => getSempThread(client, id, ruleKinds));
         if (!thread) throw new NotFoundError("Thread not found");
+        if (thread.kind === "tick") {
+          tickThreadHeaderSchema.parse({ heartbeat: thread.heartbeat, activeRun: thread.activeRun });
+        } else if (Object.hasOwn(thread, "heartbeat") || Object.hasOwn(thread, "activeRun")) {
+          throw new Error("Only a tick thread carries a heartbeat header");
+        }
         return { status: 200, body: thread };
       },
     },
@@ -138,8 +168,9 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
           throw new ValidationError("'limit' must be an integer between 1 and 100", { field: "limit" });
         const limit = rawLimit === null ? 50 : Number(rawLimit);
         const before = parseCursor(query.get("before"));
+        const ruleKinds = await heartbeatRuleKinds();
         const result = await withTransaction(pool, async (client) => {
-          if (!(await getSempThread(client, id))) throw new NotFoundError("Thread not found");
+          if (!(await getSempThread(client, id, ruleKinds))) throw new NotFoundError("Thread not found");
           return listSempThreadMessages(client, id, limit, before);
         });
         return {

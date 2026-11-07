@@ -1,15 +1,17 @@
 // The choke point's own registries for a domain's transaction-scoped write side effects — a
 // shared module in the sense of docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md,
-// owned by no domain. `itemWrites.ts`/`relationOps.ts` call `run*` inside the same transaction
-// as the write itself; a domain module registers its hook through `../domainWriteHooks.ts`, the
+// owned by no domain. `itemWrites.ts`/`relationOps.ts` (and `itemTrash.ts` for the delete and restore
+// hooks) call `run*` inside the same transaction as the write itself; a domain module registers its
+// hook through `../domainWriteHooks.ts`, the
 // one composition point that knows every domain by name so `chokePoint/` does not have to.
 // Constrained by: docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 // and, for the pre-write transform registry, docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
+// and, for the delete and restore registries, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
-import type { WriterIdentity } from "./writerKind.js";
+import type { WriterIdentity, WriterKind } from "./writerKind.js";
 
 export interface ItemCreateHookContext {
   client: PoolClient;
@@ -43,6 +45,54 @@ export interface ItemUpdateHookContext {
 }
 
 export type ItemUpdateHook = (context: ItemUpdateHookContext) => Promise<void>;
+
+/**
+ * Context of an item delete hook (issue #1601): one row the trash cascade of `itemDeleteWithClient`
+ * actually soft-deleted in this call, never a row that was already in the trash.
+ */
+export interface ItemDeleteHookContext {
+  client: PoolClient;
+  /** The database of `item`. */
+  database: DatabaseRow;
+  /** The row after its soft delete. */
+  item: ItemRow;
+  /** The item the caller trashed, the root of the cascade; `item.id` for the root itself. */
+  rootItemId: string;
+  /** The `deletedAt` every row trashed by this cascade shares. */
+  deletedAt: string;
+  /** Who made the write; `system` when the caller supplied no writer. */
+  writerKind: WriterKind;
+  /** The agent run that made the write; set only for an agent writing under a run credential. */
+  agentRunId?: string;
+  /** The user whose request trashed the item, when there is one. */
+  actingUserId?: string;
+}
+
+export type ItemDeleteHook = (context: ItemDeleteHookContext) => Promise<void>;
+
+/**
+ * Context of an item restore hook (issue #1601): one row `restoreItemWithClient` actually restored,
+ * i.e. one trashed in the same cascade as the restored root.
+ */
+export interface ItemRestoreHookContext {
+  client: PoolClient;
+  /** The database of `item`. */
+  database: DatabaseRow;
+  /** The row after its restore. */
+  item: ItemRow;
+  /** The item the caller restored, the root of the cascade; `item.id` for the root itself. */
+  rootItemId: string;
+  /** The cascade's `deletedAt` that the restore cleared. */
+  deletedAt: string;
+  /** Who made the write; `system` when the caller supplied no writer. */
+  writerKind: WriterKind;
+  /** The agent run that made the write; set only for an agent writing under a run credential. */
+  agentRunId?: string;
+  /** The user whose request restored the item, when there is one. */
+  actingUserId?: string;
+}
+
+export type ItemRestoreHook = (context: ItemRestoreHookContext) => Promise<void>;
 
 export interface RelationEdgeWriteHookContext {
   client: PoolClient;
@@ -107,14 +157,26 @@ export interface ItemPreWriteTransformContext {
 /** Returns properties to store or throws. Real transforms run in the write transaction and may allocate values under their own locks; see [[2026-10-31-confirmed-proposal-update-preconditions]]. */
 export type ItemPreWriteTransform = (context: ItemPreWriteTransformContext) => Promise<Record<string, unknown>>;
 
+/**
+ * What a read-only preparation receives. `timezone` is the tenant's IANA zone, read and validated by the
+ * managed caller in its own tenant transaction and passed as a plain value; a preparation never reads the
+ * setting itself.
+ * See docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md.
+ */
+export interface ItemPreWritePreparationContext extends Pick<ItemPreWriteTransformContext, "stored" | "patch"> {
+  timezone?: string;
+}
+
 /** A preparation cannot access a client or allocate server-assigned values. */
-export type ItemPreWritePreparation = (context: Pick<ItemPreWriteTransformContext, "stored" | "patch">) => Promise<{
+export type ItemPreWritePreparation = (context: ItemPreWritePreparationContext) => Promise<{
   patch: Record<string, unknown>;
   deferredKeys: string[];
 }>;
 
 const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
+const itemDeleteHooks = new Set<ItemDeleteHook>();
+const itemRestoreHooks = new Set<ItemRestoreHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
 const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
 const relationEdgeChangedHooks = new Set<RelationEdgeChangedHook>();
@@ -130,6 +192,16 @@ export function registerItemCreateHook(hook: ItemCreateHook): void {
 /** Registering the same function twice is a no-op — a hook module imported from more than one place still runs once. */
 export function registerItemUpdateHook(hook: ItemUpdateHook): void {
   itemUpdateHooks.add(hook);
+}
+
+/** Registering the same function twice is a no-op. See `runItemDeleteHooks` for when and how it runs. */
+export function registerItemDeleteHook(hook: ItemDeleteHook): void {
+  itemDeleteHooks.add(hook);
+}
+
+/** Registering the same function twice is a no-op. See `runItemRestoreHooks` for when and how it runs. */
+export function registerItemRestoreHook(hook: ItemRestoreHook): void {
+  itemRestoreHooks.add(hook);
 }
 
 export function registerRelationEdgeWriteHook(hook: RelationEdgeWriteHook): void {
@@ -167,7 +239,7 @@ export function registerItemPreWriteTransform(
 /** Returns null when any registered transform cannot safely be prepared. */
 export async function prepareItemPreWriteTransforms(
   moduleId: string,
-  context: Pick<ItemPreWriteTransformContext, "stored" | "patch">,
+  context: ItemPreWritePreparationContext,
 ): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] } | null> {
   let patch = context.patch;
   const deferredKeys: string[] = [];
@@ -196,6 +268,26 @@ export async function runItemCreateHooks(context: ItemCreateHookContext): Promis
 /** Awaits every registered hook sequentially, in registration order, inside the caller's transaction — the first rejection propagates and rolls the write back exactly as a direct call did. */
 export async function runItemUpdateHooks(context: ItemUpdateHookContext): Promise<void> {
   for (const hook of itemUpdateHooks) {
+    await hook(context);
+  }
+}
+
+/**
+ * Awaits every registered delete hook sequentially, in registration order, inside the trash cascade's
+ * transaction, after the row's soft delete. The first rejection propagates and rolls the whole cascade back.
+ */
+export async function runItemDeleteHooks(context: ItemDeleteHookContext): Promise<void> {
+  for (const hook of itemDeleteHooks) {
+    await hook(context);
+  }
+}
+
+/**
+ * Awaits every registered restore hook sequentially, in registration order, inside the restore cascade's
+ * transaction, after the row's restore. The first rejection propagates and rolls the whole cascade back.
+ */
+export async function runItemRestoreHooks(context: ItemRestoreHookContext): Promise<void> {
+  for (const hook of itemRestoreHooks) {
     await hook(context);
   }
 }
@@ -250,6 +342,8 @@ export function clearHooksForTests(): void {
   }
   itemCreateHooks.clear();
   itemUpdateHooks.clear();
+  itemDeleteHooks.clear();
+  itemRestoreHooks.clear();
   relationEdgeWriteHooks.clear();
   relationEdgeDeleteHooks.clear();
   relationEdgeChangedHooks.clear();

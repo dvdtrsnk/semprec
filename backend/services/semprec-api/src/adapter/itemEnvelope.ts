@@ -19,6 +19,8 @@ export interface ItemEnvelope {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /** Set by the database on insert; additive, so a client that ignores it is unaffected. */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
   fromInbox?: boolean;
@@ -50,6 +52,7 @@ export function toItemEnvelope(
     databaseId: item.databaseId,
     properties: item.properties,
     computed: item.computed,
+    createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,
     ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),

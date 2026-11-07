@@ -170,17 +170,26 @@ export function assertUserItemPatchValid(
   assertTitlePresent(properties, values, ownerModuleId, { writerKind: "user" }, "patch");
 }
 
-/** Prepares a user patch without a database client or write hooks. */
+/**
+ * Prepares a user patch without a database client or write hooks. `timezone` is the tenant zone the
+ * caller read and validated in its own tenant transaction (`getSystemTimezone` + `assertValidTimezone`);
+ * preparations that depend on the wall clock, such as the Events time rules, use it as a plain value.
+ */
 export async function prepareUserItemPatch(
   properties: PropertyRow[],
   values: Record<string, unknown>,
   database: DatabaseRow,
   stored: ItemRow,
+  timezone: string,
 ): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
   const callerKeys = Object.keys(values);
   assertUserItemPatchValid(properties, values, database.ownerModuleId);
   if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
-  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: { ...values } });
+  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, {
+    stored,
+    patch: { ...values },
+    timezone,
+  });
   if (!result)
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
   assertTransformAddedKeysWritable(properties, callerKeys, result.patch, database.ownerModuleId);
@@ -667,6 +676,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
                   databaseId: z.string(),
                   properties: z.record(z.string(), z.unknown()),
                   computed: z.record(z.string(), z.unknown()),
+                  createdAt: z.string(),
                   updatedAt: z.string(),
                   deletedAt: z.string().nullable(),
                 })

@@ -321,6 +321,7 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
   });
 
   it("upgrades populated transcript relations through the tenant runner without changing existing edges", async () => {
+    const eventIds = new Map<string, string>();
     for (const tenantId of [zero, b]) {
       await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
       const chokePoint = createChokePoint(dataPool);
@@ -335,6 +336,7 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
         if (!transcripts || !events || !people) throw new Error("Missing transcript, event or people database");
         const transcript = await chokePoint.createItem({ databaseId: transcripts.id, properties: {} });
         const event = await chokePoint.createItem({ databaseId: events.id, properties: {} });
+        eventIds.set(tenantId, event.id);
         const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
         await withTransaction(dataPool, (client) =>
           itemsStore.writeComputed(client, transcripts.id, transcript.id, "segments", [{ speaker: "SPEAKER_00" }]),
@@ -369,9 +371,10 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
         await dataPool.query("DELETE FROM relation_definitions WHERE id = ANY($1::uuid[])", [ids]);
       });
     }
-    const before = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
-      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
-    );
+    type EdgeRow = { id: string; relation_definition_id: string; item_a: string; item_b: string; metadata: string };
+    const EDGES_SQL =
+      "SELECT id, relation_definition_id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id";
+    const before = await adminPool.query<EdgeRow>(EDGES_SQL);
     expect(before.rows).toHaveLength(4);
     const speakerCatalogBefore = await adminPool.query<Record<string, unknown>>(
       `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
@@ -382,10 +385,41 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     const speakerBefore = catalogSchema.parse(speakerCatalogBefore.rows);
     expect(speakerBefore).toHaveLength(2);
     await runCutovers(dataPool);
-    const firstEdges = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
-      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
-    );
-    expect(firstEdges.rows).toEqual(before.rows);
+    const firstEdges = await adminPool.query<EdgeRow>(EDGES_SQL);
+    // Every existing edge is kept, with its id, definition, endpoints and metadata.
+    const beforeIds = new Set(before.rows.map((row) => row.id));
+    expect(firstEdges.rows.filter((row) => beforeIds.has(row.id))).toEqual(before.rows);
+    // The only new edges are the Calendars cutover's (issue #1600): per tenant, one Calendars.events edge
+    // from the tenant's default calendar to its one Event, which had no calendar.
+    const expectedCalendarEdges: Omit<EdgeRow, "id">[] = [];
+    for (const tenantId of [zero, b]) {
+      const calendar = await runInTenant(tenantId, async () => {
+        const definition = await dataPool.query<{ id: string }>(
+          `SELECT p.config->>'relationDefinitionId' AS id FROM properties p JOIN databases d ON d.id = p.database_id
+            WHERE d.owner_module_id = 'calendars' AND d.system AND p.key = 'events'`,
+        );
+        const defaults = await dataPool.query<{ id: string }>(
+          `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+            WHERE d.owner_module_id = 'calendars' AND d.system AND i.deleted_at IS NULL
+              AND i.properties -> 'isDefault' = 'true'::jsonb`,
+        );
+        expect(definition.rows).toHaveLength(1);
+        expect(defaults.rows).toHaveLength(1);
+        return { definitionId: definition.rows[0]!.id, defaultCalendarId: defaults.rows[0]!.id };
+      });
+      expectedCalendarEdges.push({
+        relation_definition_id: calendar.definitionId,
+        item_a: calendar.defaultCalendarId,
+        item_b: eventIds.get(tenantId)!,
+        metadata: "{}",
+      });
+    }
+    const addedEdges = firstEdges.rows
+      .filter((row) => !beforeIds.has(row.id))
+      .map(({ id: _id, ...edge }) => edge)
+      .sort((x, y) => x.item_b.localeCompare(y.item_b));
+    expect(addedEdges).toEqual(expectedCalendarEdges.sort((x, y) => x.item_b.localeCompare(y.item_b)));
+    expect(firstEdges.rows).toHaveLength(before.rows.length + 2);
     const speakerCatalogAfter = await adminPool.query<Record<string, unknown>>(
       `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
        JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
@@ -393,10 +427,8 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     );
     expect(catalogSchema.parse(speakerCatalogAfter.rows)).toEqual(speakerBefore);
     await runCutovers(dataPool);
-    const after = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
-      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
-    );
-    expect(after.rows).toEqual(before.rows);
+    const after = await adminPool.query<EdgeRow>(EDGES_SQL);
+    expect(after.rows).toEqual(firstEdges.rows);
     const speakerCatalogAfterSecondRun = await adminPool.query<Record<string, unknown>>(
       `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
        JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
@@ -438,6 +470,48 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
           ).rows,
       );
       expect(rows.map((row) => row.key)).toEqual(["emails", "folders", "mailboxes"]);
+    }
+  });
+
+  it("adds the Events.files / Files.events relation to every tenant in its own scope (issue #1588)", async () => {
+    await seedOldShape(zero);
+    await seedOldShape(b);
+    const pairOf = async (tenantId: string) => {
+      const { rows } = await adminPool.query<{ owner_module_id: string; key: string; target: string | null }>(
+        `SELECT d.owner_module_id, p.key,
+                (SELECT t.owner_module_id || ':' || t.tenant_id FROM databases t
+                  WHERE t.id = (p.config->>'targetDatabaseId')::uuid) AS target
+           FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND p.type = 'relation'
+            AND ((d.owner_module_id = 'events' AND p.key = 'files') OR (d.owner_module_id = 'files' AND p.key = 'events'))
+          ORDER BY d.owner_module_id`,
+        [tenantId],
+      );
+      return rows;
+    };
+    for (const tenantId of [zero, b]) {
+      const pair = await pairOf(tenantId);
+      expect(pair).toHaveLength(2);
+      // Reverts the tenant to the pre-#1588 seed; the locked schemas have no public removal path.
+      const definitions = await adminPool.query<{ id: string }>(
+        `SELECT DISTINCT (p.config->>'relationDefinitionId') AS id FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND ((d.owner_module_id = 'events' AND p.key = 'files')
+             OR (d.owner_module_id = 'files' AND p.key = 'events'))`,
+        [tenantId],
+      );
+      const ids = definitions.rows.map((row) => row.id);
+      await adminPool.query("DELETE FROM properties WHERE config->>'relationDefinitionId' = ANY($1::text[])", [ids]);
+      await adminPool.query("DELETE FROM relation_definitions WHERE id = ANY($1::uuid[])", [ids]);
+      expect(await pairOf(tenantId)).toEqual([]);
+    }
+
+    await runCutovers(dataPool);
+
+    for (const tenantId of [zero, b]) {
+      expect(await pairOf(tenantId)).toEqual([
+        { owner_module_id: "events", key: "files", target: `files:${tenantId}` },
+        { owner_module_id: "files", key: "events", target: `events:${tenantId}` },
+      ]);
     }
   });
 
