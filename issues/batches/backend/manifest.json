@@ -3219,8 +3219,8 @@
       "sequence": 33,
       "status": "proposed",
       "title": "[backend-delivery 33/74] Implement data/calendar, data/chokePoint, data/views changes",
-      "bodyCharacters": 59873,
-      "specSha256": "7c7db4663f8806a8a14fb5c99b1ddee506e88882b57cd92b96de50749846c406",
+      "bodyCharacters": 59788,
+      "specSha256": "798aedbf694c55f633bd31d10953fd26aa6882341b06f0e883bcc735c1dd1aa2",
       "members": [
         {
           "id": "gh-1588",
@@ -3233,7 +3233,7 @@
         },
         {
           "id": "gh-1594",
-          "specSha256": "7ed9be29c2e551df507868cbe83b18f99a5a4d0ce1eb1dffd9d4371e6c255518",
+          "specSha256": "4164192fe867e5ea41465937c15e86d12731a35c67397114eb8733094d9f9c24",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1524",
