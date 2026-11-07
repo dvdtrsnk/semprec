@@ -34,11 +34,13 @@ no lock key, table or protocol of its own.
   same tenant waits and then finds the database. When the database is absent it is seeded and the
   transaction commits, which ends the `properties` lock the seed took.
 - **Edge batches.** Each batch is its own transaction. It re-reads the relation definition and the default
-  calendar, takes the definition's advisory lock `pg_advisory_xact_lock(hashtextextended(definition id,
-0))` (the lock the cardinality trigger of `0013_relation_cardinality.sql` takes for every edge of the
-  definition) before its no-edge check, admits the tenant again (`admitTenantInTransaction`), inserts at
-  most 500 edges to the default calendar and commits. A concurrent batch, or any relation write of the
-  definition, waits for it and then sees its committed edges, so no Event gets a second calendar.
+  calendar, then takes the definition's advisory lock
+  `pg_advisory_xact_lock(hashtextextended(definition id, 0))` before its no-edge check. That is the lock
+  the `BEFORE INSERT` cardinality trigger of `0013_relation_cardinality.sql` takes for every edge inserted
+  for the definition. The batch then admits the tenant again (`admitTenantInTransaction`), inserts at most
+  500 edges to the default calendar and commits. A concurrent batch, or any other edge insert of the
+  definition, waits for it and then sees its committed edges, so no Event gets a second calendar. An edge
+  delete takes no such lock and does not wait.
 - No `properties` table lock is held across the edge batches.
 
 ## Consequences
@@ -46,6 +48,6 @@ no lock key, table or protocol of its own.
 - An interrupted cutover leaves valid partial progress: the calendars exist and some Events have their
   default-calendar edge. That is the state an Event created after the seed is already in. The next run
   skips the seed and links the rest; a run after a complete one writes nothing.
-- While a batch runs, a user's relation write on `Calendars.events` waits for it, as it would wait for
-  another relation write of the definition.
+- While a batch runs, a user's new edge on `Calendars.events` / `Events.calendar` waits for it, as it
+  would wait for any other edge insert of the definition.
 - Between batches other transactions see a partly linked tenant.

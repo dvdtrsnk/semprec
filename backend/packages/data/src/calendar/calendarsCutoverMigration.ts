@@ -46,10 +46,10 @@ async function existingCalendars(
  *    fresh seed calls, and commits. The `properties` table lock that seed takes ends with this transaction.
  * 2. Then each Event without a calendar edge, trashed ones included, gets an edge to the default calendar,
  *    at most 500 per transaction. Each batch re-reads the relation definition and the default calendar,
- *    takes the definition's advisory lock (the lock the cardinality trigger of
- *    `0013_relation_cardinality.sql` takes for every edge of it) before its no-edge check, admits the
- *    tenant again, inserts by direct SQL and commits; a concurrent run or relation write of that
- *    definition waits, then sees the committed edges.
+ *    takes the definition's advisory lock (the lock the `BEFORE INSERT` cardinality trigger of
+ *    `0013_relation_cardinality.sql` takes for every edge inserted for it) before its no-edge check,
+ *    admits the tenant again, inserts by direct SQL and commits; a concurrent run or edge insert of that
+ *    definition waits, then sees the committed edges. An edge delete takes no such lock and does not wait.
  *
  * Idempotent and resumable: the database is created only when absent and an Event that has an edge gets
  * no second one, so an interrupted run leaves valid partial progress that the next run completes, and a
