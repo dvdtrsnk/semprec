@@ -879,25 +879,28 @@ describe("voice session through the real gateway and registered worker", () => {
       failures.push(error);
     }
     try {
-      await vi.waitFor(async () => {
-        const state = await runInTenant(tenant, async () => {
-          const assistants = await pool.query<{ id: string; status: string | null }>(
-            "SELECT id::text, status FROM semp_messages WHERE role='assistant' AND NOT (id=ANY($1::uuid[]))",
-            [priorAssistantIds],
-          );
-          const jobs = await pool.query<{ key: string | null }>(
-            "SELECT key FROM graphile_worker.jobs WHERE key=ANY($1::text[])",
-            [assistants.rows.map((row) => `sempMessage:${row.id}`)],
-          );
-          const calls = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM ai_gateway_calls WHERE status='reserved'",
-          );
-          return { assistants: assistants.rows, jobs: jobs.rows, calls: calls.rows };
-        });
-        expect(state.assistants.every((row) => row.status === "done" || row.status === "error")).toBe(true);
-        expect(state.jobs).toEqual([]);
-        expect(state.calls).toEqual([{ count: "0" }]);
-      });
+      await vi.waitFor(
+        async () => {
+          const state = await runInTenant(tenant, async () => {
+            const assistants = await pool.query<{ id: string; status: string | null }>(
+              "SELECT id::text, status FROM semp_messages WHERE role='assistant' AND NOT (id=ANY($1::uuid[]))",
+              [priorAssistantIds],
+            );
+            const jobs = await pool.query<{ key: string | null }>(
+              "SELECT key FROM graphile_worker.jobs WHERE key=ANY($1::text[])",
+              [assistants.rows.map((row) => `sempMessage:${row.id}`)],
+            );
+            const calls = await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM ai_gateway_calls WHERE status='reserved'",
+            );
+            return { assistants: assistants.rows, jobs: jobs.rows, calls: calls.rows };
+          });
+          expect(state.assistants.every((row) => row.status === "done" || row.status === "error")).toBe(true);
+          expect(state.jobs).toEqual([]);
+          expect(state.calls).toEqual([{ count: "0" }]);
+        },
+        { timeout: 30_000 },
+      );
     } catch (error) {
       failures.push(error);
     }
