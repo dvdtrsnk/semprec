@@ -886,7 +886,7 @@ describe("queued Semp messages", () => {
           await vi.waitFor(
             () => {
               const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
-              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"], unavailable: true });
               const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
               if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
               expect(request.bodyBytes).toEqual(expect.any(Number));
@@ -943,10 +943,11 @@ describe("queued Semp messages", () => {
             { timeout: 20_000 },
           );
           if (!wakeRun) throw new Error("Missing wake run");
+          expect(wakeRun).not.toBe(runId);
           await vi.waitFor(
             () => {
               const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
-              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"], unavailable: true });
               const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
               if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
               expect(request.bodyBytes).toEqual(expect.any(Number));
@@ -968,6 +969,10 @@ describe("queued Semp messages", () => {
             { timeout: 5000 },
           );
           const wakeEvidence = await runInTenant(tenant, async () => {
+            const runs = await pool.query<{ id: string; task: string }>(
+              "SELECT id, task FROM agent_runs WHERE id = ANY($1::uuid[])",
+              [[runId, wakeRun]],
+            );
             const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
               "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
               [wakeRun, wake.assistantMessageId],
@@ -980,8 +985,17 @@ describe("queued Semp messages", () => {
               "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
               [[turn.messageId, continued.messageId, wake.messageId]],
             );
-            return { calls: calls.rows, events: events.rows, messages: messages.rows };
+            return { runs: runs.rows, calls: calls.rows, events: events.rows, messages: messages.rows };
           });
+          expect(wakeEvidence.runs).toHaveLength(2);
+          expect(wakeEvidence.runs).toEqual(
+            expect.arrayContaining([
+              { id: runId, task: "Question" },
+              { id: wakeRun, task: "Wake the image history" },
+            ]),
+          );
+          expect(JSON.stringify(wakeEvidence.runs)).not.toContain("image/jpeg");
+          expect(JSON.stringify(wakeEvidence.runs)).not.toContain("base64");
           expect(wakeEvidence.calls).toEqual([
             { status: "settled", agent_run_id: wakeRun, semp_message_id: wake.assistantMessageId },
           ]);
