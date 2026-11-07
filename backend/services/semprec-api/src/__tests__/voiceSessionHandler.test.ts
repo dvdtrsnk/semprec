@@ -1097,6 +1097,9 @@ describe("voice session through the real gateway and registered worker", () => {
       let peer: WebSocket | undefined;
       let closeWork: Promise<PromiseSettledResult<void>> | undefined;
       let held = false;
+      let audioCount = 0;
+      let frameCountAtClose = 0;
+      let audioCountAtClose = 0;
       let failed: { error: unknown } | undefined;
       const cleanup: unknown[] = [];
       const sql =
@@ -1187,7 +1190,8 @@ describe("voice session through the real gateway and registered worker", () => {
         });
         const received: unknown[] = [];
         peer.on("message", (data, binary) => {
-          if (!binary) received.push(JSON.parse(messageText(data)) as unknown);
+          if (binary) audioCount++;
+          else received.push(JSON.parse(messageText(data)) as unknown);
         });
         await once(peer, "open");
         peer.send(JSON.stringify({ type: "start", language: "en" }));
@@ -1239,6 +1243,8 @@ describe("voice session through the real gateway and registered worker", () => {
             () => ({ status: "fulfilled" as const, value: undefined }),
             (reason: unknown) => ({ status: "rejected" as const, reason }),
           );
+          frameCountAtClose = received.length;
+          audioCountAtClose = audioCount;
           releaseGate();
         } else {
           await vi.waitFor(() => expect(rollback).toBe(true));
@@ -1250,7 +1256,11 @@ describe("voice session through the real gateway and registered worker", () => {
         }
         await Promise.all(pending);
         const close = await closeWork;
-        if (mode === "server-close") expect(close.status).toBe("fulfilled");
+        if (mode === "server-close") {
+          expect(close.status).toBe("fulfilled");
+          expect(received).toHaveLength(frameCountAtClose);
+          expect(audioCount).toBe(audioCountAtClose);
+        }
         if (mode === "fault") {
           const afterJobs = await runInTenant(tenant, () =>
             pool.query<{ count: string }>(
