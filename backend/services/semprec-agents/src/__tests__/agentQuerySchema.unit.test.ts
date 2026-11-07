@@ -10,15 +10,24 @@ const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "no
 describe.each(["database.query", "view.query"] as const)("%s compact agent schema", (operation) => {
   const schema = operationInputJsonSchema(operation, "agent-query-compact");
   const tool = { name: "query", description: "query", parameters: Type.Unsafe(schema) };
+  const before = {
+    name: "query",
+    description: "query",
+    parameters: Type.Unsafe(GENERIC_OPERATION_BINDINGS[operation].input.toJSONSchema({ io: "input", reused: "ref" })),
+  };
   const identity = operation === "database.query" ? { databaseId: "db1" } : { viewId: "view1" };
   const validate = (args: Record<string, unknown>): unknown =>
     validateToolArguments(tool, { type: "toolCall", id: "test", name: "query", arguments: args });
+  const validateBefore = (args: Record<string, unknown>): unknown =>
+    validateToolArguments(before, { type: "toolCall", id: "test", name: "query", arguments: args });
 
   it("validates real generated pointers and preserves the input's optional fields", () => {
     const input = { ...identity, filter: nested(8), sort: [{ property: "name", direction: "asc" }], limit: 10 };
     expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(input).success).toBe(true);
     expect(validate(input)).toEqual(input);
+    expect(validateBefore(input)).toEqual(input);
     expect(validate(identity)).toEqual(identity);
+    expect(validateBefore(identity)).toEqual(identity);
     expect(Buffer.byteLength(JSON.stringify(schema))).toBeLessThan(20_000);
   });
 
@@ -39,6 +48,7 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
     const input = { ...identity, ...extra };
     expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(input).success).toBe(false);
     expect(() => validate(input)).toThrow();
+    expect(() => validateBefore(input)).toThrow();
   });
 
   it("accepts bounded group fanout and scalar filter branches", () => {
@@ -51,7 +61,22 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
       const input = { ...identity, filter };
       expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(input).success).toBe(true);
       expect(validate(input)).toEqual(input);
+      expect(validateBefore(input)).toEqual(input);
     }
+  });
+
+  it("retains pi coercion and the authoritative Zod-only range refinement", () => {
+    const coerced = { ...identity, limit: "10" };
+    expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(coerced).success).toBe(false);
+    expect(validate(coerced)).toEqual({ ...identity, limit: 10 });
+    expect(validateBefore(coerced)).toEqual({ ...identity, limit: 10 });
+    const reversedRange = {
+      ...identity,
+      filter: { type: "date_relative", property: "date", preset: { fromDays: 2, toDays: 1 } },
+    };
+    expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(reversedRange).success).toBe(false);
+    expect(validate(reversedRange)).toEqual(reversedRange);
+    expect(validateBefore(reversedRange)).toEqual(reversedRange);
   });
 });
 
