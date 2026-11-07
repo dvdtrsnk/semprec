@@ -1,5 +1,5 @@
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -48,6 +48,49 @@ export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 // Serializes concurrent seeds of one tenant (issue #644): distinct from auth's SETUP_ADVISORY_LOCK_KEY (2330n).
 // Taken as the two-key form (key, hashtext(tenant id)), so seeds of different tenants do not wait on each other.
 const SEED_ADVISORY_LOCK_KEY = 2331;
+
+async function requireTenantId(client: PoolClient, caller: string): Promise<string> {
+  const tenantRows = await client.query<{ tenant_id: string | null }>("SELECT app_tenant_default()::text AS tenant_id");
+  const tenantId = tenantRows.rows[0]?.tenant_id;
+  if (!tenantId) {
+    throw new Error(`${caller}: no tenant resolved; run it inside a tenant scope when several tenants exist`);
+  }
+  return tenantId;
+}
+
+async function admitTenant(client: PoolClient, tenantId: string, caller: string): Promise<void> {
+  const tenantStatus = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
+    tenantId,
+  ]);
+  const status = tenantStatus.rows[0]?.status;
+  if (status === undefined || status === "deleting") {
+    throw new Error(`${caller}: tenant ${tenantId} is ${status ?? "missing"}; refusing to seed it`);
+  }
+}
+
+/**
+ * Admits the caller's tenant (`app_tenant_default()`) to a structural write: refuses when no tenant
+ * resolves, and when the tenant row is missing or `deleting`, reading it `FOR SHARE` so a concurrent
+ * deletion waits for this transaction. Returns the tenant id.
+ */
+export async function admitTenantInTransaction(client: PoolClient, caller: string): Promise<string> {
+  const tenantId = await requireTenantId(client, caller);
+  await admitTenant(client, tenantId, caller);
+  return tenantId;
+}
+
+/**
+ * Takes the per-tenant structural seed lock `(2331, hashtext(tenant id))` of the caller's tenant, then
+ * admits the tenant as `admitTenantInTransaction` does: the lock and admission order `seedSystem` uses,
+ * shared with the calendars cutover's schema transaction so both serialize on one lock
+ * (docs/adr/2026-11-07-calendar-cutover-uses-bounded-transactions.md). Returns the tenant id.
+ */
+export async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
+  const tenantId = await requireTenantId(client, caller);
+  await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
+  await admitTenant(client, tenantId, caller);
+  return tenantId;
+}
 
 /**
  * Seeds the system records this issue's spec names directly, plus the ten hardcoded
@@ -128,21 +171,7 @@ export async function seedSystem(
   const outcome = await withTransaction(pool, async (client): Promise<"created" | "already-seeded"> => {
     // Taken before the guard below so a concurrent seed waits here, then sees this one's rows
     // and returns early instead of seeding a second copy.
-    const tenantRows = await client.query<{ tenant_id: string | null }>(
-      "SELECT app_tenant_default()::text AS tenant_id",
-    );
-    const tenantId = tenantRows.rows[0]?.tenant_id;
-    if (!tenantId) {
-      throw new Error("seedSystem: no tenant resolved; run it inside a tenant scope when several tenants exist");
-    }
-    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
-    const tenantStatus = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
-      tenantId,
-    ]);
-    const status = tenantStatus.rows[0]?.status;
-    if (status === undefined || status === "deleting") {
-      throw new Error(`seedSystem: tenant ${tenantId} is ${status ?? "missing"}; refusing to seed it`);
-    }
+    await lockTenantSeedInTransaction(client, "seedSystem");
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1 AND system`, [
       SYSTEM_SETTINGS_MODULE_ID,
     ]);

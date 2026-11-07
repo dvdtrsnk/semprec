@@ -9,6 +9,7 @@ import {
   validateSempMessageRefs,
   ValidationError,
   withTransaction,
+  type HeartbeatRuleKindRegistry,
 } from "@semprec/data";
 import {
   assertUuid,
@@ -92,7 +93,11 @@ function parseCursor(value: string | null): { createdAt: string; id: string } | 
   }
 }
 
-export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
+/** `heartbeatRuleKinds` resolves the active modules' rule kinds per request (`resolveModuleRuleKinds`). */
+export function createSempThreadRoutes(
+  pool: Pool,
+  heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,
+): RouteDefinition[] {
   return [
     {
       method: "POST",
@@ -141,7 +146,8 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/semp/threads/:id",
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
-        const thread = await withTransaction(pool, (client) => getSempThread(client, id));
+        const ruleKinds = await heartbeatRuleKinds();
+        const thread = await withTransaction(pool, (client) => getSempThread(client, id, ruleKinds));
         if (!thread) throw new NotFoundError("Thread not found");
         if (thread.kind === "tick") {
           tickThreadHeaderSchema.parse({ heartbeat: thread.heartbeat, activeRun: thread.activeRun });
@@ -162,8 +168,9 @@ export function createSempThreadRoutes(pool: Pool): RouteDefinition[] {
           throw new ValidationError("'limit' must be an integer between 1 and 100", { field: "limit" });
         const limit = rawLimit === null ? 50 : Number(rawLimit);
         const before = parseCursor(query.get("before"));
+        const ruleKinds = await heartbeatRuleKinds();
         const result = await withTransaction(pool, async (client) => {
-          if (!(await getSempThread(client, id))) throw new NotFoundError("Thread not found");
+          if (!(await getSempThread(client, id, ruleKinds))) throw new NotFoundError("Thread not found");
           return listSempThreadMessages(client, id, limit, before);
         });
         return {

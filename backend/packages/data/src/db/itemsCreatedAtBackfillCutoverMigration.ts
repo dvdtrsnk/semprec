@@ -6,12 +6,16 @@ import { withTransaction } from "./pool.js";
 const ITEMS_CREATED_AT_BACKFILL_BATCH_SIZE = 500;
 
 /**
- * Per-tenant data cutover for issue #1594: approximates the unknown creation time of every item that
+ * Per-tenant data cutover for issue #1594: approximates the unknown creation time of an item that
  * existed before `0143_items_created_at.sql` by its last change time. That migration gave such a row
  * `created_at` = the time of the ALTER, later than its own `updated_at`; a row inserted after it has
  * `created_at <= updated_at` (both default to the inserting transaction's `now()`, and every later
  * write only moves `updated_at` forward). So `created_at > updated_at` is both the filter and the
  * idempotency check: a backfilled row no longer matches, and a second run updates nothing.
+ *
+ * The approximation is limited by that filter: a pre-existing row written between the ALTER and its
+ * batch has `updated_at` past the ALTER's `created_at`, no longer matches, and keeps the ALTER time as its
+ * `created_at`. Only rows not written in that window get `created_at = updated_at`.
  *
  * Only `created_at` is written: `updated_at` is the optimistic-concurrency version, and changing it would
  * turn every client's next `ifVersion` write into a conflict. Each batch of at most

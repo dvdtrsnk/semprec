@@ -15,6 +15,19 @@ type ItemDbRow = {
   deleted_at: Date | null;
 };
 
+/**
+ * An item's system timestamps at full PostgreSQL precision, as UTC text with six fractional digits
+ * (`YYYY-MM-DDTHH:MM:SS.ffffffZ`). Read only for a keyset cursor: an `ItemRow` keeps whole milliseconds.
+ */
+export interface ExactItemTimestamps {
+  createdAt: string;
+  updatedAt: string;
+}
+
+const EXACT_TIMESTAMP_COLUMNS = `to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_exact,
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_exact`;
+const exactTimestampsRow = z.object({ created_at_exact: z.string(), updated_at_exact: z.string() });
+
 function mapItemRow(row: ItemDbRow): ItemRow {
   return {
     id: row.id,
@@ -385,9 +398,13 @@ export interface ListItemsOptions {
    * Keyset paging for a custom order (issue #664): `buildAfterSql` replaces the `id > cursor`
    * predicate with "rows after the previous page's last row" under that order (or returns
    * `undefined` on the first page), and `encodeCursor` turns a page's last row into the
-   * `nextCursor` that feeds it next time. When set, `cursor` is ignored.
+   * `nextCursor` that feeds it next time, given also that row's exact system timestamps. When set,
+   * `cursor` is ignored.
    */
-  keyset?: { buildAfterSql: (params: unknown[]) => string | undefined; encodeCursor: (last: ItemRow) => string };
+  keyset?: {
+    buildAfterSql: (params: unknown[]) => string | undefined;
+    encodeCursor: (last: ItemRow, exact: ExactItemTimestamps) => string;
+  };
 }
 
 export async function listItems(
@@ -415,16 +432,28 @@ export async function listItems(
   }
   params.push(limit + 1);
 
-  const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+  const exactColumns = options.keyset ? `, ${EXACT_TIMESTAMP_COLUMNS}` : "";
+  const { rows } = await client.query<ItemDbRow & Record<string, unknown>>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at${exactColumns}
      FROM items WHERE ${conditions.join(" AND ")} ORDER BY ${orderBySql} LIMIT $${params.length}`,
     params,
   );
   const hasMore = rows.length > limit;
-  const items = (hasMore ? rows.slice(0, limit) : rows).map(mapItemRow);
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const items = page.map(mapItemRow);
   const last = items[items.length - 1];
   let nextCursor: string | null = null;
-  if (hasMore && last) nextCursor = options.keyset ? options.keyset.encodeCursor(last) : last.id;
+  if (hasMore && last) {
+    if (options.keyset) {
+      const exact = exactTimestampsRow.parse(page[page.length - 1]);
+      nextCursor = options.keyset.encodeCursor(last, {
+        createdAt: exact.created_at_exact,
+        updatedAt: exact.updated_at_exact,
+      });
+    } else {
+      nextCursor = last.id;
+    }
+  }
   return { items, nextCursor };
 }
 

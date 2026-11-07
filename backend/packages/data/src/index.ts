@@ -99,6 +99,7 @@ export {
   handleHeartbeatSweepTask,
   createHeartbeatFireCoreTask,
   createHeartbeatFireAgentTask,
+  resolveModuleRuleKinds,
 } from "./scheduler/sweep.js";
 export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
 

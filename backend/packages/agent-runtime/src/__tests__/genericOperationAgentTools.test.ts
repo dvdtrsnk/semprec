@@ -315,6 +315,68 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(rows[0]?.count).toBe(0);
     });
 
+    it("gives an Event created through the agent tool its UID and sequence 0, and a time patch sequence 1 (issue #1599)", async () => {
+      const events = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "events"));
+      if (!events) throw new Error("Events database was not seeded");
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan a meeting" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@semprec$/;
+      /** The item a successful tool call returned, narrowed from its JSON text. */
+      const returnedItem = (outcome: { error: boolean; result: string }) => {
+        expect(outcome.error).toBe(false);
+        const value: unknown = JSON.parse(outcome.result);
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("id" in value) ||
+          typeof value.id !== "string" ||
+          !("updatedAt" in value) ||
+          typeof value.updatedAt !== "string" ||
+          !("properties" in value) ||
+          typeof value.properties !== "object" ||
+          value.properties === null
+        )
+          throw new Error("Unexpected item result");
+        return {
+          id: value.id,
+          updatedAt: value.updatedAt,
+          properties: Object.fromEntries(Object.entries(value.properties)),
+        };
+      };
+
+      const created = returnedItem(
+        await tools["item.create"](run.id, {
+          databaseId: events.id,
+          properties: { name: "Client meeting", date: "2026-10-16", timeFrom: "9:00" },
+        }),
+      );
+      expect(created.properties.icalUid).toMatch(UID_PATTERN);
+      expect(created.properties.icalSequence).toBe(0);
+      expect((await chokePoint.getItem(events.id, created.id))?.properties).toMatchObject({
+        icalUid: created.properties.icalUid,
+        icalSequence: 0,
+        timeFrom: "09:00",
+      });
+
+      const patched = returnedItem(
+        await tools["item.patch"](run.id, {
+          itemId: created.id,
+          properties: { timeFrom: "8:30" },
+          ifVersion: created.updatedAt,
+        }),
+      );
+      expect(patched.properties).toMatchObject({
+        icalUid: created.properties.icalUid,
+        icalSequence: 1,
+        timeFrom: "08:30",
+      });
+      expect((await chokePoint.getItem(events.id, created.id))?.properties).toMatchObject({
+        icalUid: created.properties.icalUid,
+        icalSequence: 1,
+      });
+    });
+
     it("returns owner_violation, never touching the choke point, for a currentRunId that doesn't exist", async () => {
       const tools = createGenericOperationAgentTools(pool, undefined, testMetadataResolver);
 

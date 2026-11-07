@@ -35,6 +35,9 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createVoiceChannel, type VoiceChannel } from "../voiceChannel.js";
 import { createVoiceSessionHandler, VoiceTextState } from "../voiceSessionHandler.js";
 
+/** Thread details resolve only core heartbeat rule kinds here; no test module declares one. */
+const CORE_RULES_ONLY = async () => new Map();
+
 describe("voice text state (component only)", () => {
   it("drains a long answer and splits an admissible multi-sentence delta before applying the sentence bound", () => {
     const state = new VoiceTextState();
@@ -300,7 +303,12 @@ describe("voice session through the real gateway and registered worker", () => {
     const ready = gateway?.messages.find((entry) => entry.type === "ready");
     if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
     voice = createVoiceChannel(pool, {
-      handler: createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync),
+      handler: createVoiceSessionHandler(
+        pool,
+        { port: ready.port, token: "batch32-test-token" },
+        sync,
+        CORE_RULES_ONLY,
+      ),
     });
     const prior = await runInTenant(tenant, () =>
       pool.query<{ id: string }>("SELECT id::text FROM semp_messages WHERE role='assistant'"),
@@ -390,6 +398,7 @@ describe("voice session through the real gateway and registered worker", () => {
           pool,
           { port: relayAddress.port, token: "batch32-test-token" },
           sync,
+          CORE_RULES_ONLY,
         );
         channel = createVoiceChannel(pool, {
           handler: {
@@ -662,7 +671,12 @@ describe("voice session through the real gateway and registered worker", () => {
           await vi.waitFor(() => expect(isolated.messages).toContainEqual({ type: "gateArmed" }), { timeout: 5000 });
           let senderSignal: AbortSignal | undefined;
           let closedCount = 0;
-          const actual = createVoiceSessionHandler(pool, { port: gatewayPort, token: "batch32-test-token" }, sync);
+          const actual = createVoiceSessionHandler(
+            pool,
+            { port: gatewayPort, token: "batch32-test-token" },
+            sync,
+            CORE_RULES_ONLY,
+          );
           channel = createVoiceChannel(pool, {
             handler: {
               ...actual,
@@ -1145,7 +1159,12 @@ describe("voice session through the real gateway and registered worker", () => {
       const ownedGateway = gateway;
       const ready = ownedGateway.messages.find((entry) => entry.type === "ready");
       if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
-      const handler = createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync);
+      const handler = createVoiceSessionHandler(
+        pool,
+        { port: ready.port, token: "batch32-test-token" },
+        sync,
+        CORE_RULES_ONLY,
+      );
       const closeDescriptor = Object.getOwnPropertyDescriptor(handler, "onClose");
       /* eslint-disable-next-line @typescript-eslint/unbound-method */
       const originalClose = handler.onClose;

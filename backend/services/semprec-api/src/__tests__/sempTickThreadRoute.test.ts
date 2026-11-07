@@ -1,7 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -25,6 +28,7 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  resolveModuleRuleKinds,
   seedSystem,
   withTransaction,
 } from "@semprec/data";
@@ -140,5 +144,94 @@ describe("GET /api/semp/threads/:id for a tick thread (issue #1562)", () => {
     expect(foreign.status).toBe(404);
     expect(missing.status).toBe(404);
     expect(await foreign.json()).toEqual(await missing.json());
+  });
+});
+
+describe("GET /api/semp/threads/:id with a module-declared heartbeat rule (issue #1562)", () => {
+  it("returns the header while the declaring module is active and refuses it once the module is inactive", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semprec-tick-route-rule-"));
+    let routeServer: Server | undefined;
+    let routePool: Pool | undefined;
+    const routeAdmin = getTestPool();
+    try {
+      await resetDatabase(routeAdmin);
+      routePool = await createRuntimeRolePool(routeAdmin, "semprec_data");
+      const modulePath = join(directory, "rule.mjs");
+      await writeFile(
+        modulePath,
+        `export const manifest = { id: 'fixtureRule', version: '1.0.0', name: 'Fixture Rule', removable: true, systemProject: false, databases: [], capabilities: [], agentTools: [], heartbeatRuleKinds: [{ kind: 'fixtureRule.once', schemaExport: 'ruleSchema', nextFireAtExport: 'nextFireAt' }] };\nexport const ruleSchema = { safeParse: (value) => ({ success: true, data: value }) };\nexport function nextFireAt() { return new Date('2031-01-01T00:00:00.000Z'); }\n`,
+      );
+      const active = new Set(["schemaCore", "fixtureRule"]);
+      const registry = new ModuleRegistry(() => active);
+      await registry.loadModule(
+        new URL("../../../../packages/data/src/chokePoint/schemaCoreModuleManifest.ts", import.meta.url).href,
+      );
+      await registry.loadModule(pathToFileURL(modulePath).href);
+      const dispatch = await createDispatcher(routePool, {
+        passwordResetMailer: { async sendPasswordResetEmail() {} },
+        appBaseUrl: "https://example.test",
+        setupToken: "test",
+        moduleRegistry: registry,
+        blobStorage: new LocalFsBlobStorageWriter(join(directory, "blobs")),
+        maxFileSizeBytes: 1024,
+      });
+      routeServer = createServer(dispatch);
+      await new Promise<void>((resolve) => routeServer!.listen(0, "127.0.0.1", resolve));
+      const address = routeServer.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+
+      const tenant = await createTestTenant(routeAdmin);
+      const email = `${randomUUID()}@example.test`;
+      await createUser(routeAdmin, { tenantId: tenant, email, passwordHash: await hashPassword(PASSWORD) });
+      const session = await login(routeAdmin, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+      const rule = { kind: "fixtureRule.once", at: "2031-01-01" };
+      const fixture = await runInTenant(tenant, async () => {
+        await seedSystem(routePool!, createViewTypeRegistry());
+        const projects = await withTransaction(routePool!, (client) => getDatabaseByModuleId(client, "projects"));
+        const project = await createChokePoint(routePool!).createItem({
+          databaseId: projects!.id,
+          properties: { name: "Module review" },
+        });
+        const kinds = await resolveModuleRuleKinds(registry);
+        return withTransaction(routePool!, async (client) => {
+          const heartbeat = await createHeartbeat(
+            client,
+            {
+              projectItemId: project.id,
+              name: "Module rule",
+              rule,
+              actionId: CORE_AGENT_RUN_ACTION_ID,
+              actionConfig: { task: "Run the module rule" },
+            },
+            kinds,
+          );
+          const tick = await getOrCreateTickThread(client, heartbeat.id);
+          return { heartbeatId: heartbeat.id, tickId: tick.id };
+        });
+      });
+      const read = () =>
+        fetch(`http://127.0.0.1:${address.port}/api/semp/threads/${fixture.tickId}`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+
+      const shown = await read();
+      expect(shown.status).toBe(200);
+      expect(await shown.json()).toMatchObject({
+        kind: "tick",
+        heartbeat: { id: fixture.heartbeatId, name: "Module rule", rule, canTrigger: true },
+        activeRun: null,
+      });
+
+      // The registry is resolved per request: once the module is inactive its rule kind is unknown.
+      active.delete("fixtureRule");
+      const refused = await read();
+      expect(refused.status).toBe(500);
+      expect(await refused.json()).toEqual({ error: { code: "internal_error" } });
+    } finally {
+      if (routeServer) await new Promise<void>((resolve) => routeServer!.close(() => resolve()));
+      await routePool?.end();
+      await routeAdmin.end();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

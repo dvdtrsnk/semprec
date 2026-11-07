@@ -5,7 +5,7 @@ import { allocateSempMessageTimestamp } from "../semp/sempMessageOrder.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { SempThreadDetail, SempThreadMessage, SempTickThreadHeartbeat } from "@semprec/shared";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
-import { isOnItemEventRule, parseHeartbeatRule } from "../scheduler/rule.js";
+import { isOnItemEventRule, parseHeartbeatRule, type HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
@@ -179,17 +179,20 @@ export async function sendSempMessage(
 }
 
 /**
- * The automation header and the running run of a tick thread (issue #1562). The heartbeat comes from a
- * left join, so a thread whose heartbeat row is gone reports `heartbeat: null` instead of failing; the
- * project name is read only from a live project item.
+ * The automation header and the running run of a tick thread (issue #1562). The rule is validated against
+ * `moduleRuleKinds`, the rule kinds of the active modules, as the scheduler validates it. The heartbeat
+ * comes from a left join; `semp_threads.heartbeat_id` references it `ON DELETE RESTRICT`
+ * (`0087_semp_threads_and_messages.sql`), so no ordinary path leaves a tick thread without its heartbeat
+ * and the `heartbeat: null` branch is defensive. The project name is read only from a live project item.
  */
 async function readTickThreadHeader(
   client: PoolClient,
   row: ThreadRow,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
 ): Promise<Pick<SempThreadDetail, "heartbeat" | "activeRun">> {
   let heartbeat: SempTickThreadHeartbeat | null = null;
   if (row.heartbeat_project_item_id !== null && row.heartbeat_row_id !== null) {
-    const rule = parseHeartbeatRule(row.heartbeat_rule, new Map());
+    const rule = parseHeartbeatRule(row.heartbeat_rule, moduleRuleKinds);
     const [project] = await getItemsByIds(client, [row.heartbeat_project_item_id]);
     const projectName = project?.properties.name;
     heartbeat = {
@@ -220,8 +223,14 @@ function requireValue<T>(value: T | null, label: string): T {
 /**
  * The detail of one Semp thread of the current tenant, or null when it is not visible. A tick thread
  * also carries its heartbeat header and active run (issue #1562); other kinds carry neither key.
+ * `moduleRuleKinds` is the active modules' rule-kind registry (`resolveModuleRuleKinds`); a rule kind that
+ * is neither core nor registered there is refused, as the scheduler refuses it.
  */
-export async function getSempThread(client: PoolClient, id: string): Promise<SempThreadDetail | null> {
+export async function getSempThread(
+  client: PoolClient,
+  id: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): Promise<SempThreadDetail | null> {
   const { rows } = await client.query<ThreadRow>(
     `SELECT t.id, t.kind, t.title, t.subject_inbox_item_id, t.subject_proposal_id, t.created_at, t.last_activity_at,
             h.id AS heartbeat_row_id, h.name AS heartbeat_name, h.rule AS heartbeat_rule,
@@ -242,7 +251,7 @@ export async function getSempThread(client: PoolClient, id: string): Promise<Sem
     createdAt: row.created_at.toISOString(),
     lastActivityAt: row.last_activity_at.toISOString(),
   };
-  return kind === "tick" ? { ...detail, ...(await readTickThreadHeader(client, row)) } : detail;
+  return kind === "tick" ? { ...detail, ...(await readTickThreadHeader(client, row, moduleRuleKinds)) } : detail;
 }
 
 export async function listSempThreadMessages(

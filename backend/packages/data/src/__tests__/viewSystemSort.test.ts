@@ -164,10 +164,65 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     expect(() => parseViewConfig({ sort })).toThrow(ValidationError);
   });
 
+  /** Raw SQL: two writes within one millisecond cannot be produced on demand, so the instants are relabelled. */
+  const RELABEL = {
+    createdAt: "UPDATE items SET created_at = $2::timestamptz WHERE id = $1",
+    updatedAt: "UPDATE items SET updated_at = $2::timestamptz WHERE id = $1",
+  } as const;
+
+  it.each(["createdAt", "updatedAt"] as const)(
+    "orders %s at full precision within one millisecond, across pages of one item, in both directions",
+    async (field) => {
+      const databaseId = await makeDatabase(`Precision ${field}`);
+      // Pair A: the older instant has the later title. Pair B: equal titles, the older instant the larger id.
+      // A millisecond comparison would order each pair by its title or id tie-break, the wrong way round.
+      const [aOld, aNew] = [
+        await chokePoint.createItem({ databaseId, properties: { title: "z" } }),
+        await chokePoint.createItem({ databaseId, properties: { title: "a" } }),
+      ];
+      const [first, second] = [
+        await chokePoint.createItem({ databaseId, properties: { title: "same" } }),
+        await chokePoint.createItem({ databaseId, properties: { title: "same" } }),
+      ];
+      const [bOld, bNew] = first.id > second.id ? [first, second] : [second, first];
+      const instants: Array<[string, string]> = [
+        [aOld.id, "2026-11-07T10:00:00.123100Z"],
+        [aNew.id, "2026-11-07T10:00:00.123900Z"],
+        [bOld.id, "2026-11-07T10:00:00.124100Z"],
+        [bNew.id, "2026-11-07T10:00:00.124900Z"],
+      ];
+      for (const [id, instant] of instants) {
+        expect((await adminPool.query(RELABEL[field], [id, instant])).rowCount).toBe(1);
+      }
+      const ascending = [aOld.id, aNew.id, bOld.id, bNew.id];
+
+      for (const direction of ["asc", "desc"] as const) {
+        const sort = [{ system: field, direction }];
+        const { ids, pages } = await collectPages((cursor) =>
+          chokePoint.queryDatabaseItems(databaseId, { sort, limit: 1, cursor }),
+        );
+        expect(ids, direction).toEqual(direction === "asc" ? ascending : [...ascending].reverse());
+        expect(pages, direction).toBe(4);
+      }
+      // The cursor carries the row's value at full precision.
+      const page = await chokePoint.queryDatabaseItems(databaseId, {
+        sort: [{ system: field, direction: "asc" }],
+        limit: 1,
+      });
+      const cursor = z
+        .object({ v: z.array(z.unknown()), id: z.string() })
+        .parse(JSON.parse(Buffer.from(page.nextCursor ?? "", "base64url").toString("utf8")));
+      expect(cursor).toEqual({ v: ["2026-11-07T10:00:00.123100Z", "z"], id: aOld.id });
+    },
+  );
+
   it.each([
     ["a non-ISO string", "yesterday"],
     ["an ISO string without milliseconds", "2026-10-16T08:00:00Z"],
     ["an impossible date", "2026-02-30T08:00:00.000Z"],
+    ["a millisecond value, the item envelope's precision", "2026-10-16T08:00:00.123Z"],
+    ["an impossible date at microsecond precision", "2026-02-30T08:00:00.000000Z"],
+    ["seven fractional digits", "2026-10-16T08:00:00.1234567Z"],
     ["a number", 1760601600000],
     ["null", null],
   ])("rejects a system-key cursor holding %s with 400", async (_label, value) => {
@@ -267,6 +322,42 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
 
       await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
       await runInTenant(other, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
+      expect(await snapshot()).toEqual(after);
+    });
+
+    it("keeps the migration time for a pre-existing row written before its batch, backfills the others and is idempotent", async () => {
+      const zero = getTenantZeroId();
+      const databaseId = await makeDatabase("Window");
+      const [untouched, written] = await createInOneTransaction(adminPool, databaseId, ["untouched", "written"]);
+      // Raw SQL, labeled: the state 0143 left on an install, with fixed instants instead of the clock. Both
+      // rows last changed on 2020-01-01; the ALTER (their created_at) ran on 2020-06-01.
+      const aged = await adminPool.query(
+        `UPDATE items SET updated_at = '2020-01-01T00:00:00Z', created_at = '2020-06-01T00:00:00Z'
+          WHERE database_id = $1 AND id = ANY($2::uuid[])`,
+        [databaseId, [untouched, written]],
+      );
+      expect(aged.rowCount).toBe(2);
+      // A real write between the ALTER and the backfill moves the row's updated_at past its created_at.
+      await chokePoint.updateItem({ databaseId, itemId: written!, propertiesPatch: { title: "written again" } });
+      const fresh = await chokePoint.createItem({ databaseId, properties: { title: "fresh" } });
+      const before = await snapshot();
+      const row = (id: string, rows: typeof before) => rows.find((candidate) => candidate.id === id)!;
+      expect(row(written!, before).updated_at > row(written!, before).created_at).toBe(true);
+
+      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
+      const after = await snapshot();
+      // Not written in the window: created_at now equals its updated_at.
+      expect(row(untouched!, after).created_at).toBe(row(untouched!, after).updated_at);
+      // Written in the window: no longer matches the backfill and keeps the migration time.
+      expect(row(written!, after)).toEqual(row(written!, before));
+      expect(row(written!, after).created_at).not.toBe(row(written!, after).updated_at);
+      // Created after the migration: untouched. No updated_at changed.
+      expect(row(fresh.id, after)).toEqual(row(fresh.id, before));
+      expect(after.map(({ id, updated_at }) => ({ id, updated_at }))).toEqual(
+        before.map(({ id, updated_at }) => ({ id, updated_at })),
+      );
+
+      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
       expect(await snapshot()).toEqual(after);
     });
 

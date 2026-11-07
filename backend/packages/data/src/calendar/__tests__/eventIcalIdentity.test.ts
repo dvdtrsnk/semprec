@@ -371,6 +371,39 @@ describe("Events iCalendar identity cutover (issue #1599)", () => {
     });
   });
 
+  it("backfills more Events than one batch of 500 holds, each with its own UID and sequence 0, once", async () => {
+    await seedWithEvents(zero, 0);
+    // 501 Events, one more than a batch, created through the production writer in one transaction.
+    await runInTenant(zero, async () => {
+      const databaseId = await databaseIdFor("events", dataPool);
+      await withTransaction(dataPool, async (client) => {
+        for (let index = 0; index < 501; index += 1) {
+          await createItemWithClient(client, {
+            databaseId,
+            properties: { name: `Bulk ${index}`, date: "2026-10-16" },
+          });
+        }
+      });
+    });
+    await revertToOldShape(zero);
+    const before = await events(zero);
+    expect(before).toHaveLength(501);
+    expect(before.every((row) => !Object.hasOwn(row.properties, "icalUid"))).toBe(true);
+
+    await runInTenant(zero, () => runEventsIcalIdentityCutoverMigration(dataPool));
+
+    const after = await events(zero);
+    expect(after.map((row) => row.properties.icalUid)).toEqual(after.map((row) => `${row.id}@semprec`));
+    expect(after.every((row) => row.properties.icalSequence === 0)).toBe(true);
+    expect(new Set(after.map((row) => row.properties.icalUid)).size).toBe(501);
+    // The backfill writes only the identity: updated_at and the other properties are as before.
+    expect(after.map(({ id, updated_at }) => ({ id, updated_at }))).toEqual(
+      before.map(({ id, updated_at }) => ({ id, updated_at })),
+    );
+    await runInTenant(zero, () => runEventsIcalIdentityCutoverMigration(dataPool));
+    expect(await events(zero)).toEqual(after);
+  });
+
   it("does nothing for a tenant without an Events database", async () => {
     await expect(runInTenant(other, () => runEventsIcalIdentityCutoverMigration(dataPool))).resolves.toBeUndefined();
     const { rows } = await adminPool.query<{ count: number }>(

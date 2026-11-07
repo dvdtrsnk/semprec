@@ -3,7 +3,8 @@
 --
 -- `now()` is STABLE, so Postgres evaluates the default once and stores it as the column's missing value:
 -- no table rewrite, and every existing row reads as the time of this ALTER until the per-tenant backfill
--- (`db/itemsCreatedAtBackfillCutoverMigration.ts`) sets it to the row's `updated_at`. The partitioned
+-- (`db/itemsCreatedAtBackfillCutoverMigration.ts`) sets it to the row's `updated_at`; a row written before
+-- its backfill batch no longer matches the backfill and keeps the ALTER time. The partitioned
 -- `items` propagates the column to every `items_p_*` partition, and `create_items_partition` creates
 -- later partitions `LIKE public.items INCLUDING ALL` (0072), so they carry the column and its default.
 --

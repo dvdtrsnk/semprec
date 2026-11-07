@@ -11,6 +11,7 @@
   "property.calendars.kind.option.subscription": "Subscription",
   "property.calendars.systemKey.name": "System key",
   "property.calendars.events.name": "Events",
+  "seed.calendars.project.name": "Calendar",
   "seed.calendars.personal.name": "Personal",
   "seed.calendars.work.name": "Work",
   "seed.calendars.family.name": "Family",

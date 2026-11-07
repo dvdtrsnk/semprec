@@ -23,6 +23,7 @@ import {
   projectAgentGuidanceStore,
   withClient,
   resolveModuleAgentToolsForRun,
+  resolveModuleRuleKinds,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -308,7 +309,7 @@ export async function createAgentSessionFactoryForRun(
   const threadId = run.threadId;
   const threadContext = threadId
     ? await withTransaction(pool, async (client) => {
-        const thread = await getSempThread(client, threadId);
+        const thread = await getSempThread(client, threadId, await resolveModuleRuleKinds(moduleRegistry));
         if (!thread) throw new Error("Semp thread not found for run");
         const schema = await generateSchemaProjection(client, moduleRegistry, {
           locale: toManifestLocale(locale ?? "en"),

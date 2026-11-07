@@ -117,8 +117,9 @@ export interface CalendarsSeedResult {
  * Seeds the calendar module's first database (issue #1600) into the caller's open transaction: a system
  * project item for the module, the `calendars` system database with its properties (`kind` and
  * `systemKey` system-owned by the calendar module), the `Calendars.events` / `Events.calendar` relation,
- * and the eight default and system calendars. Row names come from the calendar module catalog in the
- * tenant user's language (`cs` while the tenant has no user). The schema is locked once complete.
+ * and the eight default and system calendars. The project's and the rows' names come from the calendar
+ * module catalog in the tenant user's language (`cs` while the tenant has no user). The schema is locked
+ * once complete.
  *
  * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
  * `calendar/calendarsCutoverMigration.ts` calls it only for a tenant without a calendars database.
@@ -128,9 +129,12 @@ export async function seedCalendarsInTransaction(
   projectsDatabaseId: string,
   eventsDatabaseId: string,
 ): Promise<CalendarsSeedResult> {
+  const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
+  const catalogs = await loadModuleCatalogs(new URL("../calendar/calendarModuleManifest.js", import.meta.url).href);
+  const label = (key: string) => resolveCatalogLabel(null, catalogs[locale], catalogs.en, key);
   const project = await itemsStore.insertItem(client, {
     databaseId: projectsDatabaseId,
-    properties: { name: "Calendar", systemActive: true },
+    properties: { name: label("seed.calendars.project.name"), systemActive: true },
   });
   const calendars = await databasesStore.createDatabase(client, {
     name: null,
@@ -157,14 +161,12 @@ export async function seedCalendarsInTransaction(
     "calendars schema lock",
   );
 
-  const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
-  const catalogs = await loadModuleCatalogs(new URL("../calendar/calendarModuleManifest.js", import.meta.url).href);
   let defaultCalendarId: string | undefined;
   for (const row of CALENDAR_ROWS) {
     const item = await itemsStore.insertItem(client, {
       databaseId: calendars.id,
       properties: {
-        name: resolveCatalogLabel(null, catalogs[locale], catalogs.en, `seed.calendars.${row.catalogKey}.name`),
+        name: label(`seed.calendars.${row.catalogKey}.name`),
         color: row.color,
         notify: row.notify,
         hidden: false,

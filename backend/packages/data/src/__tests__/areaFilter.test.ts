@@ -179,6 +179,32 @@ describe("declarative area filters (issue #1597)", () => {
     }
   });
 
+  it("refuses at query use an expanded template with an invalid relation hop, with a 400 on filter and no write", async () => {
+    const { work } = await areasAndProjects();
+    await create("tasks", { name: "Send offer" });
+    const tasksState = async () =>
+      (
+        await pool.query<{ rows: number; latest: string | null }>(
+          "SELECT count(*)::int AS rows, max(updated_at)::text AS latest FROM items WHERE database_id = $1",
+          [ids.tasks],
+        )
+      ).rows[0];
+    const before = await tasksState();
+    const paths: Array<[string, string]> = [
+      ["name", "area"],
+      ["project", "notAProperty"],
+    ];
+    for (const path of paths) {
+      const filter = expandAreaFilter({ type: "relation_path_contains", path, value: { areaValue: true } }, work);
+      await expect(chokePoint.queryDatabaseItems(ids.tasks!, { filter }), path.join(".")).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "filter" },
+      });
+    }
+    expect(await tasksState()).toEqual(before);
+  });
+
   it("substitutes the area id into every slot and validates the result as a filter tree", () => {
     const areaId = "11111111-1111-4111-8111-111111111111";
     expect(expandAreaFilter(template("files"), areaId)).toEqual({

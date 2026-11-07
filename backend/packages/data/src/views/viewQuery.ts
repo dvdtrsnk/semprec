@@ -1,7 +1,13 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow, PropertyRow, ViewItemRow, ViewRow } from "../types.js";
-import { countItems, getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
+import {
+  countItems,
+  getItemsByIds,
+  getItemsByIdsIncludingDeleted,
+  listItems,
+  type ExactItemTimestamps,
+} from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
@@ -76,14 +82,15 @@ function encodeSortCursor(
   sortSpecs: SortSpec[],
   properties: SortProperties,
   item: ItemRow,
+  exact: ExactItemTimestamps,
   groupDirection: GroupDirection,
 ): string {
   const payload = {
     // Written only for `desc`, so tokens issued before `groupDirection` existed stay valid under the default.
     ...(groupDirection === "desc" ? { g: groupDirection } : {}),
     v: sortSpecs.map((sort) => {
-      // A system key's value is the item's own ISO timestamp, the millisecond its sort expression orders by.
-      if (sort.system !== undefined) return sort.system === "createdAt" ? item.createdAt : item.updatedAt;
+      // A system key's value is the row's timestamp at full precision, the value its sort expression orders by.
+      if (sort.system !== undefined) return sort.system === "createdAt" ? exact.createdAt : exact.updatedAt;
       const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
       return source[sort.property] ?? null;
     }),
@@ -114,16 +121,20 @@ function castableTo(cast: ReturnType<typeof sortKeyCast>, value: unknown): boole
   return true;
 }
 
-const SYSTEM_CURSOR_VALUE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const SYSTEM_CURSOR_VALUE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d{3}Z$/;
 
 /**
- * Whether a decoded cursor value is one `encodeSortCursor` can produce for a system key: the exact
- * `Date#toISOString` form of a valid instant. The column is `NOT NULL`, so `null` is foreign too.
+ * Whether a decoded cursor value is one `encodeSortCursor` can produce for a system key: UTC text with
+ * exactly six fractional digits (`listItems`' exact projection) naming a real calendar instant, checked on
+ * its whole-millisecond prefix with `Date#toISOString`. The column is `NOT NULL`, so `null` is foreign too.
  */
 function isSystemCursorValue(value: unknown): boolean {
-  if (typeof value !== "string" || !SYSTEM_CURSOR_VALUE_RE.test(value)) return false;
-  const instant = new Date(value);
-  return !Number.isNaN(instant.getTime()) && instant.toISOString() === value;
+  if (typeof value !== "string") return false;
+  const match = SYSTEM_CURSOR_VALUE_RE.exec(value);
+  if (!match) return false;
+  const millisecond = `${match[1]}Z`;
+  const instant = new Date(millisecond);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === millisecond;
 }
 
 /** Decodes and validates a sorted query's cursor — the decode is the validation, so anything that is not a token `encodeSortCursor` could have produced for these sort keys is rejected. */
@@ -213,7 +224,7 @@ async function queryItemsCore(
       ? {
           buildAfterSql: (params) =>
             sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params, collation) : undefined,
-          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last, groupDirection),
+          encodeCursor: (last, exact) => encodeSortCursor(sortSpecs, sortProperties, last, exact, groupDirection),
         }
       : undefined,
   });

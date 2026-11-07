@@ -209,6 +209,27 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(times(startCleared)).toMatchObject({ timeFrom: null, timeTo: "10:00", time: null });
   });
 
+  it("keeps a start of 24:00 as written on create and update and derives no time or end from it", async () => {
+    const created = await createEvent({ date: "2026-10-16", timeFrom: "24:00" });
+    expect(times(created)).toEqual({ date: "2026-10-16", endDate: null, timeFrom: "24:00", timeTo: null, time: null });
+
+    const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
+    const updated = await chokePoint.updateItem(
+      { databaseId: eventsId, itemId: event.id, propertiesPatch: { timeFrom: "24:00" } },
+      undefined,
+      undefined,
+      USER,
+    );
+    // Only an end may be 24:00: the start stays unreadable, and the derived time stays as stored.
+    expect(times(updated)).toEqual({
+      date: "2026-10-16",
+      endDate: null,
+      timeFrom: "24:00",
+      timeTo: "10:00",
+      time: "09:00–10:00",
+    });
+  });
+
   it("leaves an unreadable time unchanged and derives no time from it", async () => {
     const event = await createEvent({ date: "2026-10-16", timeFrom: "nine", timeTo: "25:00" });
     expect(times(event)).toEqual({ date: "2026-10-16", endDate: null, timeFrom: "nine", timeTo: "25:00", time: null });

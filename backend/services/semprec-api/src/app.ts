@@ -1,5 +1,5 @@
 import { createRecordingsRequestListener } from "./recordingsHandler.js";
-import { createCollectionMetadataResolver } from "@semprec/data";
+import { createCollectionMetadataResolver, resolveModuleRuleKinds } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
@@ -87,17 +87,11 @@ export async function createDispatcher(
   options: AppOptions,
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
+  // Resolved per call, so a module activated or deactivated since the last request is reflected.
+  const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
   const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
     ...(options.customRouteDependencies ?? createCustomRouteDependencies()),
-    heartbeatRuleKinds: async () => {
-      const definitions = await options.moduleRegistry.getHeartbeatRuleKindDefinitions();
-      return new Map(
-        definitions.map((definition) => [
-          definition.kind,
-          { schema: definition.schema, nextFireAt: definition.nextFireAt },
-        ]),
-      );
-    },
+    heartbeatRuleKinds,
   });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
@@ -106,7 +100,7 @@ export async function createDispatcher(
   const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createAccountRoutes(pool, options),
-    ...createSempThreadRoutes(pool),
+    ...createSempThreadRoutes(pool, heartbeatRuleKinds),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),

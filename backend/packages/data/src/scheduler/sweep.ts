@@ -52,9 +52,10 @@ async function notifyHeartbeatError(
 /**
  * Resolved fresh on every call (never cached) so a module activated or deactivated between
  * two sweeps/fires is reflected immediately — the same "always evaluate current activation"
- * contract `ModuleRegistry`'s own projections make.
+ * contract `ModuleRegistry`'s own projections make. Also the rule-kind registry every reader of a
+ * tick thread's heartbeat header passes to `getSempThread` (issue #1562).
  */
-async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
+export async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
   if (!moduleRegistry) return new Map();
   const definitions = await moduleRegistry.getHeartbeatRuleKindDefinitions();
   return new Map(definitions.map((def) => [def.kind, { schema: def.schema, nextFireAt: def.nextFireAt }]));

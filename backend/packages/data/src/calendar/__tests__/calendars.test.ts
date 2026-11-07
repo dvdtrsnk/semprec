@@ -12,7 +12,7 @@ import { CardinalityViolationError } from "../../errors.js";
 import { withTransaction } from "../../db/pool.js";
 import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
-import { seedSystem } from "../../seed/seedSystem.js";
+import { lockTenantSeedInTransaction, seedSystem } from "../../seed/seedSystem.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -254,6 +254,27 @@ describe("calendars system database (issue #1600)", () => {
     expect(await calendarEdges(tenantId)).toEqual([[personal.id, eventId]]);
   });
 
+  it("names the calendar system project from the module catalog in the tenant's language", async () => {
+    for (const [locale, name] of [
+      ["cs", "Kalendář"],
+      ["en", "Calendar"],
+    ] as const) {
+      const tenantId = await tenantWithUser(locale);
+      const calendarsId = await databaseId(tenantId, CALENDARS_MODULE_ID);
+      const { rows } = await adminPool.query<{ properties: unknown; deleted: boolean; database: string }>(
+        `SELECT project.properties, project.deleted_at IS NOT NULL AS deleted, owner.owner_module_id AS database
+           FROM databases calendars
+           JOIN items project ON project.id = calendars.owner_project_item_id
+           JOIN databases owner ON owner.id = project.database_id
+          WHERE calendars.tenant_id = $1 AND calendars.id = $2`,
+        [tenantId, calendarsId],
+      );
+      expect(rows, locale).toEqual([
+        { properties: { name, systemActive: true }, deleted: false, database: "projects" },
+      ]);
+    }
+  });
+
   it.each(["kind", "systemKey"])(
     "answers a generic write of %s with 403 and leaves the calendar unchanged",
     async (key) => {
@@ -425,6 +446,159 @@ describe("calendars system database (issue #1600)", () => {
       // The scoped tenant itself was cut over.
       expect(await calendars(tenantId)).toHaveLength(8);
       expect(await calendarEdges(tenantId)).toHaveLength(2);
+    });
+
+    const deadline = <T>(promise: Promise<T>, label: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 20_000);
+      });
+      return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+    };
+
+    /** The backends `holderPid` blocks; bounded: each probe is one short statement and the probes stop. */
+    async function waitingOn(holderPid: number, expected: number): Promise<number[]> {
+      let waiting: number[] = [];
+      for (let probe = 0; probe < 4000 && waiting.length < expected; probe += 1) {
+        const { rows } = await adminPool.query<{ pid: number }>(
+          "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [holderPid],
+        );
+        waiting = rows.map((row) => row.pid);
+      }
+      return waiting;
+    }
+
+    /** A transaction on its own admin connection, in `tenantId`'s scope, held open until the test commits it. */
+    async function heldTransaction(tenantId: string) {
+      const client = await adminPool.connect();
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      return { client, pid: rows[0]!.pid };
+    }
+
+    it("serializes two cutovers of a tenant without calendars on the seed lock, so exactly one seeds", async () => {
+      const tenantId = await tenantWithUser("cs");
+      const eventIds = await createEvents(tenantId, 2);
+      await revertToOldShape(tenantId);
+      const holder = await heldTransaction(tenantId);
+      let runs: Promise<void>[] = [];
+      let outcomes: PromiseSettledResult<void>[];
+      try {
+        await lockTenantSeedInTransaction(holder.client, "test seed lock holder");
+        runs = [1, 2].map(() => runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool)));
+        // Both wait for the seed lock before their existence check.
+        expect(await waitingOn(holder.pid, 2)).toHaveLength(2);
+        await holder.client.query("COMMIT");
+      } finally {
+        holder.client.release(true);
+        outcomes = await deadline(Promise.allSettled(runs), "both cutovers to settle");
+      }
+      expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
+      const { rows } = await adminPool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM databases WHERE tenant_id = $1 AND owner_module_id = $2",
+        [tenantId, CALENDARS_MODULE_ID],
+      );
+      expect(rows).toEqual([{ count: 1 }]);
+      const rowsAfter = await calendars(tenantId);
+      expect(rowsAfter).toHaveLength(8);
+      const personal = rowsAfter.find((row) => row.properties.isDefault);
+      expect(await calendarEdges(tenantId)).toEqual([...eventIds].sort().map((eventId) => [personal!.id, eventId]));
+    });
+
+    it("serializes concurrent edge batches on the relation definition lock, so an Event linked meanwhile keeps its calendar", async () => {
+      const tenantId = await tenantWithUser("cs");
+      const eventIds = await createEvents(tenantId, 3);
+      const rows = await calendars(tenantId);
+      const personal = rows.find((row) => row.properties.isDefault);
+      const work = rows.find((row) => !row.properties.isDefault);
+      if (!personal || !work) throw new Error("Expected the default and another calendar");
+      const { rows: definitions } = await adminPool.query<{ id: string }>(
+        `SELECT p.config->>'relationDefinitionId' AS id FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'events'`,
+        [tenantId, CALENDARS_MODULE_ID],
+      );
+      const holder = await heldTransaction(tenantId);
+      let runs: Promise<void>[] = [];
+      let outcomes: PromiseSettledResult<void>[];
+      try {
+        // Raw SQL, labeled: a relation write of the definition held open. Its insert fires the cardinality
+        // trigger of 0013, which takes the definition's advisory lock until this transaction ends.
+        await holder.client.query(
+          "INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)",
+          [definitions[0]!.id, work.id, eventIds[0]],
+        );
+        runs = [1, 2].map(() => runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool)));
+        expect(await waitingOn(holder.pid, 2)).toHaveLength(2);
+        await holder.client.query("COMMIT");
+      } finally {
+        holder.client.release(true);
+        outcomes = await deadline(Promise.allSettled(runs), "both cutovers to settle");
+      }
+      expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
+      const expected = eventIds
+        .map((eventId): [string, string] => [eventId === eventIds[0] ? work.id : personal.id, eventId])
+        .sort((left, right) => left[1].localeCompare(right[1]));
+      expect(await calendarEdges(tenantId)).toEqual(expected);
+    });
+
+    it("leaves valid partial progress when an edge batch fails, and the next run completes it", async () => {
+      const tenantId = await tenantWithUser("cs");
+      const eventsId = await databaseId(tenantId, "events");
+      // One more Event than a batch holds, so a second batch runs.
+      const eventIds = await runInTenant(tenantId, () =>
+        withTransaction(dataPool, async (client) => {
+          const ids: string[] = [];
+          for (let index = 0; index < 501; index += 1) {
+            ids.push(
+              (await createItemWithClient(client, { databaseId: eventsId!, properties: { name: `Bulk ${index}` } })).id,
+            );
+          }
+          return ids;
+        }),
+      );
+      await revertToOldShape(tenantId);
+      // Raw SQL, labeled: a fault injected into the second batch only. Batches link Events in id order, so the
+      // largest id is the one Event the second batch inserts; the probe table names it without interpolation.
+      const failing = [...eventIds].sort().at(-1)!;
+      await adminPool.query("CREATE TABLE calendar_cutover_failure_probe (event_id uuid PRIMARY KEY)");
+      try {
+        await adminPool.query("GRANT SELECT ON calendar_cutover_failure_probe TO semprec_data");
+        await adminPool.query(`CREATE FUNCTION calendar_cutover_failure_probe() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF EXISTS (SELECT 1 FROM calendar_cutover_failure_probe WHERE event_id = NEW.item_b) THEN
+              RAISE EXCEPTION 'injected calendar edge failure';
+            END IF;
+            RETURN NEW;
+          END $$`);
+        await adminPool.query(`CREATE TRIGGER calendar_cutover_failure_probe BEFORE INSERT ON item_relations
+          FOR EACH ROW EXECUTE FUNCTION calendar_cutover_failure_probe()`);
+        await adminPool.query("INSERT INTO calendar_cutover_failure_probe (event_id) VALUES ($1)", [failing]);
+
+        await expect(runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool))).rejects.toThrow(
+          /injected calendar edge failure/,
+        );
+        // The schema transaction and the first batch committed; the failed batch wrote nothing.
+        const rows = await calendars(tenantId);
+        expect(rows).toHaveLength(8);
+        const personal = rows.find((row) => row.properties.isDefault);
+        const partial = await calendarEdges(tenantId);
+        expect(partial).toHaveLength(500);
+        expect(partial.every(([calendar]) => calendar === personal?.id)).toBe(true);
+        expect(new Set(partial.map(([, eventId]) => eventId)).size).toBe(500);
+        expect(partial.some(([, eventId]) => eventId === failing)).toBe(false);
+      } finally {
+        await adminPool.query("DROP TRIGGER IF EXISTS calendar_cutover_failure_probe ON item_relations");
+        await adminPool.query("DROP FUNCTION IF EXISTS calendar_cutover_failure_probe()");
+        await adminPool.query("DROP TABLE IF EXISTS calendar_cutover_failure_probe");
+      }
+
+      await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
+      const complete = await calendarEdges(tenantId);
+      expect(complete.map(([, eventId]) => eventId)).toEqual([...eventIds].sort());
+      await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
+      expect(await calendarEdges(tenantId)).toEqual(complete);
     });
 
     it("links more Events than one statement inserts", async () => {

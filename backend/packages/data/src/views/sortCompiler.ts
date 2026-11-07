@@ -55,14 +55,13 @@ const SYSTEM_SORT_COLUMNS: Readonly<Record<SystemSortField, string>> = {
 };
 
 /**
- * A system key's SQL expression: its column truncated to milliseconds. An item's `createdAt`/`updatedAt`
- * (and so a cursor built from it) is that column read through a JavaScript `Date`, which keeps exactly
- * the whole milliseconds (the microseconds are dropped, never rounded up), so the cursor value equals
- * this expression for its row. Comparing the untruncated column would skip or repeat rows that share a
- * millisecond. The column name comes only from `SYSTEM_SORT_COLUMNS`.
+ * A system key's SQL expression: its column at full PostgreSQL precision, so items created or updated
+ * within one millisecond keep their real order. A cursor carries the column's exact UTC text with six
+ * fractional digits (`listItems`' exact projection), which casts back to the same `timestamptz`, so the
+ * keyset compares the value the row was ordered by. The column name comes only from `SYSTEM_SORT_COLUMNS`.
  */
 function systemSortExpression(field: SystemSortField): string {
-  return `date_trunc('milliseconds', ${SYSTEM_SORT_COLUMNS[field]})`;
+  return SYSTEM_SORT_COLUMNS[field];
 }
 
 /** One sort key resolved against the database: a system timestamp, or a property with its type and config. */
@@ -81,7 +80,7 @@ function resolveSortKey(sort: SortSpec, properties: SortProperties): ResolvedSor
 
 /**
  * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` for a property, the
- * truncated column for a system key — shared by `compileSort` and `compileSortKeyset` so the `ORDER BY`
+ * bare column for a system key — shared by `compileSort` and `compileSortKeyset` so the `ORDER BY`
  * and the keyset predicate that resumes it can never compare different expressions. A rollup's value
  * lives in `items.computed` (the recompute worker's column), every other property's in
  * `items.properties`. Pushes a property key onto `params`; a system key pushes nothing.

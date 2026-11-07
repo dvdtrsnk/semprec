@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Pool } from "pg";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
@@ -8,7 +13,9 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
+import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 import { createHeartbeat, setHeartbeatEnabled } from "../scheduler/schedulerStore.js";
+import { resolveModuleRuleKinds } from "../scheduler/sweep.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { createSempChatThread, getSempThread } from "../sempThreads/sempThreadsStore.js";
@@ -16,6 +23,8 @@ import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const WEEKLY = { kind: "weekly", days: ["sun"], at: "21:00" } as const;
+/** No module rule kind registered: only core rules validate. */
+const CORE_RULES_ONLY: HeartbeatRuleKindRegistry = new Map();
 
 let adminPool: Pool;
 let pool: Pool;
@@ -50,29 +59,39 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
   });
 
   /** A project, its heartbeat and the heartbeat's tick thread, all through their production writers. */
-  async function tickThread(rule: unknown, options: { enabled?: boolean } = {}) {
+  async function tickThread(
+    rule: unknown,
+    options: { enabled?: boolean } = {},
+    moduleRuleKinds: HeartbeatRuleKindRegistry = CORE_RULES_ONLY,
+  ) {
     return runInTenant(tenant, async () => {
       const project = await createChokePoint(pool).createItem({
         databaseId: projectsId,
         properties: { name: "Weekly review" },
       });
       return withTransaction(pool, async (client) => {
-        const heartbeat = await createHeartbeat(client, {
-          projectItemId: project.id,
-          name: "Sunday planning",
-          rule,
-          actionId: CORE_AGENT_RUN_ACTION_ID,
-          actionConfig: { task: "Plan the week" },
-          ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
-        });
+        const heartbeat = await createHeartbeat(
+          client,
+          {
+            projectItemId: project.id,
+            name: "Sunday planning",
+            rule,
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "Plan the week" },
+            ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
+          },
+          moduleRuleKinds,
+        );
         const thread = await getOrCreateTickThread(client, heartbeat.id);
         return { project, heartbeat, threadId: thread.id };
       });
     });
   }
 
-  function detail(threadId: string) {
-    return runInTenant(tenant, () => withTransaction(pool, (client) => getSempThread(client, threadId)));
+  function detail(threadId: string, moduleRuleKinds: HeartbeatRuleKindRegistry = CORE_RULES_ONLY) {
+    return runInTenant(tenant, () =>
+      withTransaction(pool, (client) => getSempThread(client, threadId, moduleRuleKinds)),
+    );
   }
 
   it("returns the header of a weekly heartbeat with its structured rule, and no active run", async () => {
@@ -89,6 +108,36 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
       canTrigger: true,
     });
     expect(thread?.activeRun).toBeNull();
+  });
+
+  it("validates a module-declared rule kind against the active modules: shown while active, refused once inactive or unknown", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semprec-tick-rule-"));
+    try {
+      // A module declaring its own heartbeat rule kind, loaded through the real module registry.
+      const modulePath = join(directory, "rule.mjs");
+      await writeFile(
+        modulePath,
+        `export const manifest = { id: 'fixtureRule', version: '1.0.0', name: 'Fixture Rule', removable: true, systemProject: false, databases: [], capabilities: [], agentTools: [], heartbeatRuleKinds: [{ kind: 'fixtureRule.once', schemaExport: 'ruleSchema', nextFireAtExport: 'nextFireAt' }] };\nexport const ruleSchema = { safeParse: (value) => ({ success: true, data: value }) };\nexport function nextFireAt() { return new Date('2031-01-01T00:00:00.000Z'); }\n`,
+      );
+      const active = new Set(["fixtureRule"]);
+      const registry = new ModuleRegistry(() => active);
+      await registry.loadModule(pathToFileURL(modulePath).href);
+      const rule = { kind: "fixtureRule.once", at: "2031-01-01" };
+      const { heartbeat, threadId } = await tickThread(rule, {}, await resolveModuleRuleKinds(registry));
+
+      expect((await detail(threadId, await resolveModuleRuleKinds(registry)))?.heartbeat).toMatchObject({
+        id: heartbeat.id,
+        rule,
+        canTrigger: true,
+      });
+      await expect(detail(threadId, CORE_RULES_ONLY)).rejects.toThrow(/Unknown heartbeat rule kind "fixtureRule.once"/);
+      active.delete("fixtureRule");
+      await expect(detail(threadId, await resolveModuleRuleKinds(registry))).rejects.toThrow(
+        /Unknown heartbeat rule kind "fixtureRule.once"/,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("reports canTrigger false for a disabled heartbeat", async () => {
@@ -165,7 +214,9 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
   it("does not show a tick thread to another tenant", async () => {
     const { threadId } = await tickThread(WEEKLY);
     const other = await createTestTenant(adminPool);
-    const seen = await runInTenant(other, () => withTransaction(pool, (client) => getSempThread(client, threadId)));
+    const seen = await runInTenant(other, () =>
+      withTransaction(pool, (client) => getSempThread(client, threadId, CORE_RULES_ONLY)),
+    );
     expect(seen).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import {
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
+  resolveModuleRuleKinds,
   startProcessHeartbeat,
   startTenantDeactivationListener,
   type InviteMailer,
@@ -187,6 +188,7 @@ const voiceServer = createVoiceChannel(pool, {
     pool,
     { port: Number(process.env.AI_GATEWAY_PORT ?? "3002"), token: speechGatewayToken },
     syncServer,
+    () => resolveModuleRuleKinds(moduleRegistry),
   ),
 });
 

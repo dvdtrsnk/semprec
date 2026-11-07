@@ -646,6 +646,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveMergedThreadId",
   "resolveModelDisplayName",
   "resolveModuleAgentToolsForRun",
+  "resolveModuleRuleKinds",
   "resolveNotificationsBySource",
   "resolveOperationLabel",
   "resolveProblem",
