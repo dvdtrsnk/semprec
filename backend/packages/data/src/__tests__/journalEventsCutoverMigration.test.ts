@@ -9,6 +9,8 @@ import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { KNOWN_OWNER_PROCESS_IDS } from "../manifest/knownActionIds.js";
+import { findOrphanedOwnerProcessIds } from "../manifest/moduleRegistryDriftCheck.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -143,6 +145,20 @@ describe("Journal events relation (issue #1609)", () => {
       ),
     );
     expect(await runInTenant(tenant, () => cp.listItemRelations(day.id, property!.id))).toEqual([]);
+  });
+
+  it("is owned by a process the module registry drift check knows", async () => {
+    const orphaned = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => ({
+        known: await findOrphanedOwnerProcessIds(client, KNOWN_OWNER_PROCESS_IDS),
+        withoutIt: await findOrphanedOwnerProcessIds(
+          client,
+          new Set([...KNOWN_OWNER_PROCESS_IDS].filter((id) => id !== JOURNAL_EVENT_LINKS_OWNER_PROCESS)),
+        ),
+      })),
+    );
+    expect(orphaned.known).not.toContain(JOURNAL_EVENT_LINKS_OWNER_PROCESS);
+    expect(orphaned.withoutIt).toContain(JOURNAL_EVENT_LINKS_OWNER_PROCESS);
   });
 
   it("labels the relation 'Události' in Czech and 'Events' in English", async () => {
