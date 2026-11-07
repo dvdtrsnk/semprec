@@ -551,6 +551,7 @@ describe("voice session through the real gateway and registered worker", () => {
     let failed = false;
     let failure: unknown;
     const cleanupErrors: unknown[] = [];
+    let lastIsolated: OwnedChild | undefined;
     try {
       for (const ending of ["peer", "tenant", "server"] as const) {
         const isolated = await startChild(
@@ -558,6 +559,7 @@ describe("voice session through the real gateway and registered worker", () => {
           { ...workerEnvironment, BATCH32_REGISTRATION_GATE: "1" },
           "worker",
         );
+        lastIsolated = isolated;
         let channel: VoiceChannel | undefined;
         let localServer: Server | undefined;
         let peer: WebSocket | undefined;
@@ -608,6 +610,7 @@ describe("voice session through the real gateway and registered worker", () => {
         /* eslint-enable @typescript-eslint/unbound-method */
         let caseFailed = false;
         let caseFailure: unknown;
+        let peerError: unknown;
         const caseCleanup: unknown[] = [];
         try {
           send(isolated, "arm");
@@ -642,7 +645,7 @@ describe("voice session through the real gateway and registered worker", () => {
           current.on("message", (data, binary) => {
             if (!binary) received.push(JSON.parse(messageText(data)) as unknown);
           });
-          current.on("error", () => {});
+          current.on("error", (error) => { peerError ??= error; });
           let closed = false;
           current.on("close", () => {
             closed = true;
@@ -792,6 +795,7 @@ describe("voice session through the real gateway and registered worker", () => {
         } catch (error) {
           caseCleanup.push(error);
         }
+        if (peerError) caseCleanup.push(peerError);
         if (caseFailed || caseCleanup.length)
           throw new AggregateError(
             [...(caseFailed ? [caseFailure] : []), ...caseCleanup],
@@ -803,7 +807,7 @@ describe("voice session through the real gateway and registered worker", () => {
       failed = true;
       failure = error;
     }
-    if (worker?.settled) worker = undefined;
+    if (lastIsolated?.settled) worker = undefined;
     if (!failed && !worker) {
       try {
         worker = await startChild(workerPath, workerEnvironment, "worker");
