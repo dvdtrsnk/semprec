@@ -36,6 +36,8 @@ const control = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("releaseSpeech") }),
   z.strictObject({ type: z.literal("holdModel") }),
   z.strictObject({ type: z.literal("releaseModel") }),
+  z.strictObject({ type: z.literal("holdFirstText") }),
+  z.strictObject({ type: z.literal("releaseFirstText"), request: z.number().int().min(1).max(100) }),
   z.strictObject({ type: z.literal("approvalTarget"), itemId: z.string().uuid() }),
   z.strictObject({ type: z.literal("stop") }),
 ]);
@@ -46,6 +48,8 @@ const approvalByResponse = new Map<ServerResponse, string>();
 let approvalTarget: string | undefined;
 let holdSpeech = false;
 let holdModel = false;
+let holdFirstText = false;
+let pendingFirstText: { response: ServerResponse; sequence: number } | undefined;
 let speechCalls = 0;
 let modelCalls = 0;
 const model = "claude-haiku-4-5";
@@ -85,6 +89,33 @@ function endModel(res: ServerResponse): void {
       .join(""),
   );
 }
+function startModel(res: ServerResponse): void {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  res.write(
+    [
+      {
+        type: "message_start",
+        message: {
+          id: "voice-fixture",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model,
+          stop_reason: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "First sentence. " } },
+    ]
+      .map(sse)
+      .join(""),
+  );
+  if (holdModel) {
+    pendingModel.add(res);
+    res.once("close", () => pendingModel.delete(res));
+  } else endModel(res);
+}
 const provider = createServer((req, res) => {
   const modelRequest = req.url === "/v1/messages" || req.url === "/v1/messages?beta=true";
   if (req.method !== "POST" || (req.url !== "/speech" && !modelRequest)) {
@@ -108,31 +139,16 @@ const provider = createServer((req, res) => {
         approvalTarget = undefined;
         res.once("close", () => approvalByResponse.delete(res));
       }
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(
-        [
-          {
-            type: "message_start",
-            message: {
-              id: "voice-fixture",
-              type: "message",
-              role: "assistant",
-              content: [],
-              model,
-              stop_reason: null,
-              usage: { input_tokens: 10, output_tokens: 0 },
-            },
-          },
-          { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "First sentence. " } },
-        ]
-          .map(sse)
-          .join(""),
-      );
-      if (holdModel) {
-        pendingModel.add(res);
-        res.once("close", () => pendingModel.delete(res));
-      } else endModel(res);
+      if (holdFirstText) {
+        holdFirstText = false;
+        pendingFirstText = { response: res, sequence: modelCalls };
+        res.once("close", () => {
+          if (pendingFirstText?.response === res) pendingFirstText = undefined;
+        });
+        process.send?.({ type: "firstTextHeld", sequence: modelCalls });
+      } else if (pendingFirstText) {
+        res.destroy();
+      } else startModel(res);
       return;
     }
     if (++speechCalls > 100) {
@@ -265,6 +281,7 @@ function shutdown(): void {
       }
     };
     await attempt(() => stt.closeAll());
+    if (pendingFirstText) await attempt(() => pendingFirstText?.response.destroy());
     for (const res of pending)
       await attempt(() => {
         res.destroy();
@@ -338,6 +355,25 @@ process.on("message", (value: unknown) => {
       pendingModel.clear();
       holdModel = false;
       break;
+    case "holdFirstText":
+      if (holdFirstText || pendingFirstText) {
+        process.exitCode = 1;
+        shutdown();
+        break;
+      }
+      holdFirstText = true;
+      process.send?.({ type: "firstTextArmed" });
+      break;
+    case "releaseFirstText": {
+      holdFirstText = false;
+      const held = pendingFirstText;
+      pendingFirstText = undefined;
+      if (held) {
+        startModel(held.response);
+        process.send?.({ type: "firstTextReleased", sequence: held.sequence, request: parsed.data.request });
+      } else process.send?.({ type: "firstTextDisarmed", request: parsed.data.request });
+      break;
+    }
     case "approvalTarget":
       if (approvalTarget) {
         process.exitCode = 1;

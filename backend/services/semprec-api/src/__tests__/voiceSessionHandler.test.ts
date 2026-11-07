@@ -107,6 +107,14 @@ const childMessage = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("audioAccepted") }),
   z.strictObject({ type: z.literal("speechCall"), sequence: z.number().int().min(1).max(100) }),
   z.strictObject({ type: z.literal("modelCall"), sequence: z.number().int().min(1).max(100) }),
+  z.strictObject({ type: z.literal("firstTextArmed") }),
+  z.strictObject({ type: z.literal("firstTextHeld"), sequence: z.number().int().min(1).max(100) }),
+  z.strictObject({
+    type: z.literal("firstTextReleased"),
+    sequence: z.number().int().min(1).max(100),
+    request: z.number().int().min(1).max(100),
+  }),
+  z.strictObject({ type: z.literal("firstTextDisarmed"), request: z.number().int().min(1).max(100) }),
   z.strictObject({ type: z.literal("approvalReady") }),
   z.strictObject({ type: z.literal("gateArmed") }),
   z.strictObject({
@@ -1538,13 +1546,34 @@ describe("voice session through the real gateway and registered worker", () => {
     let primary: { error: unknown } | undefined;
     let speechHeld = false;
     let modelHeld = false;
+    let firstTextHeld = false;
     const ownedGateway = gateway;
-    async function control(type: "holdSpeech" | "holdModel" | "releaseSpeech" | "releaseModel"): Promise<void> {
+    const descriptor = Object.getOwnPropertyDescriptor(sync, "subscribeVoice");
+    if (!descriptor || typeof descriptor.value !== "function") throw new Error("Missing voice subscription descriptor");
+    const originalSubscribe = sync.subscribeVoice;
+    type Subscription = Parameters<typeof originalSubscribe>[0];
+    type ObservedSubscription = Pick<
+      Subscription,
+      "tenantId" | "threadId" | "sempMessageId" | "runId" | "userId" | "signal"
+    > & {
+      state: "pending" | "fulfilled" | "rejected";
+      error?: unknown;
+    };
+    let subscription: ObservedSubscription | undefined;
+    let additionalSubscription = false;
+    const recorded: ObservedSubscription[] = [];
+    const observers: Promise<void>[] = [];
+    let installed = false;
+    let releaseRequest = 0;
+    async function control(
+      type: "holdSpeech" | "holdModel" | "releaseSpeech" | "releaseModel" | "holdFirstText" | "releaseFirstText",
+    ): Promise<void> {
       if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
+      const request = type === "releaseFirstText" ? ++releaseRequest : undefined;
       await new Promise<void>((resolveSend, reject) => {
         const timer = setTimeout(() => reject(new Error("Fixture control acknowledgement timed out")), 5000);
         try {
-          ownedGateway.child.send({ type }, (error) => {
+          ownedGateway.child.send(request === undefined ? { type } : { type, request }, (error) => {
             clearTimeout(timer);
             if (error) reject(error);
             else resolveSend();
@@ -1554,8 +1583,48 @@ describe("voice session through the real gateway and registered worker", () => {
           reject(error instanceof Error ? error : new Error("Fixture control failed", { cause: error }));
         }
       });
+      if (request !== undefined)
+        await vi.waitFor(() =>
+          expect(
+            ownedGateway.messages.some(
+              (entry) =>
+                (entry.type === "firstTextReleased" || entry.type === "firstTextDisarmed") && entry.request === request,
+            ),
+          ).toBe(true),
+        );
     }
     try {
+      Object.defineProperty(sync, "subscribeVoice", {
+        ...descriptor,
+        value: function (this: typeof sync, input: Subscription) {
+          const result = originalSubscribe.call(this, input);
+          const observed: ObservedSubscription = {
+            tenantId: input.tenantId,
+            threadId: input.threadId,
+            sempMessageId: input.sempMessageId,
+            runId: input.runId,
+            userId: input.userId,
+            signal: input.signal,
+            state: "pending",
+          };
+          if (subscription) additionalSubscription = true;
+          else subscription = observed;
+          recorded.push(observed);
+          observers.push(
+            result.then(
+              () => {
+                observed.state = "fulfilled";
+              },
+              (error: unknown) => {
+                observed.state = "rejected";
+                observed.error = error;
+              },
+            ),
+          );
+          return result;
+        },
+      });
+      installed = true;
       const cp = createChokePoint(pool);
       const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Voice approval fixture" }));
       const target = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: {} }));
@@ -1592,6 +1661,14 @@ describe("voice session through the real gateway and registered worker", () => {
       await control("holdSpeech");
       modelHeld = true;
       await control("holdModel");
+      const armedBefore = ownedGateway.messages.filter((entry) => entry.type === "firstTextArmed").length;
+      const heldBefore = ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld").length;
+      const releasedBefore = ownedGateway.messages.filter((entry) => entry.type === "firstTextReleased").length;
+      firstTextHeld = true;
+      await control("holdFirstText");
+      await vi.waitFor(() =>
+        expect(ownedGateway.messages.filter((entry) => entry.type === "firstTextArmed")).toHaveLength(armedBefore + 1),
+      );
       send(gateway, "partial");
       await vi.waitFor(() =>
         expect(frames).toContainEqual({ type: "transcript", text: "A spoken question.", final: false }),
@@ -1609,6 +1686,44 @@ describe("voice session through the real gateway and registered worker", () => {
         expect(result.rows[0]?.source).toBe("voice");
         return result.rows[0]!;
       });
+      const targetTurn = await vi.waitFor(async () => {
+        const rows = await runInTenant(tenant, () =>
+          pool.query<{ id: string; run_id: string; actor_user_id: string }>(
+            `SELECT m.id, m.agent_run_id AS run_id, r.actor_user_id
+             FROM semp_messages m JOIN agent_runs r ON r.id=m.agent_run_id AND r.tenant_id=m.tenant_id
+             WHERE m.thread_id=$1 AND m.role='assistant' AND m.reply_to_message_id=$2 AND m.status='running'`,
+            [source.thread_id, source.id],
+          ),
+        );
+        expect(rows.rows).toHaveLength(1);
+        expect(additionalSubscription).toBe(false);
+        expect(subscription?.state).toBe("fulfilled");
+        expect(subscription?.tenantId).toBe(tenant);
+        expect(subscription?.threadId).toBe(source.thread_id);
+        expect(subscription?.sempMessageId).toBe(rows.rows[0]?.id);
+        expect(subscription?.runId).toBe(rows.rows[0]?.run_id);
+        expect(subscription?.userId).toBe(rows.rows[0]?.actor_user_id);
+        expect(subscription?.signal?.aborted).toBe(false);
+        expect(socket?.readyState).toBe(WebSocket.OPEN);
+        const held = ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld");
+        expect(held).toHaveLength(heldBefore + 1);
+        return held.at(-1)!;
+      });
+      await Promise.all(observers);
+      expect(additionalSubscription).toBe(false);
+      Object.defineProperty(sync, "subscribeVoice", descriptor);
+      installed = false;
+      await control("releaseFirstText");
+      await vi.waitFor(() => {
+        const released = ownedGateway.messages.filter((entry) => entry.type === "firstTextReleased");
+        expect(released).toHaveLength(releasedBefore + 1);
+        expect(released.at(-1)).toEqual({
+          type: "firstTextReleased",
+          sequence: targetTurn.sequence,
+          request: releaseRequest,
+        });
+      });
+      firstTextHeld = false;
       let assistantId = "";
       let assistantRun = "";
       try {
@@ -1839,12 +1954,35 @@ describe("voice session through the real gateway and registered worker", () => {
     }
     const cleanup: unknown[] = [];
     for (const [held, type] of [
+      [firstTextHeld, "releaseFirstText"],
       [speechHeld, "releaseSpeech"],
       [modelHeld, "releaseModel"],
     ] as const) {
       if (!held) continue;
       try {
         await control(type);
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (installed && primary && socket && socket.readyState !== WebSocket.CLOSED) {
+      try {
+        const closed = once(socket, "close");
+        socket.terminate();
+        await closed;
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    try {
+      await Promise.all(observers);
+      for (const observed of recorded) if (observed.state === "rejected") cleanup.push(observed.error);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (installed) {
+      try {
+        Object.defineProperty(sync, "subscribeVoice", descriptor);
       } catch (error) {
         cleanup.push(error);
       }
