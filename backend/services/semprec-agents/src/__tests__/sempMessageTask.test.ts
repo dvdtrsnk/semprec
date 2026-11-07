@@ -72,7 +72,8 @@ let runtime: AgentsQueueRuntime | undefined;
 type RefFixtureIdentity = { tenantId: string | null; agentRunId: string | null; sempMessageId: string | null };
 type RefFixtureMessage =
   | { type: "ready"; port: number }
-  | ({ type: "gatewayRequest"; sequence: number; bodyBytes: number } & RefFixtureIdentity)
+  | ({ type: "gatewayArrival"; sequence: number } & RefFixtureIdentity)
+  | ({ type: "gatewayRequest"; sequence: number; bodyBytes: number | null } & RefFixtureIdentity)
   | ({ type: "gatewayResult"; sequence: number; status: number } & RefFixtureIdentity)
   | {
       type: "observation";
@@ -105,6 +106,28 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   )
     return { type: "ready", port: value.port };
   if (
+    value.type === "gatewayArrival" &&
+    Object.keys(value).length === 5 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "tenantId" in value &&
+    uuidOrNull(value.tenantId) &&
+    "agentRunId" in value &&
+    uuidOrNull(value.agentRunId) &&
+    "sempMessageId" in value &&
+    uuidOrNull(value.sempMessageId)
+  )
+    return {
+      type: "gatewayArrival",
+      sequence: value.sequence,
+      tenantId: value.tenantId,
+      agentRunId: value.agentRunId,
+      sempMessageId: value.sempMessageId,
+    };
+  if (
     value.type === "gatewayRequest" &&
     Object.keys(value).length === 6 &&
     "sequence" in value &&
@@ -113,10 +136,11 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     value.sequence >= 1 &&
     value.sequence <= 20 &&
     "bodyBytes" in value &&
-    typeof value.bodyBytes === "number" &&
-    Number.isInteger(value.bodyBytes) &&
-    value.bodyBytes > 0 &&
-    value.bodyBytes <= 4 * 1024 * 1024 &&
+    (value.bodyBytes === null ||
+      (typeof value.bodyBytes === "number" &&
+        Number.isInteger(value.bodyBytes) &&
+        value.bodyBytes > 0 &&
+        value.bodyBytes <= 4 * 1024 * 1024)) &&
     "tenantId" in value &&
     uuidOrNull(value.tenantId) &&
     "agentRunId" in value &&
@@ -277,6 +301,7 @@ describe("queued Semp messages", () => {
       let child: ChildProcess | undefined;
       let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
       let exited = false;
+      let stopSettled = true;
       let blockDir: string | undefined;
       let mailRoot: string | undefined;
       let workerSettled: boolean;
@@ -584,40 +609,64 @@ describe("queued Semp messages", () => {
           try {
             const observed = await runInTenant(tenant, async () => {
               const target = await pool.query<{
-                status: string;
-                error_code: string | null;
+                assistant_status: string;
+                assistant_error_code: string | null;
                 agent_run_id: string | null;
-              }>("SELECT status, error_code, agent_run_id FROM semp_messages WHERE id=$1 AND thread_id=$2", [
-                turn.assistantMessageId,
-                turn.threadId,
-              ]);
+                run_id: string | null;
+                run_status: string | null;
+                run_error_code: string | null;
+              }>(
+                `SELECT m.status AS assistant_status, m.error_code AS assistant_error_code, m.agent_run_id,
+                        r.id AS run_id, r.status AS run_status, r.error_code AS run_error_code
+                   FROM semp_messages m LEFT JOIN agent_runs r ON r.tenant_id=m.tenant_id AND r.id=m.agent_run_id
+                  WHERE m.id=$1 AND m.thread_id=$2 AND m.role='assistant'`,
+                [turn.assistantMessageId, turn.threadId],
+              );
               const calls = await pool.query<{ status: string }>(
                 "SELECT status FROM ai_gateway_calls WHERE semp_message_id=$1 ORDER BY at, id",
                 [turn.assistantMessageId],
               );
               const row = target.rows[0];
+              const arrivals = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayArrival" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
+              );
               const requests = messages.filter(
                 (entry) =>
                   entry.type === "gatewayRequest" &&
                   entry.sempMessageId === turn.assistantMessageId &&
                   entry.tenantId === tenant &&
-                  entry.agentRunId === row?.agent_run_id,
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
               );
               const results = messages.filter(
                 (entry) =>
                   entry.type === "gatewayResult" &&
                   entry.sempMessageId === turn.assistantMessageId &&
                   entry.tenantId === tenant &&
-                  entry.agentRunId === row?.agent_run_id,
+                  entry.agentRunId === row?.run_id &&
+                  row?.run_id !== null,
               );
               return {
                 targetCount: target.rows.length,
-                statusDone: row?.status === "done",
-                statusError: row?.status === "error",
-                modelError: row?.error_code === "modelError",
-                hasRun: row?.agent_run_id !== null && row?.agent_run_id !== undefined,
+                assistantDone: row?.assistant_status === "done",
+                assistantError: row?.assistant_status === "error",
+                assistantInterrupted: row?.assistant_error_code === "interrupted",
+                assistantErrorCodePresent:
+                  row?.assistant_error_code !== null && row?.assistant_error_code !== undefined,
+                hasAssociatedRun: row?.run_id !== null && row?.run_id !== undefined,
+                runRunning: row?.run_status === "running",
+                runDone: row?.run_status === "done",
+                runError: row?.run_status === "error",
+                runModelError: row?.run_error_code === "modelError",
+                runErrorCodePresent: row?.run_error_code !== null && row?.run_error_code !== undefined,
                 callCount: calls.rows.length,
                 settledCount: calls.rows.filter((call) => call.status === "settled").length,
+                gatewayArrivalCount: arrivals.length,
                 gatewayRequestCount: requests.length,
                 gateway2xx: results.filter(
                   (entry) => entry.type === "gatewayResult" && entry.status >= 200 && entry.status < 300,
@@ -659,8 +708,16 @@ describe("queued Semp messages", () => {
         );
         const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
         expect(requestObservations).toHaveLength(1);
+        expect(requestObservations[0]?.bodyBytes).toEqual(expect.any(Number));
         expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
         expect(requestObservations[0]).toMatchObject({
+          sequence: 1,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        expect(messages).toContainEqual({
+          type: "gatewayArrival",
           sequence: 1,
           tenantId: tenant,
           agentRunId: runId,
@@ -768,6 +825,7 @@ describe("queued Semp messages", () => {
               expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
               const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
               if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
+              expect(request.bodyBytes).toEqual(expect.any(Number));
               expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
               expect(request).toMatchObject({
                 tenantId: tenant,
@@ -827,6 +885,7 @@ describe("queued Semp messages", () => {
               expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
               const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
               if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
+              expect(request.bodyBytes).toEqual(expect.any(Number));
               expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
               expect(request).toMatchObject({
                 tenantId: tenant,
@@ -892,12 +951,27 @@ describe("queued Semp messages", () => {
         cleanupFailures.push(error);
       }
       if (child && childExit && !exited) {
+        let stopOperation: Promise<void> | undefined;
         try {
-          child.send?.({ type: "stop" });
+          const owned = child;
+          if (!owned.connected) throw new Error("Reference gateway IPC disconnected before stop");
+          const exit = childExit;
+          stopSettled = false;
+          stopOperation = (async () => {
+            await new Promise<void>((resolveSend, reject) =>
+              owned.send({ type: "stop" }, (error) => (error ? reject(error) : resolveSend())),
+            );
+            await exit;
+          })();
+          void stopOperation
+            .finally(() => {
+              stopSettled = true;
+            })
+            .catch(() => {});
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
             await Promise.race([
-              childExit,
+              stopOperation,
               new Promise<never>((_, reject) => {
                 timer = setTimeout(() => reject(new Error("Reference gateway stop timed out")), 10_000);
               }),
@@ -908,11 +982,26 @@ describe("queued Semp messages", () => {
         } catch (error) {
           cleanupFailures.push(error);
           try {
-            child.kill("SIGKILL");
-            await childExit;
+            if (!child.kill("SIGKILL")) cleanupFailures.push(new Error("Reference gateway signal was not accepted"));
           } catch (killError) {
             cleanupFailures.push(killError);
           }
+          let exitTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const settlement = await Promise.race([
+              Promise.allSettled(stopOperation ? [childExit, stopOperation] : [childExit]),
+              new Promise<never>((_, reject) => {
+                exitTimer = setTimeout(() => reject(new Error("Reference gateway exit not observed")), 5000);
+              }),
+            ]);
+            for (const result of settlement)
+              if (result.status === "rejected" && result.reason !== error) cleanupFailures.push(result.reason);
+          } catch (exitError) {
+            cleanupFailures.push(exitError);
+          } finally {
+            if (exitTimer) clearTimeout(exitTimer);
+          }
+          if (!stopSettled) cleanupFailures.push(new Error("Reference gateway stop IPC did not settle"));
         }
       }
       if (childExit && exited) {
@@ -925,14 +1014,14 @@ describe("queued Semp messages", () => {
           cleanupFailures.push(error);
         }
       }
-      if (blockDir && (!child || exited) && workerSettled) {
+      if (blockDir && (!child || exited) && workerSettled && stopSettled) {
         try {
           await rm(blockDir, { recursive: true });
         } catch (error) {
           cleanupFailures.push(error);
         }
       }
-      if (mailRoot && (!child || exited) && workerSettled) {
+      if (mailRoot && (!child || exited) && workerSettled && stopSettled) {
         try {
           await rm(mailRoot, { recursive: true });
         } catch (error) {

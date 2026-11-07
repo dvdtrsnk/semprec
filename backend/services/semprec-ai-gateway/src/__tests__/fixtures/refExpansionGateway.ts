@@ -174,20 +174,14 @@ const gateway = createServer((request, response) => {
       agentRunId: uuidHeader("x-semprec-agent-run-id"),
       sempMessageId: uuidHeader("x-semprec-semp-message-id"),
     };
-    let bytes = 0;
-    let valid = true;
-    request.on("data", (chunk: unknown) => {
-      if (Buffer.isBuffer(chunk)) bytes += chunk.length;
-      else if (typeof chunk === "string") bytes += Buffer.byteLength(chunk);
-      else valid = false;
-      if (bytes > 4 * 1024 * 1024) valid = false;
-    });
+    const arrival = { type: "gatewayArrival", sequence, ...identity };
+    if (sequence <= 20 && Buffer.byteLength(JSON.stringify(arrival)) <= 512) process.send?.(arrival);
+    else process.exitCode = 1;
+    const header = request.headers["content-length"];
+    const length = typeof header === "string" && /^(0|[1-9][0-9]{0,7})$/.test(header) ? Number(header) : null;
+    const bytes = length !== null && Number.isSafeInteger(length) && length <= 4 * 1024 * 1024 ? length : null;
     request.once("end", () => {
-      if (!valid || sequence > 20) {
-        process.exitCode = 1;
-        return;
-      }
-      process.send?.({ type: "gatewayRequest", sequence, bodyBytes: bytes, ...identity });
+      if (sequence <= 20) process.send?.({ type: "gatewayRequest", sequence, bodyBytes: bytes, ...identity });
     });
     response.once("finish", () => {
       if (sequence <= 20) process.send?.({ type: "gatewayResult", sequence, status: response.statusCode, ...identity });
