@@ -1254,12 +1254,34 @@ describe("voice session through the real gateway and registered worker", () => {
         await vi.waitFor(() =>
           expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(modelBefore + 1),
         );
-        const beforeJobs = await runInTenant(tenant, () =>
-          pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE payload->>'threadId'=$1",
+        const firstAssistant = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>(
+            "SELECT id FROM semp_messages WHERE thread_id=$1 AND role='assistant' ORDER BY created_at, id",
             [selectedThread],
           ),
         );
+        expect(firstAssistant.rows).toHaveLength(1);
+        const firstKey = `sempMessage:${firstAssistant.rows[0]!.id}`;
+        const firstJob = await runInTenant(tenant, () =>
+          pool.query<{ id: string; key: string | null; queue_name: string | null; task_identifier: string }>(
+            "SELECT id::text, key, queue_name, task_identifier FROM graphile_worker.jobs WHERE key=$1",
+            [firstKey],
+          ),
+        );
+        expect(firstJob.rows).toHaveLength(1);
+        const job = firstJob.rows[0]!;
+        expect(job).toMatchObject({ key: firstKey, task_identifier: "sempMessage" });
+        expect(job.queue_name).toEqual(expect.any(String));
+        if (job.queue_name === null) throw new Error("Missing Semp job queue");
+        const snapshotJobs = () =>
+          runInTenant(tenant, () =>
+            pool.query<{ id: string; key: string | null }>(
+              "SELECT id::text, key FROM graphile_worker.jobs WHERE queue_name=$1 AND task_identifier=$2 ORDER BY id",
+              [job.queue_name, job.task_identifier],
+            ),
+          );
+        const beforeJobs = await snapshotJobs();
+        expect(beforeJobs.rows).toContainEqual({ id: job.id, key: firstKey });
         pool.on("release", onRelease);
         pool.on("acquire", onAcquire);
         send(ownedGateway, "finalSecond");
@@ -1302,12 +1324,7 @@ describe("voice session through the real gateway and registered worker", () => {
           expect(audioCount).toBe(audioCountAtClose);
         }
         if (mode === "fault") {
-          const afterJobs = await runInTenant(tenant, () =>
-            pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE payload->>'threadId'=$1",
-              [selectedThread],
-            ),
-          );
+          const afterJobs = await snapshotJobs();
           expect(afterJobs.rows).toEqual(beforeJobs.rows);
           expect(close.status).toBe("rejected");
           if (close.status !== "rejected") throw new Error("Expected failed channel close");
