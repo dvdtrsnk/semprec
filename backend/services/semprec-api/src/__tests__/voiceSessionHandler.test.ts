@@ -1087,9 +1087,38 @@ describe("voice session through the real gateway and registered worker", () => {
       const ownedGateway = gateway;
       const ready = ownedGateway.messages.find((entry) => entry.type === "ready");
       if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
-      const channel = createVoiceChannel(pool, {
-        handler: createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync),
-      });
+      const handler = createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync);
+      const closeDescriptor = Object.getOwnPropertyDescriptor(handler, "onClose");
+      const originalClose = handler.onClose;
+      const closeObservations: Array<{
+        identity: { tenantId: string; userId: string; sessionId: string };
+        settled: boolean;
+        outcome?: PromiseSettledResult<void>;
+      }> = [];
+      let closeCalls = 0;
+      let unsettledCloseCalls = 0;
+      handler.onClose = function (identity) {
+        const result = originalClose.call(this, identity);
+        if (!(result instanceof Promise)) throw new Error("Voice handler close did not return a promise");
+        const observation: (typeof closeObservations)[number] = { identity, settled: false };
+        closeCalls++;
+        unsettledCloseCalls++;
+        if (closeObservations.length === 0) closeObservations.push(observation);
+        result.then(
+          () => {
+            observation.outcome = { status: "fulfilled", value: undefined };
+            observation.settled = true;
+            unsettledCloseCalls--;
+          },
+          (reason: unknown) => {
+            observation.outcome = { status: "rejected", reason };
+            observation.settled = true;
+            unsettledCloseCalls--;
+          },
+        );
+        return result;
+      };
+      const channel = createVoiceChannel(pool, { handler });
       const localServer = createServer();
       localServer.on("upgrade", (req, stream, head) => channel.handleUpgrade(req, stream, head));
       const active = new Map<PoolClient, PropertyDescriptor | undefined>();
@@ -1320,6 +1349,11 @@ describe("voice session through the real gateway and registered worker", () => {
         const close = await closeWork;
         if (mode === "server-close") {
           expect(close.status).toBe("fulfilled");
+          expect(closeCalls).toBe(1);
+          expect(closeObservations).toHaveLength(1);
+          expect(closeObservations[0]?.settled).toBe(true);
+          expect(closeObservations[0]?.outcome?.status).toBe("fulfilled");
+          expect(closeObservations[0]?.identity.tenantId).toBe(tenant);
           expect(received).toHaveLength(frameCountAtClose);
           expect(audioCount).toBe(audioCountAtClose);
         }
@@ -1329,11 +1363,24 @@ describe("voice session through the real gateway and registered worker", () => {
           expect(close.status).toBe("rejected");
           if (close.status !== "rejected") throw new Error("Expected failed channel close");
           expect(close.reason).toBeInstanceOf(AggregateError);
-          const contains = (value: unknown): boolean =>
-            value === fault ||
-            (value instanceof AggregateError && value.errors.some(contains)) ||
-            (value instanceof Error && value.cause !== undefined && contains(value.cause));
-          expect(contains(close.reason)).toBe(true);
+          if (!(close.reason instanceof AggregateError)) throw new Error("Expected aggregate channel failure");
+          expect(
+            close.reason.errors.some(
+              (error: unknown) => error instanceof Error && error.message === "Voice handler cleanup failed",
+            ),
+          ).toBe(true);
+          expect(closeCalls).toBe(1);
+          expect(closeObservations).toHaveLength(1);
+          const observed = closeObservations[0]!;
+          expect(observed.identity.tenantId).toBe(tenant);
+          expect(observed.identity.userId).toMatch(/^[0-9a-f-]{36}$/);
+          expect(observed.identity.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+          expect(observed.settled).toBe(true);
+          expect(observed.outcome?.status).toBe("rejected");
+          if (observed.outcome?.status !== "rejected" || !(observed.outcome.reason instanceof AggregateError))
+            throw new Error("Expected aggregate handler failure");
+          expect(observed.outcome.reason.cause).toBe(fault);
+          expect(observed.outcome.reason.errors[0]).toBe(fault);
           expectedCloseConsumed = true;
         }
         const rows = await runInTenant(tenant, () =>
@@ -1357,6 +1404,15 @@ describe("voice session through the real gateway and registered worker", () => {
             const result = await closeWork;
             if (result.status === "rejected" && !expectedCloseConsumed) cleanup.push(result.reason);
           } else await channel.close();
+        } catch (error) {
+          cleanup.push(error);
+        }
+        try {
+          if (unsettledCloseCalls !== 0) throw new Error("Handler close observation unsettled");
+          if (closeDescriptor) Object.defineProperty(handler, "onClose", closeDescriptor);
+          else if (!Reflect.deleteProperty(handler, "onClose"))
+            throw new Error("Cannot restore handler close descriptor");
+          expect(Object.getOwnPropertyDescriptor(handler, "onClose")).toEqual(closeDescriptor);
         } catch (error) {
           cleanup.push(error);
         }
