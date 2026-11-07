@@ -127,7 +127,9 @@ describe("openSttStream", () => {
     const server = await harness.connected;
     const received: Buffer[] = [];
     server.on("message", (data) => {
-      received.push(Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data));
+      if (Buffer.isBuffer(data)) received.push(Buffer.from(data));
+      else if (Array.isArray(data)) received.push(Buffer.concat(data));
+      else received.push(Buffer.from(data));
     });
     // Synthetic transport buffer readings exercise the admission edge on the real socket.
     const buffered = vi.spyOn(WebSocket.prototype, "bufferedAmount", "get");
