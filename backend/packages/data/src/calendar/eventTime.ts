@@ -26,8 +26,10 @@ function readEventDate(value: string): ReadDate {
     return DateTime.fromISO(value, { setZone: true }).isValid ? { kind: "instant", value } : { kind: "unreadable" };
   }
   const [, date, hours, minutes] = match;
-  // Without an offset the value is a wall-clock time in the tenant zone; only its validity is checked here.
-  if (!DateTime.fromISO(`${date}T${hours}:${minutes}`, { zone: "utc" }).isValid) return { kind: "unreadable" };
+  // Without an offset the value is a wall-clock time in the tenant zone; only its validity is checked here,
+  // on the whole value with any seconds and fraction (`T` stands in for a space separator), so a value with
+  // unreadable seconds is left unchanged rather than truncated into a valid-looking time.
+  if (!DateTime.fromISO(`${date}T${value.slice(11)}`, { zone: "utc" }).isValid) return { kind: "unreadable" };
   return { kind: "wallClock", date: date!, time: `${hours}:${minutes}` };
 }
 
@@ -62,13 +64,15 @@ function oneHourLater(time: string): string {
  *
  * - A patched `date` that carries an offset or `Z` is converted in `zone` to `date` (`YYYY-MM-DD`)
  *   plus `timeFrom`; one with a time but no offset is read as wall-clock the same way. A date-only or
- *   unreadable `date` is left unchanged.
+ *   unreadable `date` is left unchanged; a value is unreadable when any part of it, seconds included,
+ *   is not a valid date and time.
  * - `timeFrom` and `timeTo` in the result are normalized (`9:00` becomes `09:00`); an unreadable value
  *   is left unchanged for issue #1663 to reject.
  * - A single-day Event (`endDate` unset or equal to `date`) with `timeFrom` and no `timeTo` gets
  *   `timeTo` one hour later, clipped to `24:00`.
- * - `time` is derived as `HH:MM–HH:MM` (the format of `Tasks.time`), `null` without `timeFrom`; it is
- *   left as stored while `timeFrom` or `timeTo` is unreadable.
+ * - `time` is derived as `HH:MM–HH:MM` (the format of `Tasks.time`). It is `null` without `timeFrom`,
+ *   even when `timeTo` is unreadable; it is left as stored while `timeFrom` is unreadable, or while
+ *   `timeFrom` is set and `timeTo` is unreadable.
  *
  * `zone` is needed only to convert an instant; without it such a `date` cannot be predicted and is
  * refused with a 400 on `date` (a proposal preparation whose caller supplied no tenant zone).
@@ -106,15 +110,20 @@ export function deriveEventTimeProperties(
 
   const merged = { ...(stored ?? {}), ...output };
   const timeFrom = readTime(merged.timeFrom, "timeFrom");
+  // Without a start there is no time, whatever the end holds; an unreadable end is still left as it is.
+  if (timeFrom === null) {
+    output.time = null;
+    return output;
+  }
   let timeTo = readTime(merged.timeTo, "timeTo");
   if (timeFrom === undefined || timeTo === undefined) return output;
 
   const singleDay = isUnset(merged.endDate) || merged.endDate === merged.date;
-  if (singleDay && timeFrom !== null && timeTo === null) {
+  if (singleDay && timeTo === null) {
     timeTo = oneHourLater(timeFrom);
     output.timeTo = timeTo;
   }
-  output.time = timeFrom === null ? null : deriveTaskTime(timeFrom, timeTo);
+  output.time = deriveTaskTime(timeFrom, timeTo);
   return output;
 }
 

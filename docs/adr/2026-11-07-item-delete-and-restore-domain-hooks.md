@@ -76,6 +76,9 @@ propagates; `clearHooksForTests` clears them): `registerItemDeleteHook` / `runIt
   the agent and MCP trash paths that reach the same cascades.
 - A restore now holds row locks on every row of its epoch from before the first restore until it
   commits. The restore is atomic: the epoch rows are restored together or not at all.
+- Full precision narrows membership to rows with exactly the root's `deleted_at`; it does not make a
+  timestamp a transaction identity. A row trashed on its own at exactly the root's microsecond is
+  still indistinguishable and is restored with the cascade.
 - Hooks on the permanent purge and on database or property archive and delete remain undecided; a
   consumer that needs one needs its own decision.
 - This decision registers no consumer hook; each consumer registers its own.

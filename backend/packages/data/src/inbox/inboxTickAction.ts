@@ -5,7 +5,7 @@ import {
   assertUpdateStepShape,
 } from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
-import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
+import { prepareComputedUpdates, readProposalTimezone } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
   resolveModelPagePlacement,
@@ -62,7 +62,6 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { getCalendarClock } from "../calendarTime.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
@@ -246,11 +245,11 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
     if (step.op === "update") {
-      // The tenant zone the preparation needs, read and validated in this transaction (getSystemTimezone and
-      // assertValidTimezone; docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
-      const clock = Object.keys(properties).length > 0 ? await getCalendarClock(client) : null;
-      const prepared = clock
-        ? await prepareUserItemPatch(databaseProperties, properties, database, item, clock.zone)
+      // The tenant zone the preparation needs, read and validated in this transaction; an invalid stored zone
+      // propagates instead of refusing the proposal (readProposalTimezone).
+      const zone = Object.keys(properties).length > 0 ? await readProposalTimezone(client) : null;
+      const prepared = zone
+        ? await prepareUserItemPatch(databaseProperties, properties, database, item, zone)
         : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }

@@ -145,10 +145,11 @@ async function lockCascadeEpochRowIds(client: PoolClient, root: ItemRow, subtree
  * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
  * restores subtree rows whose `deleted_at` equals the root's own (`lockCascadeEpochRowIds`):
  * since Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
- * cascade delete touched shares one identical timestamp, which lets this tell "trashed
- * together with the root" apart from a row that happened to already be independently trashed
- * (earlier or later) before this subtree was ever cascaded — restoring the latter would
- * silently resurrect data the user deleted on purpose. Each restored row triggers the `update`
+ * cascade delete touched shares one identical timestamp, which tells "trashed together with the
+ * root" apart from a row independently trashed (earlier or later) at a different instant —
+ * restoring the latter would silently resurrect data the user deleted on purpose. A timestamp is
+ * not a transaction identity: a row trashed on its own at exactly the root's microsecond is
+ * indistinguishable and is restored with the cascade. Each restored row triggers the `update`
  * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
  * (issue #1604), and runs the item restore hooks (issue #1601) right after its restore; a skipped
  * row runs none, and a restore of a live root returns it without running any. A hook's rejection

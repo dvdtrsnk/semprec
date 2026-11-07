@@ -41,6 +41,9 @@ const PATCH = { timeFrom: "8:30" };
 
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.string() });
 const itemBody = z.object({ id: z.string(), updatedAt: z.string() }).passthrough();
+const createdIdentity = z
+  .object({ id: z.string(), properties: z.object({ icalUid: z.unknown(), icalSequence: z.unknown() }).passthrough() })
+  .passthrough();
 const mcpEnvelope = z.object({
   result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }),
 });
@@ -146,22 +149,37 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     return itemBody.parse(JSON.parse(text));
   }
 
+  /**
+   * Issue #1599: the identity a create returned and stored, read before any later write of the Event, so a
+   * missing initial sequence cannot be hidden by the patch transform's bump.
+   */
+  async function expectCreationIdentity(returned: unknown, path: string): Promise<void> {
+    const created = createdIdentity.parse(returned);
+    expect(created.properties.icalUid, path).toMatch(UID_PATTERN);
+    expect(created.properties.icalSequence, path).toBe(0);
+    const row = await stored(created.id);
+    expect(row.properties.icalUid, path).toBe(created.properties.icalUid);
+    expect(row.properties.icalSequence, path).toBe(0);
+  }
+
   async function viaRest(): Promise<string> {
     const created = await rest("POST", `/api/databases/${eventsId}/items`, { properties: CREATE });
     expect(created.status).toBe(201);
+    await expectCreationIdentity(created.body, "REST");
     const item = itemBody.parse(created.body);
     const patched = await rest("PATCH", `/api/items/${item.id}`, { properties: PATCH, ifVersion: item.updatedAt });
     expect(patched.status).toBe(200);
     return item.id;
   }
 
-  async function viaAgent(): Promise<string> {
-    const created = itemBody.parse(
-      await gateway().invoke("item.create", agentActor, new Set(CAPABILITY_IDS), {
-        databaseId: eventsId,
-        properties: CREATE,
-      }),
-    );
+  /** The generic operation gateway invoked with an agent actor; the agent-runtime tool wrapper is not exercised here. */
+  async function viaAgentGateway(): Promise<string> {
+    const returned = await gateway().invoke("item.create", agentActor, new Set(CAPABILITY_IDS), {
+      databaseId: eventsId,
+      properties: CREATE,
+    });
+    await expectCreationIdentity(returned, "agent gateway");
+    const created = itemBody.parse(returned);
     await gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), {
       itemId: created.id,
       properties: PATCH,
@@ -172,12 +190,13 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
 
   async function viaMcp(): Promise<string> {
     const created = await mcp("semprec.item.create", { databaseId: eventsId, properties: CREATE });
+    await expectCreationIdentity(created, "MCP");
     await mcp("semprec.item.patch", { itemId: created.id, properties: PATCH, ifVersion: created.updatedAt });
     return created.id;
   }
 
   it("stores the same normalized times and identity whichever path writes the Event", async () => {
-    const ids = [await viaRest(), await viaAgent(), await viaMcp()];
+    const ids = [await viaRest(), await viaAgentGateway(), await viaMcp()];
     const rows = await Promise.all(ids.map(stored));
     const expected = {
       date: "2026-10-16",

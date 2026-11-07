@@ -22,6 +22,8 @@ let chokePoint: ChokePoint;
  */
 const hookCalls: { delete: ItemDeleteHookContext[]; restore: ItemRestoreHookContext[] } = { delete: [], restore: [] };
 let veto: { op: "delete" | "restore"; itemId: string } | null = null;
+/** Holds the restore cascade inside the restore hook of `itemId` until `release` settles (issue #1601). */
+let pause: { itemId: string; reached: (holderPid: number) => void; release: Promise<void> } | null = null;
 
 describe("choke-point itemTrash", () => {
   beforeAll(() => {
@@ -32,6 +34,11 @@ describe("choke-point itemTrash", () => {
     registerItemRestoreHook(async (context) => {
       hookCalls.restore.push(context);
       if (veto?.op === "restore" && veto.itemId === context.item.id) throw new ValidationError("restore vetoed");
+      if (pause?.itemId === context.item.id) {
+        const { rows } = await context.client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        pause.reached(rows[0]!.pid);
+        await pause.release;
+      }
     });
   });
 
@@ -42,6 +49,7 @@ describe("choke-point itemTrash", () => {
     hookCalls.delete = [];
     hookCalls.restore = [];
     veto = null;
+    pause = null;
   });
 
   afterAll(async () => {
@@ -337,6 +345,62 @@ describe("choke-point itemTrash", () => {
         [mid.id]: "2026-11-07T10:00:00.000101Z",
         [leaf.id]: "2026-11-07T10:00:00.000101Z",
       });
+    });
+
+    it("makes a concurrent restore of a locked descendant wait for the cascade restore, then find it live", async () => {
+      const { rootDb, root, midDb, mid, ids } = await makePage();
+      await chokePoint.softDeleteItem(rootDb.id, root.id);
+      hookCalls.delete = [];
+      const deadline = <T>(promise: Promise<T>, label: string): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 10_000);
+        });
+        return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+      };
+
+      let reached: (holderPid: number) => void = () => {};
+      const atRoot = new Promise<number>((resolve) => {
+        reached = resolve;
+      });
+      let release: () => void = () => {};
+      pause = {
+        itemId: root.id,
+        reached: (pid) => reached(pid),
+        release: new Promise<void>((resolve) => (release = resolve)),
+      };
+      // The cascade restores the root first and is held in its hook: the other rows of the epoch are locked
+      // by the epoch selection but not restored yet.
+      const cascade = chokePoint.restoreItem(rootDb.id, root.id);
+      let contender: Promise<unknown> | null = null;
+      try {
+        const holderPid = await deadline(atRoot, "the cascade restore to reach the root's hook");
+        expect(hookCalls.restore.map((call) => call.item.id)).toEqual([root.id]);
+        contender = chokePoint.restoreItem(midDb.id, mid.id);
+        // Bounded: each probe is one short statement, and the probes stop after a fixed number.
+        let waiting: number[] = [];
+        for (let probe = 0; probe < 2000 && waiting.length === 0; probe += 1) {
+          const { rows } = await pool.query<{ pid: number }>(
+            "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [holderPid],
+          );
+          waiting = rows.map((row) => row.pid);
+        }
+        expect(waiting).toHaveLength(1);
+        // Still held: the waiting restore has not run, so nothing has restored the descendant yet.
+        expect(hookCalls.restore.map((call) => call.item.id)).toEqual([root.id]);
+        expect((await snapshot([mid.id]))[0]?.deleted_at).not.toBeNull();
+      } finally {
+        release();
+        await deadline(Promise.allSettled([cascade, contender]), "both restores to settle");
+      }
+      const [restoredRoot, restoredMid] = await Promise.all([cascade, contender]);
+      expect(restoredRoot).toMatchObject({ id: root.id, deletedAt: null });
+      expect(restoredMid).toMatchObject({ id: mid.id, deletedAt: null });
+      // The cascade ran the hook for each of its four rows; the waiting restore found its row live and ran none.
+      expect(hookCalls.restore.map((call) => call.item.id).sort()).toEqual([...ids].sort());
+      expect(hookCalls.restore.every((call) => call.rootItemId === root.id)).toBe(true);
+      expect((await snapshot(ids)).every((row) => row.deleted_at === null)).toBe(true);
     });
 
     it("calls no hook for a delete of an already-trashed item or a restore of a live item", async () => {

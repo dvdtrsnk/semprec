@@ -31,10 +31,12 @@ The preparation context gains an optional `timezone`: the tenant's IANA zone as 
 
 - The managed callers read it: the Inbox step validation (`inboxTickAction.ts`), the computed update
   preparation (`proposalComputedUpdates.ts`) and the locked confirmation check (`proposalSteps.ts`) each
-  read it with `getCalendarClock` (`calendarTime.ts`: `getSystemTimezone`, then `assertValidTimezone`)
-  in their existing tenant transaction, through the owner's existing settings and default contract,
-  when a step has properties to prepare. A settings or database failure propagates; it is not turned
-  into a refused proposal.
+  read it with `readProposalTimezone` (`proposalComputedUpdates.ts`), which calls `getCalendarClock`
+  (`calendarTime.ts`: `getSystemTimezone`, then `assertValidTimezone`) in their existing tenant
+  transaction, through the owner's existing settings and default contract, when a step has properties
+  to prepare. A settings or database failure propagates; it is not turned into a refused proposal or a
+  clarification. Because those callers' catches handle a proposal's `ValidationError`, the reader
+  rethrows the `ValidationError` of an invalid stored zone as a plain `Error` with it as `cause`.
 - A preparation never reads settings and never substitutes a zone. The Events time preparation converts
   an offset `date` with the supplied zone exactly as the write transform does, and refuses it with a 400
   on `date` when no zone was supplied.

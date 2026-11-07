@@ -74,6 +74,22 @@ describe("database area filters (issue #1597)", () => {
     expect(moduleManifestSchema.safeParse(withAreaFilter(areaFilter)).success).toBe(false);
   });
 
+  it("accepts eight children in one group and refuses nine, at the top and in a nested group", () => {
+    const children = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        type: "relation_contains",
+        property: `area${index}`,
+        value: SLOT,
+      }));
+    for (const type of ["or", "and"] as const) {
+      expect(moduleManifestSchema.safeParse(withAreaFilter({ type, nodes: children(8) })).success, type).toBe(true);
+      expect(moduleManifestSchema.safeParse(withAreaFilter({ type, nodes: children(9) })).success, type).toBe(false);
+    }
+    const nested = (count: number) => ({ type: "or", nodes: [{ type: "and", nodes: children(count) }] });
+    expect(moduleManifestSchema.safeParse(withAreaFilter(nested(8))).success).toBe(true);
+    expect(moduleManifestSchema.safeParse(withAreaFilter(nested(9))).success).toBe(false);
+  });
+
   it("accepts the three declared template shapes", () => {
     for (const areaFilter of [
       { type: "relation_contains", property: "area", value: SLOT },

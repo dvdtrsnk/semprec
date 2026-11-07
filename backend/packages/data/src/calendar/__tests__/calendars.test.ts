@@ -8,6 +8,7 @@ import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
+import { CardinalityViolationError } from "../../errors.js";
 import { withTransaction } from "../../db/pool.js";
 import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
@@ -188,6 +189,71 @@ describe("calendars system database (issue #1600)", () => {
     expect(rows.every((row) => row.locked)).toBe(true);
   });
 
+  it("stores Calendars.events as one-to-many and refuses a second calendar for one Event through the choke point", async () => {
+    const tenantId = await tenantWithUser("cs");
+    const calendarsId = await databaseId(tenantId, CALENDARS_MODULE_ID);
+    const eventsId = await databaseId(tenantId, "events");
+    if (!calendarsId || !eventsId) throw new Error("Seeded tenant is missing a database");
+    const { rows: definitions } = await adminPool.query<{
+      cardinality: string;
+      a_database: string;
+      a_key: string;
+      b_database: string;
+      b_key: string;
+    }>(
+      `SELECT r.cardinality, pa.database_id::text AS a_database, pa.key AS a_key,
+              pb.database_id::text AS b_database, pb.key AS b_key
+         FROM relation_definitions r
+         JOIN properties pa ON pa.id = r.property_id_a
+         JOIN properties pb ON pb.id = r.property_id_b
+        WHERE r.tenant_id = $1 AND (pa.database_id = $2 OR pb.database_id = $2)`,
+      [tenantId, calendarsId],
+    );
+    expect(definitions).toEqual([
+      { cardinality: "one_to_many", a_database: calendarsId, a_key: "events", b_database: eventsId, b_key: "calendar" },
+    ]);
+
+    const rows = await calendars(tenantId);
+    const personal = rows.find((row) => row.properties.isDefault);
+    const work = rows.find((row) => !row.properties.isDefault);
+    if (!personal || !work) throw new Error("Expected the default and another calendar");
+    const chokePoint = createChokePoint(dataPool);
+    const eventId = await runInTenant(tenantId, async () => {
+      const event = await chokePoint.createItem(
+        { databaseId: eventsId, properties: { name: "Standup", date: "2026-10-16" } },
+        undefined,
+        undefined,
+        USER,
+      );
+      const eventCalendar = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "calendar");
+      const calendarEvents = (await chokePoint.listProperties(calendarsId)).find(
+        (property) => property.key === "events",
+      );
+      if (!eventCalendar || !calendarEvents) throw new Error("Missing a calendar relation property");
+      await chokePoint.createRelation({
+        relationPropertyId: eventCalendar.id,
+        callerItemId: event.id,
+        targetItemId: personal.id,
+      });
+      await expect(
+        chokePoint.createRelation({
+          relationPropertyId: eventCalendar.id,
+          callerItemId: event.id,
+          targetItemId: work.id,
+        }),
+      ).rejects.toBeInstanceOf(CardinalityViolationError);
+      await expect(
+        chokePoint.createRelation({
+          relationPropertyId: calendarEvents.id,
+          callerItemId: work.id,
+          targetItemId: event.id,
+        }),
+      ).rejects.toBeInstanceOf(CardinalityViolationError);
+      return event.id;
+    });
+    expect(await calendarEdges(tenantId)).toEqual([[personal.id, eventId]]);
+  });
+
   it.each(["kind", "systemKey"])(
     "answers a generic write of %s with 403 and leaves the calendar unchanged",
     async (key) => {
@@ -326,6 +392,39 @@ describe("calendars system database (issue #1600)", () => {
       expect(await calendars(tenantId)).toEqual(before.rows);
       expect(await calendarEdges(tenantId)).toEqual(before.edges);
       expect(await calendarEdges(other)).toEqual(before.other);
+    });
+
+    /** Every row of `tenantId` in the tables the cutover reads or writes, on the admin pool filtered by the tenant. */
+    async function tenantRows(tenantId: string) {
+      const read = async (sql: string) =>
+        (await adminPool.query<{ row: unknown }>(sql, [tenantId])).rows.map((entry) => entry.row);
+      return {
+        databases: await read("SELECT to_jsonb(d) AS row FROM databases d WHERE tenant_id = $1 ORDER BY id"),
+        properties: await read("SELECT to_jsonb(p) AS row FROM properties p WHERE tenant_id = $1 ORDER BY id"),
+        relationDefinitions: await read(
+          "SELECT to_jsonb(r) AS row FROM relation_definitions r WHERE tenant_id = $1 ORDER BY id",
+        ),
+        items: await read("SELECT to_jsonb(i) AS row FROM items i WHERE tenant_id = $1 ORDER BY id"),
+        itemRelations: await read("SELECT to_jsonb(r) AS row FROM item_relations r WHERE tenant_id = $1 ORDER BY id"),
+      };
+    }
+
+    it("runs one tenant's cutover without changing any row of another tenant that also needs it", async () => {
+      const tenantId = await tenantWithUser("cs");
+      const other = await tenantWithUser("en");
+      await createEvents(tenantId, 2);
+      await createEvents(other, 2);
+      await revertToOldShape(tenantId);
+      await revertToOldShape(other);
+      const otherBefore = await tenantRows(other);
+
+      await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
+
+      expect(await tenantRows(other)).toEqual(otherBefore);
+      expect(await databaseId(other, CALENDARS_MODULE_ID)).toBeNull();
+      // The scoped tenant itself was cut over.
+      expect(await calendars(tenantId)).toHaveLength(8);
+      expect(await calendarEdges(tenantId)).toHaveLength(2);
     });
 
     it("links more Events than one statement inserts", async () => {

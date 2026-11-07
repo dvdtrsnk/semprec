@@ -145,6 +145,70 @@ describe("Events time normalization before the write (issue #1598)", () => {
     });
   });
 
+  it("leaves a wall-clock date with unreadable seconds unchanged on create and update, and still reads valid seconds", async () => {
+    for (const date of ["2026-10-16T10:15:99", "2026-10-16 10:15:60"]) {
+      const created = await createEvent({ date });
+      expect(times(created), date).toEqual({ date, endDate: null, timeFrom: null, timeTo: null, time: null });
+    }
+    const valid = await createEvent({ date: "2026-10-16T10:15:30" });
+    expect(times(valid)).toMatchObject({ date: "2026-10-16", timeFrom: "10:15", timeTo: "11:15" });
+
+    const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
+    const updated = await chokePoint.updateItem(
+      { databaseId: eventsId, itemId: event.id, propertiesPatch: { date: "2026-10-16T10:15:99" } },
+      undefined,
+      undefined,
+      USER,
+    );
+    // The malformed value is kept for the validator of issue #1663 and does not replace the stored start.
+    expect(times(updated)).toEqual({
+      date: "2026-10-16T10:15:99",
+      endDate: null,
+      timeFrom: "09:00",
+      timeTo: "10:00",
+      time: "09:00–10:00",
+    });
+  });
+
+  it("stores time null without a start even when the end is unreadable, on create and update", async () => {
+    const created = await createEvent({ date: "2026-10-16", timeTo: "invalid" });
+    expect(times(created)).toEqual({
+      date: "2026-10-16",
+      endDate: null,
+      timeFrom: null,
+      timeTo: "invalid",
+      time: null,
+    });
+    expect(Object.hasOwn(created.properties, "time")).toBe(true);
+
+    const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
+    expect(times(event).time).toBe("09:00–10:00");
+    const cleared = await chokePoint.updateItem(
+      { databaseId: eventsId, itemId: event.id, propertiesPatch: { timeFrom: null, timeTo: "invalid" } },
+      undefined,
+      undefined,
+      USER,
+    );
+    expect(times(cleared)).toEqual({
+      date: "2026-10-16",
+      endDate: null,
+      timeFrom: null,
+      timeTo: "invalid",
+      time: null,
+    });
+    expect(times((await chokePoint.getItem(eventsId, event.id))!)).toEqual(times(cleared));
+
+    // Clearing only the start drops the derived time and keeps the stored end.
+    const other = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
+    const startCleared = await chokePoint.updateItem(
+      { databaseId: eventsId, itemId: other.id, propertiesPatch: { timeFrom: null } },
+      undefined,
+      undefined,
+      USER,
+    );
+    expect(times(startCleared)).toMatchObject({ timeFrom: null, timeTo: "10:00", time: null });
+  });
+
   it("leaves an unreadable time unchanged and derives no time from it", async () => {
     const event = await createEvent({ date: "2026-10-16", timeFrom: "nine", timeTo: "25:00" });
     expect(times(event)).toEqual({ date: "2026-10-16", endDate: null, timeFrom: "nine", timeTo: "25:00", time: null });
