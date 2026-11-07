@@ -67,9 +67,10 @@ function requireCalendarDate(value: string, field: keyof ProjectTaskOccurrencesI
  * even when its date is not a rule date. A series that was turned off (`active` false) produces no virtual
  * occurrence after its last materialized occurrence, and none at all when it has none.
  *
- * Reads with two queries whatever the range: one for the series rows (with the last materialized occurrence of
- * each inactive series), one for the materialized occurrences in the range. A range over 400 days, an inverted
- * range or a value that is not a calendar date is rejected with a `ValidationError`. Writes nothing.
+ * Reads with at most two queries whatever the range: one for the series rows (with the last materialized occurrence
+ * of each inactive series) and, when there is a series, one for the materialized occurrences in the range. A range
+ * over 400 days, an inverted range or a value that is not a calendar date is rejected with a `ValidationError`.
+ * Writes nothing.
  */
 export async function projectTaskOccurrences(
   client: PoolClient,
