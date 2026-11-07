@@ -1210,9 +1210,10 @@ describe("voice session through the real gateway and registered worker", () => {
       cleanup.push(error);
     }
     try {
-      if (watchServer?.listening)
+      const ownedWatchServer = watchServer;
+      if (ownedWatchServer?.listening)
         await new Promise<void>((resolveClose, reject) =>
-          watchServer!.close((error) => (error ? reject(error) : resolveClose())),
+          ownedWatchServer.close((error) => (error ? reject(error) : resolveClose())),
         );
     } catch (error) {
       cleanup.push(error);
