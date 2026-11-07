@@ -81,6 +81,7 @@ type RefFixtureMessage =
       mailReply: boolean;
       block: boolean;
       sibling: boolean;
+      unavailable: boolean;
       imageCount: number;
       imageMimes: string[];
       providerSerializedBytes: number;
@@ -116,7 +117,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     return { type: "gatewayRequest", sequence: value.sequence, bodyBytes: value.bodyBytes };
   if (
     value.type === "observation" &&
-    Object.keys(value).length === 11 &&
+    Object.keys(value).length === 12 &&
     "sequence" in value &&
     typeof value.sequence === "number" &&
     Number.isInteger(value.sequence) &&
@@ -134,6 +135,8 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     typeof value.block === "boolean" &&
     "sibling" in value &&
     typeof value.sibling === "boolean" &&
+    "unavailable" in value &&
+    typeof value.unavailable === "boolean" &&
     "imageCount" in value &&
     typeof value.imageCount === "number" &&
     Number.isInteger(value.imageCount) &&
@@ -161,6 +164,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
       mailReply: value.mailReply,
       block: value.block,
       sibling: value.sibling,
+      unavailable: value.unavailable,
       imageCount: value.imageCount,
       imageMimes: value.imageMimes,
       providerSerializedBytes: value.providerSerializedBytes,
@@ -400,6 +404,7 @@ describe("queued Semp messages", () => {
       );
       if (!fileDatabase) throw new Error("Missing Files database");
       const imageRefs: Array<{ kind: "item"; databaseId: string; itemId: string }> = [];
+      const availableKeys = new Set<string>();
       for (let index = 0; index < 10; index += 1) {
         const image = await runInTenant(tenant, async () => {
           const upload = await ingestUploadedBlob(pool, {
@@ -408,13 +413,35 @@ describe("queued Semp messages", () => {
             maxBytes: imageBytes.length + 1,
             storage: fileStorage,
           });
-          return createChokePoint(pool).createItem({
+          const item = await createChokePoint(pool).createItem({
             databaseId: fileDatabase.id,
             properties: { name: `Reference image ${index}`, file: { blobId: upload.blob.id } },
           });
+          return { item, key: upload.blob.storageKey };
         });
-        imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.id });
+        availableKeys.add(image.key);
+        imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.item.id });
       }
+      const missingBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#a34257" } })
+        .png()
+        .toBuffer();
+      const unavailable = await runInTenant(tenant, async () => {
+        const upload = await ingestUploadedBlob(pool, {
+          mimeType: "image/png",
+          source: Readable.from([missingBytes]),
+          maxBytes: missingBytes.length + 1,
+          storage: fileStorage,
+        });
+        const item = await createChokePoint(pool).createItem({
+          databaseId: fileDatabase.id,
+          properties: { name: "Unavailable image", file: { blobId: upload.blob.id } },
+        });
+        return {
+          ref: { kind: "item" as const, databaseId: fileDatabase.id, itemId: item.id },
+          key: upload.blob.storageKey,
+        };
+      });
+      expect(availableKeys.has(unavailable.key)).toBe(false);
       const foreignIds = await runInTenant(foreign, () =>
         withTransaction(pool, async (client) => {
           const database = await getDatabaseByModuleId(client, "areas");
@@ -431,6 +458,7 @@ describe("queued Semp messages", () => {
         { kind: "item" as const, ...mail },
         { kind: "block" as const, itemId: ids.itemId, blockId },
         ...imageRefs.slice(0, 9),
+        unavailable.ref,
       ];
       await expect(
         withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
@@ -467,6 +495,8 @@ describe("queued Semp messages", () => {
           }),
         ),
       );
+      // Synthetic unavailable bytes: remove only this fixture's unique owned object after admission.
+      await fileStorage.delete(unavailable.key);
       const gateway = createGatewayModel({
         AI_GATEWAY_BASE_URL: `http://127.0.0.1:${ready.port}/internal/pi`,
         AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
@@ -505,6 +535,7 @@ describe("queued Semp messages", () => {
               mailReply: true,
               block: true,
               sibling: true,
+              unavailable: true,
               imageCount: 9,
               imageMimes: ["image/jpeg"],
               providerSerializedBytes: expect.any(Number),
@@ -562,6 +593,7 @@ describe("queued Semp messages", () => {
                 ...imageRefs
                   .slice(0, 9)
                   .map((ref, index) => expect.objectContaining({ ...ref, label: `Reference image ${index}` })),
+                expect.objectContaining({ ...unavailable.ref, label: "Unavailable image" }),
               ]),
             }),
           }),
@@ -572,6 +604,7 @@ describe("queued Semp messages", () => {
       ]);
       expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("image/jpeg");
       expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("base64");
+      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("Attachment unavailable.");
 
       const lastImage = imageRefs[9];
       if (!lastImage) throw new Error("Missing final image fixture");

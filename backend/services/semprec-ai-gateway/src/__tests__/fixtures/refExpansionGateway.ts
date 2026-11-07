@@ -100,6 +100,7 @@ const provider = createServer((request, response) => {
       mailReply: body.includes("REF_MAIL_REPLY_SENTINEL_32"),
       block: body.includes("REF_BLOCK_SENTINEL_32"),
       sibling: body.includes("REF_SIBLING_SENTINEL_32"),
+      unavailable: body.includes("Attachment unavailable."),
       imageCount,
       imageMimes: [...mimeTypes].sort(),
       providerSerializedBytes: Buffer.byteLength(body),
