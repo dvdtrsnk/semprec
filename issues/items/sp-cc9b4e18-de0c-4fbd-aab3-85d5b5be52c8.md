@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-cc9b4e18-de0c-4fbd-aab3-85d5b5be52c8"
 title: "[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["execution:batch","execution:sequential","spec:approved"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.976Z"
-updatedAt: "2026-11-07T20:54:54.531Z"
-closedAt: null
+updatedAt: "2026-11-07T23:02:17.033Z"
+closedAt: "2026-11-07T23:02:17.033Z"
 source: null
 approval: {"specSha256":"29182c92ec9860719dd7ad82c7a0fab38fed6dca05cf4b6306762872c9a2e421","source":"repository","actor":"Owner-delegated controller: batch34 R1 current-instance invariant, bounded Tasks-owned historical SQL and nonblocking area source reservation; preserve release gates","at":"2026-11-07T20:54:54.531Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"a2b922d8ff98353d56907d494d46eceff16abb18","at":"2026-11-07T23:02:17.033Z"}
 ---
 **Blocked by:** sp-1385289a-c057-4dcf-a42f-b2aaded63f7b
 **Model tier:** high
