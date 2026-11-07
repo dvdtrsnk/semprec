@@ -1089,6 +1089,7 @@ describe("voice session through the real gateway and registered worker", () => {
       if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
       const handler = createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync);
       const closeDescriptor = Object.getOwnPropertyDescriptor(handler, "onClose");
+      /* eslint-disable-next-line @typescript-eslint/unbound-method */
       const originalClose = handler.onClose;
       const closeObservations: Array<{
         identity: { tenantId: string; userId: string; sessionId: string };
@@ -1118,6 +1119,13 @@ describe("voice session through the real gateway and registered worker", () => {
         );
         return result;
       };
+      function restoreClose(): void {
+        if (unsettledCloseCalls !== 0) throw new Error("Handler close observation unsettled");
+        if (closeDescriptor) Object.defineProperty(handler, "onClose", closeDescriptor);
+        else if (!Reflect.deleteProperty(handler, "onClose"))
+          throw new Error("Cannot restore handler close descriptor");
+        expect(Object.getOwnPropertyDescriptor(handler, "onClose")).toEqual(closeDescriptor);
+      }
       const channel = createVoiceChannel(pool, { handler });
       const localServer = createServer();
       localServer.on("upgrade", (req, stream, head) => channel.handleUpgrade(req, stream, head));
@@ -1408,11 +1416,7 @@ describe("voice session through the real gateway and registered worker", () => {
           cleanup.push(error);
         }
         try {
-          if (unsettledCloseCalls !== 0) throw new Error("Handler close observation unsettled");
-          if (closeDescriptor) Object.defineProperty(handler, "onClose", closeDescriptor);
-          else if (!Reflect.deleteProperty(handler, "onClose"))
-            throw new Error("Cannot restore handler close descriptor");
-          expect(Object.getOwnPropertyDescriptor(handler, "onClose")).toEqual(closeDescriptor);
+          restoreClose();
         } catch (error) {
           cleanup.push(error);
         }
