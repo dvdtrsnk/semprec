@@ -14,7 +14,10 @@ import {
 } from "../inbox/inboxTickAction.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { NotFoundError } from "../errors.js";
+import { wallClockToInstant } from "../calendarTime.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { getSystemTimezone } from "../systemSettings.js";
+import { assertValidTimezone } from "../timezone.js";
 
 /** Only these Events `type` values are matched against a recording; a plain `event` never is. */
 const MATCHABLE_EVENT_TYPES = ["standup", "meeting"];
@@ -22,8 +25,14 @@ const MATCHABLE_EVENT_TYPES = ["standup", "meeting"];
 /** How long before the recording started a matching Event may start: a meeting that began early, or a recording started late. */
 const MATCH_WINDOW_LEAD_MS = 30 * 60 * 1000;
 
-/** An Events `date` carrying a time of day; a date-only value has no time to fall inside the window. */
+/**
+ * An Events `date` carrying a time of day: a row written before issue #1598, or a transcript's `date`.
+ * Since #1598 an Event stores a date-only `date` and its start in `timeFrom`.
+ */
 const DATE_WITH_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
+/** A date-only Events `date`, whose start is its wall-clock `timeFrom` in the tenant zone (issue #1598). */
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The context a `transcript` card producer writes its card's `sourceTranscript` edge under. */
 export const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
@@ -70,9 +79,15 @@ function parseDateWithTime(value: unknown): number | null {
 }
 
 /**
- * Live Events of a matchable `type` whose `date` lies inside `[startMs - 30 min, endMs]`,
- * ordered by id. `date` is user-owned free input, so it is parsed here rather than cast in SQL,
- * where one malformed value would fail the whole query.
+ * Live Events of a matchable `type` whose start lies inside `[startMs - 30 min, endMs]`, ordered by
+ * id. An Event starts at its `date` when that carries a time of day (a row written before issue
+ * #1598); otherwise a date-only `date` with a `timeFrom` starts at that wall-clock time in the tenant
+ * zone (`wallClockToInstant`). An Event with neither has no start and is not a candidate. `date` and
+ * `timeFrom` are user-owned free input, so they are parsed here rather than cast in SQL, where one
+ * malformed value would fail the whole query: a value `wallClockToInstant` refuses as a
+ * `ValidationError` leaves that Event out, and so does a `timeFrom` of `24:00`, which ends a day
+ * rather than starting one. The tenant zone is read and validated once, in the caller's transaction,
+ * when the first Event needs it; an invalid zone or any other failure propagates.
  */
 async function listCandidateEventIds(
   client: PoolClient,
@@ -80,18 +95,32 @@ async function listCandidateEventIds(
   startMs: number,
   endMs: number,
 ): Promise<string[]> {
-  const { rows } = await client.query<{ id: string; date: string | null }>(
-    `SELECT id, properties ->> 'date' AS date FROM items
+  const { rows } = await client.query<{ id: string; date: string | null; time_from: string | null }>(
+    `SELECT id, properties ->> 'date' AS date, properties ->> 'timeFrom' AS time_from FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> 'type' = ANY($2::text[])
      ORDER BY id`,
     [eventsDatabaseId, MATCHABLE_EVENT_TYPES],
   );
-  return rows
-    .filter((row) => {
-      const at = parseDateWithTime(row.date);
-      return at !== null && at >= startMs - MATCH_WINDOW_LEAD_MS && at <= endMs;
-    })
-    .map((row) => row.id);
+  let zone: string | undefined;
+  const candidates: string[] = [];
+  for (const row of rows) {
+    let at = parseDateWithTime(row.date);
+    if (at === null && row.date !== null && DATE_ONLY_RE.test(row.date) && row.time_from !== null) {
+      if (row.time_from === "24:00") continue;
+      if (zone === undefined) {
+        zone = await getSystemTimezone(client);
+        assertValidTimezone(zone);
+      }
+      try {
+        at = wallClockToInstant(row.date, row.time_from, zone).toMillis();
+      } catch (error) {
+        if (!(error instanceof ValidationError)) throw error;
+        continue;
+      }
+    }
+    if (at !== null && at >= startMs - MATCH_WINDOW_LEAD_MS && at <= endMs) candidates.push(row.id);
+  }
+  return candidates;
 }
 
 /**

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
-import { getSystemTimezone } from "../systemSettings.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -24,6 +24,7 @@ import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
   appendHistoryEntry,
+  assertValidProposalEnvelope,
   createSemprecTickAction,
   parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
@@ -2177,7 +2178,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           const [item] = await itemsStore.getItemsByIds(client, [project]);
           if (!db || !item) throw new Error("Missing project fixture");
           const properties = await propertiesStore.listPropertiesByDatabase(client, projectsDb);
-          return { item, prepared: await prepareUserItemPatch(properties, { status: "done" }, db, item) };
+          return {
+            item,
+            prepared: await prepareUserItemPatch(properties, { status: "done" }, db, item, "Europe/Prague"),
+          };
         });
       const initial = await prepare();
       const order = initial.item.properties.pinnedOrder;
@@ -2657,6 +2661,96 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(updated?.properties).toMatchObject({
         status: "done",
         completedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      });
+    });
+
+    describe("an Event update whose date carries an offset (issues #1598, C7)", () => {
+      const offsetStep = (event: string): Step => ({
+        ref: "event",
+        op: "update",
+        itemId: event,
+        role: "primary",
+        properties: { date: "2026-10-16T08:00:00Z" },
+      });
+      const form = async (event: string) => {
+        const eventsDb = await databaseIdFor("events");
+        const step = offsetStep(event);
+        return withTransaction(pool, (client) =>
+          prepareComputedUpdates(
+            client,
+            { entityKind: "database", target: eventsDb, properties: step.properties ?? {}, operations: [step] },
+            "2026-10-16",
+          ),
+        );
+      };
+      const readEvent = async (event: string) =>
+        (await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [event])))[0];
+      const setZone = (zone: string) =>
+        withTransaction(pool, async (client) =>
+          updateItemWithClient(client, {
+            databaseId: await getSystemSettingsDatabaseId(client),
+            itemId: await getSystemSettingsItemId(client),
+            propertiesPatch: { timezone: zone },
+          }),
+        );
+
+      it("forms before/after values with the tenant zone, validates the envelope and confirms the converted values", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        expect(step.before?.properties).toEqual({ date: "2026-10-16", timeFrom: null, timeTo: null });
+        expect(step.after?.properties).toEqual({ date: "2026-10-16", timeFrom: "10:00", timeTo: "11:00" });
+        await withTransaction(pool, (client) => assertValidProposalEnvelope(client, formed));
+
+        const card = await cardWithSteps("events", [step]);
+        await confirm(card);
+        expect((await readEvent(event))?.properties).toMatchObject({
+          date: "2026-10-16",
+          timeFrom: "10:00",
+          timeTo: "11:00",
+          time: "10:00–11:00",
+        });
+        expect(await cardStatus(card)).toBe("confirmed");
+      });
+
+      it("refuses an envelope whose after values ignore the conversion, at validation and at confirmation", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        const raw: Step = {
+          ...step,
+          after: { ...step.after, properties: { date: "2026-10-16T08:00:00Z", timeFrom: null, timeTo: null } },
+        };
+        const envelope = { ...formed, operations: [raw] };
+        await expect(
+          withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope)),
+        ).rejects.toMatchObject({
+          status: 400,
+          details: { ref: "event" },
+        });
+        const before = await readEvent(event);
+        const card = await cardWithSteps("events", [raw]);
+        await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "event" } });
+        expect(await readEvent(event)).toEqual(before);
+        expect(await cardStatus(card)).toBe("proposed");
+      });
+
+      it("refuses confirmation without writes when the tenant zone changed after the proposal was formed", async () => {
+        const event = await createIn("events", { name: "Sync", type: "meeting", date: "2026-10-16" });
+        const formed = await form(event);
+        const step = formed.operations?.[0];
+        if (!step) throw new Error("Missing formed Event step");
+        const card = await cardWithSteps("events", [step]);
+        const before = await readEvent(event);
+        await setZone("America/New_York");
+        await expect(confirm(card)).rejects.toMatchObject({
+          status: 400,
+          details: { ref: "event", field: "timeFrom" },
+        });
+        expect(await readEvent(event)).toEqual(before);
+        expect(await cardStatus(card)).toBe("proposed");
       });
     });
 

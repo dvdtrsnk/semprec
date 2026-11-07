@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import type { AreaFilterTemplate } from "@semprec/module-registry";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { manifest } from "../seed/systemDatabasesModuleManifest.js";
+import { createRuntimeRolePool, createTestTenant } from "../testSupport/tenantFixtures.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { expandAreaFilter } from "../views/areaFilter.js";
+import { expandAreaFilter, resolveDatabaseAreaFilters } from "../views/areaFilter.js";
 import type { FilterNode } from "../views/filterTree.js";
 
 let pool: Pool;
@@ -195,4 +197,117 @@ describe("declarative area filters (issue #1597)", () => {
     expect(() => expandAreaFilter(template("files"), "not-a-uuid")).toThrow(ValidationError);
     expect(() => expandAreaFilter(template("files"), "not-a-uuid")).toThrow(/areaId/);
   });
+});
+
+describe("resolving the declared area filters against a tenant's schema (issue #1597)", () => {
+  let adminPool: Pool;
+  let dataPool: Pool;
+  const AREA = { areaValue: true } as const;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool?.end();
+    await adminPool?.end();
+  });
+
+  async function seededTenant(): Promise<string> {
+    const tenantId = await createTestTenant(adminPool);
+    await runInTenant(tenantId, () => seedSystem(dataPool));
+    return tenantId;
+  }
+
+  function resolve(tenantId: string, declarations: Parameters<typeof resolveDatabaseAreaFilters>[1]) {
+    return runInTenant(tenantId, () =>
+      withTransaction(dataPool, (client) => resolveDatabaseAreaFilters(client, declarations)),
+    );
+  }
+
+  /** Row counts of the tables a resolution reads, in the tenant's own scope. */
+  async function schemaCounts(tenantId: string) {
+    return runInTenant(tenantId, async () => {
+      const { rows } = await dataPool.query<{ databases: number; properties: number; items: number }>(
+        `SELECT (SELECT count(*)::int FROM databases) AS databases,
+                (SELECT count(*)::int FROM properties) AS properties,
+                (SELECT count(*)::int FROM items) AS items`,
+      );
+      return rows[0];
+    });
+  }
+
+  it("returns exactly the seven declared templates for a seeded tenant, unchanged, through the runtime role", async () => {
+    const tenantId = await seededTenant();
+    const resolved = await resolve(tenantId, manifest.databases);
+    expect([...resolved.keys()].sort()).toEqual([
+      "companies",
+      "events",
+      "files",
+      "healthRecords",
+      "journal",
+      "projects",
+      "tasks",
+    ]);
+    for (const [key, areaFilter] of resolved) expect(areaFilter, key).toEqual(template(key));
+    // The manifest declares databases without a template too; none of them is returned.
+    expect(manifest.databases.length).toBeGreaterThan(resolved.size);
+  });
+
+  it("leaves out a declaration for a database the tenant does not have, per tenant", async () => {
+    const seeded = await seededTenant();
+    const bare = await createTestTenant(adminPool);
+    expect((await resolve(bare, manifest.databases)).size).toBe(0);
+    const absent = [{ key: "notASystemDatabase", areaFilter: template("companies") }];
+    expect((await resolve(seeded, absent)).size).toBe(0);
+    // The bare tenant sees none of the seeded tenant's databases, so the seeded one still resolves all seven.
+    expect((await resolve(seeded, manifest.databases)).size).toBe(7);
+  });
+
+  it.each([
+    [
+      "an unknown property",
+      { type: "relation_contains", property: "formerArea", value: AREA } satisfies AreaFilterTemplate,
+      "formerArea",
+    ],
+    [
+      "a relation condition on a non-relation property",
+      { type: "relation_contains", property: "name", value: AREA } satisfies AreaFilterTemplate,
+      "name",
+    ],
+    [
+      "a path whose first hop is not a relation",
+      { type: "relation_path_contains", path: ["name", "area"], value: AREA } satisfies AreaFilterTemplate,
+      "filter",
+    ],
+  ])(
+    "refuses %s with the database key, the compiler's field and its error as cause, returning nothing",
+    async (_, areaFilter, field) => {
+      const tenantId = await seededTenant();
+      const before = await schemaCounts(tenantId);
+      // A valid declaration ahead of the refused one is not returned either: the whole resolution fails.
+      const declarations = [
+        { key: "projects", areaFilter: template("projects") },
+        { key: "companies", areaFilter },
+      ];
+      const failure = await resolve(tenantId, declarations).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      if (!(failure instanceof Error)) return;
+      expect(failure).not.toBeInstanceOf(ValidationError);
+      expect(failure.message).toBe(
+        `The declared area filter of database 'companies' does not compile (field '${field}')`,
+      );
+      expect(failure.cause).toBeInstanceOf(ValidationError);
+      expect(failure.cause).toMatchObject({ details: { field } });
+      expect(await schemaCounts(tenantId)).toEqual(before);
+    },
+  );
 });

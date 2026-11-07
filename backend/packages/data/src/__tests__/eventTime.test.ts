@@ -2,11 +2,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
+import { prepareEventTime } from "../calendar/eventTime.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -183,18 +183,53 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(times(updated)).toEqual(times(event));
   });
 
-  it("prepares an update proposal with the same normalization and refuses to predict an instant without the zone", async () => {
+  it("prepares an update proposal with the supplied tenant zone exactly as the write stores it", async () => {
     const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
     const { database, properties } = await withTransaction(pool, async (client) => ({
       database: (await databasesStore.getDatabase(client, eventsId))!,
       properties: await propertiesStore.listPropertiesByDatabase(client, eventsId),
     }));
     const stored = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
-    const prepared = await prepareUserItemPatch(properties, { timeFrom: "7:45" }, database, stored);
+    const prepared = await prepareUserItemPatch(properties, { timeFrom: "7:45" }, database, stored, "Europe/Prague");
     // The iCalendar preparation that runs after it adds the bumped sequence (issue #1599).
     expect(prepared).toEqual({ patch: { timeFrom: "07:45", time: "07:45–10:00", icalSequence: 1 }, deferredKeys: [] });
-    await expect(prepareUserItemPatch(properties, { date: "2026-10-16T08:00:00Z" }, database, stored)).rejects.toThrow(
-      ValidationError,
-    );
+
+    for (const zone of ["Europe/Prague", "America/New_York"]) {
+      const patch = { date: "2026-10-16T14:00:00Z" };
+      const instant = await prepareUserItemPatch(properties, patch, database, stored, zone);
+      await setTenantZone(zone);
+      const written = await chokePoint.updateItem(
+        { databaseId: eventsId, itemId: event.id, propertiesPatch: patch },
+        undefined,
+        undefined,
+        USER,
+      );
+      for (const key of ["date", "timeFrom", "timeTo", "time"]) {
+        expect(instant.patch[key], `${zone} ${key}`).toEqual(written.properties[key]);
+      }
+      expect(instant.patch.timeFrom).toBe(zone === "Europe/Prague" ? "16:00" : "10:00");
+      // Restore the stored row the next zone's preparation starts from.
+      await chokePoint.updateItem(
+        { databaseId: eventsId, itemId: event.id, propertiesPatch: { date: "2026-10-16", timeFrom: "09:00" } },
+        undefined,
+        undefined,
+        USER,
+      );
+    }
+  });
+
+  it("refuses to prepare an instant date when the caller supplied no zone, and guesses none", async () => {
+    const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
+    const stored = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
+    const patch = { date: "2026-10-16T08:00:00Z" };
+    await expect(prepareEventTime({ stored, patch })).rejects.toMatchObject({
+      status: 400,
+      code: "validation_failed",
+      details: { field: "date" },
+    });
+    // A date-only patch needs no zone and still prepares.
+    await expect(prepareEventTime({ stored, patch: { date: "2026-10-17" } })).resolves.toMatchObject({
+      patch: { date: "2026-10-17", time: "09:00–10:00" },
+    });
   });
 });

@@ -9,6 +9,7 @@ import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
 import type { ProposalEnvelope, ProposalStep } from "./proposalEnvelope.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import { isWorkspaceUpdateEligible } from "./proposalWorkspaceContext.js";
+import { proposalTimezone } from "./proposalEnvelopeValidation.js";
 
 /** Forms server-owned baselines only for freshly computed multi-step proposals. */
 export async function prepareComputedUpdates(
@@ -25,6 +26,8 @@ export async function prepareComputedUpdates(
     seen.add(step.itemId);
   }
   const updated = new Map<string, ProposalStep>();
+  // The tenant zone for the Events preparation, read and validated once in this tenant transaction.
+  let timezone: string | undefined;
   for (const step of active) {
     if (step.op !== "update" || !step.itemId) continue;
     const [item] = await getItemsByIds(client, [step.itemId]);
@@ -38,8 +41,10 @@ export async function prepareComputedUpdates(
     const patch = step.properties ?? {};
     let prepared: { patch: Record<string, unknown>; deferredKeys: string[] } = { patch: {}, deferredKeys: [] };
     if (Object.keys(patch).length > 0) {
+      // Read outside the mapping below: a settings failure is not a refused proposal and propagates as is.
+      timezone ??= await proposalTimezone(client);
       try {
-        prepared = await prepareUserItemPatch(properties, patch, database, item);
+        prepared = await prepareUserItemPatch(properties, patch, database, item, timezone);
       } catch (error) {
         if (!(error instanceof ChokePointError)) throw error;
         throw new ValidationError("Proposal update cannot be prepared");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { filterNodeSchema, type FilterNode } from "../filterSort.js";
+import { filterNodeSchema, sortSpecSchema, type FilterNode } from "../filterSort.js";
+import { DatabaseQueryInputSchema } from "../schemas.js";
 
 function buildNotChain(depth: number): FilterNode {
   let node: FilterNode = { type: "equals", property: "status", value: "done" };
@@ -106,5 +107,26 @@ describe("date_relative schema", () => {
     { type: "date_relative", property: "due", preset: "unknown" },
   ])("rejects %j", (node) => {
     expect(filterNodeSchema.safeParse(node).success).toBe(false);
+  });
+});
+
+describe("sort spec schema (issue #1594)", () => {
+  it.each([
+    [{ property: "createdAt", direction: "asc" }],
+    [{ system: "createdAt", direction: "desc" }],
+    [{ system: "updatedAt", direction: "asc" }],
+  ])("accepts %j", (spec) => {
+    expect(sortSpecSchema.safeParse(spec).success).toBe(true);
+  });
+
+  it.each([
+    [{ property: "title", system: "createdAt", direction: "asc" }],
+    [{ system: "deletedAt", direction: "asc" }],
+    [{ system: "createdAt" }],
+    [{ system: "", direction: "asc" }],
+    [{ direction: "asc" }],
+  ])("rejects %j, also inside a database query input", (spec) => {
+    expect(sortSpecSchema.safeParse(spec).success).toBe(false);
+    expect(DatabaseQueryInputSchema.safeParse({ databaseId: "db", sort: [spec] }).success).toBe(false);
   });
 });

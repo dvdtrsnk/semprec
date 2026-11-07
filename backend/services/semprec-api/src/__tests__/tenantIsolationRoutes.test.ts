@@ -2565,7 +2565,25 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       });
       expect(body).toHaveProperty("createdAt");
       expect(body).toHaveProperty("lastActivityAt");
-      expect(body).not.toHaveProperty("heartbeat");
+      if (!isRecord(body)) throw new Error("Invalid thread response");
+      if (thread.kind === "tick") {
+        // Issue #1562: the tick thread's own heartbeat header, and no active run (the fixture's run is the user's).
+        expect({ heartbeat: body.heartbeat, activeRun: body.activeRun }).toEqual({
+          heartbeat: {
+            id: a.heartbeatId,
+            name: "Isolation heartbeat",
+            rule: { kind: "interval", minutes: 5 },
+            enabled: true,
+            projectItemId: a.projectItemId,
+            projectName: null,
+            canTrigger: true,
+          },
+          activeRun: null,
+        });
+      } else {
+        expect(body).not.toHaveProperty("heartbeat");
+        expect(body).not.toHaveProperty("activeRun");
+      }
     }
     const seen: string[] = [];
     let cursor: string | null = null;

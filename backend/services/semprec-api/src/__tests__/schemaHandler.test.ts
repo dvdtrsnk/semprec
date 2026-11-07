@@ -562,6 +562,21 @@ describe("createSchemaRequestListener (issue #147)", () => {
     }
   });
 
+  it("fails with a bare 500 and publishes no template when a declared property is missing from the tenant's schema (issue #1597)", async () => {
+    const headers = await authHeader("en");
+    // Raw SQL: no API renames a locked system property. This is the drifted tenant schema (a manifest
+    // declaring a property the tenant does not have) that the compile check before publishing exists for.
+    const renamed = await pool.query(
+      `UPDATE properties SET key = 'formerArea'
+        WHERE key = 'area' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'companies' AND system)`,
+    );
+    expect(renamed.rowCount).toBe(1);
+
+    const res = await fetch(`${baseUrl}/api/schema`, { headers });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal server error" });
+  });
+
   it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/schema`);
     expect(res.status).toBe(401);

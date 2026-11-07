@@ -17,7 +17,7 @@ import type { ProposalStep } from "./inboxTickAction.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { isDeepStrictEqual } from "node:util";
-import { assertUpdateStepShape, withStepRef } from "./proposalEnvelopeValidation.js";
+import { assertUpdateStepShape, proposalTimezone, withStepRef } from "./proposalEnvelopeValidation.js";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
@@ -127,7 +127,7 @@ async function assertUpdateBefore(
     const patch = step.properties ?? {};
     const prepared =
       Object.keys(patch).length > 0
-        ? await prepareUserItemPatch(properties, patch, database, item)
+        ? await prepareUserItemPatch(properties, patch, database, item, await proposalTimezone(client))
         : { patch: {}, deferredKeys: [] };
     assertUpdateStepShape(step, prepared, item, new Map(properties.map((property) => [property.key, property])));
   });

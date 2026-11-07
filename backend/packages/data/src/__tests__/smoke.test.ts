@@ -47,6 +47,8 @@ describe("smoke: choke-point end to end", () => {
       [
         "areas",
         "books",
+        // The Calendars system database (issue #1600).
+        "calendars",
         "companies",
         "events",
         "files",

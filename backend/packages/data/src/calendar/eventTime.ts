@@ -71,7 +71,7 @@ function oneHourLater(time: string): string {
  *   left as stored while `timeFrom` or `timeTo` is unreadable.
  *
  * `zone` is needed only to convert an instant; without it such a `date` cannot be predicted and is
- * refused with a 400 on `date` (read-only proposal preparation has no tenant zone).
+ * refused with a 400 on `date` (a proposal preparation whose caller supplied no tenant zone).
  */
 export function deriveEventTimeProperties(
   stored: Record<string, unknown> | null,
@@ -136,8 +136,12 @@ export const eventTimePreWriteTransform: ItemPreWriteTransform = async ({ client
   return deriveEventTimeProperties(stored?.properties ?? null, patch, zone);
 };
 
-/** The read-only preparation of `eventTimePreWriteTransform` for proposal validation; it has no tenant zone. */
-export const prepareEventTime: ItemPreWritePreparation = async ({ stored, patch }) => ({
-  patch: deriveEventTimeProperties(stored?.properties ?? null, patch, undefined),
+/**
+ * The read-only preparation of `eventTimePreWriteTransform` for proposal validation. It converts an instant
+ * with the tenant zone its managed caller supplies, exactly as the write would; without a zone it refuses
+ * such a `date` rather than guess one.
+ */
+export const prepareEventTime: ItemPreWritePreparation = async ({ stored, patch, timezone }) => ({
+  patch: deriveEventTimeProperties(stored?.properties ?? null, patch, timezone),
   deferredKeys: [],
 });

@@ -3,6 +3,7 @@ import {
   existingItemRelations,
   assertStepDatabaseWritable,
   assertUpdateStepShape,
+  proposalTimezone,
 } from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
 import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
@@ -247,7 +248,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     if (step.op === "update") {
       const prepared =
         Object.keys(properties).length > 0
-          ? await prepareUserItemPatch(databaseProperties, properties, database, item)
+          ? await prepareUserItemPatch(databaseProperties, properties, database, item, await proposalTimezone(client))
           : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }

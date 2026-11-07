@@ -157,8 +157,18 @@ export interface ItemPreWriteTransformContext {
 /** Returns properties to store or throws. Real transforms run in the write transaction and may allocate values under their own locks; see [[2026-10-31-confirmed-proposal-update-preconditions]]. */
 export type ItemPreWriteTransform = (context: ItemPreWriteTransformContext) => Promise<Record<string, unknown>>;
 
+/**
+ * What a read-only preparation receives. `timezone` is the tenant's IANA zone, read and validated by the
+ * managed caller in its own tenant transaction and passed as a plain value; a preparation never reads the
+ * setting itself.
+ * See docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md.
+ */
+export interface ItemPreWritePreparationContext extends Pick<ItemPreWriteTransformContext, "stored" | "patch"> {
+  timezone?: string;
+}
+
 /** A preparation cannot access a client or allocate server-assigned values. */
-export type ItemPreWritePreparation = (context: Pick<ItemPreWriteTransformContext, "stored" | "patch">) => Promise<{
+export type ItemPreWritePreparation = (context: ItemPreWritePreparationContext) => Promise<{
   patch: Record<string, unknown>;
   deferredKeys: string[];
 }>;
@@ -229,7 +239,7 @@ export function registerItemPreWriteTransform(
 /** Returns null when any registered transform cannot safely be prepared. */
 export async function prepareItemPreWriteTransforms(
   moduleId: string,
-  context: Pick<ItemPreWriteTransformContext, "stored" | "patch">,
+  context: ItemPreWritePreparationContext,
 ): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] } | null> {
   let patch = context.patch;
   const deferredKeys: string[] = [];

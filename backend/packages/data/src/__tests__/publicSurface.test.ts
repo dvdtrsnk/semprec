@@ -633,6 +633,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resetPassword",
   "resolveAgentRunLane",
   "resolveBlobStorageDir",
+  "resolveDatabaseAreaFilters",
   "resolveDatabaseName",
   "resolveDatabasePlaceholderForRow",
   "resolveDatabaseSearchPlaceholder",

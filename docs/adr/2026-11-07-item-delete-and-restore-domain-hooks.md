@@ -58,8 +58,8 @@ propagates; `clearHooksForTests` clears them): `registerItemDeleteHook` / `runIt
 - Epoch membership is decided by Postgres: the restore selects the subtree rows whose `deleted_at`
   equals the root's at the column's full precision and locks them `FOR UPDATE` in subtree
   (root-first) order before restoring any of them. That is the order both cascades write rows in, so
-  a concurrent trash or restore of a row in the subtree waits for the restore instead of changing the
-  epoch the row was matched on.
+  a concurrent trash or restore of one of those rows waits for the restore instead of changing the
+  epoch the row was matched on. Rows outside the epoch are not locked; the restore leaves them alone.
 - The permanent purge (`purgeExpiredTrashSubtree`) runs no hook.
 - `chokepoint-knows-no-domain` keeps exempting `itemTrash.ts`, now only for the seven listed-domain
   modules its purge (`deleteItemDependents`) calls: `blobs/blobsStore`, `docs/docsStore`,
