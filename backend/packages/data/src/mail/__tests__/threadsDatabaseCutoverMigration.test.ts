@@ -52,9 +52,10 @@ describe("Threads database cutover", () => {
           { key: "name", type: "title", owner: "system" },
           { key: "project", type: "relation", owner: "user" },
           { key: "company", type: "relation", owner: "user" },
+          { key: "tasks", type: "relation", owner: "user" },
         ]),
       );
-      expect(properties).toHaveLength(3);
+      expect(properties).toHaveLength(4);
       const definitions = await runtime.query<{ key: string; cardinality: string; property_id_b: string | null }>(
         `SELECT p.key, r.cardinality, r.property_id_b FROM properties p JOIN relation_definitions r ON r.tenant_id = p.tenant_id AND r.property_id_a = p.id WHERE p.tenant_id = app_tenant_default() AND p.database_id = $1 ORDER BY p.key`,
         [database.id],
@@ -62,6 +63,7 @@ describe("Threads database cutover", () => {
       expect(definitions.rows).toEqual([
         { key: "company", cardinality: "many_to_many", property_id_b: null },
         { key: "project", cardinality: "many_to_many", property_id_b: null },
+        { key: "tasks", cardinality: "one_to_many", property_id_b: null },
       ]);
     });
   });
@@ -298,7 +300,7 @@ describe("Threads database cutover", () => {
       );
     const first = await read();
     expect(first.threads.schemaLocked).toBe(true);
-    expect(first.properties.map((property) => property.key).sort()).toEqual(["company", "name", "project"]);
+    expect(first.properties.map((property) => property.key).sort()).toEqual(["company", "name", "project", "tasks"]);
     expect(first.rows).toEqual([
       { item_id: expect.any(String), name: "Historical subject", created_at: "2025-01-01T00:00:00.000000Z" },
     ]);

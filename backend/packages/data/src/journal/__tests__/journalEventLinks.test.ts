@@ -150,6 +150,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     await writeLine(day, randomUUID(), [link(standup.id)]);
     await runPageTextJobs();
     const before = await eventEdges(day);
+    expect(before.map((edge) => edge.target)).toEqual([standup.id]);
     invalidations = [];
     await writeLine(day, randomUUID(), "Another paragraph");
     await runPageTextJobs();
@@ -162,6 +163,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const standup = await event("Standup");
     await writeLine(day, randomUUID(), [link(standup.id)]);
     await runPageTextJobs();
+    expect((await eventEdges(day)).map((edge) => edge.target)).toEqual([standup.id]);
     await inTenant(() => cp.softDeleteItem(databases.events!, standup.id));
     await writeLine(day, randomUUID(), "Later edit");
     await runPageTextJobs();
@@ -174,9 +176,10 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const foreign = await runInTenant(other, () =>
       cp.createItem({ databaseId: otherDatabases.events!, properties: { name: "Foreign" } }),
     );
-    await writeLine(day, randomUUID(), [link(foreign.id)]);
+    const own = await event("Standup");
+    await writeLine(day, randomUUID(), [link(foreign.id), { insert: " / " }, link(own.id)]);
     await runPageTextJobs();
-    expect(await eventEdges(day)).toEqual([]);
+    expect((await eventEdges(day)).map((edge) => edge.target)).toEqual([own.id]);
     const { rows } = await admin.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1 OR item_b = $1",
       [foreign.id],

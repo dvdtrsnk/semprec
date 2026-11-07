@@ -48,5 +48,6 @@
   "database.threads.name": "Vlákna",
   "property.threads.name.name": "Název",
   "property.threads.project.name": "Projekt",
-  "property.threads.company.name": "Firma"
+  "property.threads.company.name": "Firma",
+  "property.threads.tasks.name": "Úkoly"
 }

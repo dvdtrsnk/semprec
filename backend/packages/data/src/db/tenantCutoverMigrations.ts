@@ -3,6 +3,7 @@ import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsComplete
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { runSelectOptionOrderCutoverMigration } from "../seed/selectOptionOrderCutoverMigration.js";
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
+import { runThreadTasksCutoverMigration } from "../mail/threadTasksCutoverMigration.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
@@ -55,6 +56,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runItemsCreatedAtBackfillCutoverMigration(pool);
     await runMailDatabaseKeysCutoverMigration(pool);
     await runThreadsDatabaseCutoverMigration(pool);
+    await runThreadTasksCutoverMigration(pool);
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptDurationBackfillCutoverMigration(pool);
