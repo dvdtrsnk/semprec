@@ -441,6 +441,48 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     }
   });
 
+  it("adds the Events.files / Files.events relation to every tenant in its own scope (issue #1588)", async () => {
+    await seedOldShape(zero);
+    await seedOldShape(b);
+    const pairOf = async (tenantId: string) => {
+      const { rows } = await adminPool.query<{ owner_module_id: string; key: string; target: string | null }>(
+        `SELECT d.owner_module_id, p.key,
+                (SELECT t.owner_module_id || ':' || t.tenant_id FROM databases t
+                  WHERE t.id = (p.config->>'targetDatabaseId')::uuid) AS target
+           FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND p.type = 'relation'
+            AND ((d.owner_module_id = 'events' AND p.key = 'files') OR (d.owner_module_id = 'files' AND p.key = 'events'))
+          ORDER BY d.owner_module_id`,
+        [tenantId],
+      );
+      return rows;
+    };
+    for (const tenantId of [zero, b]) {
+      const pair = await pairOf(tenantId);
+      expect(pair).toHaveLength(2);
+      // Reverts the tenant to the pre-#1588 seed; the locked schemas have no public removal path.
+      const definitions = await adminPool.query<{ id: string }>(
+        `SELECT DISTINCT (p.config->>'relationDefinitionId') AS id FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND ((d.owner_module_id = 'events' AND p.key = 'files')
+             OR (d.owner_module_id = 'files' AND p.key = 'events'))`,
+        [tenantId],
+      );
+      const ids = definitions.rows.map((row) => row.id);
+      await adminPool.query("DELETE FROM properties WHERE config->>'relationDefinitionId' = ANY($1::text[])", [ids]);
+      await adminPool.query("DELETE FROM relation_definitions WHERE id = ANY($1::uuid[])", [ids]);
+      expect(await pairOf(tenantId)).toEqual([]);
+    }
+
+    await runCutovers(dataPool);
+
+    for (const tenantId of [zero, b]) {
+      expect(await pairOf(tenantId)).toEqual([
+        { owner_module_id: "events", key: "files", target: `files:${tenantId}` },
+        { owner_module_id: "files", key: "events", target: `events:${tenantId}` },
+      ]);
+    }
+  });
+
   it("is idempotent: a second call changes no row", async () => {
     await seedOldShape(zero);
     await seedOldShape(b);
