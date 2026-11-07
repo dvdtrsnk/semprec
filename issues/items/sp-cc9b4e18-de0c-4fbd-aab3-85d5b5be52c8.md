@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.976Z"
-updatedAt: "2026-11-07T18:09:24.330Z"
+updatedAt: "2026-11-07T19:28:42.079Z"
 closedAt: null
 source: null
-approval: {"specSha256":"ce3daf5d120b0425bab7b92c046593dd2f0d6ec5b3b1b47981bbdd95ab178e36","source":"repository","actor":"Owner-delegated controller: exact backend-only batch34 after audited local batch33; Claude Code implementation, open production gates retained","at":"2026-11-07T18:09:24.330Z"}
+approval: {"specSha256":"dc9eed09653bbd9d28e87f638cb6d06fef48bebce02046936cad4861e7ce392d","source":"repository","actor":"Owner-delegated controller: batch34 grouped seam reconciliation, exact paired owners and actual entrypoint evidence; preserve all production gates","at":"2026-11-07T19:28:42.079Z"}
 resolution: null
 ---
 **Blocked by:** sp-1385289a-c057-4dcf-a42f-b2aaded63f7b
@@ -51,6 +51,8 @@ Decision: tasks that were already done before the backfill stay without `seriesI
 
 Shared-file ordering: this issue also waits for #1600 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
 
+Batch 34 reconciliation: A successful cutover covers every eligible active, non-done row. A missing Tasks instance or invalid/missing date must fail the tenant transaction unchanged, not invent an anchor or report a skipped row as success. Presets use the written definitions of #1665; that route is not implemented here. Included #1670 replaces computeNextDueDate.
+
 #### Task
 
 Load `db-migrations`, `state-writes`, `canonical-keys` and `testing`.
@@ -71,6 +73,9 @@ Load `db-migrations`, `state-writes`, `canonical-keys` and `testing`.
 - backend/packages/data/src/tasks/advanceTaskRecurrenceWithClient.ts
 - backend/packages/data/src/index.ts (barrel export if a new symbol is public)
 - backend/packages/data/src/__tests__/ (new tests for the cutover, advance and ownership)
+
+- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
+- backend/packages/data/src/testSupport/taskSeriesFixtures.ts
 
 #### Scope
 
@@ -108,11 +113,13 @@ Decision: floating rules count from `completedOn`, fixed rules from the complete
 
 Decision (product owner): `wontDo` on an occurrence advances the series the same way `done` does; it never ends the series. `wontDo` concerns only that occurrence; the user ends a series explicitly. For a floating rule the base of a `wontDo` advance is the day of the write in the tenant time zone (a `wontDo` occurrence has no `completedOn`, #1544).
 
+Batch 34 reconciliation: The template supplies the next instance except flagged/description, which included #1673 explicitly copies from the completed instance.
+
 #### Task
 
 Load `state-writes`, `canonical-keys`, `error-handling` and `testing`.
 
-1. In `nextDueDate.ts` add two pure functions, tested on their own: `firstOccurrenceAfter(rule, occurrenceDate, notBefore)` returns the first date by the rule that is after `occurrenceDate` and not before `notBefore` (default: the server's today in the system timezone; for floating rules the base is `completedOn`), and `latestOccurrenceOnOrBefore(rule, anchorDate, today)` returns the last date by the rule that is on or before `today` (null if none). Both are exported for #1677.
+1. In `nextDueDate.ts` add two pure functions, tested on their own: `firstOccurrenceAfter(rule, occurrenceDate, notBefore, floatingBase = notBefore)` returns the first date by the rule that is after `occurrenceDate` and not before `notBefore` (pure: the caller supplies the server's today in the system timezone as `notBefore`; floating `floatingBase` is `completedOn`, or today for `wontDo`), and `latestOccurrenceOnOrBefore(rule, anchorDate, today)` returns the last date by the rule that is on or before `today` (null if none). Both are exported for #1677.
 2. Rewrite `advanceTaskRecurrenceWithClient` so that: the series is found by the completed item's `seriesId` (an item without `seriesId` is a no-op, as before the series existed); the item is locked first, then the `task_recurrence` row `FOR UPDATE`; the next date is `firstOccurrenceAfter(occurrenceDate, today)`; if a non-deleted item with the same `seriesId` and `occurrenceDate` already exists, nothing is created (idempotent); otherwise the new instance is created with that `occurrenceDate` and `date`, the template properties and the same `seriesId`, and `task_recurrence.item_id` is moved to it. The relation-edge copy stays. In `taskRecurrenceItemUpdateHook.ts`, call the advance for a transition to `wontDo` as well as to `done` (today the hook reacts only to `done`, so `wontDo` silently ends the series); the same lock order and the same idempotency (at most one occurrence per date) apply.
 3. Remove the use of `computeNextDueDate(new Date())` from the advance path. Keep `computeNextDueDate` exported only if another caller still uses it.
 4. Tests: completing the Monday 19 October weekly occurrence on Friday 16 October creates Monday 26 October; completing the Monday 12 October occurrence on Friday 16 October creates Monday 19 October; done, notDone, done on the same occurrence leaves at most one open occurrence per date; late completion of yesterday's daily occurrence creates today's occurrence; setting the Monday 19 October weekly occurrence to `wontDo` on Friday 16 October creates Monday 26 October; setting it to `wontDo` twice, or `wontDo` then `done`, creates no second next occurrence; two concurrent completions create one instance; both date functions on fixed and floating rules, including month-end and nth-weekday rules.
@@ -125,6 +132,8 @@ Load `state-writes`, `canonical-keys`, `error-handling` and `testing`.
 - backend/packages/data/src/tasks/taskRecurrenceStore.ts (lookup by item and series)
 - backend/packages/data/src/index.ts (barrel export of the two new functions)
 - backend/packages/data/src/__tests__/ (advance and date-function tests)
+
+- backend/packages/data/src/tasks/advanceTaskRecurrence.ts (matching docstring)
 
 #### Scope
 
@@ -160,6 +169,8 @@ Today no such function exists. The rule evaluation helpers are in `backend/packa
 
 Decision: a virtual occurrence dated before today has the status `missed` in the projection (the state it will have when closed), and ticking it creates a real item with status `done` through #1720. The `missed` option is added to the status select by #1668; until then the projection reports the value as a plain string.
 
+Batch 34 reconciliation: Materialized occurrences in the range remain visible off-rule. Floating virtual dates use anchor plus whole intervals; inactive series have no virtual date after their last live materialized occurrence, or any when none exists.
+
 #### Task
 
 Load `canonical-keys` and `testing`.
@@ -176,6 +187,8 @@ Load `canonical-keys` and `testing`.
 - backend/packages/data/src/tasks/nextDueDate.ts (export of the range helper, if needed)
 - backend/packages/data/src/index.ts (barrel export)
 - backend/packages/data/src/__tests__/ (new projection tests)
+
+- backend/packages/data/src/testSupport/taskSeriesFixtures.ts
 
 #### Scope
 
@@ -217,6 +230,8 @@ Product rules:
 
 Decision: people and attachments carry over to the next instance (the conservative choice, since losing them silently is worse than keeping them).
 
+Batch 34 reconciliation: Test flagged/description edits after series creation and their absent defaults; do not substitute the original template. Value-link fixtures exercise the real store, not a claim that a Tasks link-rule producer already exists.
+
 #### Task
 
 Load `state-writes`, `canonical-keys` and `testing`.
@@ -230,6 +245,10 @@ Load `state-writes`, `canonical-keys` and `testing`.
 
 - backend/packages/data/src/tasks/advanceTaskRecurrenceWithClient.ts
 - tests under backend/packages/data/src/tasks/__tests__/
+
+- backend/packages/data/src/chokePoint/valueLinksStore.ts (moveValueLinkItemSources only)
+- backend/packages/data/src/__tests__/valueLinksStore.test.ts
+- backend/packages/data/src/testSupport/taskSeriesFixtures.ts
 
 #### Scope
 
@@ -283,6 +302,11 @@ Load `db-migrations`, `canonical-keys` and `testing`.
 - backend/packages/data/src/seed/i18n/en.json
 - backend/packages/data/src/__tests__/ (cutover and seed tests)
 
+- backend/packages/data/src/manifest/knownActionIds.ts (journalEventLinks owner registry)
+- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/semprec-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
+- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
+
 #### Scope
 
 ##### In scope
@@ -314,6 +338,8 @@ Decision: the `events` relation of a Journal entry is a derived value: every lin
 
 Shared-file ordering: this issue also waits for #1711 because both edit the after-document-update job for Journal pages.
 
+Batch 34 reconciliation: No page doc means no text sync; no historical backfill is added. Generic relation refusal must also be observed at the actual entry point.
+
 #### Task
 
 Load `state-writes`, `canonical-keys` and `testing`.
@@ -329,6 +355,9 @@ Load `state-writes`, `canonical-keys` and `testing`.
 - backend/packages/data/src/journal/journalEventLinks.ts (new)
 - the after-document-update job delivered by #1658 (one extra call for Journal pages, next to the call of #1711)
 - backend/packages/data/src/journal/__tests__/ (event link sync tests)
+
+- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/semprec-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
 
 #### Scope
 
@@ -356,7 +385,7 @@ Load `state-writes`, `canonical-keys` and `testing`.
 
 Model tier rationale: Moves relation edges between items inside the create transaction of another module's write path, across several callers, with a recompute job and system-owned relation guards.
 
-Inbox items belong to a Journal day through the system-owned `journalDay` relation edge, which Inbox capture writes with an internal system relation context (`INBOX_RELATION_CONTEXT`, owner process `inbox`, in `backend/packages/data/src/inbox/inboxStore.ts`). The day's Inbox summary (`backend/packages/data/src/inbox/journalInboxCompute.ts`) reads only the edges that point at that one day item. When a day entry is trashed, its edges are not removed (relations have no soft delete), and the next write for that day creates a different entry (`getOrCreateJournalItem`), so the Inbox items of the old entry disappear from the new day's Inbox section even though they belong to that calendar day.
+Inbox items belong to a Journal day through the system-owned `journalDay` relation edge, which Inbox capture writes with an internal system relation context (`INBOX_RELATION_CONTEXT`, owner process `inbox`, in `backend/packages/data/src/inbox/inboxCreateHook.ts`). The day's Inbox summary (`backend/packages/data/src/inbox/journalInboxCompute.ts`) reads only the edges that point at that one day item. When a day entry is trashed, its edges are not removed (relations have no soft delete), and the next write for that day creates a different entry (`getOrCreateJournalItem`), so the Inbox items of the old entry disappear from the new day's Inbox section even though they belong to that calendar day.
 
 New day entries are created by several callers: the lazy-create route and internal function of #1541, the Inbox create hook of #1432, journal proposal confirmation (#1981), subpage creation (#1676) and Semp writes (#1861). The choke point's create-hook registry (ADR `docs/adr/2026-10-09-item-create-domain-hooks.md`) runs after a real insert and never on an idempotency replay, so one hook on the Journal database covers all of them without changing any caller.
 
@@ -365,6 +394,8 @@ Decision: deleting a Journal period deletes the whole period including its entry
 Decision: re-linking is done by a create hook owned by the Inbox module, because the edge and its context belong to Inbox; it applies to day entries only.
 
 Shared-file ordering: this issue also waits for #1601 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
+
+Batch 34 reconciliation: The hook may construct the same internal Inbox process identity. Test actual delivered callers; #1981/#1676/#1861 remain absent-owner evidence limits, not runtime PASS or new producers.
 
 #### Task
 
@@ -430,6 +461,9 @@ Load `db-migrations`, `canonical-keys` and `testing`.
 - backend/packages/data/src/db/tenantCutoverMigrations.ts
 - backend/packages/data/src/mail/__tests__/ (new tests)
 
+- backend/packages/data/src/mail/i18n/en.json
+- backend/packages/data/src/mail/i18n/cs.json
+
 #### Scope
 
 ##### In scope
@@ -461,6 +495,8 @@ The conversion is an expand/contract step in application code, because it must w
 Decision: the marker lives inside the area's own doc, in a root `Y.Map` named `meta`, so it commits atomically with the converted content. It holds `legacyNoteSource` (the exact `note` text last converted) and `legacyNoteBlockIds` (the ids of the blocks the conversion created). The step behaves as follows per area: empty or absent `note` -> skip; marker equals current `note` -> skip; no marker -> create the blocks from the note and append them to the page; marker present but differs -> remove only the blocks listed in `legacyNoteBlockIds` that still exist, insert blocks for the new text, update the marker. Blocks a user added or edited by hand in the page are never touched by a later run except for the generated blocks being replaced.
 
 Shared-file ordering: this issue also waits for #1612 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
+
+Batch 34 reconciliation: Use the existing document-write lock order: doc_snapshots before docs, then read/mutate. Process all areas; report collected failures afterward and register this step last. No accepted ADR body is edited.
 
 #### Task
 
@@ -514,6 +550,8 @@ Decision: only `lte` and `gte` are allowed. Equality is not a preset operator; `
 
 Shared-file ordering: this issue also waits for #1619 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.
 
+Batch 34 reconciliation: Validate the final type/config pair on retype; without replacement config, presets cannot survive on a non-number type. Drop malformed stored presets without logging in the pure projection. Facade tests do not replace named HTTP contract proof.
+
 #### Task
 
 Load `canonical-keys`, `db-migrations`, `error-handling` and `testing`.
@@ -538,6 +576,10 @@ Load `canonical-keys`, `db-migrations`, `error-handling` and `testing`.
 - backend/packages/data/src/chokePoint/__tests__/propertiesStore.unit.test.ts
 - backend/packages/data/src/__tests__/manifest.test.ts
 - backend/packages/data/src/__tests__/tenantCutoverMigrations.test.ts
+
+- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
+- backend/packages/data/src/__tests__/catalogResolution.unit.test.ts
 
 #### Scope
 
