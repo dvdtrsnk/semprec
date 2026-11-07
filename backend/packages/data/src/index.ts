@@ -439,9 +439,23 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "./projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
-export { computeNextDueDate } from "./tasks/nextDueDate.js";
-export * from "./tasks/taskRecurrenceStore.js";
+export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
+export {
+  createTaskRecurrence,
+  deleteTaskRecurrence,
+  getTaskRecurrence,
+  getTaskRecurrenceBySeriesId,
+  setTaskRecurrenceActive,
+  type CreateTaskRecurrenceInput,
+  type TaskRecurrence,
+  type TaskRecurrenceTemplate,
+} from "./tasks/taskRecurrenceStore.js";
 export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
+export {
+  projectTaskOccurrences,
+  type ProjectTaskOccurrencesInput,
+  type ProjectedTaskOccurrence,
+} from "./tasks/projectTaskOccurrences.js";
 
 export * from "./journal/journalStore.js";
 export * from "./journal/journalPeriods.js";

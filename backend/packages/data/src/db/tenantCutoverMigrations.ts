@@ -32,6 +32,7 @@ import { runMailDatabaseKeysCutoverMigration } from "../mail/mailDatabaseKeysCut
 import { runPeoplePhonesCutoverMigration } from "../seed/peoplePhonesCutoverMigration.js";
 import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigration.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
+import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
 import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
@@ -84,6 +85,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
+    await runTaskRecurrenceSeriesCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);
   });
 }

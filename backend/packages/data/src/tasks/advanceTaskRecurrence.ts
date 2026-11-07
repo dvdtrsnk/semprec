@@ -7,15 +7,13 @@ import { advanceTaskRecurrenceWithClient, type AdvanceTaskRecurrenceInput } from
 export type { AdvanceTaskRecurrenceInput };
 
 /**
- * The rolling model (issue #24): at any moment only one open instance of a recurring task
- * exists. Completing it (marking it 'done') creates the next instance and carries forward
- * its name/time/notification/persistent properties and every relation edge it participated
- * in (e.g. its Projects link) — not just the recurrence rule itself. Returns `null` (no-op)
- * when the completed item has no active recurrence, which is the common case.
+ * Completes a recurring task occurrence and creates the next occurrence of its series
+ * (`advanceTaskRecurrenceWithClient`, issues #1605 and #1670). Returns `null` (no-op) when the item
+ * belongs to no active series or the next date already has an occurrence.
  *
  * Opens its own transaction around `advanceTaskRecurrenceWithClient` plus the `done` write.
  * That `done` write re-enters the choke point's Tasks hook (`updateItemWithClient`), which
- * finds the recurrence already deactivated in this same transaction and no-ops.
+ * finds the next date already occupied by the occurrence created here and creates nothing.
  */
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {

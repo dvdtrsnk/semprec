@@ -261,6 +261,41 @@ export async function removeValueLinkItemSource(
   return result.rowCount === 1;
 }
 
+/**
+ * Moves every item source naming `fromItemId` onto `toItemId`, in the caller's transaction (issue #1673: the next
+ * instance of a recurring task takes over the sources its predecessor held). Each affected link is locked first,
+ * in id order. A source whose link already names `toItemId` for the same property key is removed instead of
+ * duplicated. Link states and values are not changed. Returns how many sources were moved or merged.
+ */
+export async function moveValueLinkItemSources(
+  client: PoolClient,
+  fromItemId: string,
+  toItemId: string,
+): Promise<number> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT l.id FROM value_links l
+     WHERE l.tenant_id = app_tenant_default()
+       AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1)
+     ORDER BY l.id FOR UPDATE`,
+    [fromItemId],
+  );
+  if (rows.length === 0) return 0;
+  const linkIds = rows.map((row) => row.id);
+  const merged = await client.query(
+    `DELETE FROM value_link_sources s
+     WHERE s.tenant_id = app_tenant_default() AND s.link_id = ANY($3::uuid[]) AND s.source_kind = 'item' AND s.source_item_id = $1
+       AND EXISTS (SELECT 1 FROM value_link_sources t WHERE t.tenant_id = s.tenant_id AND t.link_id = s.link_id
+         AND t.source_kind = 'item' AND t.source_item_id = $2 AND t.source_property_key = s.source_property_key)`,
+    [fromItemId, toItemId, linkIds],
+  );
+  const moved = await client.query(
+    `UPDATE value_link_sources SET source_item_id = $2
+     WHERE tenant_id = app_tenant_default() AND link_id = ANY($3::uuid[]) AND source_kind = 'item' AND source_item_id = $1`,
+    [fromItemId, toItemId, linkIds],
+  );
+  return (merged.rowCount ?? 0) + (moved.rowCount ?? 0);
+}
+
 /** Deletes a caller-locked link after its last source is removed. */
 export async function deleteEmptyValueLink(client: PoolClient, linkId: string): Promise<boolean> {
   const result = await client.query(
