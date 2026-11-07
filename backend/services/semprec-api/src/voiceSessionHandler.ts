@@ -446,7 +446,13 @@ export function createVoiceSessionHandler(
       const disposing = session.dispose?.();
       session.speechController?.abort();
       session.stream?.close();
-      const results = await Promise.allSettled([session.streamClosed, session.admission, session.work, session.speech, disposing]);
+      const results = await Promise.allSettled([
+        session.streamClosed,
+        session.admission,
+        session.work,
+        session.speech,
+        disposing,
+      ]);
       sessions.delete(identity.userId);
       const failures: unknown[] = [...session.failures];
       for (const result of results) if (result.status === "rejected") failures.push(result.reason);

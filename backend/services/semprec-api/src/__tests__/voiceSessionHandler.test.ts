@@ -889,12 +889,17 @@ describe("voice session through the real gateway and registered worker", () => {
         const result = await Promise.race([
           owned.exit,
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} stop timed out`)), 20_000);
+            timer = setTimeout(
+              () => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} stop timed out`)),
+              20_000,
+            );
           }),
         ]);
         if (result.error || result.code !== 0 || result.signal !== null)
           throw result.error ?? new Error(`Fixture ${owned.kind} pid=${owned.pid} failed`);
-        process.stderr.write(`voice fixture kind=${owned.kind} pid=${owned.pid} exit=${result.code} signal=${result.signal}\n`);
+        process.stderr.write(
+          `voice fixture kind=${owned.kind} pid=${owned.pid} exit=${result.code} signal=${result.signal}\n`,
+        );
       } catch (error) {
         failures.push(error);
         if (!owned.settled) {
@@ -908,7 +913,10 @@ describe("voice session through the real gateway and registered worker", () => {
             await Promise.race([
               owned.exit,
               new Promise<never>((_, reject) => {
-                exitTimer = setTimeout(() => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} exit not observed`)), 5000);
+                exitTimer = setTimeout(
+                  () => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} exit not observed`)),
+                  5000,
+                );
               }),
             ]);
           } catch (exitError) {
