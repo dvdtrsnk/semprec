@@ -21,7 +21,10 @@ interface Session {
   stream: SttStream | undefined;
   streamClosed: Promise<void>;
   resolveStreamClosed(): void;
+  admission: Promise<void>;
   work: Promise<void>;
+  admissionFailure: { error: unknown } | undefined;
+  failures: unknown[];
   queued: number;
   speech: Promise<void>;
   speechController: AbortController | undefined;
@@ -185,9 +188,8 @@ export function createVoiceSessionHandler(
         if (session.textState.hasSentences && !session.sender.signal.aborted) pump(session);
       });
   }
-  async function turn(session: Session, text: string): Promise<void> {
-    const signal = session.sender.signal;
-    signal.throwIfAborted();
+  async function admit(session: Session, text: string) {
+    session.sender.signal.throwIfAborted();
     const result = await runInTenant(session.identity.tenantId, () =>
       withTransaction(pool, (client) =>
         sendSempMessage(
@@ -198,6 +200,10 @@ export function createVoiceSessionHandler(
       ),
     );
     session.threadId = result.threadId;
+    return result;
+  }
+  async function turn(session: Session, result: Awaited<ReturnType<typeof admit>>): Promise<void> {
+    const signal = session.sender.signal;
     signal.throwIfAborted();
     let delivery = await runInTenant(session.identity.tenantId, () =>
       getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
@@ -329,7 +335,10 @@ export function createVoiceSessionHandler(
         stream: undefined,
         streamClosed,
         resolveStreamClosed,
+        admission: Promise.resolve(),
         work: Promise.resolve(),
+        admissionFailure: undefined,
+        failures: [],
         queued: 0,
         speech: Promise.resolve(),
         speechController: undefined,
@@ -371,9 +380,34 @@ export function createVoiceSessionHandler(
                     return;
                   }
                   session.queued++;
+                  const admitted = session.admission
+                    .then(() => {
+                      if (session.admissionFailure) throw session.admissionFailure.error;
+                      return admit(session, text);
+                    })
+                    .then(
+                      (result) => ({ ok: true as const, result }),
+                      (error: unknown) => {
+                        if (!session.admissionFailure && !sender.signal.aborted) {
+                          session.admissionFailure = { error };
+                          session.failures.push(error);
+                          fail(session, error);
+                        }
+                        return { ok: false as const };
+                      },
+                    );
+                  session.admission = admitted.then(() => undefined);
                   session.work = session.work
-                    .then(() => turn(session, text))
-                    .catch((error: unknown) => fail(session, error))
+                    .then(async () => {
+                      const outcome = await admitted;
+                      if (outcome.ok) await turn(session, outcome.result);
+                    })
+                    .catch((error: unknown) => {
+                      if (!sender.signal.aborted) {
+                        session.failures.push(error);
+                        fail(session, error);
+                      }
+                    })
                     .finally(() => {
                       session.queued--;
                     });
@@ -412,9 +446,9 @@ export function createVoiceSessionHandler(
       const disposing = session.dispose?.();
       session.speechController?.abort();
       session.stream?.close();
-      const results = await Promise.allSettled([session.streamClosed, session.work, session.speech, disposing]);
+      const results = await Promise.allSettled([session.streamClosed, session.admission, session.work, session.speech, disposing]);
       sessions.delete(identity.userId);
-      const failures: unknown[] = [];
+      const failures: unknown[] = [...session.failures];
       for (const result of results) if (result.status === "rejected") failures.push(result.reason);
       if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed");
     },

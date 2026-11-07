@@ -126,6 +126,8 @@ function messageText(data: RawData): string {
   );
 }
 type OwnedChild = {
+  kind: "gateway" | "worker";
+  pid: number;
   child: ChildProcess;
   exit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>;
   settled: boolean;
@@ -156,6 +158,8 @@ describe("voice session through the real gateway and registered worker", () => {
     });
     if (!child.pid) throw new Error("Fixture child did not start");
     const owned: OwnedChild = {
+      kind,
+      pid: child.pid,
       child,
       settled: false,
       messages: [],
@@ -885,12 +889,12 @@ describe("voice session through the real gateway and registered worker", () => {
         const result = await Promise.race([
           owned.exit,
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Fixture stop timed out")), 20_000);
+            timer = setTimeout(() => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} stop timed out`)), 20_000);
           }),
         ]);
         if (result.error || result.code !== 0 || result.signal !== null)
-          throw result.error ?? new Error("Fixture child failed");
-        process.stderr.write(`voice fixture exit=${result.code} signal=${result.signal}\n`);
+          throw result.error ?? new Error(`Fixture ${owned.kind} pid=${owned.pid} failed`);
+        process.stderr.write(`voice fixture kind=${owned.kind} pid=${owned.pid} exit=${result.code} signal=${result.signal}\n`);
       } catch (error) {
         failures.push(error);
         if (!owned.settled) {
@@ -904,7 +908,7 @@ describe("voice session through the real gateway and registered worker", () => {
             await Promise.race([
               owned.exit,
               new Promise<never>((_, reject) => {
-                exitTimer = setTimeout(() => reject(new Error("Fixture exit not observed")), 5000);
+                exitTimer = setTimeout(() => reject(new Error(`Fixture ${owned.kind} pid=${owned.pid} exit not observed`)), 5000);
               }),
             ]);
           } catch (exitError) {
@@ -933,8 +937,16 @@ describe("voice session through the real gateway and registered worker", () => {
     let watchSocket: WebSocket | undefined;
     let watchServer: Server | undefined;
     let primary: { error: unknown } | undefined;
+    let speechHeld = false;
+    let modelHeld = false;
+    const ownedGateway = gateway;
+    async function control(type: "holdSpeech" | "holdModel" | "releaseSpeech" | "releaseModel"): Promise<void> {
+      if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
+      await new Promise<void>((resolveSend, reject) =>
+        ownedGateway.child.send({ type }, (error) => (error ? reject(error) : resolveSend())),
+      );
+    }
     try {
-      const ownedGateway = gateway;
       const cp = createChokePoint(pool);
       const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Voice approval fixture" }));
       const target = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: {} }));
@@ -962,8 +974,10 @@ describe("voice session through the real gateway and registered worker", () => {
         timeout: 10_000,
       });
       await vi.waitFor(() => expect(gateway?.messages.some((entry) => entry.type === "audioAccepted")).toBe(true));
-      send(gateway, "holdSpeech");
-      send(gateway, "holdModel");
+      speechHeld = true;
+      await control("holdSpeech");
+      modelHeld = true;
+      await control("holdModel");
       send(gateway, "partial");
       await vi.waitFor(() =>
         expect(frames).toContainEqual({ type: "transcript", text: "A spoken question.", final: false }),
@@ -1093,8 +1107,10 @@ describe("voice session through the real gateway and registered worker", () => {
         pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id=$1", [assistantId]),
       );
       expect(firstStillRunning.rows).toEqual([{ status: "running" }]);
-      send(gateway, "releaseSpeech");
-      send(gateway, "releaseModel");
+      await control("releaseSpeech");
+      speechHeld = false;
+      await control("releaseModel");
+      modelHeld = false;
       await vi.waitFor(
         async () => {
           const result = await runInTenant(tenant, () =>
@@ -1208,6 +1224,17 @@ describe("voice session through the real gateway and registered worker", () => {
       primary = { error };
     }
     const cleanup: unknown[] = [];
+    for (const [held, type] of [
+      [speechHeld, "releaseSpeech"],
+      [modelHeld, "releaseModel"],
+    ] as const) {
+      if (!held) continue;
+      try {
+        await control(type);
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
     try {
       if (watchSocket && watchSocket.readyState !== WebSocket.CLOSED) {
         const closed = once(watchSocket, "close");
