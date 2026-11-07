@@ -70,6 +70,7 @@
   "editor.mcp.credential.label": "Credential",
   "editor.mcp.credential.placeholder": "API key or token",
   "editor.mcp.mcpProjects.label": "Projects",
+  "agentTool.inbox.proposal.get.label": "Read Inbox proposal",
   "inbox.recognition.chooseType": "Choose an item type.",
   "inbox.recognition.typeShortage": "Fewer than two valid active types are available.",
   "inbox.recognition.changed": "The selected type or destination is unavailable or changed. Please clarify."

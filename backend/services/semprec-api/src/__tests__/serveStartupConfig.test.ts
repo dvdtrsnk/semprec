@@ -76,6 +76,7 @@ describe("serve.ts startup runtime role check", () => {
       await resetDatabase(pool);
       process.env.SEMPREC_API_DATABASE_URL = process.env.TEST_DATABASE_URL;
       process.env.SETUP_TOKEN = "test-setup-token";
+      process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-gateway-internal-token";
 
       await expect(import("../serve.js")).rejects.toMatchObject({
         name: "RuntimeRoleAssertionError",
