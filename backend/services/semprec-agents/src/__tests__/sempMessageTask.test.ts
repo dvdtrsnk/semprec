@@ -10,9 +10,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import sharp from "sharp";
-import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
+import {
+  closeIdleThreadSessions,
+  createBoundedSempHistory,
+  SempConversation,
+  type SempSendOptions,
+  type SempThread,
+  type SempTurnResult,
+} from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
   createChokePoint,
@@ -68,6 +75,7 @@ let tenant: string;
 let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
+let imageLifecycleUnsafe = false;
 
 type QuerySchemaObservation = {
   count: number;
@@ -289,6 +297,103 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   return null;
 }
 
+type ImageCaptureSend = (
+  this: SempConversation,
+  task: string,
+  thread: SempThread,
+  options?: SempSendOptions,
+) => Promise<SempTurnResult>;
+
+function isImageCaptureSend(value: unknown): value is ImageCaptureSend {
+  return typeof value === "function";
+}
+
+function observeImageConversations(tenantId: string, threadId: string) {
+  const prototype = SempConversation.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "send");
+  const original: unknown = descriptor?.value;
+  if (
+    !descriptor ||
+    !isImageCaptureSend(original) ||
+    original !== Reflect.get(prototype, "send") ||
+    !descriptor.configurable ||
+    !descriptor.writable
+  )
+    throw new Error("Image conversation observer unavailable");
+  const trustedOriginal = original;
+  const instances = new Set<SempConversation>();
+  const cleared = new Set<SempConversation>();
+  const latest = new Map<"last", SempConversation>();
+  let fault = false;
+  let expectedCount = 1;
+  function send(this: SempConversation, ...args: Parameters<ImageCaptureSend>): ReturnType<ImageCaptureSend> {
+    const result = trustedOriginal.apply(this, args);
+    try {
+      const scope = currentTenantScope();
+      if (scope?.kind === "tenant" && scope.tenantId === tenantId && args[1].threadId === threadId) {
+        if (!instances.has(this) && instances.size >= 2) fault = true;
+        else {
+          instances.add(this);
+          latest.set("last", this);
+        }
+      }
+    } catch {
+      fault = true;
+    }
+    return result;
+  }
+  Object.defineProperty(prototype, "send", { ...descriptor, value: send });
+  function verify(): void {
+    if (fault || instances.size !== expectedCount || !latest.has("last"))
+      throw new Error("Image conversation capture unavailable");
+  }
+  return {
+    current() {
+      verify();
+      return latest.get("last");
+    },
+    clear(instance: SempConversation) {
+      verify();
+      if (!instances.has(instance) || cleared.has(instance)) throw new Error("Image conversation clear unavailable");
+      instance.clear();
+      cleared.add(instance);
+    },
+    expectReplacement() {
+      expectedCount = 2;
+    },
+    clearAndRestore() {
+      verify();
+      const errors: unknown[] = [];
+      for (const instance of instances) {
+        if (cleared.has(instance)) continue;
+        try {
+          instance.clear();
+          cleared.add(instance);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        Object.defineProperty(prototype, "send", descriptor);
+        const restored = Object.getOwnPropertyDescriptor(prototype, "send");
+        if (
+          !restored ||
+          restored.value !== descriptor.value ||
+          restored.writable !== descriptor.writable ||
+          restored.enumerable !== descriptor.enumerable ||
+          restored.configurable !== descriptor.configurable
+        )
+          throw new Error("Image conversation observer restoration failed");
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) throw new AggregateError(errors, "Image conversation cleanup failed", { cause: errors[0] });
+    },
+  };
+}
+
+type ImageConversationObserver = ReturnType<typeof observeImageConversations>;
+
 describe("queued Semp messages", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -311,16 +416,19 @@ describe("queued Semp messages", () => {
   afterAll(async () => {
     const errors: unknown[] = [];
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image runtime settlement not established");
       await runtime?.stop();
     } catch (error) {
       errors.push(error);
     }
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image conversation cleanup not established");
       await pool?.end();
     } catch (error) {
       errors.push(error);
     }
     try {
+      if (imageLifecycleUnsafe) throw new Error("Image resources require settlement");
       await admin?.end();
     } catch (error) {
       errors.push(error);
@@ -355,6 +463,10 @@ describe("queued Semp messages", () => {
       let workerSettled: boolean;
       let failed = false;
       let failure: unknown;
+      let imageObserver: ImageConversationObserver | undefined;
+      let imageRuntimeStarting = false;
+      let imageRuntimeStopUnsettled = false;
+      let coldInstance: SempConversation | undefined;
       const cleanupFailures: unknown[] = [];
       try {
         if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
@@ -631,12 +743,17 @@ describe("queued Semp messages", () => {
           AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
           AGENT_MODEL: "claude-haiku-4-5",
         });
+        if (images) {
+          imageObserver = observeImageConversations(tenant, turn.threadId);
+          imageRuntimeStarting = true;
+        }
         runtime = await createAgentsQueueRuntime(pool, registry, {
           sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
             files: fileStorage,
             mailAttachments: mailStorage,
           }),
         });
+        imageRuntimeStarting = false;
         let runId = "";
         try {
           await vi.waitFor(
@@ -733,6 +850,11 @@ describe("queued Semp messages", () => {
             process.stderr.write("reference target observation unavailable\n");
           }
           throw error;
+        }
+        if (images) {
+          if (!imageObserver) throw new Error("Missing image conversation observer");
+          coldInstance = imageObserver.current();
+          if (!coldInstance) throw new Error("Missing cold image conversation");
         }
         await vi.waitFor(
           () =>
@@ -883,6 +1005,8 @@ describe("queued Semp messages", () => {
             { timeout: 20_000 },
           );
           expect(continuedRun).toBe(runId);
+          if (!imageObserver || !coldInstance) throw new Error("Missing cold image conversation");
+          expect(imageObserver.current()).toBe(coldInstance);
           await vi.waitFor(
             () => {
               const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
@@ -916,8 +1040,29 @@ describe("queued Semp messages", () => {
           expect(continuedCalls.rows).toEqual([
             { status: "settled", agent_run_id: runId, semp_message_id: continued.assistantMessageId },
           ]);
+          const previousRuntime = runtime;
+          if (!previousRuntime) throw new Error("Missing image runtime");
+          imageRuntimeStopUnsettled = true;
+          await previousRuntime.stop();
+          imageRuntimeStopUnsettled = false;
+          runtime = undefined;
+          try {
+            imageObserver.clear(coldInstance);
+          } catch (error) {
+            imageLifecycleUnsafe = true;
+            throw error;
+          }
           const closed = await closeIdleThreadSessions(pool);
           expect(closed.closedRunIds).toContain(runId);
+          imageObserver.expectReplacement();
+          imageRuntimeStarting = true;
+          runtime = await createAgentsQueueRuntime(pool, registry, {
+            sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
+              files: fileStorage,
+              mailAttachments: mailStorage,
+            }),
+          });
+          imageRuntimeStarting = false;
           const wake = await runInTenant(tenant, () =>
             withTransaction(pool, (client) =>
               sendSempMessage(client, {
@@ -944,6 +1089,7 @@ describe("queued Semp messages", () => {
           );
           if (!wakeRun) throw new Error("Missing wake run");
           expect(wakeRun).not.toBe(runId);
+          expect(imageObserver.current()).not.toBe(coldInstance);
           await vi.waitFor(
             () => {
               const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
@@ -1014,21 +1160,37 @@ describe("queued Semp messages", () => {
         failure = error;
       }
       try {
+        if (imageRuntimeStopUnsettled || imageRuntimeStarting) {
+          imageLifecycleUnsafe = true;
+          throw new Error("Image runtime settlement unavailable");
+        }
         const active = runtime;
         runtime = undefined;
         await active?.stop();
         workerSettled = true;
       } catch (error) {
         workerSettled = false;
+        if (imageObserver) imageLifecycleUnsafe = true;
         cleanupFailures.push(error);
       }
-      try {
-        await closeIdleThreadSessions(pool);
-      } catch (error) {
-        workerSettled = false;
-        cleanupFailures.push(error);
+      if (imageObserver && workerSettled && !imageLifecycleUnsafe) {
+        try {
+          imageObserver.clearAndRestore();
+        } catch (error) {
+          imageLifecycleUnsafe = true;
+          workerSettled = false;
+          cleanupFailures.push(error);
+        }
       }
-      if (child && childExit && !exited) {
+      if (!imageLifecycleUnsafe) {
+        try {
+          await closeIdleThreadSessions(pool);
+        } catch (error) {
+          workerSettled = false;
+          cleanupFailures.push(error);
+        }
+      }
+      if (child && childExit && !exited && !imageLifecycleUnsafe) {
         let stopOperation: Promise<void> | undefined;
         try {
           const owned = child;
