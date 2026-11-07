@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant, type SempMessageRef } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -32,6 +32,30 @@ import { ingestEmailMessage } from "../mail/ingest.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 
+async function withQueryRestored<T>(
+  client: PoolClient,
+  descriptor: PropertyDescriptor | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
+  const outcome = await work().then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let restoration: { error: unknown } | undefined;
+  try {
+    if (descriptor) Object.defineProperty(client, "query", descriptor);
+    else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+  } catch (error) {
+    restoration = { error };
+  }
+  if (!outcome.ok && restoration)
+    throw new AggregateError([outcome.error, restoration.error], "History read and observer restoration failed", {
+      cause: outcome.error,
+    });
+  if (!outcome.ok) throw outcome.error;
+  if (restoration) throw restoration.error;
+  return outcome.value;
+}
 describe("Semp history reference resolution", () => {
   let admin: Pool;
   let runtime: Pool;
@@ -111,26 +135,9 @@ describe("Semp history reference resolution", () => {
             },
           });
           /* eslint-enable @typescript-eslint/unbound-method */
-          let failed = false;
-          let primary: unknown;
-          try {
+          return withQueryRestored(client, descriptor, async () => {
             return await listSempThreadMessages(client, sent.threadId, 50, null);
-          } catch (error) {
-            failed = true;
-            primary = error;
-            throw error;
-          } finally {
-            try {
-              if (descriptor) Object.defineProperty(client, "query", descriptor);
-              else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-            } catch (error) {
-              if (failed)
-                throw new AggregateError([primary, error], "History read and observer restoration failed", {
-                  cause: primary,
-                });
-              throw error;
-            }
-          }
+          });
         }),
       );
     await runInTenant(tenant, () =>
@@ -352,26 +359,9 @@ describe("Semp history reference resolution", () => {
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
-        let failed = false;
-        let primary: unknown;
-        try {
+        return withQueryRestored(client, descriptor, async () => {
           return await listSempThreadMessages(client, first.threadId, 50, null);
-        } catch (error) {
-          failed = true;
-          primary = error;
-          throw error;
-        } finally {
-          try {
-            if (descriptor) Object.defineProperty(client, "query", descriptor);
-            else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-          } catch (error) {
-            if (failed)
-              throw new AggregateError([primary, error], "History read and observer restoration failed", {
-                cause: primary,
-              });
-            throw error;
-          }
-        }
+        });
       }),
     );
     expect(page.rows).toHaveLength(50);
@@ -575,31 +565,14 @@ describe("Semp history reference resolution", () => {
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
-            let failed = false;
-            let primary: unknown;
-            try {
+            return withQueryRestored(client, descriptor, async () => {
               const page = await listSempThreadMessages(client, first.threadId, 50, null);
               const stored = await client.query<{ id: string; context: unknown }>(
                 "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
                 [[first.messageId, second.messageId]],
               );
               return { page, stored };
-            } catch (error) {
-              failed = true;
-              primary = error;
-              throw error;
-            } finally {
-              try {
-                if (descriptor) Object.defineProperty(client, "query", descriptor);
-                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-              } catch (error) {
-                if (failed)
-                  throw new AggregateError([primary, error], "History read and observer restoration failed", {
-                    cause: primary,
-                  });
-                throw error;
-              }
-            }
+            });
           }),
         );
         expect(resolverQueries).toBe(1);
@@ -721,26 +694,9 @@ describe("Semp history reference resolution", () => {
           },
         });
         /* eslint-enable @typescript-eslint/unbound-method */
-        let failed = false;
-        let primary: unknown;
-        try {
+        return withQueryRestored(client, descriptor, async () => {
           return await listSempThreadMessages(client, sent.threadId, 50, null);
-        } catch (error) {
-          failed = true;
-          primary = error;
-          throw error;
-        } finally {
-          try {
-            if (descriptor) Object.defineProperty(client, "query", descriptor);
-            else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-          } catch (error) {
-            if (failed)
-              throw new AggregateError([primary, error], "History read and observer restoration failed", {
-                cause: primary,
-              });
-            throw error;
-          }
-        }
+        });
       }),
     );
     expect(runQueries).toBe(1);
@@ -864,26 +820,9 @@ describe("Semp history reference resolution", () => {
               },
             });
             /* eslint-enable @typescript-eslint/unbound-method */
-            let failed = false;
-            let primary: unknown;
-            try {
+            return withQueryRestored(client, descriptor, async () => {
               return await listSempThreadMessages(client, sent.threadId, 50, null);
-            } catch (error) {
-              failed = true;
-              primary = error;
-              throw error;
-            } finally {
-              try {
-                if (descriptor) Object.defineProperty(client, "query", descriptor);
-                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-              } catch (error) {
-                if (failed)
-                  throw new AggregateError([primary, error], "History read and observer restoration failed", {
-                    cause: primary,
-                  });
-                throw error;
-              }
-            }
+            });
           }),
         );
       let page = await read();

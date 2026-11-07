@@ -894,27 +894,31 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                 },
               });
               /* eslint-enable @typescript-eslint/unbound-method */
-              let failed = false;
-              let primary: unknown;
+              const outcome = await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                cardId,
+              ).then(
+                (value) => ({ ok: true as const, value }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
+              await Promise.allSettled(pending);
+              let restoration: { error: unknown } | undefined;
               try {
-                return await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId);
+                if (descriptor) Object.defineProperty(client, "query", descriptor);
+                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
               } catch (error) {
-                failed = true;
-                primary = error;
-                throw error;
-              } finally {
-                await Promise.allSettled(pending);
-                try {
-                  if (descriptor) Object.defineProperty(client, "query", descriptor);
-                  else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-                } catch (error) {
-                  if (failed)
-                    throw new AggregateError([primary, error], "Confirmation and observer cleanup failed", {
-                      cause: primary,
-                    });
-                  throw error;
-                }
+                restoration = { error };
               }
+              if (!outcome.ok && restoration)
+                throw new AggregateError(
+                  [outcome.error, restoration.error],
+                  "Confirmation and observer cleanup failed",
+                  { cause: outcome.error },
+                );
+              if (!outcome.ok) throw outcome.error;
+              if (restoration) throw restoration.error;
+              return outcome.value;
             }),
           ).rejects.toMatchObject({ status: 400 });
           expect(firstWriteObserved).toBe(true);

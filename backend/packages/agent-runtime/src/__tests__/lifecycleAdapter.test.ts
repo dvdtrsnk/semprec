@@ -253,6 +253,7 @@ describe("runAgentSession", () => {
     let pending: Promise<unknown> | undefined;
     let failure: unknown;
     let failed = false;
+    const cleanupErrors: unknown[] = [];
     const messages: unknown[] = [];
     const onNotification = (event: { payload?: string }) => {
       if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
@@ -339,26 +340,27 @@ describe("runAgentSession", () => {
     } finally {
       release?.();
       const outcomes = pending ? await Promise.allSettled([pending]) : [];
-      const errors = outcomes.flatMap((outcome) =>
-        outcome.status === "rejected" && (!failed || outcome.reason !== failure) ? [outcome.reason] : [],
+      cleanupErrors.push(
+        ...outcomes.flatMap((outcome) =>
+          outcome.status === "rejected" && (!failed || outcome.reason !== failure) ? [outcome.reason] : [],
+        ),
       );
       listener.removeListener("notification", onNotification);
       try {
         listener.release(true);
       } catch (error) {
-        errors.push(error);
+        cleanupErrors.push(error);
       }
       try {
         await runtime.end();
       } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length) {
-        throw new AggregateError([...(failed ? [failure] : []), ...errors], "Turn test cleanup failed", {
-          cause: failed ? failure : errors[0],
-        });
+        cleanupErrors.push(error);
       }
     }
+    if (cleanupErrors.length)
+      throw new AggregateError([...(failed ? [failure] : []), ...cleanupErrors], "Turn test cleanup failed", {
+        cause: failed ? failure : cleanupErrors[0],
+      });
     if (failed) throw failure;
   });
 

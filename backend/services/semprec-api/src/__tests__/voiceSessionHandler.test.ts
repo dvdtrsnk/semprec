@@ -645,7 +645,9 @@ describe("voice session through the real gateway and registered worker", () => {
           current.on("message", (data, binary) => {
             if (!binary) received.push(JSON.parse(messageText(data)) as unknown);
           });
-          current.on("error", (error) => { peerError ??= error; });
+          current.on("error", (error) => {
+            peerError ??= error;
+          });
           let closed = false;
           current.on("close", () => {
             closed = true;
@@ -762,7 +764,7 @@ describe("voice session through the real gateway and registered worker", () => {
         try {
           if (localServer?.listening)
             await new Promise<void>((resolveClose, reject) =>
-              localServer!.close((error) => (error ? reject(error) : resolveClose())),
+              localServer.close((error) => (error ? reject(error) : resolveClose())),
             );
         } catch (error) {
           caseCleanup.push(error);
