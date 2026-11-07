@@ -130,6 +130,9 @@ describe("recurring task series (issues #1605, #1670)", () => {
       await insertLegacyRecurrence(tenant, done.id, "fixed", weeklyMonday);
       await insertLegacyRecurrence(tenant, inactive.id, "fixed", weeklyMonday, false);
       await insertLegacyRecurrence(tenant, dateless.id, "fixed", weeklyMonday);
+      // A row whose instance was purged without its recurrence row being removed.
+      const orphan = "00000000-0000-4000-8000-0000000000aa";
+      await insertLegacyRecurrence(tenant, orphan, "fixed", weeklyMonday);
       const otherTasks = await tasksDatabaseId(other);
       const foreign = await runInTenant(other, () =>
         cp.createItem({ databaseId: otherTasks, properties: { name: "Other tenant", date: "2026-10-12" } }),
@@ -163,6 +166,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
         flagged: true,
         description: "Look back",
       });
+      expect(rows.get(orphan)).toMatchObject({ series_id: null, anchor_date: null, template: null });
       for (const untouched of [done, inactive, dateless]) {
         expect(rows.get(untouched.id)).toMatchObject({ series_id: null, anchor_date: null, template: null });
         const item = await runInTenant(tenant, () => cp.getItem(tasks, untouched.id));
