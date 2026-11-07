@@ -206,6 +206,7 @@
   "property.journal.period.name": "Období",
   "property.journal.area.name": "Oblast",
   "property.journal.project.name": "Projekt",
+  "property.journal.events.name": "Události",
 
   "viewType.temporal-switcher.name": "Časový přepínač"
 }

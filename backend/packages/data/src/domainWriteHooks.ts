@@ -45,6 +45,7 @@ import {
 } from "./library/libraryRatingHooks.js";
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
+import { journalDayRelinkItemCreateHook } from "./inbox/journalDayRelinkHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 import {
   inboxSourceEdgeDeleteHook,
@@ -87,6 +88,7 @@ registerRelationEdgeDeleteHook(inboxTypeEdgeDeleteHook);
 registerRelationEdgeWriteHook(inboxSourceEdgeWriteHook);
 registerRelationEdgeDeleteHook(inboxSourceEdgeDeleteHook);
 registerItemCreateHook(journalItemCreateHook);
+registerItemCreateHook(journalDayRelinkItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
 registerItemCreateHook(inboxTypeItemCreateHook);
 registerItemUpdateHook(inboxTypeItemUpdateHook);

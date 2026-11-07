@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { loadDocWithClient } from "../docs/docPersistence.js";
+import { syncJournalEventLinks } from "../journal/journalEventLinks.js";
 import { computeJournalSummary, recomputeJournalSummary } from "../journal/journalSummary.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -25,8 +26,9 @@ interface OwnerRow {
  * The `itemSearchPageText` task (issue #1658): converts the owner item's page to plain text and rebuilds its index
  * row. A missing, soft-deleted or Emails item completes without writing. An item with no page doc completes without
  * writing too, except a Journal entry, whose summary is recomputed as null (issue #1711). For a Journal entry the same
- * transaction also recomputes `computed.journalSummary` from the page's Markdown. The page text, the index row and the
- * summary are written in one transaction, so they commit together or not at all.
+ * transaction also recomputes `computed.journalSummary` from the page's Markdown and makes its `events` relation equal to
+ * the page's event links (issue #2016), from the same serialized Markdown. The page text, the index row, the summary and
+ * the event edges are written in one transaction, so they commit together or not at all.
  */
 export async function handleItemSearchPageTextTask(pool: Pool, payload: unknown): Promise<void> {
   const { itemId } = payloadSchema.parse(payload);
@@ -51,6 +53,7 @@ export async function handleItemSearchPageTextTask(pool: Pool, payload: unknown)
     await indexItem(client, itemId, { pageText: stripMarkdown(markdown, PAGE_TEXT_MAX_CHARS) });
     if (isJournalEntry) {
       await recomputeJournalSummary(client, item.database_id, itemId, computeJournalSummary(markdown));
+      await syncJournalEventLinks(client, itemId, markdown);
     }
   });
 }
