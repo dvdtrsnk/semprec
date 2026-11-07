@@ -1936,7 +1936,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       }
       return result;
     };
-    const spy = vi.spyOn(runtimePool, "query").mockImplementation(observer as unknown as () => void);
+    const queryImplementation = observer as unknown as () => void;
+    const spy = vi.spyOn(runtimePool, "query").mockImplementation(queryImplementation);
     const frames: string[] = [];
     const failures: unknown[] = [];
     const earlyFailure = new Error("Synthetic early test failure");
