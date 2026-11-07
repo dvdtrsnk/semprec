@@ -455,9 +455,19 @@ export function createVoiceSessionHandler(
     async onClose(identity) {
       const session = sessions.get(identity.userId);
       if (!session) return;
-      const disposing = session.dispose?.();
-      session.speechController?.abort();
-      session.stream?.close();
+      const dispose = session.dispose;
+      const disposing = Promise.resolve().then(() => dispose?.());
+      const cleanupFailures: unknown[] = [];
+      try {
+        session.speechController?.abort();
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      try {
+        session.stream?.close();
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
       const results = await Promise.allSettled([
         session.streamClosed,
         session.admission,
@@ -466,9 +476,15 @@ export function createVoiceSessionHandler(
         disposing,
       ]);
       sessions.delete(identity.userId);
-      const failures: unknown[] = [...session.failures];
-      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
-      if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed", { cause: failures[0] });
+      for (const result of results) if (result.status === "rejected") cleanupFailures.push(result.reason);
+      if (cleanupFailures.length) {
+        const failures = [...session.failures];
+        for (const error of cleanupFailures) {
+          if (!failures.some((prior) => Object.is(prior, error))) failures.push(error);
+        }
+        throw new AggregateError(failures, "Voice session cleanup failed", { cause: failures[0] });
+      }
+      if (session.failures.length) return { operationFailures: session.failures };
     },
   };
 }

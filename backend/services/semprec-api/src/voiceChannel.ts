@@ -58,7 +58,12 @@ export interface VoiceSessionHandler {
   ): void | Promise<void>;
   onAudio(identity: VoiceIdentity, pcm: Buffer): void | boolean | Promise<void | boolean>;
   onControl(identity: VoiceIdentity, frame: Extract<Control, { type: "stop" | "end" }>): void | Promise<void>;
-  onClose(identity: VoiceIdentity): void | Promise<void>;
+  onClose(
+    identity: VoiceIdentity,
+  ):
+    | void
+    | { readonly operationFailures: readonly unknown[] }
+    | Promise<void | { readonly operationFailures: readonly unknown[] }>;
 }
 export interface VoiceChannel {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;

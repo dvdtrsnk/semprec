@@ -618,7 +618,13 @@ describe("voice channel", () => {
         const duplicate = await connect(target.session.token),
           denied = message(duplicate),
           deniedCode = closed(duplicate);
-        expect(JSON.parse(await denied)).toEqual({ type: "error", code: "sessionLimit" });
+        const deniedFrame: unknown = JSON.parse(await denied);
+        expect(
+          z.strictObject({ type: z.literal("error"), code: z.literal("sessionLimit") }).parse(deniedFrame),
+        ).toEqual({
+          type: "error",
+          code: "sessionLimit",
+        });
         expect(await deniedCode).toBe(1008);
       }
       release?.();

@@ -5757,6 +5757,9 @@ describe("Markdown page proposal validation", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const combineFailures = (primary: unknown, cleanup: unknown) =>
+      new AggregateError([primary, cleanup], "Tick test and cleanup failed", { cause: primary });
+    let primary: { error: unknown } | undefined;
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -5840,9 +5843,16 @@ describe("Markdown page proposal validation", () => {
           }
         }
       });
-    } finally {
-      await runtime.end();
+    } catch (error) {
+      primary = { error };
     }
+    try {
+      await runtime.end();
+    } catch (error) {
+      if (primary) throw combineFailures(primary.error, error);
+      throw error;
+    }
+    if (primary) throw primary.error;
   });
 
   it("accepts current real hosts and validates headings without creating documents or exposing other tenants", async () => {
