@@ -30,6 +30,25 @@ function selectConfig(options: string[], colors: Record<string, string> = {}): R
   return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
 }
 
+/**
+ * The rating filter presets of Books and Movies (issue #1622): "5 stars", "4 and up", "3 and up" and "No rating"
+ * (empty or 0), labelled from `library/i18n`. Seeded here for a fresh install and written to existing tenants by
+ * `ratingFilterPresetsCutoverMigration.ts`.
+ */
+export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | typeof MOVIES_MODULE_ID): {
+  filterPresets: Array<{ value: number; op: "gte"; labelKey: string }>;
+  emptyPreset: { labelKey: string; matchZero: boolean };
+} {
+  return {
+    filterPresets: [5, 4, 3].map((value) => ({
+      value,
+      op: "gte" as const,
+      labelKey: `property.${databaseKey}.rating.preset.${value}`,
+    })),
+    emptyPreset: { labelKey: `property.${databaseKey}.rating.preset.none`, matchZero: true },
+  };
+}
+
 interface PropSpec {
   key: string;
   name: string | null;
@@ -121,7 +140,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "isbn", name: null, type: "text", owner: "user" },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
-    { key: "rating", name: null, type: "number", owner: "user" },
+    { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(BOOKS_MODULE_ID) },
     {
       key: "status",
       name: null,
@@ -151,7 +170,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
-    { key: "rating", name: null, type: "number", owner: "user" },
+    { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(MOVIES_MODULE_ID) },
     { key: "secondaryRating", name: null, type: "number", owner: "system" },
     { key: "sourceUrl", name: null, type: "url", owner: "system" },
     {

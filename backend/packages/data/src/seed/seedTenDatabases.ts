@@ -12,6 +12,7 @@ import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeConte
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
+import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import {
   AREAS_MODULE_ID,
@@ -650,6 +651,20 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: projects.id,
     cardinality: "many_to_many",
   });
+  // Journal -> Events (issue #1609): derived from the event links in the entry's page (#2016), so it is system-owned
+  // by that sync's process; one-directional, with no inverse on Events.
+  await relate(
+    {
+      sourceDatabaseId: journal.id,
+      key: "events",
+      name: null,
+      targetDatabaseId: events.id,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS,
+    },
+    { ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS },
+  );
 
   // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
   const all: TenDatabases = {

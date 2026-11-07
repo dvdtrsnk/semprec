@@ -206,6 +206,7 @@
   "property.journal.period.name": "Period",
   "property.journal.area.name": "Area",
   "property.journal.project.name": "Project",
+  "property.journal.events.name": "Events",
 
   "viewType.temporal-switcher.name": "Temporal switcher"
 }

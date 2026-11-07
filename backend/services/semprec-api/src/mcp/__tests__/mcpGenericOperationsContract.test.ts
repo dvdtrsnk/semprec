@@ -18,8 +18,10 @@ import {
 import {
   createChokePoint,
   createDocStore,
+  createRelationWithClient,
   createUser,
   createViewTypeRegistry,
+  ensureJournalPeriodDoc,
   hashPassword,
   login,
   mintMcpRunCredential,
@@ -1066,6 +1068,197 @@ describe("generic operation MCP contract (issue #220)", () => {
       throw failure.error;
     }
     if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP runtime fixture cleanup failed");
+  });
+
+  it("refuses a run credential's generic Journal events writes with owner_violation under tenant RLS (gh-1609, gh-2016)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let server: Server | undefined;
+    let failure: { error: unknown } | undefined;
+    const cleanupErrors: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-mcp-user", () =>
+        createUser(pool, {
+          tenantId: ownTenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      const cp = createChokePoint(runtime);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const database = async (moduleId: string) => {
+            const found = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, moduleId));
+            if (!found) throw new Error(`Missing ${moduleId} database`);
+            return found;
+          };
+          const journal = await database("journal");
+          const relationProperty = async (key: string) => {
+            const found = (await cp.listProperties(journal.id)).find((entry) => entry.key === key);
+            if (!found) throw new Error(`Missing Journal.${key}`);
+            return found;
+          };
+          const events = await relationProperty("events");
+          const project = await relationProperty("project");
+          if (events.ownerProcess === null) throw new Error("Journal.events has no owner process");
+          const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
+          const eventsDb = await database("events");
+          const standup = await cp.createItem({ databaseId: eventsDb.id, properties: { name: "Standup" } });
+          const linked = await cp.createItem({ databaseId: eventsDb.id, properties: { name: "Retro" } });
+          const projectItem = await cp.createItem({
+            databaseId: (await database("projects")).id,
+            properties: { name: "Journal project" },
+          });
+          // The derived edge as its owning process (the event-link sync) writes it, through the system choke point.
+          const ownerProcess = events.ownerProcess;
+          await withTransaction(runtime, (client) =>
+            createRelationWithClient(
+              client,
+              { relationPropertyId: events.id, callerItemId: day.itemId, targetItemId: linked.id },
+              { ownerProcess },
+            ),
+          );
+          return { events, project, day: day.itemId, standup, linked, projectItem };
+        });
+      }
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const credential = await runInTenant(ownTenant, async () => {
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!projects) throw new Error("Missing projects database");
+        const agent = await cp.createItem({ databaseId: projects.id, properties: { name: "Journal agent" } });
+        return withTransaction(runtime, (client) =>
+          mintMcpRunCredential(client, { projectItemId: agent.id, capabilities: ["core.item.write"], userId: user.id }),
+        );
+      });
+      const runtimeGateway = createGenericOperationGateway(runtime, testMetadataResolver);
+      server = createServer(
+        await createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+      );
+      const ownedServer = server;
+      await new Promise<void>((resolve, reject) => {
+        ownedServer.once("error", reject);
+        ownedServer.listen(0, "127.0.0.1", () => {
+          ownedServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing MCP runtime address");
+      const port = address.port;
+      const schema = z.object({
+        result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }).optional(),
+        error: z.object({ code: z.number(), message: z.string(), data: z.unknown().optional() }).optional(),
+      });
+      async function call(name: string, args: unknown) {
+        const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+        });
+        expect(response.status).toBe(200);
+        return schema.parse(await response.json());
+      }
+      async function snapshot(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          );
+          const approvals = await runtime.query<{ id: string; status: string }>(
+            "SELECT id, status FROM approval_requests ORDER BY id",
+          );
+          return { edges: edges.rows, approvals: approvals.rows };
+        });
+      }
+      const targets = (property: { id: string }) =>
+        runInTenant(ownTenant, async () =>
+          ((await cp.listItemRelations(own.day, property.id)) ?? []).map((edge) => edge.targetItemId),
+        );
+      expect(await targets(own.events)).toEqual([own.linked.id]);
+      const ownBefore = await snapshot(ownTenant);
+      const foreignBefore = await snapshot(foreignTenant);
+
+      const invalidations: InvalidationEvent[] = [];
+      setInvalidationHook((event) => invalidations.push(event));
+      for (const [name, targetItemId] of [
+        ["semprec.relation.put", own.standup.id],
+        ["semprec.relation.delete", own.linked.id],
+      ] as const) {
+        const refused = await call(name, { relationPropertyId: own.events.id, callerItemId: own.day, targetItemId });
+        expect(refused.result).toBeUndefined();
+        expect(refused.error).toMatchObject({ code: -32000, data: { code: "owner_violation" } });
+      }
+      setInvalidationHook(() => {});
+      expect(invalidations).toEqual([]);
+      expect(await snapshot(ownTenant)).toEqual(ownBefore);
+      expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+
+      // The same credential writes the user-owned Journal `project` relation, and its delete reaches the approval gate:
+      // the refusals above are the relation's ownership, not a missing grant or the approval requirement.
+      const put = await call("semprec.relation.put", {
+        relationPropertyId: own.project.id,
+        callerItemId: own.day,
+        targetItemId: own.projectItem.id,
+      });
+      expect(put.error).toBeUndefined();
+      expect(await targets(own.project)).toEqual([own.projectItem.id]);
+      const removal = await call("semprec.relation.delete", {
+        relationPropertyId: own.project.id,
+        callerItemId: own.day,
+        targetItemId: own.projectItem.id,
+      });
+      expect(removal.error?.code).toBe(-32001);
+      expect((await snapshot(ownTenant)).approvals).toEqual([{ id: expect.any(String), status: "pending" }]);
+      expect(await targets(own.project)).toEqual([own.projectItem.id]);
+      expect(await targets(own.events)).toEqual([own.linked.id]);
+
+      const crossTenant = await call("semprec.relation.put", {
+        relationPropertyId: foreign.events.id,
+        callerItemId: foreign.day,
+        targetItemId: foreign.standup.id,
+      });
+      const unknown = await call("semprec.relation.put", {
+        relationPropertyId: randomUUID(),
+        callerItemId: randomUUID(),
+        targetItemId: randomUUID(),
+      });
+      expect(crossTenant.result).toBeUndefined();
+      expect(crossTenant.error?.code).toBe(unknown.error?.code);
+      expect(crossTenant.error?.data).toEqual(unknown.error?.data);
+      expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      setInvalidationHook(() => {});
+      if (server?.listening) {
+        const ownedServer = server;
+        try {
+          await new Promise<void>((resolve, reject) =>
+            ownedServer.close((error) => (error ? reject(error) : resolve())),
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (failure) {
+      if (cleanupErrors.length > 0) console.error("MCP Journal events fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP Journal events fixture cleanup failed");
   });
 
   it("creates the requested initial relation through MCP", async () => {

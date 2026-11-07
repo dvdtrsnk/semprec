@@ -9,6 +9,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPresetsCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -1250,5 +1251,119 @@ describe("emails senderPeople cardinality tenant cutover (issue #1457)", () => {
     expect((error as AggregateError).message).not.toContain(zero);
     expect((error as AggregateError).errors).toHaveLength(1);
     expect(await senderCardinality(zero)).toBe("many_to_many");
+  });
+});
+
+describe("rating filter presets tenant cutover (issue #1622)", () => {
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  const ratingConfigs = (tenant: string) =>
+    runInTenant(tenant, async () => {
+      const { rows } = await dataPool.query<{ module_id: string; config: Record<string, unknown> }>(
+        `SELECT d.owner_module_id AS module_id, p.config FROM properties p JOIN databases d ON d.id = p.database_id
+         WHERE p.key = 'rating' AND d.owner_module_id = ANY('{books,movies}') ORDER BY d.owner_module_id`,
+      );
+      return Object.fromEntries(rows.map((row) => [row.module_id, row.config]));
+    });
+
+  it("adds the presets to existing tenants, keeps other config and a tenant's own presets, and is idempotent", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    const other = await createTestTenant(adminPool);
+    const own = { filterPresets: [{ value: 10, op: "gte", labelKey: "own.key" }] };
+    for (const tenant of [zero, other]) {
+      await runInTenant(tenant, async () => {
+        await seedSystem(dataPool, createViewTypeRegistry());
+        // A tenant seeded before issue #1622: the locked Library schemas cannot change config through the writer.
+        await dataPool.query(
+          `UPDATE properties SET config = (config - 'filterPresets' - 'emptyPreset') || '{"default":0}'::jsonb
+           WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = ANY('{books,movies}'))`,
+        );
+      });
+    }
+    await runInTenant(other, () =>
+      dataPool.query(
+        `UPDATE properties SET config = config || $1::jsonb
+         WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'books')`,
+        [JSON.stringify(own)],
+      ),
+    );
+
+    await runCutovers(dataPool);
+    const seeded = (databaseKey: "books" | "movies") => ({
+      default: 0,
+      filterPresets: [5, 4, 3].map((value) => ({
+        value,
+        op: "gte",
+        labelKey: `property.${databaseKey}.rating.preset.${value}`,
+      })),
+      emptyPreset: { labelKey: `property.${databaseKey}.rating.preset.none`, matchZero: true },
+    });
+    expect(await ratingConfigs(zero)).toEqual({ books: seeded("books"), movies: seeded("movies") });
+    expect(await ratingConfigs(other)).toEqual({ books: { default: 0, ...own }, movies: seeded("movies") });
+
+    const before = await snapshot();
+    await runCutovers(dataPool);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("skips a missing Movies database and still adds the Books presets", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    const movies = await runInTenant(zero, async () => {
+      await seedSystem(dataPool, createViewTypeRegistry());
+      const database = await withTransaction(dataPool, (client) => getDatabaseByModuleId(client, "movies"));
+      if (!database) throw new Error("Movies database missing");
+      // A tenant installed before the Movies database had its module id: the cutover cannot find it by module.
+      const detached = await dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE id = $1", [database.id]);
+      expect(detached.rowCount).toBe(1);
+      await dataPool.query(
+        `UPDATE properties SET config = config - 'filterPresets' - 'emptyPreset'
+         WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'books')`,
+      );
+      return database.id;
+    });
+    const moviesRating = () =>
+      runInTenant(zero, async () => {
+        const { rows } = await dataPool.query<{ config: Record<string, unknown> }>(
+          "SELECT config FROM properties WHERE database_id = $1 AND key = 'rating'",
+          [movies],
+        );
+        return rows;
+      });
+    const moviesBefore = await moviesRating();
+    expect(moviesBefore).toHaveLength(1);
+    await runInTenant(zero, () => runRatingFilterPresetsCutoverMigration(dataPool));
+    const configs = await ratingConfigs(zero);
+    expect(Object.keys(configs)).toEqual(["books"]);
+    expect(configs.books).toMatchObject({ filterPresets: expect.any(Array), emptyPreset: expect.any(Object) });
+    expect(await moviesRating()).toEqual(moviesBefore);
+  });
+
+  it("skips a missing rating property", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    await runInTenant(zero, async () => {
+      await seedSystem(dataPool, createViewTypeRegistry());
+      // Incomplete legacy schema; a locked property cannot be removed through the public writer.
+      await dataPool.query(
+        `DELETE FROM properties WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'movies')`,
+      );
+      await dataPool.query(
+        `UPDATE properties SET config = config - 'filterPresets' - 'emptyPreset'
+         WHERE key = 'rating' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'books')`,
+      );
+    });
+    await runCutovers(dataPool);
+    const configs = await ratingConfigs(zero);
+    expect(Object.keys(configs)).toEqual(["books"]);
+    expect(configs.books).toMatchObject({ filterPresets: expect.any(Array) });
   });
 });

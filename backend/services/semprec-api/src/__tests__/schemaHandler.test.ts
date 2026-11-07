@@ -236,6 +236,138 @@ describe("createSchemaRequestListener (issue #147)", () => {
     if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
   });
 
+  it("serves localized rating presets and the Journal events label, dropping malformed stored presets (gh-1622, gh-1609)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let serverRuntime: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      serverRuntime = createServer(createSchemaRequestListener(runtime, moduleRegistry));
+      await new Promise<void>((resolve) => serverRuntime?.listen(0, "127.0.0.1", resolve));
+      const address = serverRuntime.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const tenants: { id: string; headers: { Authorization: string }; locale: "cs" | "en" }[] = [];
+      for (const locale of ["cs", "en"] as const) {
+        const id = await createTestTenant(pool);
+        const email = `${randomUUID()}@example.com`;
+        await createUser(pool, { tenantId: id, email, passwordHash: await hashPassword(PASSWORD), locale });
+        const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+        tenants.push({ id, headers: { Authorization: `Bearer ${token}` }, locale });
+      }
+      const responseSchema = z.object({
+        databases: z.array(
+          z.object({
+            key: z.string().nullable(),
+            properties: z.array(
+              z.object({
+                key: z.string(),
+                name: z.string(),
+                filterable: z.boolean(),
+                config: z.object({
+                  filterPresets: z
+                    .array(z.object({ value: z.number(), op: z.enum(["lte", "gte"]), label: z.string() }).strict())
+                    .optional(),
+                  emptyPreset: z.object({ label: z.string(), matchZero: z.boolean() }).strict().optional(),
+                }),
+              }),
+            ),
+          }),
+        ),
+      });
+      const read = async (headers: { Authorization: string }) => {
+        const response = await fetch(`${base}/api/schema`, { headers });
+        expect(response.status).toBe(200);
+        return responseSchema.parse(await response.json());
+      };
+      const propertyOf = (schema: z.infer<typeof responseSchema>, databaseKey: string, key: string) => {
+        const found = schema.databases.find((db) => db.key === databaseKey)?.properties.find((p) => p.key === key);
+        if (!found) throw new Error(`Missing ${databaseKey}.${key} in the schema`);
+        return found;
+      };
+      const labels = {
+        cs: { five: "5 hvězd", four: "4 a víc", three: "3 a víc", none: "Bez hodnocení", events: "Události" },
+        en: { five: "5 stars", four: "4 and up", three: "3 and up", none: "No rating", events: "Events" },
+      } as const;
+      const fresh = new Map<string, z.infer<typeof responseSchema>>();
+      for (const tenant of tenants) {
+        const schema = await read(tenant.headers);
+        fresh.set(tenant.id, schema);
+        const label = labels[tenant.locale];
+        for (const databaseKey of ["books", "movies"]) {
+          const rating = propertyOf(schema, databaseKey, "rating");
+          expect(rating.filterable).toBe(true);
+          expect(rating.config).toEqual({
+            filterPresets: [
+              { value: 5, op: "gte", label: label.five },
+              { value: 4, op: "gte", label: label.four },
+              { value: 3, op: "gte", label: label.three },
+            ],
+            emptyPreset: { label: label.none, matchZero: true },
+          });
+        }
+        expect(propertyOf(schema, "journal", "events").name).toBe(label.events);
+      }
+
+      const [malformed, untouched] = tenants;
+      if (!malformed || !untouched) throw new Error("Expected two tenants");
+      await runInTenant(malformed.id, async () => {
+        // Synthetic historical config: property.create/patch validate presets, so a malformed stored shape (a legacy
+        // row or a direct write) can only be produced in SQL.
+        const write = async (databaseKey: string, config: Record<string, unknown>) =>
+          (
+            await runtime.query(
+              `UPDATE properties p SET config = $2::jsonb FROM databases d
+               WHERE p.database_id = d.id AND d.owner_module_id = $1 AND p.key = 'rating'`,
+              [databaseKey, JSON.stringify(config)],
+            )
+          ).rowCount;
+        expect(
+          await write("books", {
+            filterPresets: [
+              { value: 5, op: "gte", labelKey: "property.books.rating.preset.5" },
+              { value: 4, op: "eq", labelKey: "property.books.rating.preset.4" },
+              { value: "3", op: "gte", labelKey: "property.books.rating.preset.3" },
+              { value: 2, op: "gte", labelKey: "property.books.rating.preset.3", color: "#FF0000" },
+              "legacy",
+            ],
+            emptyPreset: { labelKey: "property.books.rating.preset.none", matchZero: "yes" },
+          }),
+        ).toBe(1);
+        expect(await write("movies", { filterPresets: [{ key: "five" }], emptyPreset: { labelKey: "" } })).toBe(1);
+      });
+      const afterMalformed = await read(malformed.headers);
+      const books = propertyOf(afterMalformed, "books", "rating");
+      expect(books.filterable).toBe(true);
+      expect(books.config).toEqual({ filterPresets: [{ value: 5, op: "gte", label: labels.cs.five }] });
+      const movies = propertyOf(afterMalformed, "movies", "rating");
+      expect(movies.filterable).toBe(false);
+      expect(movies.config).toEqual({});
+      expect(await read(untouched.headers)).toEqual(fresh.get(untouched.id));
+    } catch (error) {
+      failures.push(error);
+    }
+    if (serverRuntime)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          serverRuntime?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Schema preset HTTP test and settlement failed");
+  });
+
   it("does not expose a kept project deadline in the schema", async () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
     if (!database) throw new Error("Projects missing");

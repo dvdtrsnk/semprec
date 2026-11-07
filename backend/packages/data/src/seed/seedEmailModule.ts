@@ -19,7 +19,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
-import { COMPANIES_MODULE_ID } from "./tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
@@ -91,6 +91,23 @@ export async function createThreadsDatabase(
       computedKeyRegistry,
     );
   }
+  // Threads -> Tasks (issue #1612): Tasks is schema-locked, so the relation lives on Threads only. Threads is the
+  // "one" side of `one_to_many`, so a task has at most one thread. User-owned: Semp links a task with `relation.put`.
+  const tasks = await databasesStore.getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  if (!tasks) throw new Error("Tasks database is missing");
+  await createRelationPropertyWithClient(
+    client,
+    {
+      sourceDatabaseId: threads.id,
+      key: "tasks",
+      name: null,
+      targetDatabaseId: tasks.id,
+      cardinality: "one_to_many",
+      owner: "user",
+    },
+    undefined,
+    computedKeyRegistry,
+  );
   return threads;
 }
 

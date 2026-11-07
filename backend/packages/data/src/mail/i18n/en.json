@@ -48,5 +48,6 @@
   "database.threads.name": "Threads",
   "property.threads.name.name": "Name",
   "property.threads.project.name": "Project",
-  "property.threads.company.name": "Company"
+  "property.threads.company.name": "Company",
+  "property.threads.tasks.name": "Tasks"
 }

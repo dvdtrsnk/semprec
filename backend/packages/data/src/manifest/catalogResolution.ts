@@ -1,4 +1,5 @@
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
+import { NumberFilterConfigSchema } from "@semprec/shared";
 import type { PropertyRow, PropertyType, RelationDefinitionRow } from "../types.js";
 
 /** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
@@ -31,8 +32,16 @@ export interface ResolvedPropertyConfig {
   cardinality?: RelationDefinitionRow["cardinality"];
   /** date only; `false` when the stored config has no value. */
   includeTime?: boolean;
-  /** number only; passed through as stored. */
-  filterPresets?: unknown;
+  /** number only (issue #1622): the valid stored presets, labels localized; absent when none is valid. */
+  filterPresets?: ResolvedFilterPreset[];
+  /** number only (issue #1622): the valid stored empty preset, label localized. */
+  emptyPreset?: { label: string; matchZero: boolean };
+}
+
+export interface ResolvedFilterPreset {
+  value: number;
+  op: "lte" | "gte";
+  label: string;
 }
 
 export interface ResolvedProperty {
@@ -166,13 +175,52 @@ export async function resolveDatabasePlaceholderForRow(
 const ALWAYS_FILTERABLE_TYPES: readonly PropertyType[] = ["select", "multi_select", "relation", "date", "checkbox"];
 const DEFAULT_TYPES: readonly PropertyType[] = ["select", "multi_select", "checkbox", "number", "text", "date"];
 
-function isFilterable(p: PropertyRow): boolean {
-  if (p.type === "number") return Array.isArray(p.config.filterPresets) && p.config.filterPresets.length > 0;
-  return ALWAYS_FILTERABLE_TYPES.includes(p.type);
+const filterPresetSchema = NumberFilterConfigSchema.shape.filterPresets.element;
+const emptyPresetSchema = NumberFilterConfigSchema.shape.emptyPreset.unwrap();
+
+/**
+ * A preset's display label (issue #1622): its literal `label`, else `labelKey` resolved against the owning module's
+ * catalog for `locale` like an option label, else the `labelKey` text itself.
+ */
+function presetLabel(
+  preset: { labelKey: string; label?: string },
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
+): string {
+  return catalogs
+    ? resolveCatalogLabel(preset.label ?? null, catalogs[locale], catalogs.en, preset.labelKey)
+    : (preset.label ?? preset.labelKey);
+}
+
+/**
+ * The number-filter presets of a stored `number` config, validated entry by entry at this DB-row boundary: a stored
+ * preset that fails the shape (legacy or written directly) is dropped rather than failing the whole projection.
+ */
+function resolveNumberFilter(
+  config: Record<string, unknown>,
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
+): Pick<ResolvedPropertyConfig, "filterPresets" | "emptyPreset"> {
+  const stored: unknown[] = Array.isArray(config.filterPresets) ? config.filterPresets : [];
+  const filterPresets = stored.flatMap((entry) => {
+    const parsed = filterPresetSchema.safeParse(entry);
+    return parsed.success
+      ? [{ value: parsed.data.value, op: parsed.data.op, label: presetLabel(parsed.data, catalogs, locale) }]
+      : [];
+  });
+  const empty = emptyPresetSchema.safeParse(config.emptyPreset);
+  return {
+    ...(filterPresets.length > 0 ? { filterPresets } : {}),
+    ...(empty.success
+      ? { emptyPreset: { label: presetLabel(empty.data, catalogs, locale), matchZero: empty.data.matchZero } }
+      : {}),
+  };
 }
 
 function resolveConfig(
   p: PropertyRow,
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
   relationDefinitions: ReadonlyMap<string, RelationDefinitionRow> | undefined,
 ): ResolvedPropertyConfig {
   if (p.type === "relation") {
@@ -183,7 +231,7 @@ function resolveConfig(
   }
   const config: ResolvedPropertyConfig = {};
   if (p.type === "date") config.includeTime = p.config.includeTime === true;
-  if (p.type === "number" && Object.hasOwn(p.config, "filterPresets")) config.filterPresets = p.config.filterPresets;
+  if (p.type === "number") Object.assign(config, resolveNumberFilter(p.config, catalogs, locale));
   if (DEFAULT_TYPES.includes(p.type) && Object.hasOwn(p.config, "default")) config.default = p.config.default;
   return config;
 }
@@ -199,15 +247,17 @@ export function resolveProperty(
     ? resolveCatalogLabel(p.name, catalogs[locale], catalogs.en, `property.${dbKey}.${p.key}.name`)
     : rawKeyFallback(p.name, p.key, p.key);
 
+  const config = resolveConfig(p, catalogs, locale, relationDefinitions);
   const resolved: ResolvedProperty = {
     id: p.id,
     type: p.type,
-    filterable: isFilterable(p),
+    // A number is filterable only through presets (issue #1360), and only valid stored presets count (issue #1622).
+    filterable: p.type === "number" ? config.filterPresets !== undefined : ALWAYS_FILTERABLE_TYPES.includes(p.type),
     key: p.key,
     name: propName,
     owner: p.owner,
     locked: p.locked,
-    config: resolveConfig(p, relationDefinitions),
+    config,
   };
 
   if (p.type === "select" || p.type === "multi_select") {

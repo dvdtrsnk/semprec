@@ -21,6 +21,7 @@ import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPi
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29, same caveat as
@@ -58,4 +59,5 @@ export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   TRANSCRIPTION_OWNER_PROCESS,
   TASKS_MODULE_ID,
   PROJECTS_OWNER_PROCESS,
+  JOURNAL_EVENT_LINKS_OWNER_PROCESS,
 ]);

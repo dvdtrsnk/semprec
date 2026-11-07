@@ -8,9 +8,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createBlob, getBlob } from "../blobs/blobsStore.js";
-import { createTaskRecurrence } from "../tasks/taskRecurrenceStore.js";
 import { advanceTaskRecurrence } from "../tasks/advanceTaskRecurrence.js";
-import { computeNextDueDate } from "../tasks/nextDueDate.js";
+import { startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
 import { ConflictError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
@@ -195,13 +194,12 @@ describe("ten hardcoded databases (issue #24)", () => {
       targetItemId: project.id,
     });
 
-    await withTransaction(pool, (client) =>
-      createTaskRecurrence(client, {
-        itemId: task.id,
-        mode: "fixed",
-        rule: { kind: "weekdays", days: ["mon", "fri"] },
-      }),
-    );
+    await startTaskSeries(pool, {
+      databaseId: tasksId,
+      itemId: task.id,
+      mode: "fixed",
+      rule: { kind: "weekdays", days: ["mon", "fri"] },
+    });
 
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
     expect(next).not.toBeNull();
@@ -230,8 +228,8 @@ describe("ten hardcoded databases (issue #24)", () => {
     const plainAfter = await chokePoint.getItem(tasksId, plain.id);
     expect(plainAfter?.properties.status).toBe("notDone");
 
-    // the rolling-model invariant: re-advancing the already-completed original instance is
-    // also a no-op (its recurrence was deactivated when the next instance was created)
+    // re-advancing the already-completed original instance is also a no-op: its series already has
+    // the occurrence for the next date (issue #1670)
     const reAdvanceOriginal = await advanceTaskRecurrence(pool, {
       databaseId: tasksId,
       itemId: task.id,
@@ -258,13 +256,12 @@ describe("ten hardcoded databases (issue #24)", () => {
       callerItemId: task.id,
       targetItemId: project.id,
     });
-    await withTransaction(pool, (client) =>
-      createTaskRecurrence(client, {
-        itemId: task.id,
-        mode: "fixed",
-        rule: { kind: "weekdays", days: ["mon", "fri"] },
-      }),
-    );
+    await startTaskSeries(pool, {
+      databaseId: tasksId,
+      itemId: task.id,
+      mode: "fixed",
+      rule: { kind: "weekdays", days: ["mon", "fri"] },
+    });
 
     await chokePoint.softDeleteItem(projectsId, project.id);
 
@@ -275,13 +272,13 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(newEdges).toHaveLength(0);
   });
 
-  it("task recurrence preserves a one-directional edge where the task is the target side (Events -> Tasks actionItems)", async () => {
+  it("task recurrence does not carry an Events -> Tasks actionItems edge to the next instance (issue #1673)", async () => {
     const tasksId = await databaseIdFor("tasks");
     const eventsId = await databaseIdFor("events");
     const event = await chokePoint.createItem({ databaseId: eventsId, properties: { name: "Standup" } });
     const task = await chokePoint.createItem({
       databaseId: tasksId,
-      properties: { name: "Follow up", status: "notDone" },
+      properties: { name: "Follow up", status: "notDone", date: "2026-08-24" },
     });
 
     const { rows: actionItemsProp } = await pool.query(
@@ -294,17 +291,20 @@ describe("ten hardcoded databases (issue #24)", () => {
       targetItemId: task.id,
     });
 
-    await withTransaction(pool, (client) =>
-      createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 1 } }),
-    );
+    await startTaskSeries(pool, {
+      databaseId: tasksId,
+      itemId: task.id,
+      mode: "floating",
+      rule: { unit: "days", n: 1 },
+    });
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    expect(next).not.toBeNull();
 
-    // the event keeps its original action-item link (the completed instance stays part of
-    // the historical record) and gains a new one to the next instance
+    // the event keeps its action-item link to the completed instance and gains none to the next one
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, event.id));
     const linkedItemIds = edges.flatMap((e) => [e.itemA, e.itemB]);
     expect(linkedItemIds).toContain(task.id);
-    expect(linkedItemIds).toContain(next!.id);
+    expect(linkedItemIds).not.toContain(next!.id);
   });
 
   describe("task recurrence through the choke point's `status: 'done'` write", () => {
@@ -329,13 +329,16 @@ describe("ten hardcoded databases (issue #24)", () => {
         databaseId: tasksId,
         properties: { name: "Water plants", status: "notDone", date: "2026-08-24" },
       });
-      await withTransaction(pool, (client) =>
-        createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 3 } }),
-      );
+      await startTaskSeries(pool, {
+        databaseId: tasksId,
+        itemId: task.id,
+        mode: "floating",
+        rule: { unit: "days", n: 3 },
+      });
       return task;
     }
 
-    it("creates exactly one next notDone instance carrying the recurrence, and deactivates the old one", async () => {
+    it("creates exactly one next notDone instance and moves the series row to it (issue #1605)", async () => {
       const tasksId = await databaseIdFor("tasks");
       const task = await createRecurringTask(tasksId);
 
@@ -353,7 +356,9 @@ describe("ten hardcoded databases (issue #24)", () => {
       expect(next?.properties.name).toBe("Water plants");
       expect(next?.properties.status).toBe("notDone");
       expect(await recurrenceOf(nextId)).toEqual({ active: true, mode: "floating", rule: { unit: "days", n: 3 } });
-      expect((await recurrenceOf(task.id))?.active).toBe(false);
+      expect(await recurrenceOf(task.id)).toBeNull();
+      const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM task_recurrence");
+      expect(rows[0]?.n).toBe(1);
     });
 
     it("a second `done` write on the old task creates nothing", async () => {
@@ -406,37 +411,6 @@ describe("ten hardcoded databases (issue #24)", () => {
       expect((await chokePoint.getItem(tasksId, task.id))?.properties.status).toBe("notDone");
       expect((await recurrenceOf(task.id))?.active).toBe(true);
     });
-  });
-
-  it("computeNextDueDate: fixed nthWeekday and floating interval rules", () => {
-    const secondTuesday = computeNextDueDate(
-      "fixed",
-      { kind: "nthWeekday", n: 2, weekday: "tue" },
-      "UTC",
-      new Date("2026-08-01T00:00:00Z"),
-    );
-    expect(secondTuesday).toBe("2026-08-11");
-
-    const inTwoWeeks = computeNextDueDate("floating", { unit: "weeks", n: 2 }, "UTC", new Date("2026-08-01T00:00:00Z"));
-    expect(inTwoWeeks).toBe("2026-08-15");
-  });
-
-  it("computeNextDueDate: fixed monthDates rolls to the next month once the date has passed", () => {
-    const withinMonth = computeNextDueDate(
-      "fixed",
-      { kind: "monthDates", dates: [15] },
-      "UTC",
-      new Date("2026-08-01T00:00:00Z"),
-    );
-    expect(withinMonth).toBe("2026-08-15");
-
-    const alreadyPassed = computeNextDueDate(
-      "fixed",
-      { kind: "monthDates", dates: [15] },
-      "UTC",
-      new Date("2026-08-20T00:00:00Z"),
-    );
-    expect(alreadyPassed).toBe("2026-09-15");
   });
 
   it("journal: lazily creates one item per period and is idempotent for the same period", async () => {

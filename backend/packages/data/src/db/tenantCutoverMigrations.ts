@@ -1,8 +1,10 @@
 import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
+import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPresetsCutoverMigration.js";
 import { runSelectOptionOrderCutoverMigration } from "../seed/selectOptionOrderCutoverMigration.js";
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
+import { runThreadTasksCutoverMigration } from "../mail/threadTasksCutoverMigration.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
@@ -32,9 +34,12 @@ import { runMailDatabaseKeysCutoverMigration } from "../mail/mailDatabaseKeysCut
 import { runPeoplePhonesCutoverMigration } from "../seed/peoplePhonesCutoverMigration.js";
 import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigration.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
+import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
+import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
 import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
+import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -53,6 +58,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runItemsCreatedAtBackfillCutoverMigration(pool);
     await runMailDatabaseKeysCutoverMigration(pool);
     await runThreadsDatabaseCutoverMigration(pool);
+    await runThreadTasksCutoverMigration(pool);
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptDurationBackfillCutoverMigration(pool);
@@ -79,11 +85,16 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPeopleRelationshipOptionsCutoverMigration(pool);
     await runSelectOptionOrderCutoverMigration(pool);
     await runSelectOptionColorsCutoverMigration(pool);
+    await runRatingFilterPresetsCutoverMigration(pool);
     await runProjectsCompletedAtCutoverMigration(pool);
     await runAreasUnplannedCutoverMigration(pool);
     await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
+    await runTaskRecurrenceSeriesCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);
+    await runJournalEventsCutoverMigration(pool);
+    // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
+    await runAreaNoteCutoverMigration(pool);
   });
 }

@@ -13,6 +13,7 @@ import {
   insertValueLink,
   listValueLinkSourcesByLinkIds,
   listValueLinksByItemIds,
+  moveValueLinkItemSources,
 } from "../chokePoint/valueLinksStore.js";
 
 /** Issue #1403: the two tables' constraints and the store's batched lists. */
@@ -187,6 +188,46 @@ describe("value links store (issue #1403)", () => {
       );
       expect(seenByA.map((link) => link.id)).toEqual([linkA.link.id]);
       expect(seenByB.map((link) => link.id)).toEqual([linkB.link.id]);
+    } finally {
+      await runtimePool.end();
+    }
+  });
+
+  it("moves a source item's sources to another item, merges a duplicate and touches nothing else (issue #1673)", async () => {
+    const adminPool = pool;
+    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      const tenantA = await createTestTenant(adminPool);
+      const tenantB = await createTestTenant(adminPool);
+      const [from, to, unrelated] = [randomUUID(), randomUUID(), randomUUID()];
+      const source = (sourceItemId: string, sourcePropertyKey = "project") =>
+        ({ kind: "item", sourceItemId, sourcePropertyKey }) as const;
+      const insert = (tenant: string, sources: ReturnType<typeof source>[]) =>
+        withTenantTransaction(runtimePool, tenant, (client) =>
+          insertValueLink(client, { itemId: randomUUID(), propertyKey: "projects", ruleKey: "r", sources }),
+        );
+      const moved = await insert(tenantA, [source(from), source(from, "company")]);
+      const merged = await insert(tenantA, [source(from), source(to)]);
+      const untouched = await insert(tenantA, [source(unrelated)]);
+      const foreign = await insert(tenantB, [source(from)]);
+
+      const count = await withTenantTransaction(runtimePool, tenantA, (client) =>
+        moveValueLinkItemSources(client, from, to),
+      );
+      expect(count).toBe(3);
+      const sourcesOf = (tenant: string, linkId: string) =>
+        withTenantTransaction(runtimePool, tenant, async (client) =>
+          (await listValueLinkSourcesByLinkIds(client, [linkId]))
+            .map((row) => (row.kind === "item" ? `${row.sourceItemId} ${row.sourcePropertyKey}` : row.domain))
+            .sort(),
+        );
+      expect(await sourcesOf(tenantA, moved.link.id)).toEqual([`${to} company`, `${to} project`].sort());
+      expect(await sourcesOf(tenantA, merged.link.id)).toEqual([`${to} project`]);
+      expect(await sourcesOf(tenantA, untouched.link.id)).toEqual([`${unrelated} project`]);
+      expect(await sourcesOf(tenantB, foreign.link.id)).toEqual([`${from} project`]);
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) => moveValueLinkItemSources(client, from, to)),
+      ).toBe(0);
     } finally {
       await runtimePool.end();
     }
