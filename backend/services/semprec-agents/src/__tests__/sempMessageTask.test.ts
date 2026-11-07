@@ -361,7 +361,7 @@ function observeImageConversations(tenantId: string, threadId: string) {
     expectReplacement() {
       expectedCount = 2;
     },
-    clearAndRestore() {
+    clearCaptured() {
       verify();
       const errors: unknown[] = [];
       for (const instance of instances) {
@@ -373,21 +373,19 @@ function observeImageConversations(tenantId: string, threadId: string) {
           errors.push(error);
         }
       }
-      try {
-        Object.defineProperty(prototype, "send", descriptor);
-        const restored = Object.getOwnPropertyDescriptor(prototype, "send");
-        if (
-          !restored ||
-          restored.value !== descriptor.value ||
-          restored.writable !== descriptor.writable ||
-          restored.enumerable !== descriptor.enumerable ||
-          restored.configurable !== descriptor.configurable
-        )
-          throw new Error("Image conversation observer restoration failed");
-      } catch (error) {
-        errors.push(error);
-      }
       if (errors.length) throw new AggregateError(errors, "Image conversation cleanup failed", { cause: errors[0] });
+    },
+    restore() {
+      Object.defineProperty(prototype, "send", descriptor);
+      const restored = Object.getOwnPropertyDescriptor(prototype, "send");
+      if (
+        !restored ||
+        restored.value !== descriptor.value ||
+        restored.writable !== descriptor.writable ||
+        restored.enumerable !== descriptor.enumerable ||
+        restored.configurable !== descriptor.configurable
+      )
+        throw new Error("Image conversation observer restoration failed");
     },
   };
 }
@@ -1173,12 +1171,33 @@ describe("queued Semp messages", () => {
         if (imageObserver) imageLifecycleUnsafe = true;
         cleanupFailures.push(error);
       }
-      if (imageObserver && workerSettled && !imageLifecycleUnsafe) {
+      if (imageObserver) {
+        const runtimeStopped = workerSettled;
+        let capturedCleared = false;
+        let descriptorRestored = false;
+        if (workerSettled && !imageLifecycleUnsafe) {
+          try {
+            imageObserver.clearCaptured();
+            capturedCleared = true;
+          } catch (error) {
+            imageLifecycleUnsafe = true;
+            workerSettled = false;
+            cleanupFailures.push(error);
+          }
+        }
         try {
-          imageObserver.clearAndRestore();
+          imageObserver.restore();
+          descriptorRestored = true;
         } catch (error) {
           imageLifecycleUnsafe = true;
           workerSettled = false;
+          cleanupFailures.push(error);
+        }
+        try {
+          process.stderr.write(
+            `image lifecycle cleanup ${JSON.stringify({ runtimeStopped, capturedCleared, descriptorRestored })}\n`,
+          );
+        } catch (error) {
           cleanupFailures.push(error);
         }
       }
