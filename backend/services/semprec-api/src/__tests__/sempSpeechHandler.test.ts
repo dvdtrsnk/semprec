@@ -44,41 +44,69 @@ const fixtureMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("released") }),
 ]);
 
-type ObservedDescriptors = { query: PropertyDescriptor | undefined; release: PropertyDescriptor | undefined };
+type QueryDescriptors = Map<PoolClient, PropertyDescriptor | undefined>;
 
-function restoreObservedClientOnRelease(client: PoolClient, active: Map<PoolClient, ObservedDescriptors>): void {
-  const descriptors = {
-    query: Object.getOwnPropertyDescriptor(client, "query"),
-    release: Object.getOwnPropertyDescriptor(client, "release"),
-  };
-  active.set(client, descriptors);
-  /* eslint-disable @typescript-eslint/unbound-method */
-  const release = client.release;
-  client.release = new Proxy(release, {
-    apply(target, receiver, args: unknown[]) {
-      const errors: unknown[] = [];
-      for (const key of ["query", "release"] as const) {
-        try {
-          const descriptor = descriptors[key];
-          if (descriptor) Object.defineProperty(client, key, descriptor);
-          else if (!Reflect.deleteProperty(client, key)) throw new Error(`Cannot restore ${key} descriptor`);
-        } catch (error) {
-          errors.push(error);
-        }
-      }
+function watchQueryReleases(pool: Pool, active: QueryDescriptors) {
+  const errors: unknown[] = [];
+  const retirements: Promise<void>[] = [];
+  const onRelease = (_error: Error | undefined, client: PoolClient): void => {
+    if (!active.has(client)) return;
+    const descriptor = active.get(client);
+    try {
+      if (descriptor) Object.defineProperty(client, "query", descriptor);
+      else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
       active.delete(client);
-      if (errors.length) {
-        try {
-          Reflect.apply(target, receiver, [true]);
-        } catch (error) {
-          errors.push(error);
-        }
-        throw new AggregateError(errors, "Could not restore observed client", { cause: errors[0] });
+    } catch (error) {
+      errors.push(error);
+      // A public end() immediately retires this client; observe its actual settlement.
+      try {
+        const retirement = client.end().then(
+          () => {
+            active.delete(client);
+          },
+          (endError: unknown) => {
+            errors.push(endError);
+          },
+        );
+        retirements.push(retirement);
+      } catch (endError) {
+        errors.push(endError);
       }
-      return Reflect.apply(target, receiver, args);
-    },
-  });
-  /* eslint-enable @typescript-eslint/unbound-method */
+    }
+  };
+  pool.on("release", onRelease);
+  return { errors, retirements, onRelease };
+}
+
+async function finishQueryObserver(
+  pool: Pool,
+  active: QueryDescriptors,
+  instrument: (client: PoolClient) => void,
+  observedQueries: Promise<unknown>[],
+  releaseObserver: ReturnType<typeof watchQueryReleases>,
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await Promise.all(observedQueries);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await vi.waitFor(() => expect(active.size).toBe(0), { timeout: 5000 });
+  } catch (error) {
+    errors.push(error);
+  }
+  if (active.size === 0) {
+    pool.off("acquire", instrument);
+    pool.off("release", releaseObserver.onRelease);
+  }
+  try {
+    await Promise.all(releaseObserver.retirements);
+  } catch (error) {
+    errors.push(error);
+  }
+  errors.push(...releaseObserver.errors);
+  if (errors.length) throw new AggregateError(errors, "Query observer restoration failed", { cause: errors[0] });
 }
 
 describe("message speech HTTP", () => {
@@ -366,19 +394,97 @@ describe("message speech HTTP", () => {
     expect(providerCalls()).toBe(calls + 1);
   });
 
+  it("restores the exact query descriptor before a runtime client is reused", async () => {
+    const owned = await createRuntimeRolePool(admin, "semprec_data");
+    const active: QueryDescriptors = new Map();
+    const observedQueries: Promise<unknown>[] = [];
+    const releaseObserver = watchQueryReleases(owned, active);
+    let originalDescriptor: PropertyDescriptor | undefined;
+    let originalQuery: PoolClient["query"] | undefined;
+    const instrument = (client: PoolClient) => {
+      if (active.has(client)) return;
+      originalDescriptor = Object.getOwnPropertyDescriptor(client, "query");
+      /* eslint-disable @typescript-eslint/unbound-method */
+      originalQuery = client.query;
+      active.set(client, originalDescriptor);
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (result instanceof Promise)
+            observedQueries.push(
+              result.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
+          return result;
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
+    };
+    owned.on("acquire", instrument);
+    let first: PoolClient | undefined;
+    let firstReleased = false;
+    let second: PoolClient | undefined;
+    let failure: unknown;
+    let failed = false;
+    const cleanup: unknown[] = [];
+    try {
+      first = await runInTenant(tenant, () => owned.connect());
+      expect((await first.query<{ value: number }>("SELECT 1::int AS value")).rows).toEqual([{ value: 1 }]);
+      firstReleased = true;
+      first.release();
+      await vi.waitFor(() => expect(active.size).toBe(0), { timeout: 5000 });
+      await finishQueryObserver(owned, active, instrument, observedQueries, releaseObserver);
+      second = await runInTenant(tenant, () => owned.connect());
+      expect(second).toBe(first);
+      expect(Object.getOwnPropertyDescriptor(second, "query")).toEqual(originalDescriptor);
+      /* eslint-disable @typescript-eslint/unbound-method */
+      expect(second.query).toBe(originalQuery);
+      /* eslint-enable @typescript-eslint/unbound-method */
+      expect((await second.query<{ value: number }>("SELECT 2::int AS value")).rows).toEqual([{ value: 2 }]);
+      const last = second;
+      second = undefined;
+      last.release();
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      if (first && !firstReleased) first.release(true);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      second?.release(true);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      await owned.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (failed || cleanup.length)
+      throw new AggregateError([...(failed ? [failure] : []), ...cleanup], "Observer reuse test or cleanup failed", {
+        cause: failed ? failure : cleanup[0],
+      });
+  });
+
   it("coalesces two overlapping requests through the real API, guard and gateway", async () => {
     const value = await turn("Concurrent speech");
     const before = await accounting();
     const calls = providerCalls();
     await setMode("hold");
-    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
     const observedQueries: Promise<unknown>[] = [];
+    const releaseObserver = watchQueryReleases(pool, originals);
     const guardClients = new Set<PoolClient>();
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       // The observer delegates every real query and is restored before the pool closes.
       /* eslint-disable @typescript-eslint/unbound-method */
-      restoreObservedClientOnRelease(client, originals);
+      originals.set(client, Object.getOwnPropertyDescriptor(client, "query"));
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
@@ -439,9 +545,11 @@ describe("message speech HTTP", () => {
       cleanupFailures.push(error);
     }
     try {
-      pool.off("acquire", instrument);
-      await Promise.all(observedQueries);
-      if (originals.size !== 0) throw new Error("Observed clients are still checked out");
+      await finishQueryObserver(pool, originals, instrument, observedQueries, releaseObserver);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
       await setMode("normal");
     } catch (error) {
       cleanupFailures.push(error);
@@ -589,8 +697,9 @@ describe("message speech HTTP", () => {
       .mockImplementation((milliseconds) =>
         milliseconds === 300_000 ? deadline.signal : originalTimeout(milliseconds),
       );
-    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
     const observedQueries: Promise<unknown>[] = [];
+    const releaseObserver = watchQueryReleases(pool, originals);
     let release!: () => void;
     const proceed = new Promise<void>((resolve) => {
       release = resolve;
@@ -600,7 +709,7 @@ describe("message speech HTTP", () => {
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       /* eslint-disable @typescript-eslint/unbound-method */
-      restoreObservedClientOnRelease(client, originals);
+      originals.set(client, Object.getOwnPropertyDescriptor(client, "query"));
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
@@ -652,26 +761,41 @@ describe("message speech HTTP", () => {
       failed = true;
       failure = error;
     }
-    release();
-    await settled;
-    pool.off("acquire", instrument);
-    await Promise.all(observedQueries);
-    if (originals.size !== 0) throw new Error("Observed clients are still checked out");
-    timeoutSpy.mockRestore();
-    if (failed) throw failure instanceof Error ? failure : new Error("Deadline test failed", { cause: failure });
+    const cleanup: unknown[] = [];
+    try {
+      release();
+      await settled;
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      await finishQueryObserver(pool, originals, instrument, observedQueries, releaseObserver);
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      timeoutSpy.mockRestore();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (failed || cleanup.length)
+      throw new AggregateError([...(failed ? [failure] : []), ...cleanup], "Deadline test or cleanup failed", {
+        cause: failed ? failure : cleanup[0],
+      });
   });
 
   it("retains committed audio after a synthetic lost COMMIT acknowledgement", async () => {
     const value = await turn("Lost acknowledgement");
     const calls = providerCalls();
-    const originals = new Map<PoolClient, ObservedDescriptors>();
+    const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
     const observedQueries: Promise<unknown>[] = [];
+    const releaseObserver = watchQueryReleases(pool, originals);
     const writers = new Set<PoolClient>();
     let injected = false;
     const instrument = (client: PoolClient) => {
       if (originals.has(client)) return;
       /* eslint-disable @typescript-eslint/unbound-method */
-      restoreObservedClientOnRelease(client, originals);
+      originals.set(client, Object.getOwnPropertyDescriptor(client, "query"));
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
           const result: unknown = Reflect.apply(target, receiver, args);
@@ -721,10 +845,18 @@ describe("message speech HTTP", () => {
       failed = true;
       failure = error;
     }
-    pool.off("acquire", instrument);
-    await Promise.all(observedQueries);
-    if (originals.size !== 0) throw new Error("Observed clients are still checked out");
-    if (failed) throw failure instanceof Error ? failure : new Error("Lost-ack test failed", { cause: failure });
+    let cleanup: { error: unknown } | undefined;
+    try {
+      await finishQueryObserver(pool, originals, instrument, observedQueries, releaseObserver);
+    } catch (error) {
+      cleanup = { error };
+    }
+    if (failed || cleanup)
+      throw new AggregateError(
+        [...(failed ? [failure] : []), ...(cleanup ? [cleanup.error] : [])],
+        "Lost-ack test or cleanup failed",
+        { cause: failed ? failure : cleanup?.error },
+      );
   });
 
   it.each(["acquisition acknowledgement", "unlock acknowledgement"] as const)(

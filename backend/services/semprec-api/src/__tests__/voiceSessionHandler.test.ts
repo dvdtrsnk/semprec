@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, runAsSystem, runInTenant } from "@semprec/shared";
 import { SpeechSynthesisCapacityError, synthesizeSpeech } from "@semprec/ai-gateway-client";
 import {
   createRuntimeRolePool,
@@ -346,7 +346,7 @@ describe("voice session through the real gateway and registered worker", () => {
       let failed = false;
       const cleanupErrors: unknown[] = [];
       const received: unknown[] = [];
-      let shutdown: Promise<void> | undefined;
+      let shutdown: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
       try {
         const listen = (owned: ReturnType<typeof createTcpServer>) =>
           new Promise<void>((resolveListen, reject) => {
@@ -361,6 +361,7 @@ describe("voice session through the real gateway and registered worker", () => {
         const relayAddress = relay.address();
         if (!relayAddress || typeof relayAddress === "string") throw new Error("Missing relay address");
         let startSignal: AbortSignal | undefined;
+        let startFailure: { error: unknown; aborted: boolean } | undefined;
         let closedSessions = 0;
         const actualHandler = createVoiceSessionHandler(
           pool,
@@ -372,7 +373,10 @@ describe("voice session through the real gateway and registered worker", () => {
             ...actualHandler,
             onStart(identity, frame, sender) {
               startSignal = sender.signal;
-              return actualHandler.onStart(identity, frame, sender);
+              return Promise.resolve(actualHandler.onStart(identity, frame, sender)).catch((error: unknown) => {
+                startFailure = { error, aborted: sender.signal.aborted };
+                throw error;
+              });
             },
             async onClose(identity) {
               await actualHandler.onClose(identity);
@@ -425,8 +429,10 @@ describe("voice session through the real gateway and registered worker", () => {
           if (ending === "peer") peer.close();
           else if (ending === "tenant") actualChannel.closeTenant(tenant);
           else {
-            shutdown = actualChannel.close();
-            void shutdown.catch(() => {});
+            shutdown = actualChannel.close().then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            );
           }
           await vi.waitFor(() => expect(peerClosed).toBe(true), { timeout: 5000 });
           expect(startSignal?.aborted).toBe(true);
@@ -442,6 +448,12 @@ describe("voice session through the real gateway and registered worker", () => {
         }
         await vi.waitFor(() => expect(peerClosed).toBe(true), { timeout: 5000 });
         await vi.waitFor(() => expect(closedSessions).toBe(1), { timeout: 5000 });
+        if (ending === "server") {
+          expect(startFailure?.aborted).toBe(true);
+          expect(startFailure?.error).toBeInstanceOf(AiGatewayFailedError);
+          if (!(startFailure?.error instanceof AiGatewayFailedError)) throw new Error("Missing gateway rejection");
+          expect(startFailure.error.reason).toBe("http");
+        }
         expect(await observations()).toEqual(before);
       } catch (error) {
         failed = true;
@@ -459,8 +471,18 @@ describe("voice session through the real gateway and registered worker", () => {
         cleanupErrors.push(error);
       }
       try {
-        if (shutdown) await shutdown;
-        else if (channel) await channel.close();
+        if (shutdown) {
+          const outcome = await shutdown;
+          if (ending === "server") {
+            expect(outcome.ok).toBe(false);
+            if (outcome.ok || !(outcome.error instanceof AggregateError)) throw new Error("Missing shutdown aggregate");
+            expect(outcome.error.errors).toHaveLength(1);
+            const member: unknown = outcome.error.errors[0];
+            expect(member).toBeInstanceOf(Error);
+            if (!(member instanceof Error)) throw new Error("Invalid shutdown member");
+            expect(member.message).toBe("Voice handler operation failed");
+          } else if (!outcome.ok) throw outcome.error;
+        } else if (channel) await channel.close();
       } catch (error) {
         cleanupErrors.push(error);
       }

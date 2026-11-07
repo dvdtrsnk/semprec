@@ -50,97 +50,111 @@ const gate = new Promise<void>((resolve) => {
 });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const observed = new Set<Promise<unknown>>();
+const active = new Map<PoolClient, PropertyDescriptor | undefined>();
+const restorationErrors: unknown[] = [];
+const retirements: Promise<void>[] = [];
+const retireClient = (client: PoolClient, error: unknown): void => {
+  restorationErrors.push(error);
+  try {
+    retirements.push(
+      client.end().then(
+        () => {
+          active.delete(client);
+        },
+        (endError: unknown) => {
+          restorationErrors.push(endError);
+        },
+      ),
+    );
+  } catch (endError) {
+    restorationErrors.push(endError);
+  }
+};
+const onRelease = (_error: Error | undefined, client: PoolClient): void => {
+  if (!active.has(client)) return;
+  const descriptor = active.get(client);
+  try {
+    if (descriptor) Object.defineProperty(client, "query", descriptor);
+    else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore worker query descriptor");
+    active.delete(client);
+  } catch (error) {
+    retireClient(client, error);
+  }
+};
+pool.on("release", onRelease);
 const instrument = (client: PoolClient): void => {
-  if (!gateEnabled || !armed) return;
-  const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
-  const releaseDescriptor = Object.getOwnPropertyDescriptor(client, "release");
-  /* eslint-disable @typescript-eslint/unbound-method */
-  const query = client.query;
-  const release = client.release;
-  let identity: { tenantId: string; messageId: string; runId: string; eventId: string } | undefined;
-  client.query = new Proxy(query, {
-    apply(target, receiver, args: unknown[]) {
-      const result: unknown = Reflect.apply(target, receiver, args);
-      if (typeof args[0] !== "string") return result;
-      if (
-        armed &&
-        !claimed &&
-        args[0] ===
-          "UPDATE semp_messages SET agent_run_id = $2, event_from_id = $3::bigint, updated_at = now() WHERE id = $1 AND status = 'running'"
-      ) {
-        claimed = true;
-        const values = args[1];
-        const scope = currentTenantScope();
+  if (!gateEnabled || !armed || active.has(client)) return;
+  try {
+    const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
+    active.set(client, queryDescriptor);
+    /* eslint-disable @typescript-eslint/unbound-method */
+    const query = client.query;
+    let identity: { tenantId: string; messageId: string; runId: string; eventId: string } | undefined;
+    client.query = new Proxy(query, {
+      apply(target, receiver, args: unknown[]) {
+        const result: unknown = Reflect.apply(target, receiver, args);
+        if (result instanceof Promise) {
+          observed.add(result);
+          void result.finally(() => observed.delete(result)).catch(() => {});
+        }
+        if (typeof args[0] !== "string") return result;
         if (
-          !Array.isArray(values) ||
-          values.length !== 3 ||
-          typeof values[0] !== "string" ||
-          !uuid.test(values[0]) ||
-          typeof values[1] !== "string" ||
-          !uuid.test(values[1]) ||
-          typeof values[2] !== "string" ||
-          !/^[1-9][0-9]*$/.test(values[2]) ||
-          scope?.kind !== "tenant"
+          armed &&
+          !claimed &&
+          args[0] ===
+            "UPDATE semp_messages SET agent_run_id = $2, event_from_id = $3::bigint, updated_at = now() WHERE id = $1 AND status = 'running'"
         ) {
-          const invalid = Promise.resolve(result).then(() => {
-            throw new Error("Invalid worker gate identity");
+          claimed = true;
+          const values = args[1];
+          const scope = currentTenantScope();
+          if (
+            !Array.isArray(values) ||
+            values.length !== 3 ||
+            typeof values[0] !== "string" ||
+            !uuid.test(values[0]) ||
+            typeof values[1] !== "string" ||
+            !uuid.test(values[1]) ||
+            typeof values[2] !== "string" ||
+            !/^[1-9][0-9]*$/.test(values[2]) ||
+            scope?.kind !== "tenant"
+          ) {
+            const invalid = Promise.resolve(result).then(() => {
+              throw new Error("Invalid worker gate identity");
+            });
+            observed.add(invalid);
+            void invalid.finally(() => observed.delete(invalid)).catch(() => {});
+            return invalid;
+          }
+          const selected = { tenantId: scope.tenantId, messageId: values[0], runId: values[1], eventId: values[2] };
+          const next = Promise.resolve(result).then((actual: unknown) => {
+            if (typeof actual !== "object" || actual === null || !("rowCount" in actual) || actual.rowCount !== 1)
+              throw new Error("Worker gate update did not affect one row");
+            identity = selected;
+            return actual;
           });
-          observed.add(invalid);
-          void invalid.finally(() => observed.delete(invalid)).catch(() => {});
-          return invalid;
+          observed.add(next);
+          void next.finally(() => observed.delete(next)).catch(() => {});
+          return next;
         }
-        const selected = { tenantId: scope.tenantId, messageId: values[0], runId: values[1], eventId: values[2] };
-        const next = Promise.resolve(result).then((actual: unknown) => {
-          if (typeof actual !== "object" || actual === null || !("rowCount" in actual) || actual.rowCount !== 1)
-            throw new Error("Worker gate update did not affect one row");
-          identity = selected;
-          return actual;
-        });
-        observed.add(next);
-        void next.finally(() => observed.delete(next)).catch(() => {});
-        return next;
-      }
-      if (args[0] === "COMMIT" && identity && armed && !held) {
-        const selected = identity;
-        const next = Promise.resolve(result).then(async (actual: unknown) => {
-          held = true;
-          process.send?.({ type: "gateHeld", ...selected });
-          await gate;
-          return actual;
-        });
-        observed.add(next);
-        void next.finally(() => observed.delete(next)).catch(() => {});
-        return next;
-      }
-      return result;
-    },
-  });
-  client.release = new Proxy(release, {
-    apply(target, receiver, args: unknown[]) {
-      const errors: unknown[] = [];
-      for (const [key, descriptor] of [
-        ["query", queryDescriptor],
-        ["release", releaseDescriptor],
-      ] as const) {
-        try {
-          if (descriptor) Object.defineProperty(client, key, descriptor);
-          else if (!Reflect.deleteProperty(client, key)) throw new Error("Cannot restore worker observer");
-        } catch (error) {
-          errors.push(error);
+        if (args[0] === "COMMIT" && identity && armed && !held) {
+          const selected = identity;
+          const next = Promise.resolve(result).then(async (actual: unknown) => {
+            held = true;
+            process.send?.({ type: "gateHeld", ...selected });
+            await gate;
+            return actual;
+          });
+          observed.add(next);
+          void next.finally(() => observed.delete(next)).catch(() => {});
+          return next;
         }
-      }
-      if (errors.length) {
-        try {
-          Reflect.apply(target, receiver, [true]);
-        } catch (error) {
-          errors.push(error);
-        }
-        throw new AggregateError(errors, "Worker observer restoration failed", { cause: errors[0] });
-      }
-      return Reflect.apply(target, receiver, args);
-    },
-  });
-  /* eslint-enable @typescript-eslint/unbound-method */
+        return result;
+      },
+    });
+    /* eslint-enable @typescript-eslint/unbound-method */
+  } catch (error) {
+    retireClient(client, error);
+  }
 };
 pool.on("acquire", instrument);
 const runtime = await createAgentsQueueRuntime(pool, registry, {
@@ -181,8 +195,14 @@ function shutdown(): void {
       failures.push(error);
     }
     try {
-      pool.off("acquire", instrument);
       await Promise.allSettled([...observed]);
+      const expires = Date.now() + 5000;
+      while (active.size > 0 && Date.now() < expires) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      if (active.size > 0) throw new Error("Worker observer clients did not settle");
+      pool.off("acquire", instrument);
+      pool.off("release", onRelease);
+      await Promise.all(retirements);
+      failures.push(...restorationErrors);
       await pool.end();
     } catch (error) {
       failures.push(error);
@@ -209,7 +229,23 @@ process.on("message", (message: unknown) => {
   }
   if (gateEnabled && message.type === "arm" && !armed && !held) {
     armed = true;
-    process.send?.({ type: "gateArmed" });
+    void (async () => {
+      const client = await runAsSystem("test:voice-worker-gate", () => pool.connect());
+      try {
+        if (!active.has(client) || restorationErrors.length > 0) throw new Error("Worker observer was not installed");
+      } finally {
+        client.release();
+      }
+      const expires = Date.now() + 5000;
+      while (active.has(client) && Date.now() < expires) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      if (active.has(client) || restorationErrors.length > 0) throw new Error("Worker observer did not restore");
+      process.send?.({ type: "gateArmed" });
+    })().catch((error: unknown) => {
+      restorationErrors.push(error);
+      process.stderr.write("Voice worker gate arm failed\n");
+      process.exitCode = 1;
+      shutdown();
+    });
     return;
   }
   if (gateEnabled && message.type === "abort" && held && !aborted) {
