@@ -388,7 +388,7 @@ export function createVoiceSessionHandler(
                     .then(
                       (result) => ({ ok: true as const, result }),
                       (error: unknown) => {
-                        if (!session.admissionFailure && !sender.signal.aborted) {
+                        if (!session.admissionFailure && (!sender.signal.aborted || error !== sender.signal.reason)) {
                           session.admissionFailure = { error };
                           session.failures.push(error);
                           fail(session, error);

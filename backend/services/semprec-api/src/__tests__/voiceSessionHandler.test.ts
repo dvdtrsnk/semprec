@@ -950,9 +950,19 @@ describe("voice session through the real gateway and registered worker", () => {
     const ownedGateway = gateway;
     async function control(type: "holdSpeech" | "holdModel" | "releaseSpeech" | "releaseModel"): Promise<void> {
       if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
-      await new Promise<void>((resolveSend, reject) =>
-        ownedGateway.child.send({ type }, (error) => (error ? reject(error) : resolveSend())),
-      );
+      await new Promise<void>((resolveSend, reject) => {
+        const timer = setTimeout(() => reject(new Error("Fixture control acknowledgement timed out")), 5000);
+        try {
+          ownedGateway.child.send({ type }, (error) => {
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolveSend();
+          });
+        } catch (error) {
+          clearTimeout(timer);
+          reject(error);
+        }
+      });
     }
     try {
       const cp = createChokePoint(pool);
