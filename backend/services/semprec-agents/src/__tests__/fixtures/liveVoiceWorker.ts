@@ -1,4 +1,5 @@
 import { register } from "node:module";
+import type { PoolClient } from "pg";
 
 register(
   new URL("../../../../semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs", import.meta.url),
@@ -7,7 +8,7 @@ register(
 register(new URL("../../../src/__tests__/fixtures/liveVoiceWorkerResolver.mjs", import.meta.url), import.meta.url);
 const { createPool, loadFullModuleRegistry, LocalFsBlobStorageWriter } = await import("@semprec/data");
 const { wireRealtimeHooks } = await import("@semprec/realtime");
-const { runAsSystem } = await import("@semprec/shared");
+const { currentTenantScope, runAsSystem } = await import("@semprec/shared");
 const { closeIdleThreadSessions } = await import("@semprec/agent-runtime");
 const { createAgentRunTask, createRunAgentForHeartbeats } = await import("../../agentRunTasks.js");
 const { createInFlightAgentRuns } = await import("../../inFlightAgentRuns.js");
@@ -38,6 +39,110 @@ const gateway = createGatewayModel({
   AGENT_MODEL: "claude-haiku-4-5",
 });
 const inFlight = createInFlightAgentRuns();
+const gateEnabled = process.env.BATCH32_REGISTRATION_GATE === "1";
+let armed = false;
+let held = false;
+let aborted = false;
+let claimed = false;
+let releaseGate: (() => void) | undefined;
+const gate = new Promise<void>((resolve) => {
+  releaseGate = resolve;
+});
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const observed = new Set<Promise<unknown>>();
+const instrument = (client: PoolClient): void => {
+  if (!gateEnabled || !armed) return;
+  const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
+  const releaseDescriptor = Object.getOwnPropertyDescriptor(client, "release");
+  /* eslint-disable @typescript-eslint/unbound-method */
+  const query = client.query;
+  const release = client.release;
+  let identity: { tenantId: string; messageId: string; runId: string; eventId: string } | undefined;
+  client.query = new Proxy(query, {
+    apply(target, receiver, args: unknown[]) {
+      const result: unknown = Reflect.apply(target, receiver, args);
+      if (typeof args[0] !== "string") return result;
+      if (
+        armed &&
+        !claimed &&
+        args[0] ===
+          "UPDATE semp_messages SET agent_run_id = $2, event_from_id = $3::bigint, updated_at = now() WHERE id = $1 AND status = 'running'"
+      ) {
+        claimed = true;
+        const values = args[1];
+        const scope = currentTenantScope();
+        if (
+          !Array.isArray(values) ||
+          values.length !== 3 ||
+          typeof values[0] !== "string" ||
+          !uuid.test(values[0]) ||
+          typeof values[1] !== "string" ||
+          !uuid.test(values[1]) ||
+          typeof values[2] !== "string" ||
+          !/^[1-9][0-9]*$/.test(values[2]) ||
+          scope?.kind !== "tenant"
+        ) {
+          const invalid = Promise.resolve(result).then(() => {
+            throw new Error("Invalid worker gate identity");
+          });
+          observed.add(invalid);
+          void invalid.finally(() => observed.delete(invalid)).catch(() => {});
+          return invalid;
+        }
+        const selected = { tenantId: scope.tenantId, messageId: values[0], runId: values[1], eventId: values[2] };
+        const next = Promise.resolve(result).then((actual: unknown) => {
+          if (typeof actual !== "object" || actual === null || !("rowCount" in actual) || actual.rowCount !== 1)
+            throw new Error("Worker gate update did not affect one row");
+          identity = selected;
+          return actual;
+        });
+        observed.add(next);
+        void next.finally(() => observed.delete(next)).catch(() => {});
+        return next;
+      }
+      if (args[0] === "COMMIT" && identity && armed && !held) {
+        const selected = identity;
+        const next = Promise.resolve(result).then(async (actual: unknown) => {
+          held = true;
+          process.send?.({ type: "gateHeld", ...selected });
+          await gate;
+          return actual;
+        });
+        observed.add(next);
+        void next.finally(() => observed.delete(next)).catch(() => {});
+        return next;
+      }
+      return result;
+    },
+  });
+  client.release = new Proxy(release, {
+    apply(target, receiver, args: unknown[]) {
+      const errors: unknown[] = [];
+      for (const [key, descriptor] of [
+        ["query", queryDescriptor],
+        ["release", releaseDescriptor],
+      ] as const) {
+        try {
+          if (descriptor) Object.defineProperty(client, key, descriptor);
+          else if (!Reflect.deleteProperty(client, key)) throw new Error("Cannot restore worker observer");
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) {
+        try {
+          Reflect.apply(target, receiver, [true]);
+        } catch (error) {
+          errors.push(error);
+        }
+        throw new AggregateError(errors, "Worker observer restoration failed", { cause: errors[0] });
+      }
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  /* eslint-enable @typescript-eslint/unbound-method */
+};
+pool.on("acquire", instrument);
 const runtime = await createAgentsQueueRuntime(pool, registry, {
   runAgent: createRunAgentForHeartbeats(pool, registry, gateway, inFlight),
   agentRunTask: createAgentRunTask(pool, registry, gateway, inFlight),
@@ -76,6 +181,8 @@ function shutdown(): void {
       failures.push(error);
     }
     try {
+      pool.off("acquire", instrument);
+      await Promise.allSettled([...observed]);
       await pool.end();
     } catch (error) {
       failures.push(error);
@@ -93,10 +200,31 @@ process.on("message", (message: unknown) => {
     message === null ||
     Array.isArray(message) ||
     !("type" in message) ||
-    message.type !== "stop" ||
-    Object.keys(message).length !== 1
-  )
+    Object.keys(message).length !== 1 ||
+    JSON.stringify(message).length > 256
+  ) {
     process.exitCode = 1;
+    shutdown();
+    return;
+  }
+  if (gateEnabled && message.type === "arm" && !armed && !held) {
+    armed = true;
+    process.send?.({ type: "gateArmed" });
+    return;
+  }
+  if (gateEnabled && message.type === "abort" && held && !aborted) {
+    const count = inFlight.abortSemp();
+    if (count > 0) aborted = true;
+    process.send?.({ type: "gateAborted", count });
+    return;
+  }
+  if (gateEnabled && message.type === "release" && held && aborted) {
+    armed = false;
+    releaseGate?.();
+    process.send?.({ type: "gateReleased" });
+    return;
+  }
+  if (message.type !== "stop") process.exitCode = 1;
   shutdown();
 });
 process.on("disconnect", shutdown);

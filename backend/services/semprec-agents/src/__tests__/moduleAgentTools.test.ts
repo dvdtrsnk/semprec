@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
@@ -128,7 +127,10 @@ describe("module agent tools under project ownership", () => {
       );
       const result = await tool.invoke({ proposalId: own.cardId });
       expect(result.error).toBe(false);
-      expect(z.record(z.string(), z.unknown()).parse(JSON.parse(result.result) as unknown)).toMatchObject({
+      const decoded: unknown = JSON.parse(result.result);
+      if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded))
+        throw new Error("Invalid tool result");
+      expect(decoded).toMatchObject({
         captureText: "",
         attachments: [],
         envelope: null,
