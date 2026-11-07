@@ -281,7 +281,10 @@ function shutdown(): void {
       }
     };
     await attempt(() => stt.closeAll());
-    if (pendingFirstText) await attempt(() => pendingFirstText?.response.destroy());
+    if (pendingFirstText)
+      await attempt(() => {
+        pendingFirstText?.response.destroy();
+      });
     for (const res of pending)
       await attempt(() => {
         res.destroy();
