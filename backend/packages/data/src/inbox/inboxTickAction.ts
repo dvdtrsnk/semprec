@@ -3,7 +3,6 @@ import {
   existingItemRelations,
   assertStepDatabaseWritable,
   assertUpdateStepShape,
-  proposalTimezone,
 } from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
 import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
@@ -63,6 +62,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { getCalendarClock } from "../calendarTime.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
@@ -246,10 +246,12 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
     if (step.op === "update") {
-      const prepared =
-        Object.keys(properties).length > 0
-          ? await prepareUserItemPatch(databaseProperties, properties, database, item, await proposalTimezone(client))
-          : { patch: {}, deferredKeys: [] };
+      // The tenant zone the preparation needs, read and validated in this transaction (getSystemTimezone and
+      // assertValidTimezone; docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
+      const clock = Object.keys(properties).length > 0 ? await getCalendarClock(client) : null;
+      const prepared = clock
+        ? await prepareUserItemPatch(databaseProperties, properties, database, item, clock.zone)
+        : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }
     await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step), item.id);

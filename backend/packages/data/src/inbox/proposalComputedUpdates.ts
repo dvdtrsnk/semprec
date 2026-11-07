@@ -6,10 +6,10 @@ import { getDatabase } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
+import { getCalendarClock } from "../calendarTime.js";
 import type { ProposalEnvelope, ProposalStep } from "./proposalEnvelope.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import { isWorkspaceUpdateEligible } from "./proposalWorkspaceContext.js";
-import { proposalTimezone } from "./proposalEnvelopeValidation.js";
 
 /** Forms server-owned baselines only for freshly computed multi-step proposals. */
 export async function prepareComputedUpdates(
@@ -42,7 +42,7 @@ export async function prepareComputedUpdates(
     let prepared: { patch: Record<string, unknown>; deferredKeys: string[] } = { patch: {}, deferredKeys: [] };
     if (Object.keys(patch).length > 0) {
       // Read outside the mapping below: a settings failure is not a refused proposal and propagates as is.
-      timezone ??= await proposalTimezone(client);
+      timezone ??= (await getCalendarClock(client)).zone;
       try {
         prepared = await prepareUserItemPatch(properties, patch, database, item, timezone);
       } catch (error) {

@@ -4,6 +4,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { getCalendarClock } from "../calendarTime.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
@@ -17,7 +18,7 @@ import type { ProposalStep } from "./inboxTickAction.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { isDeepStrictEqual } from "node:util";
-import { assertUpdateStepShape, proposalTimezone, withStepRef } from "./proposalEnvelopeValidation.js";
+import { assertUpdateStepShape, withStepRef } from "./proposalEnvelopeValidation.js";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
@@ -125,9 +126,11 @@ async function assertUpdateBefore(
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   await withStepRef(step.ref, async () => {
     const patch = step.properties ?? {};
+    // The tenant zone is read and validated again here, under the item lock this confirmation holds
+    // (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
     const prepared =
       Object.keys(patch).length > 0
-        ? await prepareUserItemPatch(properties, patch, database, item, await proposalTimezone(client))
+        ? await prepareUserItemPatch(properties, patch, database, item, (await getCalendarClock(client)).zone)
         : { patch: {}, deferredKeys: [] };
     assertUpdateStepShape(step, prepared, item, new Map(properties.map((property) => [property.key, property])));
   });

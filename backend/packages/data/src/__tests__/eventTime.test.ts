@@ -195,8 +195,10 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(prepared).toEqual({ patch: { timeFrom: "07:45", time: "07:45–10:00", icalSequence: 1 }, deferredKeys: [] });
 
     for (const zone of ["Europe/Prague", "America/New_York"]) {
+      // The row as this iteration's write will find it: the previous iteration wrote and restored it.
+      const current = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
       const patch = { date: "2026-10-16T14:00:00Z" };
-      const instant = await prepareUserItemPatch(properties, patch, database, stored, zone);
+      const instant = await prepareUserItemPatch(properties, patch, database, current, zone);
       await setTenantZone(zone);
       const written = await chokePoint.updateItem(
         { databaseId: eventsId, itemId: event.id, propertiesPatch: patch },
@@ -204,10 +206,14 @@ describe("Events time normalization before the write (issue #1598)", () => {
         undefined,
         USER,
       );
-      for (const key of ["date", "timeFrom", "timeTo", "time"]) {
-        expect(instant.patch[key], `${zone} ${key}`).toEqual(written.properties[key]);
+      // The prepared patch names only the keys it changes; the stored row supplies the rest.
+      const effective = { ...current.properties, ...instant.patch };
+      for (const key of ["date", "timeFrom", "timeTo", "time", "icalSequence"]) {
+        expect(effective[key], `${zone} ${key}`).toEqual(written.properties[key]);
       }
       expect(instant.patch.timeFrom).toBe(zone === "Europe/Prague" ? "16:00" : "10:00");
+      // The iCalendar preparation compares the time-normalized values: the start moved, so the sequence is bumped.
+      expect(instant.patch.icalSequence).toBe(Number(current.properties.icalSequence) + 1);
       // Restore the stored row the next zone's preparation starts from.
       await chokePoint.updateItem(
         { databaseId: eventsId, itemId: event.id, propertiesPatch: { date: "2026-10-16", timeFrom: "09:00" } },

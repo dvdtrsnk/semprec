@@ -16,22 +16,8 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { pageContentV2Schema } from "./proposalEnvelope.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
-import { getSystemTimezone } from "../systemSettings.js";
-import { assertValidTimezone } from "../timezone.js";
 
 const PAGE_TARGET_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * The tenant zone a proposal preparation needs (`prepareUserItemPatch`): read with `getSystemTimezone` and
- * validated in the calling validation, computation or confirmation step's own tenant transaction, then
- * passed on as a plain value (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
- * A settings failure or an invalid zone propagates.
- */
-export async function proposalTimezone(client: PoolClient): Promise<string> {
-  const timezone = await getSystemTimezone(client);
-  assertValidTimezone(timezone);
-  return timezone;
-}
 
 export async function requireProposalPageTarget(client: PoolClient, target: string): Promise<ItemRow> {
   if (!PAGE_TARGET_UUID.test(target)) {
