@@ -140,28 +140,47 @@ globalThis.fetch = (input, init) => {
 const unused = (): never => {
   throw new Error("Unexpected fixture operation");
 };
-const gateway = createServer(
-  createDispatcher(
-    pool,
-    {
-      internalToken: token,
-      provider: { id: "unused", supportsJsonSchemaStructuredOutput: true, complete: unused },
-      model: "unused",
-      pricePerMillionInputTokens: 0,
-      pricePerMillionOutputTokens: 0,
-      globalCaps: caps,
-    },
-    {
-      internalToken: token,
-      diarizationProvider: { id: "unused", model: "unused", diarize: unused },
-      transcriptionProvider: { id: "unused", model: "unused", transcribe: unused },
-      pyannotePricePerAudioHour: 0,
-      deepInfraPricePerAudioHour: 0,
-      globalCaps: caps,
-    },
-    { internalToken: token, models: builtinModels(), apiKey: "fixture-key", streamFn: streamSimple, globalCaps: caps },
-  ),
+const dispatcher = createDispatcher(
+  pool,
+  {
+    internalToken: token,
+    provider: { id: "unused", supportsJsonSchemaStructuredOutput: true, complete: unused },
+    model: "unused",
+    pricePerMillionInputTokens: 0,
+    pricePerMillionOutputTokens: 0,
+    globalCaps: caps,
+  },
+  {
+    internalToken: token,
+    diarizationProvider: { id: "unused", model: "unused", diarize: unused },
+    transcriptionProvider: { id: "unused", model: "unused", transcribe: unused },
+    pyannotePricePerAudioHour: 0,
+    deepInfraPricePerAudioHour: 0,
+    globalCaps: caps,
+  },
+  { internalToken: token, models: builtinModels(), apiKey: "fixture-key", streamFn: streamSimple, globalCaps: caps },
 );
+let gatewayRequests = 0;
+const gateway = createServer((request, response) => {
+  if (request.method === "POST" && request.url === "/internal/pi/messages") {
+    let bytes = 0;
+    let valid = true;
+    request.on("data", (chunk: unknown) => {
+      if (Buffer.isBuffer(chunk)) bytes += chunk.length;
+      else if (typeof chunk === "string") bytes += Buffer.byteLength(chunk);
+      else valid = false;
+      if (bytes > 4 * 1024 * 1024) valid = false;
+    });
+    request.once("end", () => {
+      if (!valid || ++gatewayRequests > 20) {
+        process.exitCode = 1;
+        return;
+      }
+      process.send?.({ type: "gatewayRequest", sequence: gatewayRequests, bodyBytes: bytes });
+    });
+  }
+  dispatcher(request, response);
+});
 await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
 const gatewayAddress = gateway.address();
 if (!gatewayAddress || typeof gatewayAddress === "string") throw new Error("Missing gateway address");

@@ -4,15 +4,18 @@ import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_pr
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import sharp from "sharp";
 import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
+  createChokePoint,
   createAgentRun,
   createDocStore,
   createItemWithClient,
@@ -24,6 +27,7 @@ import {
   finishSempMessageTurn,
   getDatabaseByModuleId,
   insertAgentRunEvent,
+  ingestUploadedBlob,
   loadFullModuleRegistry,
   listPropertiesByDatabase,
   LocalFsBlobStorageWriter,
@@ -67,6 +71,7 @@ let runtime: AgentsQueueRuntime | undefined;
 
 type RefFixtureMessage =
   | { type: "ready"; port: number }
+  | { type: "gatewayRequest"; sequence: number; bodyBytes: number }
   | {
       type: "observation";
       sequence: number;
@@ -94,6 +99,21 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     value.port <= 65535
   )
     return { type: "ready", port: value.port };
+  if (
+    value.type === "gatewayRequest" &&
+    Object.keys(value).length === 3 &&
+    "sequence" in value &&
+    typeof value.sequence === "number" &&
+    Number.isInteger(value.sequence) &&
+    value.sequence >= 1 &&
+    value.sequence <= 20 &&
+    "bodyBytes" in value &&
+    typeof value.bodyBytes === "number" &&
+    Number.isInteger(value.bodyBytes) &&
+    value.bodyBytes > 0 &&
+    value.bodyBytes <= 4 * 1024 * 1024
+  )
+    return { type: "gatewayRequest", sequence: value.sequence, bodyBytes: value.bodyBytes };
   if (
     value.type === "observation" &&
     Object.keys(value).length === 11 &&
@@ -295,7 +315,8 @@ describe("queued Semp messages", () => {
         }),
       );
       mailRoot = await mkdtemp(join(tmpdir(), "semp-ref-worker-mail-"));
-      const mailStorage = new LocalFsBlobStorageWriter(mailRoot);
+      const mailStorage = new LocalFsBlobStorageWriter(join(mailRoot, "mail"));
+      const fileStorage = new LocalFsBlobStorageWriter(join(mailRoot, "files"));
       const mail = await runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
           const mailIds = await resolveMailModuleIds(client);
@@ -371,6 +392,29 @@ describe("queued Semp messages", () => {
         );
         await docs.putBlock(ids.itemId, { id: parentId, flavour: "page", children: [blockId, siblingId] }, "user");
       });
+      const imageBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#2376af" } })
+        .png()
+        .toBuffer();
+      const fileDatabase = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getDatabaseByModuleId(client, "files")),
+      );
+      if (!fileDatabase) throw new Error("Missing Files database");
+      const imageRefs: Array<{ kind: "item"; databaseId: string; itemId: string }> = [];
+      for (let index = 0; index < 10; index += 1) {
+        const image = await runInTenant(tenant, async () => {
+          const upload = await ingestUploadedBlob(pool, {
+            mimeType: "image/png",
+            source: Readable.from([imageBytes]),
+            maxBytes: imageBytes.length + 1,
+            storage: fileStorage,
+          });
+          return createChokePoint(pool).createItem({
+            databaseId: fileDatabase.id,
+            properties: { name: `Reference image ${index}`, file: { blobId: upload.blob.id } },
+          });
+        });
+        imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.id });
+      }
       const foreignIds = await runInTenant(foreign, () =>
         withTransaction(pool, async (client) => {
           const database = await getDatabaseByModuleId(client, "areas");
@@ -386,6 +430,7 @@ describe("queued Semp messages", () => {
         { kind: "item" as const, ...ids },
         { kind: "item" as const, ...mail },
         { kind: "block" as const, itemId: ids.itemId, blockId },
+        ...imageRefs.slice(0, 9),
       ];
       await expect(
         withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
@@ -428,7 +473,10 @@ describe("queued Semp messages", () => {
         AGENT_MODEL: "claude-haiku-4-5",
       });
       runtime = await createAgentsQueueRuntime(pool, registry, {
-        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
+          files: fileStorage,
+          mailAttachments: mailStorage,
+        }),
       });
       let runId = "";
       await vi.waitFor(
@@ -457,13 +505,16 @@ describe("queued Semp messages", () => {
               mailReply: true,
               block: true,
               sibling: true,
-              imageCount: 0,
-              imageMimes: [],
+              imageCount: 9,
+              imageMimes: ["image/jpeg"],
               providerSerializedBytes: expect.any(Number),
             }),
           ]),
         { timeout: 5000 },
       );
+      const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
+      expect(requestObservations).toHaveLength(1);
+      expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
       const evidence = await runInTenant(tenant, async () => {
         const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
         const events = await pool.query<{ payload: unknown }>(
@@ -508,6 +559,9 @@ describe("queued Semp messages", () => {
                 expect.objectContaining({ ...refs[0], label: "Reference" }),
                 expect.objectContaining({ ...refs[1], label: "Reference thread" }),
                 expect.objectContaining({ ...refs[2], label: "Reference" }),
+                ...imageRefs
+                  .slice(0, 9)
+                  .map((ref, index) => expect.objectContaining({ ...ref, label: `Reference image ${index}` })),
               ]),
             }),
           }),
@@ -516,6 +570,117 @@ describe("queued Semp messages", () => {
       expect(evidence.calls).toEqual([
         { status: "settled", agent_run_id: runId, semp_message_id: turn.assistantMessageId },
       ]);
+      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("image/jpeg");
+      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("base64");
+
+      const lastImage = imageRefs[9];
+      if (!lastImage) throw new Error("Missing final image fixture");
+      const continued = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) =>
+          sendSempMessage(client, {
+            threadId: turn.threadId,
+            text: "Continue with an image",
+            context: await validateSempMessageRefs(client, [lastImage]),
+            hasContext: true,
+          }),
+        ),
+      );
+      const continuedRun = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ status: string; agent_run_id: string | null }>(
+              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+              [continued.assistantMessageId],
+            ),
+          );
+          expect(result.rows[0]?.status).toBe("done");
+          expect(result.rows[0]?.agent_run_id).toBe(runId);
+          return result.rows[0]?.agent_run_id;
+        },
+        { timeout: 20_000 },
+      );
+      expect(continuedRun).toBe(runId);
+      await vi.waitFor(
+        () => {
+          const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
+          expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+          const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
+          expect(request?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+        },
+        { timeout: 5000 },
+      );
+      const continuedCalls = await runInTenant(tenant, () =>
+        pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+          [runId, continued.assistantMessageId],
+        ),
+      );
+      expect(continuedCalls.rows).toEqual([
+        { status: "settled", agent_run_id: runId, semp_message_id: continued.assistantMessageId },
+      ]);
+      const closed = await closeIdleThreadSessions(pool);
+      expect(closed.closedRunIds).toContain(runId);
+      const wake = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, {
+            threadId: turn.threadId,
+            text: "Wake the image history",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+      const wakeRun = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ status: string; agent_run_id: string | null }>(
+              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+              [wake.assistantMessageId],
+            ),
+          );
+          expect(result.rows[0]?.status).toBe("done");
+          expect(result.rows[0]?.agent_run_id).toBeTruthy();
+          return result.rows[0]?.agent_run_id;
+        },
+        { timeout: 20_000 },
+      );
+      if (!wakeRun) throw new Error("Missing wake run");
+      await vi.waitFor(
+        () => {
+          const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
+          expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+          const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
+          expect(request?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+        },
+        { timeout: 5000 },
+      );
+      const wakeEvidence = await runInTenant(tenant, async () => {
+        const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+          [wakeRun, wake.assistantMessageId],
+        );
+        const events = await pool.query<{ payload: unknown }>(
+          "SELECT payload FROM agent_run_events WHERE agent_run_id = ANY($1::uuid[]) ORDER BY id",
+          [[runId, wakeRun]],
+        );
+        const messages = await pool.query<{ id: string; context: unknown }>(
+          "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
+          [[turn.messageId, continued.messageId, wake.messageId]],
+        );
+        return { calls: calls.rows, events: events.rows, messages: messages.rows };
+      });
+      expect(wakeEvidence.calls).toEqual([
+        { status: "settled", agent_run_id: wakeRun, semp_message_id: wake.assistantMessageId },
+      ]);
+      expect(wakeEvidence.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: turn.messageId, context: refs }),
+          expect.objectContaining({ id: continued.messageId, context: [lastImage] }),
+          expect.objectContaining({ id: wake.messageId, context: [] }),
+        ]),
+      );
+      expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("image/jpeg");
+      expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("base64");
     } catch (error) {
       failed = true;
       failure = error;
