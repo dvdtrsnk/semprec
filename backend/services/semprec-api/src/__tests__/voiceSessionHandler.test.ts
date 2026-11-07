@@ -1021,6 +1021,14 @@ describe("voice session through the real gateway and registered worker", () => {
           expect(rows.rows[i * 2 + 1]).toMatchObject({ role: "assistant" });
         }
         expect(audioFrames).toBe(audioBefore);
+        expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(priorModelCalls + 1);
+        expect(rows.rows.filter((row) => row.role === "assistant" && row.status === "queued")).toHaveLength(count - 1);
+        const allThreads = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
+        );
+        expect(allThreads.rows.filter((row) => !prior.rows.some((old) => old.id === row.id))).toEqual([
+          { id: threadId },
+        ]);
         if (overflow) {
           send(ownedGateway, "finalSecond");
           await vi.waitFor(() => expect(frames).toContainEqual({ type: "error", code: "overloaded" }));
