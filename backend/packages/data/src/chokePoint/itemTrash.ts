@@ -3,12 +3,14 @@
 // expired trashed subtree. Item creation and updates, destructive-operation projection, and
 // database-level archiving do not belong here.
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md,
-// docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
+// docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md,
+// docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError } from "../errors.js";
-import type { ItemRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
+import { runItemDeleteHooks, runItemRestoreHooks } from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
@@ -29,10 +31,35 @@ import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
 import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
 import type { WriterIdentity } from "./writerKind.js";
 
+/** The writer fields every delete and restore hook receives; `system` when the caller supplied none. */
+function hookWriterFields(writer: WriterIdentity | undefined, actingUserId: string | undefined) {
+  return {
+    writerKind: writer?.writerKind ?? "system",
+    ...(writer?.agentRunId === undefined ? {} : { agentRunId: writer.agentRunId }),
+    ...(actingUserId === undefined ? {} : { actingUserId }),
+  };
+}
+
+/** Reads each database of a cascade once, for the hook contexts. */
+function databaseLookup(client: PoolClient): (databaseId: string) => Promise<DatabaseRow> {
+  const cache = new Map<string, DatabaseRow>();
+  return async (databaseId) => {
+    const cached = cache.get(databaseId);
+    if (cached) return cached;
+    const database = await databasesStore.getDatabase(client, databaseId);
+    if (!database) throw new Error(`Database ${databaseId} of a trash cascade row is missing`);
+    cache.set(databaseId, database);
+    return database;
+  };
+}
+
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
  * same reason as `propertyDeleteWithClient` above. Runs the identical subtree cascade, including
- * the `systemActive`/archived-database guards and rollup/heartbeat side effects.
+ * the `systemActive`/archived-database guards and rollup/heartbeat side effects. Each row this call
+ * actually soft-deletes, root first, runs the item delete hooks (issue #1601) right after its soft
+ * delete, inside this transaction; a row already in the trash runs none, and a repeat delete of a
+ * trashed root returns it without running any. A hook's rejection rolls the whole cascade back.
  */
 export async function itemDeleteWithClient(
   client: PoolClient,
@@ -41,7 +68,7 @@ export async function itemDeleteWithClient(
   options: {
     queueAffinity: ActionQueueAffinity;
     actingUserId?: string;
-    /** Accepted and carried so the delete hook can read it without a signature change; not yet consumed. */
+    /** Passed to every delete hook; `system` when absent. */
     writer?: WriterIdentity;
   },
 ): Promise<ItemRow | null> {
@@ -58,11 +85,23 @@ export async function itemDeleteWithClient(
   const subtree = await collectItemSubtree(client, before);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
+  const writerFields = hookWriterFields(options.writer, options.actingUserId);
+  const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
     const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    // `now()` is fixed for the transaction, so every row this cascade trashes shares this `deletedAt`.
+    if (item.deletedAt === null) throw new Error(`Soft delete of item ${item.id} returned a live row`);
+    await runItemDeleteHooks({
+      client,
+      database: await databaseOf(item.databaseId),
+      item,
+      rootItemId: itemId,
+      deletedAt: item.deletedAt,
+      ...writerFields,
+    });
     await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, options.queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
@@ -81,16 +120,39 @@ export async function itemDeleteWithClient(
 }
 
 /**
+ * The rows of `subtree` trashed together with `root` (its cascade epoch): those whose `deleted_at`
+ * equals the root's, compared by Postgres at the column's full microsecond precision. An `ItemRow`'s
+ * `deletedAt` keeps only whole milliseconds, so comparing those strings would take a row trashed on its
+ * own in a different transaction within the same millisecond for part of the cascade. The rows are
+ * locked `FOR UPDATE` in subtree (root-first) order, the order the delete and restore cascades write
+ * in, so a concurrent trash or restore of one of them waits for this transaction instead of changing
+ * the epoch it was matched on.
+ */
+async function lockCascadeEpochRowIds(client: PoolClient, root: ItemRow, subtree: ItemRow[]): Promise<Set<string>> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM items
+      WHERE database_id = ANY($1::uuid[]) AND id = ANY($2::uuid[])
+        AND deleted_at = (SELECT deleted_at FROM items WHERE database_id = $3 AND id = $4)
+      ORDER BY array_position($2::uuid[], id)
+      FOR UPDATE`,
+    [[...new Set(subtree.map((row) => row.databaseId))], subtree.map((row) => row.id), root.databaseId, root.id],
+  );
+  return new Set(rows.map((row) => row.id));
+}
+
+/**
  * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
  * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
- * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
- * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
+ * restores subtree rows whose `deleted_at` equals the root's own (`lockCascadeEpochRowIds`):
+ * since Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
  * cascade delete touched shares one identical timestamp, which lets this tell "trashed
  * together with the root" apart from a row that happened to already be independently trashed
  * (earlier or later) before this subtree was ever cascaded — restoring the latter would
  * silently resurrect data the user deleted on purpose. Each restored row triggers the `update`
  * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
- * (issue #1604).
+ * (issue #1604), and runs the item restore hooks (issue #1601) right after its restore; a skipped
+ * row runs none, and a restore of a live root returns it without running any. A hook's rejection
+ * rolls the whole cascade back.
  */
 async function restoreItemWithClient(
   client: PoolClient,
@@ -98,8 +160,8 @@ async function restoreItemWithClient(
   itemId: string,
   queueAffinity: ActionQueueAffinity,
   actingUserId?: string,
-  // Accepted and carried so the restore hook can read it without a signature change; not yet consumed.
-  _writer?: WriterIdentity,
+  /** Passed to every restore hook; `system` when absent. */
+  writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
@@ -113,13 +175,24 @@ async function restoreItemWithClient(
 
   const subtree = await collectItemSubtree(client, before);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
+  const epochRowIds = await lockCascadeEpochRowIds(client, before, subtree);
 
+  const writerFields = hookWriterFields(writer, actingUserId);
+  const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
-    if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
+    if (!epochRowIds.has(row.id)) continue; // not trashed together with the root: leave as-is
     const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    await runItemRestoreHooks({
+      client,
+      database: await databaseOf(item.databaseId),
+      item,
+      rootItemId: itemId,
+      deletedAt: cascadeEpoch,
+      ...writerFields,
+    });
     await triggerOnItemEventHeartbeats(client, row.databaseId, "update", row.id, queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
