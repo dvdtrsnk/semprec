@@ -256,681 +256,700 @@ describe("queued Semp messages", () => {
     if (errors.length) throw new AggregateError(errors, "Semp test cleanup failed", { cause: errors[0] });
   });
 
-  it("expands tenant references through the registered worker and real gateway without persisting content", async () => {
-    await runtime?.stop();
-    runtime = undefined;
-    const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-    const blockRoot = resolve(backend, "../shared/block-model");
-    const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/refExpansionGateway.js");
-    const fixtureSource = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/refExpansionGateway.ts");
-    const messages: RefFixtureMessage[] = [];
-    let invalidOutput = false;
-    let outputBytes = 0;
-    let child: ChildProcess | undefined;
-    let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
-    let exited = false;
-    let blockDir: string | undefined;
-    let mailRoot: string | undefined;
-    let workerSettled: boolean;
-    let failed = false;
-    let failure: unknown;
-    const cleanupFailures: unknown[] = [];
-    try {
-      if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
-        throw new Error("Stale reference gateway fixture build");
-      blockDir = await mkdtemp(join(blockRoot, "node_modules/.batch09-"));
-      const args = [
-        join(backend, "node_modules/typescript/bin/tsc"),
-        "-p",
-        join(blockRoot, "tsconfig.json"),
-        "--noEmit",
-        "false",
-        "--declaration",
-        "false",
-        "--incremental",
-        "false",
-        "--outDir",
-        blockDir,
-      ];
-      const compiled = spawnSync(process.execPath, args, { cwd: backend, timeout: 25_000, maxBuffer: 1_000_000 });
-      process.stderr.write(
-        `ref block compiler pid=${compiled.pid} status=${compiled.status} signal=${compiled.signal} argv=${JSON.stringify([process.execPath, ...args])}\n`,
-      );
-      if (compiled.error) throw compiled.error;
-      if (compiled.status !== 0) throw new Error("Reference fixture block-model build failed");
-      const blockEntry = join(blockDir, "index.js");
-      const fixtureHash = createHash("sha256")
-        .update(await readFile(fixture))
-        .digest("hex");
-      const blockHash = createHash("sha256")
-        .update(await readFile(blockEntry))
-        .digest("hex");
-      const databaseUrl = pool.options.connectionString;
-      if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
-      child = spawn(process.execPath, [fixture], {
-        cwd: backend,
-        detached: true,
-        env: { ...process.env, BATCH09_BLOCK_MODEL_ENTRY: blockEntry, BATCH32_GATEWAY_DATABASE_URL: databaseUrl },
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
-      });
-      const owned = child;
-      if (!owned.pid) throw new Error("Reference gateway child did not start");
-      childExit = new Promise((resolveExit) => {
-        let childError: Error | undefined;
-        owned.once("error", (error) => {
-          childError = error;
-        });
-        owned.once("close", (code, signal) => {
-          exited = true;
-          resolveExit({ code, signal, ...(childError ? { error: childError } : {}) });
-        });
-      });
-      const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(owned.pid)], { encoding: "utf8" }).trim());
-      if (pgid !== owned.pid) throw new Error("Unexpected reference gateway process group");
-      process.stderr.write(
-        `ref gateway argv=${JSON.stringify([process.execPath, fixture])} pid=${owned.pid} pgid=${pgid} sha256=${fixtureHash} blockSha256=${blockHash}\n`,
-      );
-      for (const output of [owned.stdout, owned.stderr])
-        output?.on("data", (chunk: Buffer) => {
-          outputBytes += chunk.length;
-          if (outputBytes > 100_000) invalidOutput = true;
-        });
-      owned.on("message", (value: unknown) => {
-        const parsed = parseRefFixtureMessage(value);
-        if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
-        else messages.push(parsed);
-      });
-      await vi.waitFor(
-        () => {
-          expect(invalidOutput).toBe(false);
-          expect(messages.some((entry) => entry.type === "ready")).toBe(true);
-        },
-        { timeout: 10_000 },
-      );
-      const ready = messages.find((entry) => entry.type === "ready");
-      if (!ready || ready.type !== "ready") throw new Error("Missing reference gateway readiness");
-      await setTenantAiBudget(admin, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
-      const foreign = await createTestTenant(admin);
-      await runInTenant(foreign, () => seedSystem(pool));
-      const ids = await runInTenant(tenant, () =>
-        withTransaction(pool, async (client) => {
-          const database = await getDatabaseByModuleId(client, "areas");
-          if (!database) throw new Error("Missing areas database");
-          const item = await createItemWithClient(client, {
-            databaseId: database.id,
-            properties: { name: "Reference", note: "REF_OWNER_SENTINEL_32" },
-          });
-          return { databaseId: database.id, itemId: item.id };
-        }),
-      );
-      mailRoot = await mkdtemp(join(tmpdir(), "semp-ref-worker-mail-"));
-      const mailStorage = new LocalFsBlobStorageWriter(join(mailRoot, "mail"));
-      const fileStorage = new LocalFsBlobStorageWriter(join(mailRoot, "files"));
-      const mail = await runInTenant(tenant, () =>
-        withTransaction(pool, async (client) => {
-          const mailIds = await resolveMailModuleIds(client);
-          const emailProperties = await listPropertiesByDatabase(client, mailIds.emailsDatabaseId);
-          const folderProperties = await listPropertiesByDatabase(client, mailIds.foldersDatabaseId);
-          const attachments = emailProperties.find((property) => property.key === "attachments");
-          const folder = emailProperties.find((property) => property.key === "folder");
-          const mailbox = folderProperties.find((property) => property.key === "mailbox");
-          if (!attachments || !folder || !mailbox) throw new Error("Missing mail fixture relations");
-          const mailboxItem = await createItemWithClient(client, {
-            databaseId: mailIds.mailboxesDatabaseId,
-            properties: { name: "Reference mailbox" },
-          });
-          const folderId = await ensureFolderItem(client, {
-            foldersDatabaseId: mailIds.foldersDatabaseId,
-            mailboxItemId: mailboxItem.id,
-            mailboxRelationPropertyId: mailbox.id,
-            providerId: "INBOX",
-            name: "Inbox",
-            behavior: "folder",
-            specialPurpose: "inbox",
-          });
-          const messageId = `<${randomUUID()}@example.test>`;
-          const common = {
-            emailsDatabaseId: mailIds.emailsDatabaseId,
-            filesDatabaseId: mailIds.filesDatabaseId,
-            folderRelationPropertyId: folder.id,
-            attachmentsRelationPropertyId: attachments.id,
-            folderItemId: folderId,
-            mailboxItemId: mailboxItem.id,
-            subject: "Reference thread",
-            envelope: {},
-            attachments: [],
-            storage: mailStorage,
-            storageKeyPrefix: "reference-worker",
-          };
-          const first = await ingestEmailMessage(client, {
-            ...common,
-            messageId,
-            bodyText: "REF_MAIL_FIRST_SENTINEL_32",
-          });
-          const reply = await ingestEmailMessage(client, {
-            ...common,
-            messageId: `<${randomUUID()}@example.test>`,
-            inReplyTo: messageId,
-            references: [messageId],
-            bodyText: "REF_MAIL_REPLY_SENTINEL_32",
-          });
-          const threads = await client.query<{ item_id: string; thread_id: string | null }>(
-            "SELECT item_id, thread_id FROM mail_message_meta WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
-            [[first.itemId, reply.itemId]],
-          );
-          expect(threads.rows).toHaveLength(2);
-          expect(threads.rows[0]?.thread_id).toBeTruthy();
-          expect(threads.rows[0]?.thread_id).toBe(threads.rows[1]?.thread_id);
-          return { databaseId: mailIds.emailsDatabaseId, itemId: first.itemId };
-        }),
-      );
-      const blockId = randomUUID();
-      const siblingId = randomUUID();
-      const parentId = randomUUID();
-      await runInTenant(tenant, async () => {
-        const docs = createDocStore(pool);
-        await docs.putBlock(
-          ids.itemId,
-          { id: blockId, flavour: "paragraph", fields: { text: "REF_BLOCK_SENTINEL_32" } },
-          "user",
-        );
-        await docs.putBlock(
-          ids.itemId,
-          { id: siblingId, flavour: "paragraph", fields: { text: "REF_SIBLING_SENTINEL_32" } },
-          "user",
-        );
-        await docs.putBlock(ids.itemId, { id: parentId, flavour: "page", children: [blockId, siblingId] }, "user");
-      });
-      const imageBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#2376af" } })
-        .png()
-        .toBuffer();
-      const fileDatabase = await runInTenant(tenant, () =>
-        withTransaction(pool, (client) => getDatabaseByModuleId(client, "files")),
-      );
-      if (!fileDatabase) throw new Error("Missing Files database");
-      const imageRefs: Array<{ kind: "item"; databaseId: string; itemId: string }> = [];
-      const availableKeys = new Set<string>();
-      for (let index = 0; index < 10; index += 1) {
-        const image = await runInTenant(tenant, async () => {
-          const upload = await ingestUploadedBlob(pool, {
-            mimeType: "image/png",
-            source: Readable.from([imageBytes]),
-            maxBytes: imageBytes.length + 1,
-            storage: fileStorage,
-          });
-          const item = await createChokePoint(pool).createItem({
-            databaseId: fileDatabase.id,
-            properties: { name: `Reference image ${index}`, file: { blobId: upload.blob.id } },
-          });
-          return { item, key: upload.blob.storageKey };
-        });
-        availableKeys.add(image.key);
-        imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.item.id });
-      }
-      const missingBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#a34257" } })
-        .png()
-        .toBuffer();
-      const unavailable = await runInTenant(tenant, async () => {
-        const upload = await ingestUploadedBlob(pool, {
-          mimeType: "image/png",
-          source: Readable.from([missingBytes]),
-          maxBytes: missingBytes.length + 1,
-          storage: fileStorage,
-        });
-        const item = await createChokePoint(pool).createItem({
-          databaseId: fileDatabase.id,
-          properties: { name: "Unavailable image", file: { blobId: upload.blob.id } },
-        });
-        return {
-          ref: { kind: "item" as const, databaseId: fileDatabase.id, itemId: item.id },
-          key: upload.blob.storageKey,
-        };
-      });
-      expect(availableKeys.has(unavailable.key)).toBe(false);
-      const foreignIds = await runInTenant(foreign, () =>
-        withTransaction(pool, async (client) => {
-          const database = await getDatabaseByModuleId(client, "areas");
-          if (!database) throw new Error("Missing foreign areas database");
-          const item = await createItemWithClient(client, {
-            databaseId: database.id,
-            properties: { name: "REF_FOREIGN_SENTINEL_32" },
-          });
-          return { databaseId: database.id, itemId: item.id };
-        }),
-      );
-      const refs = [
-        { kind: "item" as const, ...ids },
-        { kind: "item" as const, ...mail },
-        { kind: "block" as const, itemId: ids.itemId, blockId },
-        ...imageRefs.slice(0, 9),
-        unavailable.ref,
-      ];
-      await expect(
-        withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
-      ).rejects.toThrow();
-      expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(0);
-      const refused = [
-        { kind: "item" as const, ...foreignIds },
-        { kind: "item" as const, databaseId: ids.databaseId, itemId: randomUUID() },
-      ];
-      const countMessages = () =>
-        runInTenant(tenant, () => pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"));
-      const beforeRefusal = await countMessages();
-      const jobsBeforeRefusal = await admin.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM graphile_worker.jobs",
-      );
-      for (const ref of refused) {
-        await expect(
-          runInTenant(tenant, () => withTransaction(pool, (client) => validateSempMessageRefs(client, [ref]))),
-        ).rejects.toThrow();
-        expect(
-          await runInTenant(tenant, () => withTransaction(pool, (client) => readSempRefContext(client, ref))),
-        ).toBeNull();
-      }
-      expect((await countMessages()).rows).toEqual(beforeRefusal.rows);
-      expect(
-        (await admin.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-      ).toEqual(jobsBeforeRefusal.rows);
-      const turn = await runInTenant(tenant, () =>
-        withTransaction(pool, async (client) =>
-          sendSempMessage(client, {
-            text: "Question",
-            context: await validateSempMessageRefs(client, refs),
-            hasContext: true,
-          }),
-        ),
-      );
-      // Synthetic unavailable bytes: remove only this fixture's unique owned object after admission.
-      await fileStorage.delete(unavailable.key);
-      const gateway = createGatewayModel({
-        AI_GATEWAY_BASE_URL: `http://127.0.0.1:${ready.port}/internal/pi`,
-        AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
-        AGENT_MODEL: "claude-haiku-4-5",
-      });
-      runtime = await createAgentsQueueRuntime(pool, registry, {
-        sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
-          files: fileStorage,
-          mailAttachments: mailStorage,
-        }),
-      });
-      let runId = "";
+  it.each([
+    {
+      name: "expands tenant references through the registered worker and real gateway without persisting content",
+      images: false,
+    },
+    { name: "replays fresh and continuing images through the registered worker and real gateway", images: true },
+  ])(
+    "$name",
+    async ({ images }) => {
+      await runtime?.stop();
+      runtime = undefined;
+      const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+      const blockRoot = resolve(backend, "../shared/block-model");
+      const fixture = join(backend, "services/semprec-ai-gateway/dist/__tests__/fixtures/refExpansionGateway.js");
+      const fixtureSource = join(backend, "services/semprec-ai-gateway/src/__tests__/fixtures/refExpansionGateway.ts");
+      const messages: RefFixtureMessage[] = [];
+      let invalidOutput = false;
+      let outputBytes = 0;
+      let child: ChildProcess | undefined;
+      let childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }> | undefined;
+      let exited = false;
+      let blockDir: string | undefined;
+      let mailRoot: string | undefined;
+      let workerSettled: boolean;
+      let failed = false;
+      let failure: unknown;
+      const cleanupFailures: unknown[] = [];
       try {
-        await vi.waitFor(
-          async () => {
-            const result = await runInTenant(tenant, () =>
-              pool.query<{ status: string; agent_run_id: string | null }>(
-                "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
-                [turn.assistantMessageId],
-              ),
-            );
-            expect(result.rows[0]?.status).toBe("done");
-            runId = result.rows[0]?.agent_run_id ?? "";
-            expect(runId).not.toBe("");
-          },
-          { timeout: 20_000 },
+        if ((await stat(fixture)).mtimeMs < (await stat(fixtureSource)).mtimeMs)
+          throw new Error("Stale reference gateway fixture build");
+        blockDir = await mkdtemp(join(blockRoot, "node_modules/.batch09-"));
+        const args = [
+          join(backend, "node_modules/typescript/bin/tsc"),
+          "-p",
+          join(blockRoot, "tsconfig.json"),
+          "--noEmit",
+          "false",
+          "--declaration",
+          "false",
+          "--incremental",
+          "false",
+          "--outDir",
+          blockDir,
+        ];
+        const compiled = spawnSync(process.execPath, args, { cwd: backend, timeout: 25_000, maxBuffer: 1_000_000 });
+        process.stderr.write(
+          `ref block compiler pid=${compiled.pid} status=${compiled.status} signal=${compiled.signal} argv=${JSON.stringify([process.execPath, ...args])}\n`,
         );
-      } catch (error) {
-        try {
-          const observed = await runInTenant(tenant, async () => {
-            const target = await pool.query<{ status: string; error_code: string | null; agent_run_id: string | null }>(
-              "SELECT status, error_code, agent_run_id FROM semp_messages WHERE id=$1 AND thread_id=$2",
-              [turn.assistantMessageId, turn.threadId],
+        if (compiled.error) throw compiled.error;
+        if (compiled.status !== 0) throw new Error("Reference fixture block-model build failed");
+        const blockEntry = join(blockDir, "index.js");
+        const fixtureHash = createHash("sha256")
+          .update(await readFile(fixture))
+          .digest("hex");
+        const blockHash = createHash("sha256")
+          .update(await readFile(blockEntry))
+          .digest("hex");
+        const databaseUrl = pool.options.connectionString;
+        if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
+        child = spawn(process.execPath, [fixture], {
+          cwd: backend,
+          detached: true,
+          env: { ...process.env, BATCH09_BLOCK_MODEL_ENTRY: blockEntry, BATCH32_GATEWAY_DATABASE_URL: databaseUrl },
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        const owned = child;
+        if (!owned.pid) throw new Error("Reference gateway child did not start");
+        childExit = new Promise((resolveExit) => {
+          let childError: Error | undefined;
+          owned.once("error", (error) => {
+            childError = error;
+          });
+          owned.once("close", (code, signal) => {
+            exited = true;
+            resolveExit({ code, signal, ...(childError ? { error: childError } : {}) });
+          });
+        });
+        const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(owned.pid)], { encoding: "utf8" }).trim());
+        if (pgid !== owned.pid) throw new Error("Unexpected reference gateway process group");
+        process.stderr.write(
+          `ref gateway argv=${JSON.stringify([process.execPath, fixture])} pid=${owned.pid} pgid=${pgid} sha256=${fixtureHash} blockSha256=${blockHash}\n`,
+        );
+        for (const output of [owned.stdout, owned.stderr])
+          output?.on("data", (chunk: Buffer) => {
+            outputBytes += chunk.length;
+            if (outputBytes > 100_000) invalidOutput = true;
+          });
+        owned.on("message", (value: unknown) => {
+          const parsed = parseRefFixtureMessage(value);
+          if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+          else messages.push(parsed);
+        });
+        await vi.waitFor(
+          () => {
+            expect(invalidOutput).toBe(false);
+            expect(messages.some((entry) => entry.type === "ready")).toBe(true);
+          },
+          { timeout: 10_000 },
+        );
+        const ready = messages.find((entry) => entry.type === "ready");
+        if (!ready || ready.type !== "ready") throw new Error("Missing reference gateway readiness");
+        await setTenantAiBudget(admin, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
+        const foreign = await createTestTenant(admin);
+        await runInTenant(foreign, () => seedSystem(pool));
+        const ids = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const database = await getDatabaseByModuleId(client, "areas");
+            if (!database) throw new Error("Missing areas database");
+            const item = await createItemWithClient(client, {
+              databaseId: database.id,
+              properties: { name: "Reference", note: "REF_OWNER_SENTINEL_32" },
+            });
+            return { databaseId: database.id, itemId: item.id };
+          }),
+        );
+        mailRoot = await mkdtemp(join(tmpdir(), "semp-ref-worker-mail-"));
+        const mailStorage = new LocalFsBlobStorageWriter(join(mailRoot, "mail"));
+        const fileStorage = new LocalFsBlobStorageWriter(join(mailRoot, "files"));
+        const mail = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) => {
+            const mailIds = await resolveMailModuleIds(client);
+            const emailProperties = await listPropertiesByDatabase(client, mailIds.emailsDatabaseId);
+            const folderProperties = await listPropertiesByDatabase(client, mailIds.foldersDatabaseId);
+            const attachments = emailProperties.find((property) => property.key === "attachments");
+            const folder = emailProperties.find((property) => property.key === "folder");
+            const mailbox = folderProperties.find((property) => property.key === "mailbox");
+            if (!attachments || !folder || !mailbox) throw new Error("Missing mail fixture relations");
+            const mailboxItem = await createItemWithClient(client, {
+              databaseId: mailIds.mailboxesDatabaseId,
+              properties: { name: "Reference mailbox" },
+            });
+            const folderId = await ensureFolderItem(client, {
+              foldersDatabaseId: mailIds.foldersDatabaseId,
+              mailboxItemId: mailboxItem.id,
+              mailboxRelationPropertyId: mailbox.id,
+              providerId: "INBOX",
+              name: "Inbox",
+              behavior: "folder",
+              specialPurpose: "inbox",
+            });
+            const messageId = `<${randomUUID()}@example.test>`;
+            const common = {
+              emailsDatabaseId: mailIds.emailsDatabaseId,
+              filesDatabaseId: mailIds.filesDatabaseId,
+              folderRelationPropertyId: folder.id,
+              attachmentsRelationPropertyId: attachments.id,
+              folderItemId: folderId,
+              mailboxItemId: mailboxItem.id,
+              subject: "Reference thread",
+              envelope: {},
+              attachments: [],
+              storage: mailStorage,
+              storageKeyPrefix: "reference-worker",
+            };
+            const first = await ingestEmailMessage(client, {
+              ...common,
+              messageId,
+              bodyText: "REF_MAIL_FIRST_SENTINEL_32",
+            });
+            const reply = await ingestEmailMessage(client, {
+              ...common,
+              messageId: `<${randomUUID()}@example.test>`,
+              inReplyTo: messageId,
+              references: [messageId],
+              bodyText: "REF_MAIL_REPLY_SENTINEL_32",
+            });
+            const threads = await client.query<{ item_id: string; thread_id: string | null }>(
+              "SELECT item_id, thread_id FROM mail_message_meta WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+              [[first.itemId, reply.itemId]],
             );
-            const calls = await pool.query<{ status: string }>(
-              "SELECT status FROM ai_gateway_calls WHERE semp_message_id=$1 ORDER BY at, id",
-              [turn.assistantMessageId],
-            );
-            const row = target.rows[0];
-            const requests = messages.filter(
-              (entry) =>
-                entry.type === "gatewayRequest" &&
-                entry.sempMessageId === turn.assistantMessageId &&
-                entry.tenantId === tenant &&
-                entry.agentRunId === row?.agent_run_id,
-            );
-            const results = messages.filter(
-              (entry) =>
-                entry.type === "gatewayResult" &&
-                entry.sempMessageId === turn.assistantMessageId &&
-                entry.tenantId === tenant &&
-                entry.agentRunId === row?.agent_run_id,
-            );
+            expect(threads.rows).toHaveLength(2);
+            expect(threads.rows[0]?.thread_id).toBeTruthy();
+            expect(threads.rows[0]?.thread_id).toBe(threads.rows[1]?.thread_id);
+            return { databaseId: mailIds.emailsDatabaseId, itemId: first.itemId };
+          }),
+        );
+        const blockId = randomUUID();
+        const siblingId = randomUUID();
+        const parentId = randomUUID();
+        await runInTenant(tenant, async () => {
+          const docs = createDocStore(pool);
+          await docs.putBlock(
+            ids.itemId,
+            { id: blockId, flavour: "paragraph", fields: { text: "REF_BLOCK_SENTINEL_32" } },
+            "user",
+          );
+          await docs.putBlock(
+            ids.itemId,
+            { id: siblingId, flavour: "paragraph", fields: { text: "REF_SIBLING_SENTINEL_32" } },
+            "user",
+          );
+          await docs.putBlock(ids.itemId, { id: parentId, flavour: "page", children: [blockId, siblingId] }, "user");
+        });
+        const imageRefs: Array<{ kind: "item"; databaseId: string; itemId: string }> = [];
+        let unavailable: { ref: { kind: "item"; databaseId: string; itemId: string }; key: string } | undefined;
+        if (images) {
+          const imageBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#2376af" } })
+            .png()
+            .toBuffer();
+          const fileDatabase = await runInTenant(tenant, () =>
+            withTransaction(pool, (client) => getDatabaseByModuleId(client, "files")),
+          );
+          if (!fileDatabase) throw new Error("Missing Files database");
+          const availableKeys = new Set<string>();
+          for (let index = 0; index < 10; index += 1) {
+            const image = await runInTenant(tenant, async () => {
+              const upload = await ingestUploadedBlob(pool, {
+                mimeType: "image/png",
+                source: Readable.from([imageBytes]),
+                maxBytes: imageBytes.length + 1,
+                storage: fileStorage,
+              });
+              const item = await createChokePoint(pool).createItem({
+                databaseId: fileDatabase.id,
+                properties: { name: `Reference image ${index}`, file: { blobId: upload.blob.id } },
+              });
+              return { item, key: upload.blob.storageKey };
+            });
+            availableKeys.add(image.key);
+            imageRefs.push({ kind: "item", databaseId: fileDatabase.id, itemId: image.item.id });
+          }
+          const missingBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#a34257" } })
+            .png()
+            .toBuffer();
+          unavailable = await runInTenant(tenant, async () => {
+            const upload = await ingestUploadedBlob(pool, {
+              mimeType: "image/png",
+              source: Readable.from([missingBytes]),
+              maxBytes: missingBytes.length + 1,
+              storage: fileStorage,
+            });
+            const item = await createChokePoint(pool).createItem({
+              databaseId: fileDatabase.id,
+              properties: { name: "Unavailable image", file: { blobId: upload.blob.id } },
+            });
             return {
-              targetCount: target.rows.length,
-              statusDone: row?.status === "done",
-              statusError: row?.status === "error",
-              modelError: row?.error_code === "modelError",
-              hasRun: row?.agent_run_id !== null && row?.agent_run_id !== undefined,
-              callCount: calls.rows.length,
-              settledCount: calls.rows.filter((call) => call.status === "settled").length,
-              gatewayRequestCount: requests.length,
-              gateway2xx: results.filter(
-                (entry) => entry.type === "gatewayResult" && entry.status >= 200 && entry.status < 300,
-              ).length,
-              gateway4xx: results.filter(
-                (entry) => entry.type === "gatewayResult" && entry.status >= 400 && entry.status < 500,
-              ).length,
-              gateway5xx: results.filter(
-                (entry) => entry.type === "gatewayResult" && entry.status >= 500 && entry.status < 600,
-              ).length,
-              providerObservationCount: messages.filter((entry) => entry.type === "observation").length,
+              ref: { kind: "item" as const, databaseId: fileDatabase.id, itemId: item.id },
+              key: upload.blob.storageKey,
             };
           });
-          process.stderr.write(`reference target observation ${JSON.stringify(observed)}\n`);
-        } catch {
-          process.stderr.write("reference target observation unavailable\n");
+          expect(availableKeys.has(unavailable.key)).toBe(false);
         }
-        throw error;
-      }
-      await vi.waitFor(
-        () =>
-          expect(messages.filter((entry) => entry.type === "observation")).toEqual([
+        const foreignIds = await runInTenant(foreign, () =>
+          withTransaction(pool, async (client) => {
+            const database = await getDatabaseByModuleId(client, "areas");
+            if (!database) throw new Error("Missing foreign areas database");
+            const item = await createItemWithClient(client, {
+              databaseId: database.id,
+              properties: { name: "REF_FOREIGN_SENTINEL_32" },
+            });
+            return { databaseId: database.id, itemId: item.id };
+          }),
+        );
+        const refs = [
+          { kind: "item" as const, ...ids },
+          { kind: "item" as const, ...mail },
+          { kind: "block" as const, itemId: ids.itemId, blockId },
+          ...imageRefs.slice(0, 9),
+          ...(unavailable ? [unavailable.ref] : []),
+        ];
+        await expect(
+          withTransaction(pool, (client) => readSempRefContext(client, { kind: "item", ...ids })),
+        ).rejects.toThrow();
+        expect(messages.filter((entry) => entry.type === "observation")).toHaveLength(0);
+        const refused = [
+          { kind: "item" as const, ...foreignIds },
+          { kind: "item" as const, databaseId: ids.databaseId, itemId: randomUUID() },
+        ];
+        const countMessages = () =>
+          runInTenant(tenant, () => pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"));
+        const beforeRefusal = await countMessages();
+        const jobsBeforeRefusal = await admin.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+        );
+        for (const ref of refused) {
+          await expect(
+            runInTenant(tenant, () => withTransaction(pool, (client) => validateSempMessageRefs(client, [ref]))),
+          ).rejects.toThrow();
+          expect(
+            await runInTenant(tenant, () => withTransaction(pool, (client) => readSempRefContext(client, ref))),
+          ).toBeNull();
+        }
+        expect((await countMessages()).rows).toEqual(beforeRefusal.rows);
+        expect(
+          (await admin.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+        ).toEqual(jobsBeforeRefusal.rows);
+        const turn = await runInTenant(tenant, () =>
+          withTransaction(pool, async (client) =>
+            sendSempMessage(client, {
+              text: "Question",
+              context: await validateSempMessageRefs(client, refs),
+              hasContext: true,
+            }),
+          ),
+        );
+        // Synthetic unavailable bytes: remove only this fixture's unique owned object after admission.
+        if (unavailable) await fileStorage.delete(unavailable.key);
+        const gateway = createGatewayModel({
+          AI_GATEWAY_BASE_URL: `http://127.0.0.1:${ready.port}/internal/pi`,
+          AI_GATEWAY_INTERNAL_TOKEN: "batch32-ref-test-token",
+          AGENT_MODEL: "claude-haiku-4-5",
+        });
+        runtime = await createAgentsQueueRuntime(pool, registry, {
+          sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns(), {
+            files: fileStorage,
+            mailAttachments: mailStorage,
+          }),
+        });
+        let runId = "";
+        try {
+          await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [turn.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              runId = result.rows[0]?.agent_run_id ?? "";
+              expect(runId).not.toBe("");
+            },
+            { timeout: 20_000 },
+          );
+        } catch (error) {
+          try {
+            const observed = await runInTenant(tenant, async () => {
+              const target = await pool.query<{
+                status: string;
+                error_code: string | null;
+                agent_run_id: string | null;
+              }>("SELECT status, error_code, agent_run_id FROM semp_messages WHERE id=$1 AND thread_id=$2", [
+                turn.assistantMessageId,
+                turn.threadId,
+              ]);
+              const calls = await pool.query<{ status: string }>(
+                "SELECT status FROM ai_gateway_calls WHERE semp_message_id=$1 ORDER BY at, id",
+                [turn.assistantMessageId],
+              );
+              const row = target.rows[0];
+              const requests = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayRequest" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.agent_run_id,
+              );
+              const results = messages.filter(
+                (entry) =>
+                  entry.type === "gatewayResult" &&
+                  entry.sempMessageId === turn.assistantMessageId &&
+                  entry.tenantId === tenant &&
+                  entry.agentRunId === row?.agent_run_id,
+              );
+              return {
+                targetCount: target.rows.length,
+                statusDone: row?.status === "done",
+                statusError: row?.status === "error",
+                modelError: row?.error_code === "modelError",
+                hasRun: row?.agent_run_id !== null && row?.agent_run_id !== undefined,
+                callCount: calls.rows.length,
+                settledCount: calls.rows.filter((call) => call.status === "settled").length,
+                gatewayRequestCount: requests.length,
+                gateway2xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 200 && entry.status < 300,
+                ).length,
+                gateway4xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 400 && entry.status < 500,
+                ).length,
+                gateway5xx: results.filter(
+                  (entry) => entry.type === "gatewayResult" && entry.status >= 500 && entry.status < 600,
+                ).length,
+                providerObservationCount: messages.filter((entry) => entry.type === "observation").length,
+              };
+            });
+            process.stderr.write(`reference target observation ${JSON.stringify(observed)}\n`);
+          } catch {
+            process.stderr.write("reference target observation unavailable\n");
+          }
+          throw error;
+        }
+        await vi.waitFor(
+          () =>
+            expect(messages.filter((entry) => entry.type === "observation")).toEqual([
+              expect.objectContaining({
+                type: "observation",
+                sequence: 1,
+                owner: true,
+                foreign: false,
+                mailFirst: true,
+                mailReply: true,
+                block: true,
+                sibling: true,
+                unavailable: images,
+                imageCount: images ? 9 : 0,
+                imageMimes: images ? ["image/jpeg"] : [],
+                providerSerializedBytes: expect.any(Number),
+              }),
+            ]),
+          { timeout: 5000 },
+        );
+        const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
+        expect(requestObservations).toHaveLength(1);
+        expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+        expect(requestObservations[0]).toMatchObject({
+          sequence: 1,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        expect(messages).toContainEqual({
+          type: "gatewayResult",
+          sequence: 1,
+          status: 200,
+          tenantId: tenant,
+          agentRunId: runId,
+          sempMessageId: turn.assistantMessageId,
+        });
+        const evidence = await runInTenant(tenant, async () => {
+          const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
+          const events = await pool.query<{ payload: unknown }>(
+            "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
+            [runId],
+          );
+          const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+            "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1",
+            [runId],
+          );
+          const storedMessages = await pool.query<{ id: string; context: unknown; reply_to_message_id: string | null }>(
+            "SELECT id, context, reply_to_message_id FROM semp_messages WHERE id = ANY($1::uuid[])",
+            [[turn.messageId, turn.assistantMessageId]],
+          );
+          return { run: run.rows, events: events.rows, calls: calls.rows, messages: storedMessages.rows };
+        });
+        expect(evidence.run).toEqual([{ task: "Question" }]);
+        expect(evidence.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: turn.messageId, context: refs }),
+            expect.objectContaining({ id: turn.assistantMessageId, reply_to_message_id: turn.messageId }),
+          ]),
+        );
+        expect(JSON.stringify(evidence.events)).not.toContain("REF_OWNER_SENTINEL_32");
+        expect(JSON.stringify(evidence.events)).not.toContain("REF_FOREIGN_SENTINEL_32");
+        for (const sentinel of [
+          "REF_MAIL_FIRST_SENTINEL_32",
+          "REF_MAIL_REPLY_SENTINEL_32",
+          "REF_BLOCK_SENTINEL_32",
+          "REF_SIBLING_SENTINEL_32",
+        ]) {
+          expect(JSON.stringify(evidence.events)).not.toContain(sentinel);
+          expect(JSON.stringify(evidence.run)).not.toContain(sentinel);
+          expect(JSON.stringify(evidence.messages)).not.toContain(sentinel);
+        }
+        expect(evidence.events).toEqual(
+          expect.arrayContaining([
             expect.objectContaining({
-              type: "observation",
-              sequence: 1,
-              owner: true,
-              foreign: false,
-              mailFirst: true,
-              mailReply: true,
-              block: true,
-              sibling: true,
-              unavailable: true,
-              imageCount: 9,
-              imageMimes: ["image/jpeg"],
-              providerSerializedBytes: expect.any(Number),
+              payload: expect.objectContaining({
+                kind: "user_message",
+                context: expect.arrayContaining([
+                  expect.objectContaining({ ...refs[0], label: "Reference" }),
+                  expect.objectContaining({ ...refs[1], label: "Reference thread" }),
+                  expect.objectContaining({ ...refs[2], label: "Reference" }),
+                  ...imageRefs
+                    .slice(0, 9)
+                    .map((ref, index) => expect.objectContaining({ ...ref, label: `Reference image ${index}` })),
+                  ...(unavailable ? [expect.objectContaining({ ...unavailable.ref, label: "Unavailable image" })] : []),
+                ]),
+              }),
             }),
           ]),
-        { timeout: 5000 },
-      );
-      const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
-      expect(requestObservations).toHaveLength(1);
-      expect(requestObservations[0]?.bodyBytes).toBeLessThan(4 * 1024 * 1024);
-      expect(requestObservations[0]).toMatchObject({
-        sequence: 1,
-        tenantId: tenant,
-        agentRunId: runId,
-        sempMessageId: turn.assistantMessageId,
-      });
-      expect(messages).toContainEqual({
-        type: "gatewayResult",
-        sequence: 1,
-        status: 200,
-        tenantId: tenant,
-        agentRunId: runId,
-        sempMessageId: turn.assistantMessageId,
-      });
-      const evidence = await runInTenant(tenant, async () => {
-        const run = await pool.query<{ task: string }>("SELECT task FROM agent_runs WHERE id = $1", [runId]);
-        const events = await pool.query<{ payload: unknown }>(
-          "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id",
-          [runId],
         );
-        const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
-          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1",
-          [runId],
-        );
-        const storedMessages = await pool.query<{ id: string; context: unknown; reply_to_message_id: string | null }>(
-          "SELECT id, context, reply_to_message_id FROM semp_messages WHERE id = ANY($1::uuid[])",
-          [[turn.messageId, turn.assistantMessageId]],
-        );
-        return { run: run.rows, events: events.rows, calls: calls.rows, messages: storedMessages.rows };
-      });
-      expect(evidence.run).toEqual([{ task: "Question" }]);
-      expect(evidence.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: turn.messageId, context: refs }),
-          expect.objectContaining({ id: turn.assistantMessageId, reply_to_message_id: turn.messageId }),
-        ]),
-      );
-      expect(JSON.stringify(evidence.events)).not.toContain("REF_OWNER_SENTINEL_32");
-      expect(JSON.stringify(evidence.events)).not.toContain("REF_FOREIGN_SENTINEL_32");
-      for (const sentinel of [
-        "REF_MAIL_FIRST_SENTINEL_32",
-        "REF_MAIL_REPLY_SENTINEL_32",
-        "REF_BLOCK_SENTINEL_32",
-        "REF_SIBLING_SENTINEL_32",
-      ]) {
-        expect(JSON.stringify(evidence.events)).not.toContain(sentinel);
-        expect(JSON.stringify(evidence.run)).not.toContain(sentinel);
-        expect(JSON.stringify(evidence.messages)).not.toContain(sentinel);
-      }
-      expect(evidence.events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            payload: expect.objectContaining({
-              kind: "user_message",
-              context: expect.arrayContaining([
-                expect.objectContaining({ ...refs[0], label: "Reference" }),
-                expect.objectContaining({ ...refs[1], label: "Reference thread" }),
-                expect.objectContaining({ ...refs[2], label: "Reference" }),
-                ...imageRefs
-                  .slice(0, 9)
-                  .map((ref, index) => expect.objectContaining({ ...ref, label: `Reference image ${index}` })),
-                expect.objectContaining({ ...unavailable.ref, label: "Unavailable image" }),
-              ]),
-            }),
-          }),
-        ]),
-      );
-      expect(evidence.calls).toEqual([
-        { status: "settled", agent_run_id: runId, semp_message_id: turn.assistantMessageId },
-      ]);
-      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("image/jpeg");
-      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("base64");
-      expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("Attachment unavailable.");
+        expect(evidence.calls).toEqual([
+          { status: "settled", agent_run_id: runId, semp_message_id: turn.assistantMessageId },
+        ]);
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("image/jpeg");
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("base64");
+        expect(JSON.stringify([evidence.events, evidence.messages])).not.toContain("Attachment unavailable.");
 
-      const lastImage = imageRefs[9];
-      if (!lastImage) throw new Error("Missing final image fixture");
-      const continued = await runInTenant(tenant, () =>
-        withTransaction(pool, async (client) =>
-          sendSempMessage(client, {
-            threadId: turn.threadId,
-            text: "Continue with an image",
-            context: await validateSempMessageRefs(client, [lastImage]),
-            hasContext: true,
-          }),
-        ),
-      );
-      const continuedRun = await vi.waitFor(
-        async () => {
-          const result = await runInTenant(tenant, () =>
-            pool.query<{ status: string; agent_run_id: string | null }>(
-              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
-              [continued.assistantMessageId],
+        if (images) {
+          const lastImage = imageRefs[9];
+          if (!lastImage) throw new Error("Missing final image fixture");
+          const continued = await runInTenant(tenant, () =>
+            withTransaction(pool, async (client) =>
+              sendSempMessage(client, {
+                threadId: turn.threadId,
+                text: "Continue with an image",
+                context: await validateSempMessageRefs(client, [lastImage]),
+                hasContext: true,
+              }),
             ),
           );
-          expect(result.rows[0]?.status).toBe("done");
-          expect(result.rows[0]?.agent_run_id).toBe(runId);
-          return result.rows[0]?.agent_run_id;
-        },
-        { timeout: 20_000 },
-      );
-      expect(continuedRun).toBe(runId);
-      await vi.waitFor(
-        () => {
-          const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
-          expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
-          const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
-          if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
-          expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
-          expect(request).toMatchObject({
-            tenantId: tenant,
-            agentRunId: runId,
-            sempMessageId: continued.assistantMessageId,
-          });
-          expect(messages).toContainEqual({
-            type: "gatewayResult",
-            sequence: 2,
-            status: 200,
-            tenantId: tenant,
-            agentRunId: runId,
-            sempMessageId: continued.assistantMessageId,
-          });
-        },
-        { timeout: 5000 },
-      );
-      const continuedCalls = await runInTenant(tenant, () =>
-        pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
-          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
-          [runId, continued.assistantMessageId],
-        ),
-      );
-      expect(continuedCalls.rows).toEqual([
-        { status: "settled", agent_run_id: runId, semp_message_id: continued.assistantMessageId },
-      ]);
-      const closed = await closeIdleThreadSessions(pool);
-      expect(closed.closedRunIds).toContain(runId);
-      const wake = await runInTenant(tenant, () =>
-        withTransaction(pool, (client) =>
-          sendSempMessage(client, {
-            threadId: turn.threadId,
-            text: "Wake the image history",
-            context: [],
-            hasContext: false,
-          }),
-        ),
-      );
-      const wakeRun = await vi.waitFor(
-        async () => {
-          const result = await runInTenant(tenant, () =>
-            pool.query<{ status: string; agent_run_id: string | null }>(
-              "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
-              [wake.assistantMessageId],
+          const continuedRun = await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [continued.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              expect(result.rows[0]?.agent_run_id).toBe(runId);
+              return result.rows[0]?.agent_run_id;
+            },
+            { timeout: 20_000 },
+          );
+          expect(continuedRun).toBe(runId);
+          await vi.waitFor(
+            () => {
+              const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 2);
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+              const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 2);
+              if (!request || request.type !== "gatewayRequest") throw new Error("Missing continued gateway request");
+              expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+              expect(request).toMatchObject({
+                tenantId: tenant,
+                agentRunId: runId,
+                sempMessageId: continued.assistantMessageId,
+              });
+              expect(messages).toContainEqual({
+                type: "gatewayResult",
+                sequence: 2,
+                status: 200,
+                tenantId: tenant,
+                agentRunId: runId,
+                sempMessageId: continued.assistantMessageId,
+              });
+            },
+            { timeout: 5000 },
+          );
+          const continuedCalls = await runInTenant(tenant, () =>
+            pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+              "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+              [runId, continued.assistantMessageId],
             ),
           );
-          expect(result.rows[0]?.status).toBe("done");
-          expect(result.rows[0]?.agent_run_id).toBeTruthy();
-          return result.rows[0]?.agent_run_id;
-        },
-        { timeout: 20_000 },
-      );
-      if (!wakeRun) throw new Error("Missing wake run");
-      await vi.waitFor(
-        () => {
-          const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
-          expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
-          const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
-          if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
-          expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
-          expect(request).toMatchObject({
-            tenantId: tenant,
-            agentRunId: wakeRun,
-            sempMessageId: wake.assistantMessageId,
-          });
-          expect(messages).toContainEqual({
-            type: "gatewayResult",
-            sequence: 3,
-            status: 200,
-            tenantId: tenant,
-            agentRunId: wakeRun,
-            sempMessageId: wake.assistantMessageId,
-          });
-        },
-        { timeout: 5000 },
-      );
-      const wakeEvidence = await runInTenant(tenant, async () => {
-        const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
-          "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
-          [wakeRun, wake.assistantMessageId],
-        );
-        const events = await pool.query<{ payload: unknown }>(
-          "SELECT payload FROM agent_run_events WHERE agent_run_id = ANY($1::uuid[]) ORDER BY id",
-          [[runId, wakeRun]],
-        );
-        const messages = await pool.query<{ id: string; context: unknown }>(
-          "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
-          [[turn.messageId, continued.messageId, wake.messageId]],
-        );
-        return { calls: calls.rows, events: events.rows, messages: messages.rows };
-      });
-      expect(wakeEvidence.calls).toEqual([
-        { status: "settled", agent_run_id: wakeRun, semp_message_id: wake.assistantMessageId },
-      ]);
-      expect(wakeEvidence.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: turn.messageId, context: refs }),
-          expect.objectContaining({ id: continued.messageId, context: [lastImage] }),
-          expect.objectContaining({ id: wake.messageId, context: [] }),
-        ]),
-      );
-      expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("image/jpeg");
-      expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("base64");
-    } catch (error) {
-      failed = true;
-      failure = error;
-    }
-    try {
-      const active = runtime;
-      runtime = undefined;
-      await active?.stop();
-      workerSettled = true;
-    } catch (error) {
-      workerSettled = false;
-      cleanupFailures.push(error);
-    }
-    try {
-      await closeIdleThreadSessions(pool);
-    } catch (error) {
-      workerSettled = false;
-      cleanupFailures.push(error);
-    }
-    if (child && childExit && !exited) {
-      try {
-        child.send?.({ type: "stop" });
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            childExit,
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Reference gateway stop timed out")), 10_000);
-            }),
+          expect(continuedCalls.rows).toEqual([
+            { status: "settled", agent_run_id: runId, semp_message_id: continued.assistantMessageId },
           ]);
-        } finally {
-          if (timer) clearTimeout(timer);
+          const closed = await closeIdleThreadSessions(pool);
+          expect(closed.closedRunIds).toContain(runId);
+          const wake = await runInTenant(tenant, () =>
+            withTransaction(pool, (client) =>
+              sendSempMessage(client, {
+                threadId: turn.threadId,
+                text: "Wake the image history",
+                context: [],
+                hasContext: false,
+              }),
+            ),
+          );
+          const wakeRun = await vi.waitFor(
+            async () => {
+              const result = await runInTenant(tenant, () =>
+                pool.query<{ status: string; agent_run_id: string | null }>(
+                  "SELECT status, agent_run_id FROM semp_messages WHERE id = $1",
+                  [wake.assistantMessageId],
+                ),
+              );
+              expect(result.rows[0]?.status).toBe("done");
+              expect(result.rows[0]?.agent_run_id).toBeTruthy();
+              return result.rows[0]?.agent_run_id;
+            },
+            { timeout: 20_000 },
+          );
+          if (!wakeRun) throw new Error("Missing wake run");
+          await vi.waitFor(
+            () => {
+              const observation = messages.find((entry) => entry.type === "observation" && entry.sequence === 3);
+              expect(observation).toMatchObject({ imageCount: 10, imageMimes: ["image/jpeg"] });
+              const request = messages.find((entry) => entry.type === "gatewayRequest" && entry.sequence === 3);
+              if (!request || request.type !== "gatewayRequest") throw new Error("Missing wake gateway request");
+              expect(request.bodyBytes).toBeLessThan(4 * 1024 * 1024);
+              expect(request).toMatchObject({
+                tenantId: tenant,
+                agentRunId: wakeRun,
+                sempMessageId: wake.assistantMessageId,
+              });
+              expect(messages).toContainEqual({
+                type: "gatewayResult",
+                sequence: 3,
+                status: 200,
+                tenantId: tenant,
+                agentRunId: wakeRun,
+                sempMessageId: wake.assistantMessageId,
+              });
+            },
+            { timeout: 5000 },
+          );
+          const wakeEvidence = await runInTenant(tenant, async () => {
+            const calls = await pool.query<{ status: string; agent_run_id: string; semp_message_id: string }>(
+              "SELECT status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE agent_run_id = $1 AND semp_message_id = $2",
+              [wakeRun, wake.assistantMessageId],
+            );
+            const events = await pool.query<{ payload: unknown }>(
+              "SELECT payload FROM agent_run_events WHERE agent_run_id = ANY($1::uuid[]) ORDER BY id",
+              [[runId, wakeRun]],
+            );
+            const messages = await pool.query<{ id: string; context: unknown }>(
+              "SELECT id, context FROM semp_messages WHERE id = ANY($1::uuid[])",
+              [[turn.messageId, continued.messageId, wake.messageId]],
+            );
+            return { calls: calls.rows, events: events.rows, messages: messages.rows };
+          });
+          expect(wakeEvidence.calls).toEqual([
+            { status: "settled", agent_run_id: wakeRun, semp_message_id: wake.assistantMessageId },
+          ]);
+          expect(wakeEvidence.messages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ id: turn.messageId, context: refs }),
+              expect.objectContaining({ id: continued.messageId, context: [lastImage] }),
+              expect.objectContaining({ id: wake.messageId, context: [] }),
+            ]),
+          );
+          expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("image/jpeg");
+          expect(JSON.stringify([wakeEvidence.events, wakeEvidence.messages])).not.toContain("base64");
         }
       } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      try {
+        const active = runtime;
+        runtime = undefined;
+        await active?.stop();
+        workerSettled = true;
+      } catch (error) {
+        workerSettled = false;
         cleanupFailures.push(error);
+      }
+      try {
+        await closeIdleThreadSessions(pool);
+      } catch (error) {
+        workerSettled = false;
+        cleanupFailures.push(error);
+      }
+      if (child && childExit && !exited) {
         try {
-          child.kill("SIGKILL");
-          await childExit;
-        } catch (killError) {
-          cleanupFailures.push(killError);
+          child.send?.({ type: "stop" });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              childExit,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("Reference gateway stop timed out")), 10_000);
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        } catch (error) {
+          cleanupFailures.push(error);
+          try {
+            child.kill("SIGKILL");
+            await childExit;
+          } catch (killError) {
+            cleanupFailures.push(killError);
+          }
         }
       }
-    }
-    if (childExit && exited) {
-      try {
-        const outcome = await childExit;
-        process.stderr.write(`ref gateway exit=${outcome.code} signal=${outcome.signal}\n`);
-        if (outcome.error) throw outcome.error;
-        if (outcome.code !== 0 || outcome.signal !== null) throw new Error("Reference gateway did not exit cleanly");
-      } catch (error) {
-        cleanupFailures.push(error);
+      if (childExit && exited) {
+        try {
+          const outcome = await childExit;
+          process.stderr.write(`ref gateway exit=${outcome.code} signal=${outcome.signal}\n`);
+          if (outcome.error) throw outcome.error;
+          if (outcome.code !== 0 || outcome.signal !== null) throw new Error("Reference gateway did not exit cleanly");
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
       }
-    }
-    if (blockDir && (!child || exited) && workerSettled) {
-      try {
-        await rm(blockDir, { recursive: true });
-      } catch (error) {
-        cleanupFailures.push(error);
+      if (blockDir && (!child || exited) && workerSettled) {
+        try {
+          await rm(blockDir, { recursive: true });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
       }
-    }
-    if (mailRoot && (!child || exited) && workerSettled) {
-      try {
-        await rm(mailRoot, { recursive: true });
-      } catch (error) {
-        cleanupFailures.push(error);
+      if (mailRoot && (!child || exited) && workerSettled) {
+        try {
+          await rm(mailRoot, { recursive: true });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
       }
-    }
-    if (failed && cleanupFailures.length)
-      throw new AggregateError([failure, ...cleanupFailures], "Reference worker test and cleanup failed", {
-        cause: failure,
-      });
-    if (failed)
-      throw failure instanceof Error ? failure : new Error("Reference worker test failed", { cause: failure });
-    if (cleanupFailures.length)
-      throw new AggregateError(cleanupFailures, "Reference worker cleanup failed", { cause: cleanupFailures[0] });
-  }, 60_000);
+      if (failed && cleanupFailures.length)
+        throw new AggregateError([failure, ...cleanupFailures], "Reference worker test and cleanup failed", {
+          cause: failure,
+        });
+      if (failed)
+        throw failure instanceof Error ? failure : new Error("Reference worker test failed", { cause: failure });
+      if (cleanupFailures.length)
+        throw new AggregateError(cleanupFailures, "Reference worker cleanup failed", { cause: cleanupFailures[0] });
+    },
+    60_000,
+  );
 
   it("refuses Semp enqueue outside a tenant scope without creating a job", async () => {
     const payload = { threadId: randomUUID(), assistantMessageId: randomUUID() };
