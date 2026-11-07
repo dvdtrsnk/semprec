@@ -506,14 +506,16 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(next.rest).toEqual(original.rest);
   });
 
-  it("loads the empty calendar module and lists no database for it", async () => {
+  it("loads the calendar module with its calendars database and no agent tool (issue #1600)", async () => {
     expect(moduleRegistry.listModuleIds()).toContain("calendar");
     expect(await moduleRegistry.listActiveModuleIds()).toContain("calendar");
 
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
     expect(res.status).toBe(200);
     const body = (await res.json()) as SchemaProjectionBody;
-    expect(body.databases.filter((db) => db.key?.startsWith("calendar"))).toEqual([]);
+    expect(body.databases.filter((db) => db.key?.startsWith("calendar")).map((db) => [db.key, db.name])).toEqual([
+      ["calendars", "Calendars"],
+    ]);
     expect(body.agentTools.filter((tool) => tool.moduleId === "calendar")).toEqual([]);
   });
 

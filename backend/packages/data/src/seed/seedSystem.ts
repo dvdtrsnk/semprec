@@ -39,6 +39,7 @@ import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
+import { seedCalendarsInTransaction } from "./seedCalendars.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
@@ -308,6 +309,10 @@ export async function seedSystem(
     // connection metadata only. Order relative to the other module seeds doesn't matter —
     // only depends on the Projects database above.
     await seedMcpModuleInTransaction(client, projectsDb.id);
+
+    // Calendars (issue #1600): the calendar module's first database and the `Events.calendar` relation.
+    // After seedTenDatabasesInTransaction above, whose Events database this edits.
+    await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
     return "created";
   });
 

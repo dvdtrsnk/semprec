@@ -140,6 +140,7 @@
   "property.events.actionItems.name": "Akční položky",
   "property.events.company.name": "Firma",
   "property.events.files.name": "Soubory",
+  "property.events.calendar.name": "Kalendář",
 
   "database.healthRecords.name": "Zdravotní záznamy",
   "database.healthRecords.searchPlaceholder": "Hledat v záznamech",

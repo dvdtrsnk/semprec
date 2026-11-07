@@ -140,6 +140,7 @@
   "property.events.actionItems.name": "Action items",
   "property.events.company.name": "Company",
   "property.events.files.name": "Files",
+  "property.events.calendar.name": "Calendar",
 
   "database.healthRecords.name": "Health records",
   "database.healthRecords.searchPlaceholder": "Search records",
