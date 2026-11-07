@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat } from "node:fs/promises";
-import { constants } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -242,130 +241,6 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
   return null;
 }
 
-const referenceSdkEnvironmentNames = [
-  "ANTHROPIC_CUSTOM_HEADERS",
-  "ANTHROPIC_WEBHOOK_SIGNING_KEY",
-  "ANTHROPIC_LOG",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-] as const;
-
-function requirePrivateReferenceEnvironment(): void {
-  if (referenceSdkEnvironmentNames.some((name) => Object.hasOwn(process.env, name)))
-    throw new Error("Reference diagnostic environment unavailable");
-}
-
-const privateReferenceRoot = "/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-32-run";
-
-async function privateReferenceDirectory(): Promise<{ directory: string; sourcePin: string }> {
-  const directory = process.env.BATCH32_PRIVATE_DIAGNOSTIC_DIR;
-  const sourcePin = process.env.BATCH32_SOURCE_PIN;
-  if (!directory || !sourcePin || !/^[0-9a-f]{40}$/.test(sourcePin))
-    throw new Error("Reference diagnostic configuration unavailable");
-  const root = await realpath(privateReferenceRoot);
-  const info = await lstat(directory);
-  if (
-    !info.isDirectory() ||
-    info.isSymbolicLink() ||
-    (info.mode & 0o7777) !== 0o700 ||
-    info.uid !== process.getuid?.() ||
-    dirname(resolve(directory)) !== root ||
-    (await realpath(directory)) !== resolve(directory) ||
-    !/^reference-private-[a-zA-Z0-9_-]+$/.test(basename(directory))
-  )
-    throw new Error("Reference diagnostic directory unavailable");
-  return { directory, sourcePin };
-}
-
-async function capturePrivateReferenceFailure(options: {
-  directory: string;
-  sourcePin: string;
-  tenantId: string;
-  threadId: string;
-  assistantId: string;
-  sensitive: string[];
-}): Promise<string> {
-  requirePrivateReferenceEnvironment();
-  const result = await runInTenant(options.tenantId, () =>
-    pool.query<{ run_id: string; result_text: string | null; oversize: boolean }>(
-      `SELECT r.id AS run_id,
-              CASE WHEN octet_length(r.result) <= 1024 THEN r.result ELSE NULL END AS result_text,
-              COALESCE(octet_length(r.result) > 1024, false) AS oversize
-         FROM semp_messages m JOIN agent_runs r ON r.id = m.agent_run_id AND r.tenant_id = m.tenant_id
-        WHERE m.id = $1 AND m.thread_id = $2 AND m.tenant_id = $3 AND m.role = 'assistant'
-          AND m.status = 'error' AND r.status = 'error' AND r.error_code = 'modelError'`,
-      [options.assistantId, options.threadId, options.tenantId],
-    ),
-  );
-  const row = result.rows[0];
-  if (result.rows.length !== 1 || !row) return "target-unavailable";
-  if (row.oversize) return "oversize";
-  if (row.result_text === null) return "null-result";
-  if (/["'](?:messages|system|content|prompt|headers|body)["']\s*:/i.test(row.result_text))
-    return "structured-content-unavailable";
-  let redacted = row.result_text;
-  for (const value of options.sensitive.filter(Boolean).sort((a, b) => b.length - a.length))
-    redacted = redacted.split(value).join("[redacted]");
-  redacted = redacted
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[uri]")
-    .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+/g, "[email]")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[uuid]")
-    .replace(/\b(?:authorization|api[-_ ]?key|token)["']?\s*[=:]\s*["']?(?:bearer\s+)?[^\s,;"'}]+/gi, "[credential]")
-    .replace(/\bbearer\s+[^\s,;"'}]+/gi, "[credential]");
-  let bounded = "";
-  for (const character of redacted) {
-    if (Buffer.byteLength(bounded + character, "utf8") > 512) break;
-    bounded += character;
-  }
-  const document = JSON.stringify({
-    version: 1,
-    tenantId: options.tenantId,
-    threadId: options.threadId,
-    assistantId: options.assistantId,
-    runId: row.run_id,
-    sourcePin: options.sourcePin,
-    assistantStatus: "error",
-    runStatus: "error",
-    errorCode: "modelError",
-    redactionApplied: true,
-    truncated: bounded !== redacted,
-    message: bounded,
-  });
-  if (Buffer.byteLength(document, "utf8") > 2048) throw new Error("Reference diagnostic artifact too large");
-  const tenantDirectory = join(options.directory, options.tenantId);
-  await mkdir(tenantDirectory, { mode: 0o700 });
-  const artifact = join(tenantDirectory, "failure.json");
-  const handle = await open(
-    artifact,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600,
-  );
-  let failed = false;
-  let failure: unknown;
-  try {
-    await handle.writeFile(document, "utf8");
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  let closeFailed = false;
-  let closeFailure: unknown;
-  try {
-    await handle.close();
-  } catch (error) {
-    closeFailed = true;
-    closeFailure = error;
-  }
-  if (failed && closeFailed)
-    throw new AggregateError([failure, closeFailure], "Reference diagnostic write and close failed", {
-      cause: failure,
-    });
-  if (failed) throw failure;
-  if (closeFailed) throw closeFailure;
-  return `${basename(options.directory)}/${options.tenantId}/failure.json`;
-}
-
 describe("queued Semp messages", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -414,14 +289,6 @@ describe("queued Semp messages", () => {
   ])(
     "$name",
     async ({ images }) => {
-      let privateDiagnostic: Awaited<ReturnType<typeof privateReferenceDirectory>> | undefined;
-      if (!images) {
-        try {
-          privateDiagnostic = await privateReferenceDirectory();
-        } catch {
-          throw new Error("Reference diagnostic configuration unavailable");
-        }
-      }
       await runtime?.stop();
       runtime = undefined;
       const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -473,7 +340,6 @@ describe("queued Semp messages", () => {
           .digest("hex");
         const databaseUrl = pool.options.connectionString;
         if (typeof databaseUrl !== "string") throw new Error("Missing runtime database URL");
-        if (!images) requirePrivateReferenceEnvironment();
         child = spawn(process.execPath, [fixture], {
           cwd: backend,
           detached: true,
@@ -740,45 +606,6 @@ describe("queued Semp messages", () => {
             { timeout: 20_000 },
           );
         } catch (error) {
-          if (privateDiagnostic) {
-            try {
-              const artifact = await capturePrivateReferenceFailure({
-                ...privateDiagnostic,
-                tenantId: tenant,
-                threadId: turn.threadId,
-                assistantId: turn.assistantMessageId,
-                sensitive: [
-                  databaseUrl,
-                  backend,
-                  blockRoot,
-                  blockDir,
-                  mailRoot,
-                  tmpdir(),
-                  homedir(),
-                  "batch32-ref-test-token",
-                  "fixture-key",
-                  "REF_OWNER_SENTINEL_32",
-                  "REF_FOREIGN_SENTINEL_32",
-                  "REF_MAIL_FIRST_SENTINEL_32",
-                  "REF_MAIL_REPLY_SENTINEL_32",
-                  "REF_BLOCK_SENTINEL_32",
-                  "REF_SIBLING_SENTINEL_32",
-                  "Reference mailbox",
-                  "Reference thread",
-                  "reference-worker",
-                  "Reference",
-                  "Fixture response.",
-                  "Question",
-                  "INBOX",
-                  "Inbox",
-                ].filter((value): value is string => typeof value === "string"),
-              });
-              process.stderr.write(`reference private diagnostic ${artifact}\n`);
-            } catch {
-              process.stderr.write("reference private diagnostic unavailable\n");
-              cleanupFailures.push(new Error("Reference private diagnostic failed"));
-            }
-          }
           try {
             const observed = await runInTenant(tenant, async () => {
               const target = await pool.query<{
