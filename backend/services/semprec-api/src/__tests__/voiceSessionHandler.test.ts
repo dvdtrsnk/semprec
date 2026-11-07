@@ -950,6 +950,7 @@ describe("voice session through the real gateway and registered worker", () => {
       const ownedGateway = gateway;
       let held = false;
       let failure: { error: unknown } | undefined;
+      let socketError: { error: Error } | undefined;
       const cleanup: unknown[] = [];
       const control = async (type: "holdModel" | "releaseModel") => {
         if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
@@ -974,9 +975,18 @@ describe("voice session through the real gateway and registered worker", () => {
           else frames.push(JSON.parse(messageText(data)) as unknown);
         });
         await once(socket, "open");
+        socket.on("error", (error) => {
+          socketError ??= { error };
+        });
         socket.send(JSON.stringify({ type: "start", language: "en" }));
         await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }));
-        await vi.waitFor(() => expect(ownedGateway.messages.some((entry) => entry.type === "sttReady")).toBe(true));
+        const sttBefore = ownedGateway.messages.filter((entry) => entry.type === "sttReady").length;
+        const audioBefore = ownedGateway.messages.filter((entry) => entry.type === "audioAccepted").length;
+        socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+        await vi.waitFor(() => {
+          expect(ownedGateway.messages.filter((entry) => entry.type === "sttReady")).toHaveLength(sttBefore + 1);
+          expect(ownedGateway.messages.filter((entry) => entry.type === "audioAccepted")).toHaveLength(audioBefore + 1);
+        });
         held = true;
         await control("holdModel");
         const prior = await runInTenant(tenant, () =>
@@ -996,7 +1006,6 @@ describe("voice session through the real gateway and registered worker", () => {
         await vi.waitFor(() =>
           expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(priorModelCalls + 1),
         );
-        const audioBefore = audioFrames;
         for (let i = 1; i < count; i++) {
           if (overflow) send(ownedGateway, "finalSecond");
           await vi.waitFor(async () => {
@@ -1020,8 +1029,8 @@ describe("voice session through the real gateway and registered worker", () => {
           expect(rows.rows[i * 2]).toMatchObject({ role: "user", source: "voice" });
           expect(rows.rows[i * 2 + 1]).toMatchObject({ role: "assistant" });
         }
-        expect(audioFrames).toBe(audioBefore);
         expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(priorModelCalls + 1);
+        expect(rows.rows.filter((row) => row.role === "assistant" && row.status === "running")).toHaveLength(1);
         expect(rows.rows.filter((row) => row.role === "assistant" && row.status === "queued")).toHaveLength(count - 1);
         const allThreads = await runInTenant(tenant, () =>
           pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
@@ -1059,6 +1068,7 @@ describe("voice session through the real gateway and registered worker", () => {
           }
         }
       }
+      if (socketError) cleanup.push(socketError.error);
       if (cleanup.length)
         throw new AggregateError(
           failure ? [failure.error, ...cleanup] : cleanup,
@@ -1101,6 +1111,8 @@ describe("voice session through the real gateway and registered worker", () => {
       let frameCountAtClose = 0;
       let audioCountAtClose = 0;
       let failed: { error: unknown } | undefined;
+      let socketError: { error: Error } | undefined;
+      let expectedCloseConsumed = false;
       const cleanup: unknown[] = [];
       const sql =
         "INSERT INTO semp_messages (thread_id, role, text, context, created_at, source) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz, $5) RETURNING id";
@@ -1131,55 +1143,73 @@ describe("voice session through the real gateway and registered worker", () => {
       };
       const onAcquire = (client: PoolClient) => {
         if (active.has(client)) return;
-        active.set(client, Object.getOwnPropertyDescriptor(client, "query"));
-        /* eslint-disable @typescript-eslint/unbound-method */
-        client.query = new Proxy(client.query, {
-          apply(target, receiver, args: unknown[]) {
-            const scope = currentTenantScope();
-            const values: unknown = args[1];
-            const match =
-              !reached &&
-              args[0] === sql &&
-              scope?.kind === "tenant" &&
-              scope.tenantId === tenant &&
-              Array.isArray(values) &&
-              values.length === 5 &&
-              values[0] === selectedThread &&
-              values[1] === "A second question." &&
-              values[2] === "[]" &&
-              (values[3] instanceof Date || typeof values[3] === "string") &&
-              values[4] === "voice";
-            if (!match) {
-              const result: unknown = Reflect.apply(target, receiver, args);
-              if (client === selectedClient && args[0] === "ROLLBACK" && result instanceof Promise) {
-                const observed = result.then(
-                  () => {
-                    rollback = true;
-                  },
-                  (error: unknown) => {
-                    observerErrors.push(error);
-                  },
-                );
-                pending.push(observed);
+        try {
+          active.set(client, Object.getOwnPropertyDescriptor(client, "query"));
+          /* eslint-disable @typescript-eslint/unbound-method */
+          client.query = new Proxy(client.query, {
+            apply(target, receiver, args: unknown[]) {
+              const scope = currentTenantScope();
+              const values: unknown = args[1];
+              const match =
+                !reached &&
+                args[0] === sql &&
+                scope?.kind === "tenant" &&
+                scope.tenantId === tenant &&
+                Array.isArray(values) &&
+                values.length === 5 &&
+                values[0] === selectedThread &&
+                values[1] === "A second question." &&
+                values[2] === "[]" &&
+                (values[3] instanceof Date || typeof values[3] === "string") &&
+                values[4] === "voice";
+              if (!match) {
+                const result: unknown = Reflect.apply(target, receiver, args);
+                if (client === selectedClient && args[0] === "ROLLBACK" && result instanceof Promise) {
+                  const observed = result.then(
+                    () => {
+                      rollback = true;
+                    },
+                    (error: unknown) => {
+                      observerErrors.push(error);
+                    },
+                  );
+                  pending.push(observed);
+                }
+                return result;
               }
-              return result;
-            }
-            reached = true;
-            selectedClient = client;
-            const operation =
-              mode === "fault"
-                ? Promise.reject(fault)
-                : gate.then(() => Reflect.apply(target, receiver, args) as unknown);
+              reached = true;
+              selectedClient = client;
+              const operation =
+                mode === "fault"
+                  ? Promise.reject(fault)
+                  : gate.then(() => Reflect.apply(target, receiver, args) as unknown);
+              pending.push(
+                operation.then(
+                  () => undefined,
+                  () => undefined,
+                ),
+              );
+              return operation;
+            },
+          });
+          /* eslint-enable @typescript-eslint/unbound-method */
+        } catch (error) {
+          observerErrors.push(error);
+          try {
             pending.push(
-              operation.then(
-                () => undefined,
-                () => undefined,
+              client.end().then(
+                () => {
+                  active.delete(client);
+                },
+                (endError: unknown) => {
+                  observerErrors.push(endError);
+                },
               ),
             );
-            return operation;
-          },
-        });
-        /* eslint-enable @typescript-eslint/unbound-method */
+          } catch (endError) {
+            observerErrors.push(endError);
+          }
+        }
       };
       try {
         await new Promise<void>((resolveListen) => localServer.listen(0, "127.0.0.1", resolveListen));
@@ -1194,8 +1224,18 @@ describe("voice session through the real gateway and registered worker", () => {
           else received.push(JSON.parse(messageText(data)) as unknown);
         });
         await once(peer, "open");
+        peer.on("error", (error) => {
+          socketError ??= { error };
+        });
         peer.send(JSON.stringify({ type: "start", language: "en" }));
         await vi.waitFor(() => expect(received).toContainEqual({ type: "ready" }));
+        const sttBefore = ownedGateway.messages.filter((entry) => entry.type === "sttReady").length;
+        const audioBefore = ownedGateway.messages.filter((entry) => entry.type === "audioAccepted").length;
+        peer.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+        await vi.waitFor(() => {
+          expect(ownedGateway.messages.filter((entry) => entry.type === "sttReady")).toHaveLength(sttBefore + 1);
+          expect(ownedGateway.messages.filter((entry) => entry.type === "audioAccepted")).toHaveLength(audioBefore + 1);
+        });
         held = true;
         send(ownedGateway, "holdModel");
         const before = await runInTenant(tenant, () =>
@@ -1277,6 +1317,7 @@ describe("voice session through the real gateway and registered worker", () => {
             (value instanceof AggregateError && value.errors.some(contains)) ||
             (value instanceof Error && value.cause !== undefined && contains(value.cause));
           expect(contains(close.reason)).toBe(true);
+          expectedCloseConsumed = true;
         }
         const rows = await runInTenant(tenant, () =>
           pool.query<{ users: string; assistants: string }>(
@@ -1295,8 +1336,10 @@ describe("voice session through the real gateway and registered worker", () => {
           cleanup.push(error);
         }
         try {
-          if (closeWork) await closeWork;
-          else await channel.close();
+          if (closeWork) {
+            const result = await closeWork;
+            if (result.status === "rejected" && !expectedCloseConsumed) cleanup.push(result.reason);
+          } else await channel.close();
         } catch (error) {
           cleanup.push(error);
         }
@@ -1331,6 +1374,7 @@ describe("voice session through the real gateway and registered worker", () => {
           cleanup.push(error);
         }
       }
+      if (socketError) cleanup.push(socketError.error);
       if (cleanup.length)
         throw new AggregateError(
           failed ? [failed.error, ...cleanup] : cleanup,
