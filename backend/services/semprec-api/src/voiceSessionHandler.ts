@@ -40,6 +40,18 @@ const MAX_TEXT = 4000;
 class VoiceTextOverloadError extends Error {}
 class VoiceTextMismatchError extends Error {}
 
+function isSessionCancellation(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false;
+  if (error === signal.reason) return true;
+  return (
+    error instanceof Error &&
+    error.name === "AbortError" &&
+    "code" in error &&
+    error.code === "ABORT_ERR" &&
+    error.cause === signal.reason
+  );
+}
+
 /** Bounded, ephemeral sentence and streamed-prefix state for one voice session. */
 export class VoiceTextState {
   private hash = createHash("sha256");
@@ -388,7 +400,7 @@ export function createVoiceSessionHandler(
                     .then(
                       (result) => ({ ok: true as const, result }),
                       (error: unknown) => {
-                        if (!session.admissionFailure && (!sender.signal.aborted || error !== sender.signal.reason)) {
+                        if (!session.admissionFailure && !isSessionCancellation(error, sender.signal)) {
                           session.admissionFailure = { error };
                           session.failures.push(error);
                           fail(session, error);
@@ -403,7 +415,7 @@ export function createVoiceSessionHandler(
                       if (outcome.ok) await turn(session, outcome.result);
                     })
                     .catch((error: unknown) => {
-                      if (!sender.signal.aborted) {
+                      if (!isSessionCancellation(error, sender.signal)) {
                         session.failures.push(error);
                         fail(session, error);
                       }
@@ -456,7 +468,7 @@ export function createVoiceSessionHandler(
       sessions.delete(identity.userId);
       const failures: unknown[] = [...session.failures];
       for (const result of results) if (result.status === "rejected") failures.push(result.reason);
-      if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed");
+      if (failures.length) throw new AggregateError(failures, "Voice session cleanup failed", { cause: failures[0] });
     },
   };
 }

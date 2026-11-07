@@ -8,10 +8,10 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { createServer as createTcpServer, connect as connectTcp, type Socket } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
-import { AiGatewayFailedError, runAsSystem, runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import { SpeechSynthesisCapacityError, synthesizeSpeech } from "@semprec/ai-gateway-client";
 import {
   createRuntimeRolePool,
@@ -940,6 +940,390 @@ describe("voice session through the real gateway and registered worker", () => {
     } else failures.push(new Error("Child settlement unknown; fixture files retained"));
     if (failures.length) throw new AggregateError(failures, "Voice fixture cleanup failed", { cause: failures[0] });
   }, 60_000);
+  it.each([
+    { name: "admits two quick initial finals into one thread before delivery finishes", count: 2, overflow: false },
+    { name: "admits sixteen outstanding voice turns and refuses the seventeenth", count: 16, overflow: true },
+  ])(
+    "$name",
+    async ({ count, overflow }) => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      let held = false;
+      let failure: { error: unknown } | undefined;
+      const cleanup: unknown[] = [];
+      const control = async (type: "holdModel" | "releaseModel") => {
+        if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
+        await new Promise<void>((resolveSend, reject) => {
+          const timer = setTimeout(() => reject(new Error("Fixture control acknowledgement timed out")), 5000);
+          try {
+            ownedGateway.child.send({ type }, (error) => {
+              clearTimeout(timer);
+              if (error) reject(error);
+              else resolveSend();
+            });
+          } catch (error) {
+            clearTimeout(timer);
+            reject(error instanceof Error ? error : new Error("Fixture control failed", { cause: error }));
+          }
+        });
+      };
+      try {
+        socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+        socket.on("message", (data, binary) => {
+          if (binary) audioFrames++;
+          else frames.push(JSON.parse(messageText(data)) as unknown);
+        });
+        await once(socket, "open");
+        socket.send(JSON.stringify({ type: "start", language: "en" }));
+        await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }));
+        await vi.waitFor(() => expect(ownedGateway.messages.some((entry) => entry.type === "sttReady")).toBe(true));
+        held = true;
+        await control("holdModel");
+        const prior = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
+        );
+        const priorModelCalls = ownedGateway.messages.filter((entry) => entry.type === "modelCall").length;
+        send(ownedGateway, "final");
+        if (!overflow) send(ownedGateway, "finalSecond");
+        const threadId = await vi.waitFor(async () => {
+          const threads = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
+          );
+          const fresh = threads.rows.filter((row) => !prior.rows.some((old) => old.id === row.id));
+          expect(fresh).toHaveLength(1);
+          return fresh[0]!.id;
+        });
+        await vi.waitFor(() =>
+          expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(priorModelCalls + 1),
+        );
+        const audioBefore = audioFrames;
+        for (let i = 1; i < count; i++) {
+          if (overflow) send(ownedGateway, "finalSecond");
+          await vi.waitFor(async () => {
+            const rows = await runInTenant(tenant, () =>
+              pool.query<{ users: string; assistants: string }>(
+                "SELECT count(*) FILTER (WHERE role='user')::text AS users, count(*) FILTER (WHERE role='assistant')::text AS assistants FROM semp_messages WHERE thread_id=$1",
+                [threadId],
+              ),
+            );
+            expect(rows.rows).toEqual([{ users: String(i + 1), assistants: String(i + 1) }]);
+          });
+        }
+        const rows = await runInTenant(tenant, () =>
+          pool.query<{ role: string; source: string | null; status: string | null }>(
+            "SELECT role, source, status FROM semp_messages WHERE thread_id=$1 ORDER BY created_at, id",
+            [threadId],
+          ),
+        );
+        expect(rows.rows).toHaveLength(count * 2);
+        for (let i = 0; i < count; i++) {
+          expect(rows.rows[i * 2]).toMatchObject({ role: "user", source: "voice" });
+          expect(rows.rows[i * 2 + 1]).toMatchObject({ role: "assistant" });
+        }
+        expect(audioFrames).toBe(audioBefore);
+        if (overflow) {
+          send(ownedGateway, "finalSecond");
+          await vi.waitFor(() => expect(frames).toContainEqual({ type: "error", code: "overloaded" }));
+          const after = await runInTenant(tenant, () =>
+            pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages WHERE thread_id=$1", [
+              threadId,
+            ]),
+          );
+          expect(after.rows).toEqual([{ count: String(count * 2) }]);
+        }
+      } catch (error) {
+        failure = { error };
+      } finally {
+        if (held) {
+          try {
+            await control("releaseModel");
+          } catch (error) {
+            cleanup.push(error);
+          }
+        }
+        if (socket && socket.readyState !== WebSocket.CLOSED) {
+          try {
+            const closed = once(socket, "close");
+            socket.terminate();
+            await closed;
+          } catch (error) {
+            cleanup.push(error);
+          }
+        }
+      }
+      if (cleanup.length)
+        throw new AggregateError(
+          failure ? [failure.error, ...cleanup] : cleanup,
+          "Voice admission test cleanup failed",
+          { cause: failure ? failure.error : cleanup[0] },
+        );
+      if (failure) throw failure.error;
+    },
+    70_000,
+  );
+
+  it.each(["fault", "server-close"] as const)(
+    "settles a real second voice admission with a synthetic %s boundary",
+    async (mode) => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      const ready = ownedGateway.messages.find((entry) => entry.type === "ready");
+      if (!ready || ready.type !== "ready" || !ready.port) throw new Error("Missing gateway port");
+      const channel = createVoiceChannel(pool, {
+        handler: createVoiceSessionHandler(pool, { port: ready.port, token: "batch32-test-token" }, sync),
+      });
+      const localServer = createServer();
+      localServer.on("upgrade", (req, stream, head) => channel.handleUpgrade(req, stream, head));
+      const active = new Map<PoolClient, PropertyDescriptor | undefined>();
+      const pending: Promise<void>[] = [];
+      const observerErrors: unknown[] = [];
+      const fault = new Error("Synthetic second voice admission fault");
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolveGate) => {
+        releaseGate = resolveGate;
+      });
+      let reached = false;
+      let rollback = false;
+      let selectedClient: PoolClient | undefined;
+      let selectedThread: string | undefined;
+      let peer: WebSocket | undefined;
+      let closeWork: Promise<PromiseSettledResult<void>> | undefined;
+      let held = false;
+      let failed: { error: unknown } | undefined;
+      const cleanup: unknown[] = [];
+      const sql =
+        "INSERT INTO semp_messages (thread_id, role, text, context, created_at, source) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz, $5) RETURNING id";
+      const onRelease = (_error: Error | undefined, client: PoolClient) => {
+        if (!active.has(client)) return;
+        const descriptor = active.get(client);
+        try {
+          if (descriptor) Object.defineProperty(client, "query", descriptor);
+          else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
+          active.delete(client);
+        } catch (error) {
+          observerErrors.push(error);
+          try {
+            pending.push(
+              client.end().then(
+                () => {
+                  active.delete(client);
+                },
+                (endError: unknown) => {
+                  observerErrors.push(endError);
+                },
+              ),
+            );
+          } catch (endError) {
+            observerErrors.push(endError);
+          }
+        }
+      };
+      const onAcquire = (client: PoolClient) => {
+        if (active.has(client)) return;
+        active.set(client, Object.getOwnPropertyDescriptor(client, "query"));
+        /* eslint-disable @typescript-eslint/unbound-method */
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            const scope = currentTenantScope();
+            const values: unknown = args[1];
+            const match =
+              !reached &&
+              args[0] === sql &&
+              scope?.kind === "tenant" &&
+              scope.tenantId === tenant &&
+              Array.isArray(values) &&
+              values.length === 5 &&
+              values[0] === selectedThread &&
+              values[1] === "A second question." &&
+              values[2] === "[]" &&
+              (values[3] instanceof Date || typeof values[3] === "string") &&
+              values[4] === "voice";
+            if (!match) {
+              const result: unknown = Reflect.apply(target, receiver, args);
+              if (client === selectedClient && args[0] === "ROLLBACK" && result instanceof Promise) {
+                const observed = result.then(
+                  () => {
+                    rollback = true;
+                  },
+                  (error: unknown) => {
+                    observerErrors.push(error);
+                  },
+                );
+                pending.push(observed);
+              }
+              return result;
+            }
+            reached = true;
+            selectedClient = client;
+            const operation =
+              mode === "fault"
+                ? Promise.reject(fault)
+                : gate.then(() => Reflect.apply(target, receiver, args) as unknown);
+            pending.push(
+              operation.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
+            return operation;
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+      };
+      try {
+        await new Promise<void>((resolveListen) => localServer.listen(0, "127.0.0.1", resolveListen));
+        const address = localServer.address();
+        if (!address || typeof address === "string") throw new Error("Missing local listener");
+        peer = new WebSocket(`ws://127.0.0.1:${address.port}/api/voice`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const received: unknown[] = [];
+        peer.on("message", (data, binary) => {
+          if (!binary) received.push(JSON.parse(messageText(data)) as unknown);
+        });
+        await once(peer, "open");
+        peer.send(JSON.stringify({ type: "start", language: "en" }));
+        await vi.waitFor(() => expect(received).toContainEqual({ type: "ready" }));
+        held = true;
+        send(ownedGateway, "holdModel");
+        const before = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
+        );
+        const modelBefore = ownedGateway.messages.filter((entry) => entry.type === "modelCall").length;
+        send(ownedGateway, "final");
+        selectedThread = await vi.waitFor(async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>("SELECT id FROM semp_threads ORDER BY id"),
+          );
+          const added = result.rows.filter((row) => !before.rows.some((old) => old.id === row.id));
+          expect(added).toHaveLength(1);
+          return added[0]!.id;
+        });
+        await vi.waitFor(() =>
+          expect(ownedGateway.messages.filter((entry) => entry.type === "modelCall")).toHaveLength(modelBefore + 1),
+        );
+        const beforeJobs = await runInTenant(tenant, () =>
+          pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE payload->>'threadId'=$1",
+            [selectedThread],
+          ),
+        );
+        pool.on("release", onRelease);
+        pool.on("acquire", onAcquire);
+        send(ownedGateway, "finalSecond");
+        await vi.waitFor(() => expect(reached).toBe(true));
+        if (mode === "server-close") {
+          send(ownedGateway, "finalSecond");
+          await vi.waitFor(() =>
+            expect(
+              received.filter(
+                (entry) =>
+                  typeof entry === "object" &&
+                  entry !== null &&
+                  "type" in entry &&
+                  entry.type === "transcript" &&
+                  "final" in entry &&
+                  entry.final === true,
+              ),
+            ).toHaveLength(3),
+          );
+          closeWork = channel.close().then(
+            () => ({ status: "fulfilled" as const, value: undefined }),
+            (reason: unknown) => ({ status: "rejected" as const, reason }),
+          );
+          releaseGate();
+        } else {
+          await vi.waitFor(() => expect(rollback).toBe(true));
+          await vi.waitFor(() => expect(received).toContainEqual({ type: "error", code: "unavailable" }));
+          closeWork = channel.close().then(
+            () => ({ status: "fulfilled" as const, value: undefined }),
+            (reason: unknown) => ({ status: "rejected" as const, reason }),
+          );
+        }
+        await Promise.all(pending);
+        const close = await closeWork;
+        if (mode === "server-close") expect(close.status).toBe("fulfilled");
+        if (mode === "fault") {
+          const afterJobs = await runInTenant(tenant, () =>
+            pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE payload->>'threadId'=$1",
+              [selectedThread],
+            ),
+          );
+          expect(afterJobs.rows).toEqual(beforeJobs.rows);
+          expect(close.status).toBe("rejected");
+          if (close.status !== "rejected") throw new Error("Expected failed channel close");
+          expect(close.reason).toBeInstanceOf(AggregateError);
+          const contains = (value: unknown): boolean =>
+            value === fault ||
+            (value instanceof AggregateError && value.errors.some(contains)) ||
+            (value instanceof Error && value.cause !== undefined && contains(value.cause));
+          expect(contains(close.reason)).toBe(true);
+        }
+        const rows = await runInTenant(tenant, () =>
+          pool.query<{ users: string; assistants: string }>(
+            "SELECT count(*) FILTER (WHERE role='user')::text AS users, count(*) FILTER (WHERE role='assistant')::text AS assistants FROM semp_messages WHERE thread_id=$1",
+            [selectedThread],
+          ),
+        );
+        expect(rows.rows).toEqual([{ users: mode === "fault" ? "1" : "2", assistants: mode === "fault" ? "1" : "2" }]);
+      } catch (error) {
+        failed = { error };
+      } finally {
+        releaseGate();
+        try {
+          if (held) send(ownedGateway, "releaseModel");
+        } catch (error) {
+          cleanup.push(error);
+        }
+        try {
+          if (closeWork) await closeWork;
+          else await channel.close();
+        } catch (error) {
+          cleanup.push(error);
+        }
+        try {
+          await Promise.all(pending);
+        } catch (error) {
+          cleanup.push(error);
+        }
+        pool.off("acquire", onAcquire);
+        try {
+          await vi.waitFor(() => expect(active.size).toBe(0), { timeout: 5000 });
+        } catch (error) {
+          cleanup.push(error);
+        }
+        if (!active.size) pool.off("release", onRelease);
+        cleanup.push(...observerErrors);
+        try {
+          if (peer && peer.readyState !== WebSocket.CLOSED) {
+            const closed = once(peer, "close");
+            peer.terminate();
+            await closed;
+          }
+        } catch (error) {
+          cleanup.push(error);
+        }
+        try {
+          if (localServer.listening)
+            await new Promise<void>((resolveClose, reject) =>
+              localServer.close((error) => (error ? reject(error) : resolveClose())),
+            );
+        } catch (error) {
+          cleanup.push(error);
+        }
+      }
+      if (cleanup.length)
+        throw new AggregateError(
+          failed ? [failed.error, ...cleanup] : cleanup,
+          "Voice admission boundary cleanup failed",
+          { cause: failed ? failed.error : cleanup[0] },
+        );
+      if (failed) throw failed.error;
+    },
+    70_000,
+  );
+
   it("stores a trusted voice turn and streams a real worker answer before native provider completion", async () => {
     if (!gateway || !worker) throw new Error("Missing fixture child");
     let watchSocket: WebSocket | undefined;
