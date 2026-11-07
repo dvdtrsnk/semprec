@@ -30,7 +30,9 @@ import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
 import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
-import { FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
+import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
@@ -63,6 +65,9 @@ registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async
   patch,
   deferredKeys: stored === null && !Object.hasOwn(patch, "type") && Object.hasOwn(patch, "file") ? ["type"] : [],
 }));
+// Events: the time transform first, so the iCalendar sequence compares normalized times (issues #1598, #1599).
+registerItemPreWriteTransform(EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime);
+registerItemPreWriteTransform(EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity);
 registerItemCreateHook(blobReferenceItemCreateHook);
 registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);

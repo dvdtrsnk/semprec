@@ -132,6 +132,8 @@
   "property.events.description.name": "Popis",
   "property.events.alertMinutes.name": "Upozornění (minuty předem)",
   "property.events.travelMinutes.name": "Cesta (minuty)",
+  "property.events.icalUid.name": "UID iCalendar",
+  "property.events.icalSequence.name": "Pořadí revize iCalendar",
   "property.events.project.name": "Projekt",
   "property.events.people.name": "Lidé",
   "property.events.transcript.name": "Přepis",

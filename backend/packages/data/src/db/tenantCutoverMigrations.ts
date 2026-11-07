@@ -21,6 +21,7 @@ import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcri
 import { runEventTranscriptCardinalityCutoverMigration } from "../transcription/eventTranscriptCardinalityCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
+import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
@@ -59,6 +60,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
+    await runEventsIcalIdentityCutoverMigration(pool);
     await runEventsAreaCutoverMigration(pool);
     await runEventsFilesRelationCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);

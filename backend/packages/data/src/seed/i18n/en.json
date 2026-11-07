@@ -132,6 +132,8 @@
   "property.events.description.name": "Description",
   "property.events.alertMinutes.name": "Alert (minutes before)",
   "property.events.travelMinutes.name": "Travel time (minutes)",
+  "property.events.icalUid.name": "iCalendar UID",
+  "property.events.icalSequence.name": "iCalendar sequence",
   "property.events.project.name": "Project",
   "property.events.people.name": "People",
   "property.events.transcript.name": "Transcript",

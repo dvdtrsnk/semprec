@@ -280,6 +280,10 @@ export async function seedTenDatabasesInTransaction(
     { key: "description", name: "Description", type: "longText", owner: "user" },
     { key: "alertMinutes", name: "Alert minutes", type: "number", owner: "user" },
     { key: "travelMinutes", name: "Travel minutes", type: "number", owner: "user" },
+    // The iCalendar identity of an Event (issue #1599), computed by `calendar/eventIcalIdentityTransform.ts`;
+    // a populated tenant gets the same two definitions from `calendar/eventsIcalIdentityCutoverMigration.ts`.
+    { key: "icalUid", name: "iCalendar UID", type: "text", owner: "system", locked: true },
+    { key: "icalSequence", name: "iCalendar sequence", type: "number", owner: "system", locked: true },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);
