@@ -1759,6 +1759,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     let registration: Promise<() => Promise<void>> | undefined;
     let disposed = false;
     let primary: { error: unknown } | undefined;
+    const cleanup: unknown[] = [];
     try {
       const input = {
         tenantId: tenantA,
@@ -1787,10 +1788,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       await dispose();
     } catch (error) {
       primary = { error };
-      throw error;
     } finally {
       release();
-      const cleanup: unknown[] = [];
       try {
         if (registration) {
           const [outcome] = await Promise.allSettled([registration]);
@@ -1811,11 +1810,12 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       } catch (error) {
         cleanup.push(error);
       }
-      if (cleanup.length)
-        throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice barrier cleanup failed", {
-          cause: primary ? primary.error : cleanup[0],
-        });
     }
+    if (cleanup.length)
+      throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice barrier cleanup failed", {
+        cause: primary ? primary.error : cleanup[0],
+      });
+    if (primary) throw primary.error;
 
     let releaseAbort!: () => void;
     let observedAbort!: () => void;
@@ -1847,6 +1847,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     let abortRegistration: Promise<() => Promise<void>> | undefined;
     let abortPrimary: { error: unknown } | undefined;
     let observedAbortRejection = false;
+    const abortCleanup: unknown[] = [];
     try {
       abortRegistration = tenantServer.subscribeVoice({
         tenantId: tenantA,
@@ -1870,11 +1871,9 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       expect(afterAbort).toEqual([]);
     } catch (error) {
       abortPrimary = { error };
-      throw error;
     } finally {
       controller.abort();
       releaseAbort();
-      const cleanup: unknown[] = [];
       try {
         if (abortRegistration) {
           const [outcome] = await Promise.allSettled([abortRegistration]);
@@ -1884,23 +1883,24 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
             !observedAbortRejection &&
             (abortPrimary === undefined || outcome.reason !== abortPrimary.error)
           )
-            cleanup.push(outcome.reason);
+            abortCleanup.push(outcome.reason);
         }
       } catch (error) {
-        cleanup.push(error);
+        abortCleanup.push(error);
       }
       try {
         abortSpy.mockRestore();
       } catch (error) {
-        cleanup.push(error);
+        abortCleanup.push(error);
       }
-      if (cleanup.length)
-        throw new AggregateError(
-          abortPrimary ? [abortPrimary.error, ...cleanup] : cleanup,
-          "Voice abort cleanup failed",
-          { cause: abortPrimary ? abortPrimary.error : cleanup[0] },
-        );
     }
+    if (abortCleanup.length)
+      throw new AggregateError(
+        abortPrimary ? [abortPrimary.error, ...abortCleanup] : abortCleanup,
+        "Voice abort cleanup failed",
+        { cause: abortPrimary ? abortPrimary.error : abortCleanup[0] },
+      );
+    if (abortPrimary) throw abortPrimary.error;
   });
 
   async function waitForVoiceBarrier(barrier: Promise<void>, operation?: Promise<unknown>): Promise<void> {
@@ -2740,6 +2740,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     let registration: Promise<() => Promise<void>> | undefined;
     let disposed = false;
     let primary: { error: unknown } | undefined;
+    const cleanup: unknown[] = [];
     try {
       registration = tenantServer.subscribeVoice({
         tenantId: tenantA,
@@ -2844,10 +2845,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       await dispose();
     } catch (error) {
       primary = { error };
-      throw error;
     } finally {
       release();
-      const cleanup: unknown[] = [];
       try {
         if (registration) {
           const [outcome] = await Promise.allSettled([registration]);
@@ -2868,11 +2867,12 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       } catch (error) {
         cleanup.push(error);
       }
-      if (cleanup.length)
-        throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice replay cleanup failed", {
-          cause: primary ? primary.error : cleanup[0],
-        });
     }
+    if (cleanup.length)
+      throw new AggregateError(primary ? [primary.error, ...cleanup] : cleanup, "Voice replay cleanup failed", {
+        cause: primary ? primary.error : cleanup[0],
+      });
+    if (primary) throw primary.error;
   });
 
   it("delivers nothing to a socket of another tenant watching a run, as for an unknown run id", async () => {
