@@ -27,6 +27,72 @@ const token = "batch32-ref-test-token";
 const model = "claude-haiku-4-5";
 const caps = { dailyCapUsd: 1_000_000, monthlyCapUsd: 1_000_000 };
 let calls = 0;
+type QuerySchemaObservation = {
+  count: number;
+  bytes: number;
+  nestedDefinitions: boolean;
+  rootDefinitions: boolean;
+  refs: number;
+  allResolved: boolean;
+};
+
+function querySchemaObservation(input: unknown, name: string): QuerySchemaObservation {
+  const absent = { count: 0, bytes: 0, nestedDefinitions: false, rootDefinitions: false, refs: 0, allResolved: false };
+  const parsed = z
+    .object({
+      tools: z
+        .array(z.object({ name: z.string(), input_schema: z.unknown() }))
+        .max(200)
+        .optional(),
+    })
+    .safeParse(input);
+  if (!parsed.success) return absent;
+  const matches = (parsed.data.tools ?? []).filter((tool) => tool.name === name);
+  if (matches.length !== 1) return { ...absent, count: matches.length };
+  const schema = matches[0]?.input_schema;
+  const object = z.record(z.string(), z.unknown());
+  const root = object.safeParse(schema);
+  if (!root.success) return { ...absent, count: 1 };
+  const properties = object.safeParse(root.data.properties);
+  const filter = properties.success ? object.safeParse(properties.data.filter) : undefined;
+  const nestedDefinitions = filter?.success === true && object.safeParse(filter.data.$defs).success;
+  const pending: unknown[] = [schema];
+  let refs = 0;
+  let nodes = 0;
+  let allResolved = true;
+  while (pending.length) {
+    const current = pending.pop();
+    if (typeof current !== "object" || current === null) continue;
+    if (++nodes > 100_000) return { ...absent, count: 1 };
+    for (const [key, value] of Object.entries(current)) {
+      if (key === "$ref") {
+        refs += 1;
+        if (typeof value !== "string" || !/^#\/(?:[^/~]|~[01]|\/)+$/.test(value)) {
+          allResolved = false;
+          continue;
+        }
+        let target: unknown = schema;
+        for (const token of value.slice(2).split("/")) {
+          const part = token.replaceAll("~1", "/").replaceAll("~0", "~");
+          if (typeof target !== "object" || target === null || !Object.hasOwn(target, part)) {
+            allResolved = false;
+            break;
+          }
+          target = Reflect.get(target, part);
+        }
+      } else if (typeof value === "object" && value !== null) pending.push(value);
+    }
+  }
+  return {
+    count: 1,
+    bytes: Buffer.byteLength(JSON.stringify(schema)),
+    nestedDefinitions,
+    rootDefinitions: Object.hasOwn(root.data, "$defs"),
+    refs,
+    allResolved: refs > 0 && allResolved,
+  };
+}
+
 const provider = createServer((request, response) => {
   if (request.method !== "POST" || !request.url?.startsWith("/v1/messages")) {
     response.writeHead(404).end();
@@ -104,6 +170,10 @@ const provider = createServer((request, response) => {
       imageCount,
       imageMimes: [...mimeTypes].sort(),
       providerSerializedBytes: Buffer.byteLength(body),
+      querySchemas: {
+        database: querySchemaObservation(parsed, "database_query"),
+        view: querySchemaObservation(parsed, "view_query"),
+      },
     });
     const events = [
       {

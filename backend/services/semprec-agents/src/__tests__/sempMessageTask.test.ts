@@ -69,6 +69,43 @@ let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 
+type QuerySchemaObservation = {
+  count: number;
+  bytes: number;
+  nestedDefinitions: boolean;
+  rootDefinitions: boolean;
+  refs: number;
+  allResolved: boolean;
+};
+
+function isQuerySchemaObservation(value: unknown): value is QuerySchemaObservation {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 6)
+    return false;
+  return (
+    "count" in value &&
+    typeof value.count === "number" &&
+    Number.isInteger(value.count) &&
+    value.count >= 0 &&
+    value.count <= 200 &&
+    "bytes" in value &&
+    typeof value.bytes === "number" &&
+    Number.isInteger(value.bytes) &&
+    value.bytes >= 0 &&
+    value.bytes <= 4 * 1024 * 1024 &&
+    "nestedDefinitions" in value &&
+    typeof value.nestedDefinitions === "boolean" &&
+    "rootDefinitions" in value &&
+    typeof value.rootDefinitions === "boolean" &&
+    "refs" in value &&
+    typeof value.refs === "number" &&
+    Number.isInteger(value.refs) &&
+    value.refs >= 0 &&
+    value.refs <= 100_000 &&
+    "allResolved" in value &&
+    typeof value.allResolved === "boolean"
+  );
+}
+
 type RefFixtureIdentity = { tenantId: string | null; agentRunId: string | null; sempMessageId: string | null };
 type RefFixtureMessage =
   | { type: "ready"; port: number }
@@ -88,6 +125,7 @@ type RefFixtureMessage =
       imageCount: number;
       imageMimes: string[];
       providerSerializedBytes: number;
+      querySchemas: { database: QuerySchemaObservation; view: QuerySchemaObservation };
     };
 
 function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
@@ -186,7 +224,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     };
   if (
     value.type === "observation" &&
-    Object.keys(value).length === 12 &&
+    Object.keys(value).length === 13 &&
     "sequence" in value &&
     typeof value.sequence === "number" &&
     Number.isInteger(value.sequence) &&
@@ -218,6 +256,15 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
       (mime: unknown): mime is string =>
         typeof mime === "string" && ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime),
     ) &&
+    "querySchemas" in value &&
+    typeof value.querySchemas === "object" &&
+    value.querySchemas !== null &&
+    !Array.isArray(value.querySchemas) &&
+    Object.keys(value.querySchemas).length === 2 &&
+    "database" in value.querySchemas &&
+    isQuerySchemaObservation(value.querySchemas.database) &&
+    "view" in value.querySchemas &&
+    isQuerySchemaObservation(value.querySchemas.view) &&
     "providerSerializedBytes" in value &&
     typeof value.providerSerializedBytes === "number" &&
     Number.isInteger(value.providerSerializedBytes) &&
@@ -237,6 +284,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
       imageCount: value.imageCount,
       imageMimes: value.imageMimes,
       providerSerializedBytes: value.providerSerializedBytes,
+      querySchemas: { database: value.querySchemas.database, view: value.querySchemas.view },
     };
   return null;
 }
@@ -706,6 +754,22 @@ describe("queued Semp messages", () => {
             ]),
           { timeout: 5000 },
         );
+        if (!images) {
+          const providerObservation = messages.find((entry) => entry.type === "observation" && entry.sequence === 1);
+          if (!providerObservation || providerObservation.type !== "observation")
+            throw new Error("Missing provider observation");
+          for (const schema of Object.values(providerObservation.querySchemas)) {
+            expect(schema).toMatchObject({
+              count: 1,
+              nestedDefinitions: true,
+              rootDefinitions: false,
+              allResolved: true,
+            });
+            expect(schema.bytes).toBeGreaterThan(0);
+            expect(schema.bytes).toBeLessThan(20_000);
+            expect(schema.refs).toBeGreaterThan(0);
+          }
+        }
         const requestObservations = messages.filter((entry) => entry.type === "gatewayRequest");
         expect(requestObservations).toHaveLength(1);
         expect(requestObservations[0]?.bodyBytes).toEqual(expect.any(Number));

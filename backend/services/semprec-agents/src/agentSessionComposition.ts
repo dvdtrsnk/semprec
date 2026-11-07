@@ -89,7 +89,10 @@ const GENERIC_OPERATION_REASON_KEY = "reason";
  * optional agent-only `reason` when the operation is approval-gated (issue #1420).
  */
 function genericOperationToolSchema(operation: GenericOperationName): Record<string, unknown> {
-  const schema = operationInputJsonSchema(operation);
+  const schema =
+    operation === "database.query" || operation === "view.query"
+      ? operationInputJsonSchema(operation, "agent-query-compact")
+      : operationInputJsonSchema(operation);
   if (!OPERATION_METADATA[operation].requiresApproval) return schema;
   const properties = isArgumentsObject(schema.properties) ? schema.properties : {};
   return {
