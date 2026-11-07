@@ -38,6 +38,7 @@ import { runJournalProjectCutoverMigration } from "../journal/journalProjectCuto
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
 import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
+import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -91,5 +92,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTaskRecurrenceSeriesCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);
     await runJournalEventsCutoverMigration(pool);
+    // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
+    await runAreaNoteCutoverMigration(pool);
   });
 }
