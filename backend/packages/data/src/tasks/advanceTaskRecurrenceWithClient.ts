@@ -66,9 +66,11 @@ function isCalendarDate(value: unknown): value is string {
  *   (a `wontDo` occurrence, issue #1544).
  * - When a non-deleted occurrence of the series already has that date, nothing is created, so repeated
  *   transitions of one occurrence create at most one occurrence per date.
- * - Otherwise the next instance is created from the series template with that `date` and `occurrenceDate`, the
- *   same `seriesId` and a copy of `recurrence`; the series row is moved to it; the `project`, `people` and `files`
- *   edges are re-created on it; and the value-link sources naming the old instance are moved to it.
+ * - Otherwise the next instance is created with that `date` and `occurrenceDate`, the same `seriesId` and a copy
+ *   of `recurrence`; its `name`, `timeFrom`, `timeTo`, `notifications` and `persistent` come from the series
+ *   template, its `flagged` and `description` from the completed occurrence (issue #1673). The series row is moved to
+ *   it; the `project`, `people` and `files` edges are re-created on it; and the value-link sources naming the old
+ *   instance are moved to it. The series template itself is not changed.
  *
  * Every item/relation write goes through the choke-point's own logic — `createItemWithClient` /
  * `createRelationWithClient` — so idempotency handling, ownership checks, onItemEvent heartbeat triggering and
@@ -108,6 +110,7 @@ export async function advanceTaskRecurrenceWithClient(
       databaseId: input.databaseId,
       properties: {
         ...templateProperties(series.template),
+        ...completedOccurrenceProperties(current.properties),
         status: "notDone",
         date: nextDate,
         seriesId,
@@ -124,9 +127,8 @@ export async function advanceTaskRecurrenceWithClient(
 }
 
 /**
- * The next instance's template-derived properties: an explicit allowlist of the template's keys. `flagged`
- * defaults to `false` and `description` to `null` (issue #1673) because the template stores them that way; a
- * `name` that is not a non-blank string is left out rather than written as an invalid title.
+ * The next instance's properties taken from the series template: an explicit allowlist of template keys. A `name`
+ * that is not a non-blank string is left out rather than written as an invalid title.
  */
 function templateProperties(template: TaskRecurrenceTemplate): Record<string, unknown> {
   return {
@@ -135,8 +137,17 @@ function templateProperties(template: TaskRecurrenceTemplate): Record<string, un
     timeTo: template.timeTo,
     notifications: template.notifications,
     persistent: template.persistent,
-    flagged: template.flagged,
-    description: template.description,
+  };
+}
+
+/**
+ * The next instance's properties copied from the completed occurrence (issue #1673): an explicit allowlist. `flagged`
+ * defaults to `false` and `description` to `null` when the occurrence has no such value.
+ */
+function completedOccurrenceProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  return {
+    flagged: typeof properties.flagged === "boolean" ? properties.flagged : false,
+    description: typeof properties.description === "string" ? properties.description : null,
   };
 }
 

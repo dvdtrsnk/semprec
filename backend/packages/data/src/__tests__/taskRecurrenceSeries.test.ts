@@ -7,6 +7,7 @@ import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
+import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
@@ -98,7 +99,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
   });
 
   describe("series cutover", () => {
-    it("gives every active recurring instance a series and leaves done, inactive and dateless ones alone", async () => {
+    it("gives every active recurring instance a series and leaves done and inactive ones alone", async () => {
       const tasks = await tasksDatabaseId(tenant);
       const cp = createChokePoint(pool);
       const create = (properties: Record<string, unknown>) =>
@@ -117,7 +118,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
       const offPreset = await create({ name: "Tuesday thing", date: "2026-10-12" });
       const done = await create({ name: "Old chore", date: "2026-10-01", status: "done" });
       const inactive = await create({ name: "Stopped", date: "2026-10-02" });
-      const dateless = await create({ name: "No date" });
       const cases: Array<[string, TaskRecurrenceMode, TaskRecurrenceRule, string | null]> = [
         [weekly.id, "fixed", weeklyMonday, "weekly"],
         [everyDay.id, "fixed", daily, "daily"],
@@ -129,10 +129,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
       for (const [itemId, mode, rule] of cases) await insertLegacyRecurrence(tenant, itemId, mode, rule);
       await insertLegacyRecurrence(tenant, done.id, "fixed", weeklyMonday);
       await insertLegacyRecurrence(tenant, inactive.id, "fixed", weeklyMonday, false);
-      await insertLegacyRecurrence(tenant, dateless.id, "fixed", weeklyMonday);
-      // A row whose instance was purged without its recurrence row being removed.
-      const orphan = "00000000-0000-4000-8000-0000000000aa";
-      await insertLegacyRecurrence(tenant, orphan, "fixed", weeklyMonday);
       const otherTasks = await tasksDatabaseId(other);
       const foreign = await runInTenant(other, () =>
         cp.createItem({ databaseId: otherTasks, properties: { name: "Other tenant", date: "2026-10-12" } }),
@@ -166,8 +162,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
         flagged: true,
         description: "Look back",
       });
-      expect(rows.get(orphan)).toMatchObject({ series_id: null, anchor_date: null, template: null });
-      for (const untouched of [done, inactive, dateless]) {
+      for (const untouched of [done, inactive]) {
         expect(rows.get(untouched.id)).toMatchObject({ series_id: null, anchor_date: null, template: null });
         const item = await runInTenant(tenant, () => cp.getItem(tasks, untouched.id));
         expect(item?.properties.seriesId).toBeUndefined();
@@ -196,6 +191,81 @@ describe("recurring task series (issues #1605, #1670)", () => {
       const before = await snapshot();
       await runAsSystem("test cutover", () => runTenantCutoverMigrations(pool));
       expect(await snapshot()).toEqual(before);
+    });
+
+    it("fails a tenant's cutover unchanged when an eligible row has no valid date or no Tasks instance", async () => {
+      const tasks = await tasksDatabaseId(tenant);
+      const otherTasks = await tasksDatabaseId(other);
+      const cp = createChokePoint(pool);
+      const valid = await runInTenant(tenant, () =>
+        cp.createItem({ databaseId: tasks, properties: { name: "Weekly review", date: "2026-10-12" } }),
+      );
+      const dateless = await runInTenant(tenant, () =>
+        cp.createItem({ databaseId: tasks, properties: { name: "No date" } }),
+      );
+      const done = await runInTenant(tenant, () =>
+        cp.createItem({ databaseId: tasks, properties: { name: "Old chore", status: "done" } }),
+      );
+      await insertLegacyRecurrence(tenant, valid.id, "fixed", weeklyMonday);
+      await insertLegacyRecurrence(tenant, dateless.id, "fixed", weeklyMonday);
+      // A done instance without a date stays excluded and does not fail the tenant.
+      await insertLegacyRecurrence(tenant, done.id, "fixed", weeklyMonday);
+      // A row whose instance was purged without its recurrence row being removed.
+      const orphan = "00000000-0000-4000-8000-0000000000aa";
+      await insertLegacyRecurrence(tenant, orphan, "fixed", weeklyMonday);
+      const foreign = await runInTenant(other, () =>
+        cp.createItem({ databaseId: otherTasks, properties: { name: "Other tenant", date: "2026-10-12" } }),
+      );
+      await insertLegacyRecurrence(other, foreign.id, "fixed", weeklyMonday);
+      const state = (id: string, databaseId: string) =>
+        runInTenant(id, async () => ({
+          recurrence: await recurrenceRows(id),
+          items: (
+            await pool.query<{ id: string; properties: unknown; updated_at: Date }>(
+              "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
+              [databaseId],
+            )
+          ).rows,
+        }));
+      const before = await state(tenant, tasks);
+
+      const failure = await runAsSystem("test cutover", () => runTenantCutoverMigrations(pool)).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(AggregateError);
+      const errors = failure instanceof AggregateError ? failure.errors : [];
+      expect(failure instanceof Error ? failure.message : "").toContain(tenant);
+      expect(errors).toHaveLength(1);
+      const message = errors[0] instanceof Error ? errors[0].message : "";
+      expect(message).toContain(dateless.id);
+      expect(message).toContain(orphan);
+      expect(message).not.toContain(valid.id);
+      expect(message).not.toContain(done.id);
+      expect(await state(tenant, tasks)).toEqual(before);
+      const [foreignRow] = await recurrenceRows(other);
+      expect(foreignRow?.series_id).toEqual(expect.any(String));
+      expect((await runInTenant(other, () => cp.getItem(otherTasks, foreign.id)))?.properties.seriesId).toBe(
+        foreignRow?.series_id,
+      );
+    });
+
+    it("fails closed when active recurrence rows exist in a tenant without a Tasks database", async () => {
+      const bare = await createTestTenant(admin);
+      // A historical state: an active pre-#1605 recurrence row in a tenant whose Tasks database does not exist.
+      await insertLegacyRecurrence(bare, "00000000-0000-4000-8000-0000000000bb", "fixed", weeklyMonday);
+      await expect(runInTenant(bare, () => runTaskRecurrenceSeriesCutoverMigration(pool))).rejects.toThrow(
+        "no Tasks database",
+      );
+      expect(await recurrenceRows(bare)).toEqual([
+        {
+          item_id: "00000000-0000-4000-8000-0000000000bb",
+          series_id: null,
+          anchor_date: null,
+          template: null,
+          active: true,
+        },
+      ]);
     });
 
     it("returns the series fields on read and refuses a client write of each of them with 403 owner_violation", async () => {

@@ -11,19 +11,10 @@ import {
 } from "./taskRecurrenceRule.js";
 
 /**
- * The properties a series' occurrences are created from (issue #1605), in the order the template stores them.
- * The advance creates each next occurrence from exactly these keys (issues #1670, #1673).
+ * The properties a series' occurrences are created from (issue #1605). The advance takes `name`, `timeFrom`,
+ * `timeTo`, `notifications` and `persistent` from it and `flagged`/`description` from the completed occurrence
+ * (#1673); the projection uses all seven for a virtual occurrence (#1672).
  */
-export const TASK_RECURRENCE_TEMPLATE_KEYS = [
-  "name",
-  "timeFrom",
-  "timeTo",
-  "notifications",
-  "persistent",
-  "flagged",
-  "description",
-] as const;
-
 const templateSchema = z
   .object({
     name: z.string().nullable(),
@@ -45,7 +36,8 @@ export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
  * `TaskRecurrenceRule`, not a round-trip cast back through `unknown`.
  *
  * `seriesId`, `anchorDate` and `template` are null on a row without a series: one written before issue #1605 that the
- * series cutover left alone (inactive, or its instance done, missing or dateless) or one a previous release inserted.
+ * series cutover left alone (inactive, or its instance done), one whose tenant's cutover failed or has not run yet,
+ * or one a previous release inserted.
  * `createTaskRecurrence` and the cutover always set the three together.
  */
 export interface TaskRecurrence {

@@ -16,6 +16,8 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { TASKS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { startTaskSeries } from "../../testSupport/taskSeriesFixtures.js";
+import type { TaskRecurrenceRule } from "../taskRecurrenceRule.js";
+import type { TaskRecurrenceTemplate } from "../taskRecurrenceStore.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -182,6 +184,52 @@ describe("carrying Tasks fields and relations to the next recurring instance (is
       cp.getItem(databases.tasks!, await nextOccurrenceId(seriesId, task.id)),
     );
     expect(next?.properties).toMatchObject({ flagged: false, description: null });
+  });
+
+  it("takes flag and description from the completed occurrence after edits and leaves the template as it was", async () => {
+    const weekly: TaskRecurrenceRule = { kind: "weekdays", days: ["mon"] };
+    const start = async (properties: Record<string, unknown>, template?: Partial<TaskRecurrenceTemplate>) => {
+      const task = await create("tasks", { name: "Review", date: "2026-10-12", ...properties });
+      const seriesId = await runInTenant(tenant, () =>
+        startTaskSeries(pool, { databaseId: databases.tasks!, itemId: task.id, mode: "fixed", rule: weekly, template }),
+      );
+      return { task, seriesId };
+    };
+    const patch = (itemId: string, propertiesPatch: Record<string, unknown>) =>
+      runInTenant(tenant, () => cp.updateItem({ databaseId: databases.tasks!, itemId, propertiesPatch }));
+    const templateOf = async (seriesId: string) => {
+      const { rows } = await runInTenant(tenant, () =>
+        pool.query<{ template: unknown }>("SELECT template FROM task_recurrence WHERE series_id = $1", [seriesId]),
+      );
+      return rows[0]?.template;
+    };
+    const nextOf = async (seriesId: string, previousId: string) =>
+      (
+        await runInTenant(tenant, async () =>
+          cp.getItem(databases.tasks!, await nextOccurrenceId(seriesId, previousId)),
+        )
+      )?.properties;
+
+    const edited = await start({ flagged: true, description: "Before" });
+    const editedTemplate = await templateOf(edited.seriesId);
+    await patch(edited.task.id, { flagged: false, description: "After" });
+    await patch(edited.task.id, { status: "done" });
+    expect(await nextOf(edited.seriesId, edited.task.id)).toMatchObject({ flagged: false, description: "After" });
+    expect(editedTemplate).toMatchObject({ flagged: true, description: "Before" });
+    expect(await templateOf(edited.seriesId)).toEqual(editedTemplate);
+
+    const cleared = await start({ flagged: false, description: "Notes" });
+    await patch(cleared.task.id, { flagged: true, description: null });
+    await patch(cleared.task.id, { status: "done" });
+    expect(await nextOf(cleared.seriesId, cleared.task.id)).toMatchObject({ flagged: true, description: null });
+
+    const absent = await start({}, { flagged: true, description: "Template only" });
+    const absentTask = await runInTenant(tenant, () => cp.getItem(databases.tasks!, absent.task.id));
+    expect(absentTask?.properties.flagged).toBeUndefined();
+    expect(absentTask?.properties.description).toBeUndefined();
+    await patch(absent.task.id, { status: "done" });
+    expect(await nextOf(absent.seriesId, absent.task.id)).toMatchObject({ flagged: false, description: null });
+    expect(await templateOf(absent.seriesId)).toMatchObject({ flagged: true, description: "Template only" });
   });
 
   it("skips an edge whose counterpart is in the trash and still advances", async () => {

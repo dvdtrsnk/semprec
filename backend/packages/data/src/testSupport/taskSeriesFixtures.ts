@@ -4,17 +4,25 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { TaskRecurrenceMode, TaskRecurrenceRule } from "../tasks/taskRecurrenceRule.js";
-import { createTaskRecurrence } from "../tasks/taskRecurrenceStore.js";
+import { createTaskRecurrence, type TaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 
 /**
  * Turns an existing dated Tasks item into the current occurrence of a new series, the state the recurrence route
  * (#1665, not yet built) will produce: `createTaskRecurrence` stores the series with the item's `date` as anchor and
  * its template fields, and the Tasks module's system write puts `seriesId`, `occurrenceDate` and `recurrence` on the
- * item through the choke point. Returns the new series id.
+ * item through the choke point. `template` overrides fields of the template taken from the item. Returns the new
+ * series id.
  */
 export async function startTaskSeries(
   pool: Pool,
-  input: { databaseId: string; itemId: string; mode: TaskRecurrenceMode; rule: TaskRecurrenceRule; active?: boolean },
+  input: {
+    databaseId: string;
+    itemId: string;
+    mode: TaskRecurrenceMode;
+    rule: TaskRecurrenceRule;
+    active?: boolean;
+    template?: Partial<TaskRecurrenceTemplate>;
+  },
 ): Promise<string> {
   return withTransaction(pool, async (client) => {
     const item = await itemsStore.getItemById(client, input.databaseId, input.itemId);
@@ -35,6 +43,7 @@ export async function startTaskSeries(
         persistent: item.properties.persistent === true,
         flagged: item.properties.flagged === true,
         description: text(item.properties.description),
+        ...input.template,
       },
     });
     if (series.seriesId === null) throw new Error("createTaskRecurrence returned no series");

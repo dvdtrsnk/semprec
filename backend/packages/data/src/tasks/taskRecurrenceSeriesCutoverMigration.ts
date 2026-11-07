@@ -1,7 +1,6 @@
 import { DateTime } from "luxon";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { createLogger } from "@semprec/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -14,8 +13,6 @@ import {
   type Weekday,
 } from "./taskRecurrenceRule.js";
 import type { TaskRecurrenceTemplate } from "./taskRecurrenceStore.js";
-
-const logger = createLogger("task-recurrence-series-cutover");
 
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** Luxon weekday numbers 1 (Monday) to 7 (Sunday), as rule weekday names. */
@@ -73,22 +70,25 @@ function calendarDate(value: unknown): DateTime | null {
  * nothing.
  *
  * Idempotent: a row that already has a series is never selected, so a second run changes nothing. Inactive rows and
- * done instances get no series (their history is not reconstructed). A row whose instance is missing from Tasks or
- * has no valid calendar `date` is left unchanged too and only counted in a log line, because a series needs an
- * anchor day.
+ * done instances get no series (their history is not reconstructed). Every other candidate must get one: when an
+ * active row without a series has no Tasks instance, an instance without a valid calendar `date`, or the tenant has
+ * no Tasks database at all, the step throws before writing, so the tenant's transaction rolls back unchanged and the
+ * tenant runner reports the failure. No anchor is invented and no row is deactivated or skipped.
  *
  * One transaction per tenant. Lock order of docs/adr/2026-10-25-task-and-event-recurrence-model.md: the instance
  * items first, then their `task_recurrence` rows, each in id order; both are re-checked under their locks.
  */
 export async function runTaskRecurrenceSeriesCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
-    const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
-    if (!tasks) return;
     const candidates = await client.query<{ item_id: string }>(
       "SELECT item_id FROM task_recurrence WHERE active AND series_id IS NULL ORDER BY item_id",
     );
     const candidateIds = candidates.rows.map((row) => row.item_id);
     if (candidateIds.length === 0) return;
+    const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
+    if (!tasks) {
+      throw new Error(`Task recurrence series cutover: ${candidateIds.length} active rows but no Tasks database`);
+    }
 
     const items = await client.query<{ id: string; properties: unknown }>(
       "SELECT id, properties FROM items WHERE database_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE",
@@ -101,38 +101,45 @@ export async function runTaskRecurrenceSeriesCutoverMigration(pool: Pool): Promi
       [candidateIds],
     );
 
-    let skippedWithoutAnchor = 0;
+    const eligible: Array<{
+      itemId: string;
+      mode: string;
+      rule: unknown;
+      properties: Record<string, unknown>;
+      date: DateTime;
+    }> = [];
+    const withoutAnchor: string[] = [];
     for (const row of rows.rows) {
       const properties = propertiesById.get(row.item_id);
       if (properties?.status === "done") continue;
       const date = properties ? calendarDate(properties.date) : null;
-      if (!properties || !date) {
-        skippedWithoutAnchor++;
-        continue;
-      }
+      if (!properties || !date) withoutAnchor.push(row.item_id);
+      else eligible.push({ itemId: row.item_id, mode: row.mode, rule: row.rule, properties, date });
+    }
+    if (withoutAnchor.length > 0) {
+      throw new Error(
+        `Task recurrence series cutover: active rows without a Tasks instance or a valid date: ${withoutAnchor.join(", ")}`,
+      );
+    }
+
+    for (const row of eligible) {
       const mode = assertKnownValue(TASK_RECURRENCE_MODES, row.mode, "task recurrence mode");
       const rule = parseTaskRecurrenceRule(mode, row.rule);
-      const occurrenceDate = date.toFormat("yyyy-MM-dd");
+      const occurrenceDate = row.date.toFormat("yyyy-MM-dd");
       const series = await client.query<{ series_id: string }>(
         `UPDATE task_recurrence SET series_id = gen_random_uuid(), anchor_date = $2::date, template = $3::jsonb
          WHERE item_id = $1 AND series_id IS NULL RETURNING series_id::text AS series_id`,
-        [row.item_id, occurrenceDate, JSON.stringify(templateOf(properties))],
+        [row.itemId, occurrenceDate, JSON.stringify(templateOf(row.properties))],
       );
       requireAffectedRows(series, "task_recurrence series");
       const seriesId = requireSingleRow(series.rows, "task_recurrence series").series_id;
-      const recurrence = { preset: presetOf(mode, rule, date), mode, rule };
+      const recurrence = { preset: presetOf(mode, rule, row.date), mode, rule };
       const instance = await client.query(
         `UPDATE items SET properties = properties || jsonb_build_object('seriesId', $3::text, 'occurrenceDate', $4::text, 'recurrence', $5::jsonb)
          WHERE database_id = $1 AND id = $2`,
-        [tasks.id, row.item_id, seriesId, occurrenceDate, JSON.stringify(recurrence)],
+        [tasks.id, row.itemId, seriesId, occurrenceDate, JSON.stringify(recurrence)],
       );
       requireAffectedRows(instance, "recurring task series properties");
-    }
-    if (skippedWithoutAnchor > 0) {
-      logger.warn(
-        { skipped: skippedWithoutAnchor },
-        "Active task recurrence rows left without a series: no dated instance",
-      );
     }
   });
 }
