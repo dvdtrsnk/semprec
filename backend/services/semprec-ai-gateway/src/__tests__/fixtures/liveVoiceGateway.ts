@@ -86,11 +86,11 @@ function endModel(res: ServerResponse): void {
   );
 }
 const provider = createServer((req, res) => {
-  if (req.method !== "POST" || (req.url !== "/speech" && req.url !== "/v1/messages")) {
+  const modelRequest = req.url === "/v1/messages" || req.url === "/v1/messages?beta=true";
+  if (req.method !== "POST" || (req.url !== "/speech" && !modelRequest)) {
     res.writeHead(404).end();
     return;
   }
-  const modelRequest = req.url === "/v1/messages";
   let bytes = 0;
   req.on("data", (part: Buffer) => {
     bytes += part.length;
