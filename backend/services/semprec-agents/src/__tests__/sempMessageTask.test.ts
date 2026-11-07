@@ -76,6 +76,9 @@ type RefFixtureMessage =
       mailReply: boolean;
       block: boolean;
       sibling: boolean;
+      imageCount: number;
+      imageMimes: string[];
+      providerSerializedBytes: number;
     };
 
 function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
@@ -93,7 +96,7 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     return { type: "ready", port: value.port };
   if (
     value.type === "observation" &&
-    Object.keys(value).length === 8 &&
+    Object.keys(value).length === 11 &&
     "sequence" in value &&
     typeof value.sequence === "number" &&
     Number.isInteger(value.sequence) &&
@@ -110,7 +113,24 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     "block" in value &&
     typeof value.block === "boolean" &&
     "sibling" in value &&
-    typeof value.sibling === "boolean"
+    typeof value.sibling === "boolean" &&
+    "imageCount" in value &&
+    typeof value.imageCount === "number" &&
+    Number.isInteger(value.imageCount) &&
+    value.imageCount >= 0 &&
+    value.imageCount <= 100_000 &&
+    "imageMimes" in value &&
+    Array.isArray(value.imageMimes) &&
+    value.imageMimes.length <= 4 &&
+    value.imageMimes.every(
+      (mime: unknown): mime is string =>
+        typeof mime === "string" && ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime),
+    ) &&
+    "providerSerializedBytes" in value &&
+    typeof value.providerSerializedBytes === "number" &&
+    Number.isInteger(value.providerSerializedBytes) &&
+    value.providerSerializedBytes > 0 &&
+    value.providerSerializedBytes <= 4 * 1024 * 1024
   )
     return {
       type: "observation",
@@ -121,6 +141,9 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
       mailReply: value.mailReply,
       block: value.block,
       sibling: value.sibling,
+      imageCount: value.imageCount,
+      imageMimes: value.imageMimes,
+      providerSerializedBytes: value.providerSerializedBytes,
     };
   return null;
 }
@@ -425,7 +448,7 @@ describe("queued Semp messages", () => {
       await vi.waitFor(
         () =>
           expect(messages.filter((entry) => entry.type === "observation")).toEqual([
-            {
+            expect.objectContaining({
               type: "observation",
               sequence: 1,
               owner: true,
@@ -434,7 +457,10 @@ describe("queued Semp messages", () => {
               mailReply: true,
               block: true,
               sibling: true,
-            },
+              imageCount: 0,
+              imageMimes: [],
+              providerSerializedBytes: expect.any(Number),
+            }),
           ]),
         { timeout: 5000 },
       );

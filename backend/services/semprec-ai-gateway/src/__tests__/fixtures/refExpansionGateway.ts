@@ -39,6 +39,53 @@ const provider = createServer((request, response) => {
     if (Buffer.byteLength(body) > 4 * 1024 * 1024) request.destroy();
   });
   request.on("end", () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      response.writeHead(400).end();
+      return;
+    }
+    const pending: unknown[] = [parsed];
+    const mimeTypes = new Set<string>();
+    let imageCount = 0;
+    let nodes = 0;
+    while (pending.length) {
+      const value = pending.pop();
+      if (++nodes > 100_000) {
+        response.writeHead(400).end();
+        return;
+      }
+      if (Array.isArray(value)) {
+        if (pending.length + value.length > 100_000) {
+          response.writeHead(400).end();
+          return;
+        }
+        for (const child of value) pending.push(child);
+      } else if (typeof value === "object" && value !== null) {
+        if ("type" in value && value.type === "image") {
+          if (
+            !("source" in value) ||
+            typeof value.source !== "object" ||
+            value.source === null ||
+            !("media_type" in value.source) ||
+            typeof value.source.media_type !== "string" ||
+            !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(value.source.media_type)
+          ) {
+            response.writeHead(400).end();
+            return;
+          }
+          imageCount += 1;
+          mimeTypes.add(value.source.media_type);
+        }
+        const children: unknown[] = Object.values(value);
+        if (pending.length + children.length > 100_000) {
+          response.writeHead(400).end();
+          return;
+        }
+        for (const child of children) pending.push(child);
+      }
+    }
     calls += 1;
     if (calls > 20) {
       request.destroy();
@@ -53,6 +100,9 @@ const provider = createServer((request, response) => {
       mailReply: body.includes("REF_MAIL_REPLY_SENTINEL_32"),
       block: body.includes("REF_BLOCK_SENTINEL_32"),
       sibling: body.includes("REF_SIBLING_SENTINEL_32"),
+      imageCount,
+      imageMimes: [...mimeTypes].sort(),
+      providerSerializedBytes: Buffer.byteLength(body),
     });
     const events = [
       {
