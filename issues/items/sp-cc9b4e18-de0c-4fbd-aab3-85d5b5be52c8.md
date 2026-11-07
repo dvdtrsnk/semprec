@@ -5,15 +5,15 @@ title: "[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokeP
 kind: "implementation"
 state: "open"
 stateReason: null
-labels: ["spec:proposed","execution:batch","execution:sequential"]
+labels: ["execution:batch","execution:sequential","spec:approved"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.976Z"
-updatedAt: "2026-10-31T17:31:01.976Z"
+updatedAt: "2026-11-07T18:09:24.330Z"
 closedAt: null
 source: null
-approval: null
+approval: {"specSha256":"ce3daf5d120b0425bab7b92c046593dd2f0d6ec5b3b1b47981bbdd95ab178e36","source":"repository","actor":"Owner-delegated controller: exact backend-only batch34 after audited local batch33; Claude Code implementation, open production gates retained","at":"2026-11-07T18:09:24.330Z"}
 resolution: null
 ---
 **Blocked by:** sp-1385289a-c057-4dcf-a42f-b2aaded63f7b
