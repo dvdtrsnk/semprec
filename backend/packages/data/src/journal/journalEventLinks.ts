@@ -18,9 +18,9 @@ const JOURNAL_EVENT_LINKS_CONTEXT: SystemRelationWriteContext = { ownerProcess: 
  * linked are deleted, through the choke point's relation operations as the `journalEventLinks` process, in the
  * caller's transaction. When the two sets are equal nothing is written and nothing is announced.
  *
- * The entry row is locked first, so two syncs of one entry compute their differences one after the other. A missing
- * or trashed entry is left unchanged. Item ids come from the caller's tenant scope only: row-level security hides
- * another tenant's items, so a link to one is not live and creates no edge.
+ * The entry row is locked before its edges are read, so two syncs of one entry compute their differences one after
+ * the other. A missing or trashed entry is left unchanged. Item ids come from the caller's tenant scope only:
+ * row-level security hides another tenant's items, so a link to one is not live and creates no edge.
  */
 export async function syncJournalEventLinks(
   client: PoolClient,

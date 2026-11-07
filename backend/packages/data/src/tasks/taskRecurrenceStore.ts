@@ -44,8 +44,9 @@ export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
  * store's callers (advanceTaskRecurrenceWithClient.ts) need the already-validated, discriminated
  * `TaskRecurrenceRule`, not a round-trip cast back through `unknown`.
  *
- * `seriesId`, `anchorDate` and `template` are null only on a row the series cutover left without a series
- * (an inactive row, or one whose instance was done or had no date); every series row has all three.
+ * `seriesId`, `anchorDate` and `template` are null on a row without a series: one written before issue #1605 that the
+ * series cutover left alone (inactive, or its instance done, missing or dateless) or one a previous release inserted.
+ * `createTaskRecurrence` and the cutover always set the three together.
  */
 export interface TaskRecurrence {
   itemId: string;

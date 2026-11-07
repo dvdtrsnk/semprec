@@ -5,7 +5,7 @@
 -- Expand only: the three columns are nullable and have no default, so the ALTER is catalog-only and the
 -- previous release, which never names them, keeps inserting and reading rows unchanged. The per-tenant cutover
 -- `tasks/taskRecurrenceSeriesCutoverMigration.ts` fills them for active rows; rows it leaves without a series
--- (inactive rows, done or dateless instances) keep NULL.
+-- (inactive rows; done, missing or dateless instances) keep NULL.
 --
 -- The table keeps its existing tenant column, row-level security policies (0059, 0060) and table-level grants
 -- (0040), which cover the new columns. The unique index leads with `tenant_id`; Postgres treats NULLs as
