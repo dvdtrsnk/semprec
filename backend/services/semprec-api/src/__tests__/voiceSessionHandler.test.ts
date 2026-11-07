@@ -951,12 +951,13 @@ describe("voice session through the real gateway and registered worker", () => {
   }, 60_000);
   it("stores a trusted voice turn and streams a real worker answer before native provider completion", async () => {
     if (!gateway || !worker) throw new Error("Missing fixture child");
+    const ownedGateway = gateway;
     const cp = createChokePoint(pool);
     const database = await runInTenant(tenant, () => cp.createDatabase({ name: "Voice approval fixture" }));
     const target = await runInTenant(tenant, () => cp.createItem({ databaseId: database.id, properties: {} }));
-    if (!gateway.child.connected) throw new Error("Fixture gateway disconnected");
+    if (!ownedGateway.child.connected) throw new Error("Fixture gateway disconnected");
     await new Promise<void>((resolveSend, reject) =>
-      gateway.child.send({ type: "approvalTarget", itemId: target.id }, (error) =>
+      ownedGateway.child.send({ type: "approvalTarget", itemId: target.id }, (error) =>
         error ? reject(error) : resolveSend(),
       ),
     );
