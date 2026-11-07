@@ -83,14 +83,16 @@ function convertNote(ydoc: Y.Doc, note: string): void {
 
 /**
  * Converts one area's note in its own transaction (docs/adr/2026-11-07-area-note-cutover-reserves-source-without-waiting.md).
- * An unlocked read decides only whether to go on: a trashed area or an empty note is left without a doc. The page doc
- * is then ensured and the document lock shared by document writes (the `doc_snapshots` row) and the `docs` row are
- * taken with `FOR UPDATE`, in that order, so a concurrent second run waits for this one and then reads its marker.
+ * An unlocked read decides only whether to go on: a trashed area or an empty note at that read stops the conversion
+ * before any document is ensured. The page doc is then ensured and the document lock shared by document writes (the
+ * `doc_snapshots` row) and the `docs` row are taken with `FOR UPDATE`, in that order, so a concurrent second run waits
+ * for this one and then reads its marker.
  * Only after that is the area row reserved with `lockItemByIdNowait`, and the note converted is the one read from that
  * reserved row, never the unlocked read: a note written while this run waited for the document lock is the one it
  * converts. A row another transaction holds raises PostgreSQL's lock-not-available error instead of waiting while the
  * document locks are held; it rolls this area back and reaches the caller. When the reserved row is trashed or its
- * note is empty by then, nothing is converted, and the page doc ensured in this transaction is kept empty.
+ * note is empty by then, nothing is converted and the page doc is left unchanged: an existing page keeps its content,
+ * and a page first created in this transaction stays empty.
  */
 async function convertArea(client: PoolClient, databaseId: string, areaId: string): Promise<void> {
   const discovered = await itemsStore.getItemById(client, databaseId, areaId);
@@ -107,8 +109,10 @@ async function convertArea(client: PoolClient, databaseId: string, areaId: strin
 /**
  * Per-tenant step of issue #1619 (expand phase; app code because it writes Yjs documents,
  * docs/adr/2026-09-10-app-code-post-migration-steps.md): puts each live area's `note` text into the area's page doc,
- * once, and reconciles later edits that old clients make to `note`. The `note` property is never modified, and an
- * area with an empty or absent note gets no doc. A tenant without an Areas database is a no-op.
+ * once, and reconciles later edits that old clients make to `note`. The `note` property is never modified. An area
+ * whose note is empty or absent at discovery or at `convertArea`'s unlocked read is not converted and gets no new doc;
+ * one whose reserved row is trashed or has an empty note by then is not converted either, and its page doc is left as
+ * `convertArea` describes. A tenant without an Areas database is a no-op.
  *
  * Each area runs in its own transaction, so one area failing neither rolls back nor stops the others. Every failure,
  * a lock-not-available error on an area row another transaction holds included, is logged with the area id and,

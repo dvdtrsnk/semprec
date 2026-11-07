@@ -270,7 +270,8 @@ describe("area note cutover (issue #1619)", () => {
 
   it("converts the note read under the document lock, so an older read cannot overwrite a newer conversion", async () => {
     const area = await createArea(tenant, areas, { note: "Old note" });
-    // The page doc exists, so run A creates no docs row and holds no key-share lock on the area while it waits.
+    // The page doc exists, so run A inserts no docs row while it is held; with a new doc, run B's insert could wait on
+    // the unique-index arbitration with run A's uncommitted row.
     const doc = await ensurePage(area.id);
     const hold = barrier();
     const runA = await observedPool(async (sql) => {
@@ -305,7 +306,7 @@ describe("area note cutover (issue #1619)", () => {
   it("fails only the area whose row a writer holds, without waiting for it, and converts it on the next run", async () => {
     const contended = await createArea(tenant, areas, { note: "Before" });
     const fine = await createArea(tenant, areas, { note: NOTE });
-    // The page doc exists, so the conversion reaches the source reservation instead of the docs foreign-key check.
+    // The page doc exists before the run, so its content and update count can be compared after the refused run.
     const contendedDoc = await ensurePage(contended.id);
     const pageBefore = await page(tenant, contended.id);
     const updatesBefore = await docUpdateCount(contendedDoc.id);

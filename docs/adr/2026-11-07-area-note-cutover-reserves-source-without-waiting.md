@@ -22,8 +22,10 @@ Locking the area row before the document locks would oppose an existing owner. T
 (`search/pageTextJob.ts`) locks `doc_snapshots` through `loadDocWithClient` and then the item row through
 `indexItem`, so it takes the document before the item. Page restore
 ([[2026-11-01-page-restore-locks-live-items-and-update-identity]]) takes the item before the document and asks not to
-lock the item after its document. Item soft-delete and purge change the item before its dependents. A blocking item
-lock in either position would be the reverse of one of these.
+lock the item after its document. Item soft delete (`itemDeleteWithClient` in `chokePoint/itemTrash.ts`) locks the
+item row `FOR UPDATE` and marks it deleted; it does not touch the document. Permanent purge deletes the document among
+the item's dependents (`deleteItemDependents`, through `deleteDocByItemId`). A blocking item lock in either position
+would be the reverse of the page-text job's order or of restore's.
 
 ## Decision
 
@@ -49,10 +51,15 @@ lock in either position would be the reverse of one of these.
 - The page-text job and the conversion do not wait on each other in a cycle. The job waits for `doc_snapshots` while
   holding nothing the conversion needs. The conversion never waits for the item row while it holds the document
   locks.
-- Restore, soft delete and purge hold the item row while they reach the document, and the conversion fails at once
-  instead of waiting for them. This matches the restore ADR's rule against waiting for an item after its document.
-- `getOrCreateDoc` for an area that has no page doc yet inserts the `docs` row before the document locks. Its foreign
-  key check takes a key-share lock on the area row and can wait for a writer holding that row. That existing
-  behaviour is unchanged, and this decision makes no claim of deadlock freedom beyond the orders named here.
-- When the reserved row's note is empty or the area is trashed by then, the page doc ensured in that transaction
-  stays, empty.
+- A transaction that holds the area row when the conversion reaches the reservation, such as restore or soft delete,
+  makes the reservation fail at once instead of waiting for it. This matches the restore ADR's rule against waiting
+  for an item after its document. Permanent purge deletes the document through its own path, which this decision
+  does not change.
+- `getOrCreateDoc` for an area that has no page doc yet checks at the application layer that the area row exists, with
+  a plain read: `docs.item_id` has no PostgreSQL foreign key to `items` (`db/migrations/0003_docs.sql`). It then
+  inserts the `docs` row with `ON CONFLICT DO NOTHING`, before the document locks, so a concurrent first insert for
+  the same area can wait on that unique-index arbitration until the other transaction ends. That path is unchanged
+  and does not reserve the area row. This decision makes no claim about every first-document schedule or about
+  deadlock freedom beyond the orders named here.
+- When the reserved row's note is empty or the area is trashed by then, nothing is converted and the page doc is left
+  unchanged: an existing page keeps its content, and a page first created in that transaction stays empty.
