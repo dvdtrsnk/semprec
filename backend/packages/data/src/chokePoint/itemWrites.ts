@@ -615,6 +615,30 @@ export async function convergeObservedEmailFlagsWithClient(
   );
 }
 
+export interface RolloverTaskInput {
+  databaseId: string;
+  itemId: string;
+  /** The day the task moves to, `YYYY-MM-DD` in the system time zone. */
+  date: string;
+}
+
+/**
+ * The explicit ownership handover of docs/adr/2026-09-10-single-writer-ownership-model.md for the nightly Tasks day
+ * rollover (issue #1674, docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md): the one system
+ * write of Tasks' owner:'user' `date`, `timeFrom` and `timeTo`, which moves an unfinished one-off task to `input.date`
+ * as an all-day task. It goes through `updateItemWithClient`, so the Tasks transform sets `since`/`sinceTime` by the
+ * shared first-planned-day rule and derives `time`. It passes no acting user, so every moved task announces an
+ * invalidation to every socket of the tenant, and it writes no `status`, so it starts no series advance. Never call
+ * `updateItemWithClient` with these keys from another system process, and never use this function for any other key.
+ */
+export async function rolloverTaskWithClient(client: PoolClient, input: RolloverTaskInput): Promise<ItemRow> {
+  return updateItemWithClient(client, {
+    databaseId: input.databaseId,
+    itemId: input.itemId,
+    propertiesPatch: { date: input.date, timeFrom: null, timeTo: null },
+  });
+}
+
 /**
  * The items-row `FOR UPDATE` lock `mail/mailFlagObservation.ts`'s `applyObservedMailMessageFlags`
  * takes before it locks `mail_message_flag_sync_state`, in that order — see that function's doc

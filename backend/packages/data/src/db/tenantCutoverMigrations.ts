@@ -37,6 +37,7 @@ import { runPeopleLastContactCutoverMigration } from "../people/peopleLastContac
 import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigration.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
 import { runTasksPersistentRemovalCutoverMigration } from "../tasks/tasksPersistentRemovalCutoverMigration.js";
+import { runTasksDayRolloverHeartbeatCutoverMigration } from "../tasks/tasksDayRolloverHeartbeatCutoverMigration.js";
 import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
@@ -68,6 +69,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptionLanguageCodeCutoverMigration(pool);
     await runEventTranscriptCardinalityCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+    await runTasksDayRolloverHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
     await runEventsIcalIdentityCutoverMigration(pool);

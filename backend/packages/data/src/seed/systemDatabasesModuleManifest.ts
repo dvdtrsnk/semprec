@@ -1,6 +1,7 @@
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
+import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
@@ -325,7 +326,11 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   viewTypes: [TEMPORAL_SWITCHER_VIEW_TYPE],
-  heartbeatActions: [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID],
+  heartbeatActions: [
+    FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+    TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+    TASKS_DAY_ROLLOVER_ACTION_ID,
+  ],
   migrations: ["0004_ten_databases.sql"],
   dataMigrations: [
     {

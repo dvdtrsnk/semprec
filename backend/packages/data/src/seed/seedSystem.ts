@@ -36,6 +36,7 @@ import {
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
 } from "../transcription/transcriptionActions.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
+import { TASKS_DAY_ROLLOVER_ACTION_ID, TASKS_DAY_ROLLOVER_HEARTBEAT } from "../tasks/tasksDayRolloverAction.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
@@ -321,6 +322,14 @@ export async function seedSystem(
       ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
       actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
       actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
+    });
+    // Midnight Tasks rollover (issue #1674): moves unfinished one-off tasks to the new day. A populated install gets it
+    // from runTasksDayRolloverHeartbeatCutoverMigration instead.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      ...TASKS_DAY_ROLLOVER_HEARTBEAT,
+      actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
+      actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
     });
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases

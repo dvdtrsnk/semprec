@@ -468,6 +468,7 @@ export {
   createTaskRecurrenceSetRouteHandler,
 } from "./tasks/taskRecurrenceRoutes.js";
 export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
+export { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "./tasks/tasksDayRolloverAction.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,

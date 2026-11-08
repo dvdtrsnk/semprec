@@ -22,6 +22,7 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.j
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { PEOPLE_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
+import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29, same caveat as
@@ -42,6 +43,7 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   AGENT_GUIDANCE_DRIFT_ACTION_ID,
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+  TASKS_DAY_ROLLOVER_ACTION_ID,
 ]);
 
 /**
