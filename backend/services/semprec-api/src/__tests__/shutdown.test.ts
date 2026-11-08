@@ -5,10 +5,12 @@ import { Pool } from "pg";
 import { WebSocket } from "ws";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
+  createGmailPubSubDispatcher,
   createUser,
   hashPassword,
   login,
   startTenantDeactivationListener,
+  type GmailWatchTransport,
   type TenantDeactivationListener,
 } from "@semprec/data";
 import type { SyncServer } from "@semprec/realtime";
@@ -303,5 +305,148 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     expect(clientsWhenSyncCloses).toBe(1);
     expect(dedicatedPool.ended).toBe(true);
     expect(lines.filter((line) => line.level === "error")).toEqual([]);
+  });
+});
+
+describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher before the mail root (issue #1739)", () => {
+  let sharedPool: Pool;
+  let dedicatedPool: Pool;
+
+  beforeEach(async () => {
+    sharedPool ??= getTestPool();
+    await resetDatabase(sharedPool);
+    dedicatedPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  });
+
+  afterEach(async () => {
+    if (!dedicatedPool.ended) await dedicatedPool.end();
+  });
+
+  afterAll(async () => {
+    await sharedPool?.end();
+  });
+
+  /**
+   * A Pub/Sub transport that keeps every notification until it is acknowledged, as Pub/Sub redelivers an
+   * unacknowledged one. While `hold` is set, the next pull stays in flight until the test releases it.
+   */
+  function fakePubSub() {
+    const unacknowledged = new Map([
+      ["ack-held", { ackId: "ack-held", emailAddress: "nobody@example.com", historyId: "1" }],
+    ]);
+    const acknowledged: string[][] = [];
+    let pulls = 0;
+    let hold: { started: () => void; release: Promise<void> } | null = null;
+    const transport: GmailWatchTransport = {
+      async registerWatch() {
+        throw new Error("no watch is registered in this test");
+      },
+      async pull() {
+        pulls += 1;
+        const held = hold;
+        if (held) {
+          hold = null;
+          held.started();
+          await held.release;
+        }
+        return [...unacknowledged.values()];
+      },
+      async acknowledge(ackIds) {
+        acknowledged.push(ackIds);
+        for (const ackId of ackIds) unacknowledged.delete(ackId);
+      },
+    };
+    return {
+      transport,
+      acknowledged,
+      unacknowledged,
+      pulls: () => pulls,
+      holdNextPull(started: () => void, release: Promise<void>) {
+        hold = { started, release };
+      },
+    };
+  }
+
+  it("awaits the dispatcher's stop after the drain and before the mail root and the pool, leaving a pulled notification unacknowledged", async () => {
+    const { server, syncServer, voiceServer, tenantDeactivationListener } = await startServer(dedicatedPool);
+    const pubSub = fakePubSub();
+    let pullStarted: () => void = () => {};
+    const pulling = new Promise<void>((resolve) => {
+      pullStarted = resolve;
+    });
+    let releasePull: () => void = () => {};
+    pubSub.holdNextPull(
+      pullStarted,
+      new Promise<void>((resolve) => {
+        releasePull = resolve;
+      }),
+    );
+    const dispatcher = createGmailPubSubDispatcher(dedicatedPool, pubSub.transport);
+    const order: string[] = [];
+    let listeningAtDispatcherStop: boolean | undefined;
+    let poolEndedAtRootStop: boolean | undefined;
+    await dispatcher.start();
+    try {
+      await pulling;
+      const { logger, lines } = createCapturingLogger();
+      await createGracefulShutdown({
+        server,
+        tenantDeactivationListener,
+        syncServer,
+        voiceServer,
+        queueRuntime: {
+          stop: async () => {
+            order.push("queueRuntime.stop");
+          },
+        },
+        gmailPubSubDispatcher: {
+          stop: async () => {
+            order.push("gmailPubSubDispatcher.stop");
+            listeningAtDispatcherStop = server.listening;
+            const stopping = dispatcher.stop();
+            // The pull in flight returns after the stop was requested, as one would at its request timeout.
+            releasePull();
+            await stopping;
+            order.push("gmailPubSubDispatcher.stopped");
+          },
+        },
+        mailLiveSync: {
+          stop: async () => {
+            order.push("mailLiveSync.stop");
+            poolEndedAtRootStop = dedicatedPool.ended;
+          },
+        },
+        pool: dedicatedPool,
+        logger,
+      })("SIGTERM");
+      expect(order).toEqual([
+        "gmailPubSubDispatcher.stop",
+        "gmailPubSubDispatcher.stopped",
+        "mailLiveSync.stop",
+        "queueRuntime.stop",
+      ]);
+      expect(listeningAtDispatcherStop).toBe(false);
+      expect(poolEndedAtRootStop).toBe(false);
+      expect(dedicatedPool.ended).toBe(true);
+      expect(lines.filter((line) => line.level === "error")).toEqual([]);
+    } finally {
+      releasePull();
+      await dispatcher.stop();
+    }
+    // Pulled, never dispatched, never acknowledged: Pub/Sub still holds it.
+    expect(pubSub.pulls()).toBe(1);
+    expect(pubSub.acknowledged).toEqual([]);
+    expect([...pubSub.unacknowledged.keys()]).toEqual(["ack-held"]);
+
+    // The next process's dispatcher receives it again and, once handed off (no mailbox watches the
+    // address), acknowledges it.
+    const next = createGmailPubSubDispatcher(sharedPool, pubSub.transport, { pullEmptyBackoffMs: 10 });
+    await next.start();
+    try {
+      await vi.waitFor(() => expect(pubSub.acknowledged).toEqual([["ack-held"]]));
+    } finally {
+      await next.stop();
+    }
+    expect(pubSub.unacknowledged.size).toBe(0);
   });
 });

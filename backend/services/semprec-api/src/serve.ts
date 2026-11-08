@@ -26,7 +26,12 @@ import {
   type CustomRouteOAuthClient,
   type MailLiveSyncControl,
 } from "./adapter/customRouteMount.js";
-import { createImapIdleLifecycleFactory, createMailLiveSyncLifecycleFactory } from "./mailLiveSyncLifecycles.js";
+import {
+  createGmailPubSubDispatcherFor,
+  createImapIdleLifecycleFactory,
+  createMailLiveSyncLifecycleFactory,
+  resolveGmailWatchHosting,
+} from "./mailLiveSyncLifecycles.js";
 import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createVoiceChannel } from "./voiceChannel.js";
 import { createVoiceSessionHandler } from "./voiceSessionHandler.js";
@@ -198,12 +203,20 @@ const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
 // Issue #650: this long-lived process hosts the one mail live-sync root that
 // `createMailLiveSyncRoot`'s contract requires. The root discovers each active tenant's
-// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550). Every other
-// sync mode gets the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync`,
-// until the Gmail and Graph lifecycles are hosted (#1739, #1745).
+// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550) and Gmail accounts the
+// watch lifecycle (issue #1739) when its configuration is complete; otherwise, and for every other sync
+// mode, the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync` and leaves the
+// account to the periodic sweep, until the Graph lifecycle is hosted (#1745).
+const gmailWatch = await resolveGmailWatchHosting(pool, process.env);
 const mailLiveSync = createMailLiveSyncRoot(
   pool,
-  createMailLiveSyncLifecycleFactory({ pool, hosted: { imap: createImapIdleLifecycleFactory(pool) } }),
+  createMailLiveSyncLifecycleFactory({
+    pool,
+    hosted: {
+      imap: createImapIdleLifecycleFactory(pool),
+      ...(gmailWatch ? { gmail_api: gmailWatch.lifecycle } : {}),
+    },
+  }),
   {
     onLifecycleError: (mailboxItemId, phase, err) => {
       logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
@@ -211,6 +224,11 @@ const mailLiveSync = createMailLiveSyncRoot(
   },
 );
 await mailLiveSync.start();
+
+// Issue #1739: the one puller of the deployment's Gmail Pub/Sub subscription, started after the root
+// and stopped before it (docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md).
+const gmailPubSubDispatcher = gmailWatch ? createGmailPubSubDispatcherFor(pool, gmailWatch) : undefined;
+await gmailPubSubDispatcher?.start();
 
 // Issue #1042: a tenant leaving `active` ends its sockets and its hosted mailbox lifecycles in this
 // process at once, instead of on the next session check or discovery pass.
@@ -228,6 +246,7 @@ const shutdown = createGracefulShutdown({
   syncServer,
   voiceServer,
   queueRuntime,
+  gmailPubSubDispatcher,
   mailLiveSync,
   pool,
   logger,

@@ -4,7 +4,8 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
-export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+export { ensureMailAccountSyncState, recordProviderAccountAddress } from "../mail/mailAccountSyncStateStore.js";
+export { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 // Test-only: exercises the existing mail-ingest owner from cross-package integration fixtures.
