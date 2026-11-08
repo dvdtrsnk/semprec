@@ -10,6 +10,7 @@ import { normalizeWallClockTime } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import {
   getTaskRecurrenceBySeriesId,
+  publicTaskRecurrenceTemplate,
   updateTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
@@ -20,16 +21,11 @@ interface Context {
   identity: { user: { id: string } };
 }
 
-/** The template fields a series edit may change; every other key is refused by name. */
-const TEMPLATE_FIELDS = [
-  "name",
-  "timeFrom",
-  "timeTo",
-  "notifications",
-  "persistent",
-  "flagged",
-  "description",
-] as const;
+/**
+ * The template fields a series edit may change; every other key is refused by name. `persistent` was one until issue
+ * #2009 removed the Tasks property; it is refused now like any other key, and responses omit it.
+ */
+const TEMPLATE_FIELDS = ["name", "timeFrom", "timeTo", "notifications", "flagged", "description"] as const;
 type TemplateField = (typeof TEMPLATE_FIELDS)[number];
 const TEMPLATE_FIELD_SET: ReadonlySet<string> = new Set(TEMPLATE_FIELDS);
 
@@ -76,7 +72,6 @@ function parsePatch(body: unknown): Partial<TaskRecurrenceTemplate> {
         patch.timeTo = normalizeWallClockTime(value, { field: "timeTo", allow2400: true });
         break;
       case "notifications":
-      case "persistent":
       case "flagged":
         patch[key] = boolean(value, key);
         break;
@@ -170,7 +165,7 @@ export function createTaskSeriesPatchRouteHandler(pool: Pool) {
         status: 200,
         body: {
           seriesId,
-          template,
+          template: publicTaskRecurrenceTemplate(template),
           recurrence: after?.properties.recurrence ?? null,
           currentInstanceId: current.id,
         },

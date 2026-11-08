@@ -203,7 +203,6 @@ export async function seedTenDatabasesInTransaction(
     { key: "occurrenceDate", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
     { key: "recurrence", name: null, type: "json", owner: "system", ownerProcess: TASKS_MODULE_ID },
     { key: "notifications", name: "Notifications", type: "checkbox", owner: "user" },
-    { key: "persistent", name: "Persistent", type: "checkbox", owner: "user" },
   ]);
 
   const people = await createDb(client, PEOPLE_MODULE_ID);

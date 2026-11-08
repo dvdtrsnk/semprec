@@ -36,6 +36,7 @@ import { runPeoplePhonesCutoverMigration } from "../seed/peoplePhonesCutoverMigr
 import { runPeopleLastContactCutoverMigration } from "../people/peopleLastContactCutoverMigration.js";
 import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigration.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
+import { runTasksPersistentRemovalCutoverMigration } from "../tasks/tasksPersistentRemovalCutoverMigration.js";
 import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
@@ -94,6 +95,8 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runAreasUnplannedCutoverMigration(pool);
     await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
+    // Issue #2009: registered after the Tasks schema cutover of #1540.
+    await runTasksPersistentRemovalCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
     await runTaskRecurrenceSeriesCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);

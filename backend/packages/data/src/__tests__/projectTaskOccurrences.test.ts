@@ -124,7 +124,6 @@ describe("projectTaskOccurrences (issue #1672)", () => {
         timeFrom: null,
         timeTo: null,
         notifications: false,
-        persistent: false,
         flagged: true,
         description: null,
         date: "2026-10-17",

@@ -72,7 +72,6 @@
   "property.tasks.status.option.missed": "Missed",
   "property.tasks.time.name": "Time",
   "property.tasks.notifications.name": "Notifications",
-  "property.tasks.persistent.name": "Persistent",
   "property.tasks.project.name": "Project",
 
   "database.people.name": "People",

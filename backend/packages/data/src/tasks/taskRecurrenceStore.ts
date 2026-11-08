@@ -12,8 +12,10 @@ import {
 
 /**
  * The properties a series' occurrences are created from (issue #1605). The advance takes `name`, `timeFrom`,
- * `timeTo`, `notifications` and `persistent` from it and `flagged`/`description` from the completed occurrence
- * (#1673); the projection uses all seven for a virtual occurrence (#1672).
+ * `timeTo` and `notifications` from it and `flagged`/`description` from the completed occurrence (#1673); the
+ * projection uses every field but `persistent` for a virtual occurrence (#1672). `persistent` is a legacy field: the
+ * Tasks property was removed (issue #2009), stored templates keep the boolean, new series store `false`, and no reader
+ * outside this module sees it (`publicTaskRecurrenceTemplate`).
  */
 const templateSchema = z
   .object({
@@ -28,6 +30,20 @@ const templateSchema = z
   .strict();
 
 export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
+
+/** A template as callers outside the store show it: every field but the legacy `persistent` (issue #2009). */
+export type PublicTaskRecurrenceTemplate = Omit<TaskRecurrenceTemplate, "persistent">;
+
+export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): PublicTaskRecurrenceTemplate {
+  return {
+    name: template.name,
+    timeFrom: template.timeFrom,
+    timeTo: template.timeTo,
+    notifications: template.notifications,
+    flagged: template.flagged,
+    description: template.description,
+  };
+}
 
 /**
  * Not `types.ts`'s `TaskRecurrenceRow` (which keeps `rule` as a loosely-typed jsonb bag,
