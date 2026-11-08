@@ -135,7 +135,7 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
           },
           async (client, file) => {
             if (target) {
-              await attachUploadedFileWithClient(client, target, file.item.id, {
+              await attachUploadedFileWithClient(client, target, file.item.id, file.blob.id, {
                 writer: { writerKind: "user" },
                 actingUserId: identity.user.id,
               });

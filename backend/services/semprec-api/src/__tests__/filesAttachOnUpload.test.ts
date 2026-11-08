@@ -323,12 +323,80 @@ async function waitersOn(holderPid: number): Promise<Set<number>> {
   return waiting;
 }
 
-/** Every queued job, read through graphile-worker's public `jobs` view. */
-async function queuedJobs(): Promise<unknown[]> {
-  const { rows } = await admin.query<{ row: unknown }>(
-    "SELECT json_build_object('task', task_identifier, 'key', key, 'payload', payload) AS row FROM graphile_worker.jobs ORDER BY id",
+/**
+ * One row of graphile-worker's public `jobs` view, every column it has (graphile-worker 0.17.3,
+ * `sql/000017.sql`). `revision` and `updated_at` change when a keyed job is replaced. The view exposes no
+ * payload, so payloads are not observed.
+ */
+const queuedJobRow = z
+  .object({
+    id: z.string(),
+    queue_name: z.string().nullable(),
+    task_identifier: z.string(),
+    priority: z.number(),
+    run_at: z.date(),
+    attempts: z.number(),
+    max_attempts: z.number(),
+    last_error: z.string().nullable(),
+    created_at: z.date(),
+    updated_at: z.date(),
+    key: z.string().nullable(),
+    locked_at: z.date().nullable(),
+    locked_by: z.string().nullable(),
+    revision: z.number(),
+    flags: z.record(z.string(), z.unknown()).nullable(),
+  })
+  .strict();
+type QueuedJob = z.infer<typeof queuedJobRow>;
+
+/** Every queued job, whole rows of graphile-worker's public `jobs` view, in id order. */
+async function queuedJobs(): Promise<QueuedJob[]> {
+  const { rows } = await admin.query<Record<string, unknown>>(
+    `SELECT id::text AS id, queue_name, task_identifier, priority, run_at, attempts, max_attempts, last_error,
+            created_at, updated_at, key, locked_at, locked_by, revision, flags
+     FROM graphile_worker.jobs ORDER BY id`,
   );
-  return rows.map((row) => row.row);
+  return rows.map((row) => queuedJobRow.parse(row));
+}
+
+/**
+ * The jobs `after` holds that `before` did not, or holds changed, as their content without identity and
+ * timing (row id, timestamps, attempts), with each id of `names` replaced by its placeholder; sorted, so two
+ * writers' deltas compare as multisets.
+ */
+function jobDelta(before: QueuedJob[], after: QueuedJob[], names: Record<string, string>): string[] {
+  const earlier = new Map(before.map((job) => [job.id, JSON.stringify(job)]));
+  const rename = (value: string | null) => {
+    if (value === null) return null;
+    let renamed = value;
+    for (const [id, placeholder] of Object.entries(names)) renamed = renamed.split(id).join(placeholder);
+    return renamed;
+  };
+  return after
+    .filter((job) => earlier.get(job.id) !== JSON.stringify(job))
+    .map((job) =>
+      JSON.stringify({
+        queue: rename(job.queue_name),
+        task: job.task_identifier,
+        key: rename(job.key),
+        priority: job.priority,
+        maxAttempts: job.max_attempts,
+        flags: job.flags,
+        replaced: earlier.has(job.id),
+      }),
+    )
+    .sort();
+}
+
+/** `events` without their timing, with each id of `names` replaced by its placeholder; sorted. */
+function invalidationShape(events: InvalidationEvent[], names: Record<string, string>): string[] {
+  return events
+    .map((event) => {
+      let text = JSON.stringify("updatedAt" in event ? { ...event, updatedAt: "<time>" } : event);
+      for (const [id, placeholder] of Object.entries(names)) text = text.split(id).join(placeholder);
+      return text;
+    })
+    .sort();
 }
 
 /** Reads `probe` until it returns a value, failing after 10 s. */
@@ -350,6 +418,13 @@ async function onlyBlobId(tenant: TenantFixture): Promise<string> {
   const [id] = ids;
   if (ids.length !== 1 || id === undefined) throw new Error(`expected one blob, found ${ids.length}`);
   return id;
+}
+
+/** The ids of `tenant`'s blobs. */
+async function blobIdsOf(tenant: TenantFixture): Promise<string[]> {
+  return runInTenant(tenant.tenantId, async () =>
+    (await pool.query<{ id: string }>("SELECT id FROM blobs ORDER BY id")).rows.map((row) => row.id),
+  );
 }
 
 /** The upload answer's error code, with the body checked to name none of `ids`. */
@@ -885,6 +960,27 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     expect(filed.status).toBe(201);
     const file = itemBody.parse(JSON.parse(filed.text));
     const blobId = await onlyBlobId(a);
+    const patch = (itemId: string, fileBlobId: string) =>
+      runInTenant(a.tenantId, () =>
+        chokePoint.updateItem({
+          databaseId: a.filesId,
+          itemId,
+          propertiesPatch: { name: "Renamed while attaching", file: { blobId: fileBlobId } },
+        }),
+      );
+
+    // The control: the same PATCH of another, uncontended Files item. Its jobs and invalidations are what the
+    // PATCH below may add; anything beyond them would be the upload's.
+    const control = itemBody.parse(JSON.parse((await upload(a, { body: PDF("control file") })).text));
+    const controlBlobId = (await blobIdsOf(a)).find((id) => id !== blobId);
+    if (!controlBlobId) throw new Error("no control blob");
+    const controlJobsBefore = await queuedJobs();
+    const controlMarked = invalidations.length;
+    await patch(control.id, controlBlobId);
+    const controlNames = { [control.id]: "<file>", [controlBlobId]: "<blob>" };
+    const controlJobs = jobDelta(controlJobsBefore, await queuedJobs(), controlNames);
+    const controlInvalidations = invalidationShape(invalidations.slice(controlMarked), controlNames);
+
     const before = await storedState(a);
     const jobsBefore = await queuedJobs();
     const marked = invalidations.length;
@@ -899,15 +995,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     try {
       const uploadPid = await within(gate.reached, 10_000, "The upload's target reservation");
       // The production PATCH owner on the runtime role: it takes the Files item, then its blob reference lock.
-      patching = outcomeOf(
-        runInTenant(a.tenantId, () =>
-          chokePoint.updateItem({
-            databaseId: a.filesId,
-            itemId: file.id,
-            propertiesPatch: { name: "Renamed while attaching", file: { blobId } },
-          }),
-        ),
-      );
+      patching = outcomeOf(patch(file.id, blobId));
       const waiting = await pollFor(async () => {
         const { rows } = await admin.query<{ pid: number; query: string }>(
           "SELECT pid, query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
@@ -949,19 +1037,15 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     expect(after.edges).toEqual(before.edges);
     expect(after.blobs).toEqual(before.blobs);
     expect(after.bytes).toEqual(before.bytes);
-    expect(await fileIds(a)).toEqual([file.id]);
+    expect(await fileIds(a)).toEqual([control.id, file.id].sort());
     expect(await linked(a, file.id, "healthRecords")).toEqual([]);
     const patchedFile = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
     expect(patchedFile?.properties).toMatchObject({ name: "Renamed while attaching", file: { blobId } });
-    // Every invalidation since names the Files item the PATCH wrote; none names the target or an edge.
-    expect(
-      invalidations
-        .slice(marked)
-        .filter((event) => event.scope !== "item" || event.itemId !== file.id || event.op !== "update"),
-    ).toEqual([]);
-    // No job mentions the target beyond those queued before the upload: the upload queued none for it or its edge.
-    const mentioningTarget = (jobs: unknown[]) => jobs.filter((job) => JSON.stringify(job).includes(record));
-    expect(mentioningTarget(await queuedJobs())).toEqual(mentioningTarget(jobsBefore));
+    // Exactly the control PATCH's effects, for this Files item: the upload added no job and no invalidation.
+    const names = { [file.id]: "<file>", [blobId]: "<blob>" };
+    expect(jobDelta(jobsBefore, await queuedJobs(), names)).toEqual(controlJobs);
+    expect(invalidationShape(invalidations.slice(marked), names)).toEqual(controlInvalidations);
+    expect(controlInvalidations.length).toBeGreaterThan(0);
   });
 
   it.each([
@@ -1109,6 +1193,93 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     },
   );
 
+  it.each([
+    ["a new edge", false],
+    ["an existing edge", true],
+  ])(
+    "answers 409 upload_attach_conflict when a PATCH repoints the deduplicated Files item from its blob to another after the lookup, for %s, and stores nothing",
+    async (_name, alreadyLinked) => {
+      const record = await createItem(a, a.healthRecordsId, "Record");
+      const bytes = PDF(`repointed after lookup ${String(alreadyLinked)}`);
+      const filed = alreadyLinked
+        ? await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })
+        : await upload(a, { body: bytes });
+      expect(filed.status).toBe(201);
+      const file = itemBody.parse(JSON.parse(filed.text));
+      const uploadedBlobId = await onlyBlobId(a);
+      // Blob C: other bytes, stored through the standalone blob route, filed by no item.
+      const stored = await fetch(`${baseUrl}/api/blobs`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/pdf" },
+        body: PDF(`other bytes ${String(alreadyLinked)}`),
+      });
+      expect(stored.status).toBe(201);
+      const otherBlobId = z.object({ blobId: z.string() }).parse(await stored.json()).blobId;
+      expect(otherBlobId).not.toBe(uploadedBlobId);
+
+      // The upload pauses at its Files item reservation: after the deduplicating lookup found the item filing B.
+      const gate = pauseAtReservationOf(file.id);
+      const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+      let primary: { error: unknown } | undefined;
+      let before: Awaited<ReturnType<typeof storedState>> | undefined;
+      let jobsBefore: QueuedJob[] = [];
+      let marked = 0;
+      let uploaded: Outcome<Answer> | undefined;
+      let patching: Promise<Outcome<unknown>> | undefined;
+      try {
+        await within(gate.reached, 10_000, "The upload's Files item reservation");
+        // The production PATCH owner repoints the item at C; it does not wait on the upload, which holds B.
+        patching = outcomeOf(
+          runInTenant(a.tenantId, () =>
+            chokePoint.updateItem({
+              databaseId: a.filesId,
+              itemId: file.id,
+              propertiesPatch: { file: { blobId: otherBlobId } },
+            }),
+          ),
+        );
+        const patched = await within(patching, 10_000, "Repointing the Files item while the upload is paused");
+        if (!patched.ok) throw patched.error;
+        before = await storedState(a);
+        jobsBefore = await queuedJobs();
+        marked = invalidations.length;
+        gate.release();
+        uploaded = await within(uploading, 10_000, "The paused upload");
+      } catch (error) {
+        primary = { error };
+      }
+      gate.release();
+      const failures: unknown[] = [];
+      for (const [started, what] of [
+        [uploaded ? undefined : uploading, "The paused upload"],
+        [patching, "Repointing the Files item"],
+      ] as const) {
+        if (!started) continue;
+        try {
+          await within(started, 10_000, what);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      settle(primary, failures);
+      if (!uploaded || !before) throw new Error("The paused upload did not settle");
+      if (!uploaded.ok) throw uploaded.error;
+
+      expect(uploaded.value.status).toBe(409);
+      expect(conflictCode(uploaded.value, [file.id, record, uploadedBlobId, otherBlobId])).toBe(
+        "upload_attach_conflict",
+      );
+      // Exactly the state the PATCH left: the item still files C, no edge was added or changed, and the upload's
+      // streamed copy of B's bytes is gone again while B's own bytes stay.
+      expect(await storedState(a)).toEqual(before);
+      expect(await queuedJobs()).toEqual(jobsBefore);
+      expect(invalidations.slice(marked)).toEqual([]);
+      const repointed = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
+      expect(repointed?.properties).toMatchObject({ file: { blobId: otherBlobId } });
+      expect(await linked(a, file.id, "healthRecords")).toEqual(alreadyLinked ? [record] : []);
+    },
+  );
+
   it("answers the same 404 when the target is trashed after the pre-check and before its reservation, and stores nothing", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
     const gate = pauseAtReservationOf(record);
@@ -1167,6 +1338,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
   it("marks the upload rollback-only, so a caller that catches the attach conflict still commits nothing", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
     const gone = itemBody.parse(JSON.parse((await upload(a, { body: PDF("gone") })).text)).id;
+    const goneBlobId = await onlyBlobId(a);
     await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.filesId, gone));
     const before = await storedState(a);
     const jobsBefore = await queuedJobs();
@@ -1195,7 +1367,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         async (client) => {
           // The trashed Files item as the attach source: the conflict is caught here and not rethrown.
           try {
-            await attachUploadedFileWithClient(client, target, gone);
+            await attachUploadedFileWithClient(client, target, gone, goneBlobId);
           } catch (error) {
             caught.push(error);
           }

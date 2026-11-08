@@ -2,7 +2,8 @@
 // `X-Attach-To-Item` and `X-Attach-Relation` headers. The target is resolved read-only before the body is
 // read, then reserved, re-checked and linked inside the upload's own ingest transaction, through the choke
 // point's relation write, so the file and its edge commit or roll back together.
-// Constrained by: docs/adr/2026-11-08-upload-attach-reserves-source-and-target.md
+// Constrained by: docs/adr/2026-11-08-upload-attach-reserves-source-and-target.md and
+// docs/adr/2026-11-08-upload-attach-rechecks-the-file-blob-binding.md
 import { DatabaseError, type PoolClient } from "pg";
 import { getItemsByIds, lockItemByIdNowait } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
@@ -33,8 +34,8 @@ function attachTargetNotFound(): NotFoundError {
 
 /**
  * The answer when the target or the uploaded Files item is locked by another transaction at the moment this
- * upload reserves it, and when the deduplicated Files item is gone by then: one fixed 409, naming no id. The
- * upload is rolled back and not retried; the caller may send it again.
+ * upload reserves it, and when the deduplicated Files item is gone, or no longer files the uploaded blob, by
+ * then: one fixed 409, naming no id. The upload is rolled back and not retried; the caller may send it again.
  */
 function uploadAttachConflict(): ChokePointError {
   return new ChokePointError(409, "upload_attach_conflict", "The upload could not be attached; send it again");
@@ -51,6 +52,17 @@ async function reserveItemNowait(client: PoolClient, databaseId: string, itemId:
     if (error instanceof DatabaseError && error.code === "55P03") throw uploadAttachConflict();
     throw error;
   }
+}
+
+/**
+ * Whether a Files item row still files `expectedBlobId`: its `file` property is an object whose `blobId` is a
+ * string naming that blob. UUIDs are compared case-insensitively, as blob reference writers accept any case.
+ */
+function filesBlob(row: ItemRow, expectedBlobId: string): boolean {
+  const file = row.properties.file;
+  if (typeof file !== "object" || file === null || !Object.hasOwn(file, "blobId")) return false;
+  const blobId: unknown = Reflect.get(file, "blobId");
+  return typeof blobId === "string" && blobId.toLowerCase() === expectedBlobId.toLowerCase();
 }
 
 /**
@@ -95,7 +107,8 @@ export async function resolveUploadAttachTarget(
  * before the blob reference lock, so a waiting reservation could close a cycle with it. Either row locked by
  * another transaction answers `uploadAttachConflict`. Under those locks, a target trashed or purged since the
  * pre-check answers the same 404 as an unknown one, and a Files item gone or trashed since the deduplicating
- * lookup answers `uploadAttachConflict`. Only then is an existing edge between the two left as it is, or the
+ * lookup, or whose `file` no longer names `expectedBlobId` (the blob the ingest filed, from its own result),
+ * answers `uploadAttachConflict`. Only then is an existing edge between the two left as it is, or the
  * edge written by `createRelationWithClient`, so its cardinality check and edge hooks apply and a cardinality
  * violation keeps its 409. Any failure here marks the managed upload transaction rollback-only before it
  * propagates, so a caller that catches it still commits nothing.
@@ -104,6 +117,7 @@ export async function attachUploadedFileWithClient(
   client: PoolClient,
   target: UploadAttachTarget,
   fileItemId: string,
+  expectedBlobId: string,
   options: { writer?: WriterIdentity; actingUserId?: string } = {},
 ): Promise<void> {
   requireManagedTransaction(client);
@@ -111,7 +125,7 @@ export async function attachUploadedFileWithClient(
     const targetRow = await reserveItemNowait(client, target.targetDatabaseId, target.targetItemId);
     if (!targetRow || targetRow.deletedAt) throw attachTargetNotFound();
     const fileRow = await reserveItemNowait(client, target.filesDatabaseId, fileItemId);
-    if (!fileRow || fileRow.deletedAt) throw uploadAttachConflict();
+    if (!fileRow || fileRow.deletedAt || !filesBlob(fileRow, expectedBlobId)) throw uploadAttachConflict();
     const definition = await getRelationDefinitionByPropertyId(client, target.relationPropertyId);
     if (!definition) throw new Error("The attach relation has no relation definition");
     const { itemA, itemB } = normalizeRelationSides(
