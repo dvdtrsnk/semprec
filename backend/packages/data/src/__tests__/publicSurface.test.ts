@@ -342,6 +342,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "enqueueRollupRecompute",
   "enqueueSempMessage",
   "enqueueSempThreadTitleIfFirst",
+  "enqueueTenantSearchReindex",
   "enqueueTranscriptionJob",
   "ensureItemAutomation",
   "ensureJournalPeriodDoc",

@@ -681,6 +681,43 @@ const cases: Record<string, TaskCase> = {
       ).toEqual([{ title: "Legacy searchable", matches: true }]);
     },
   },
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const projectsId = await requireModuleDatabaseId(tenant, "projects");
+        const tasksId = await requireModuleDatabaseId(tenant, "tasks");
+        const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Původní" } });
+        const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Závislý úkol" } });
+        const projectProperty = (await chokePoint.listProperties(tasksId)).find((p) => p.key === "project");
+        if (!projectProperty) throw new Error("expected Tasks.project");
+        await chokePoint.createRelation({
+          relationPropertyId: projectProperty.id,
+          callerItemId: task.id,
+          targetItemId: project.id,
+        });
+        // A project title that changed while its dependents' documents were not rebuilt yet: written
+        // directly, so the task's document is stale until this job runs.
+        const renamed = await pool.query(
+          "UPDATE items SET properties = properties || jsonb_build_object('name', 'Přejmenovaný') WHERE id = $1",
+          [project.id],
+        );
+        expect(renamed.rowCount).toBe(1);
+        return { kind: "referrers", itemId: project.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ matches: boolean }>(
+          tenant,
+          `SELECT s.search_vector @@ plainto_tsquery('czech_simple', 'Přejmenovaný') AS matches
+           FROM item_relations r JOIN item_search_index s ON s.item_id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
+           WHERE r.item_a = $1 OR r.item_b = $1`,
+          [requirePayloadString(payload, "itemId")],
+        ),
+      ).toEqual([{ matches: true }]);
+    },
+  },
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: {
     tenancy: "tenant",
     async seed(tenant) {

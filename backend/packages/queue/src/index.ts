@@ -43,6 +43,9 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
+  // Issue #1652: rebuilds the search documents that quote another item's text after an edge, title, trash
+  // state or Inbox entry change, looking the dependents up when it runs, in committed chunks.
+  ITEM_SEARCH_REINDEX_DEPENDENTS: "itemSearchReindexDependents",
   // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
   // with a 30-second debounce (`preserve_run_at`).
   ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
@@ -136,6 +139,7 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
@@ -200,6 +204,7 @@ export type TaskTenancy = "tenant" | "system";
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "tenant",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",

@@ -20,6 +20,26 @@ import { applyRollupConfig } from "../rollup/config.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
 import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
+import { currentTenantScope } from "@semprec/shared";
+import { enqueueItemSearchBackfill } from "../search/itemSearchBackfill.js";
+import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
+
+/**
+ * Issue #1652: after a property is created, changed or deleted, the search documents of its
+ * database are rebuilt by issue #1397's backfill with `onlyMissing: false`, queued in this
+ * transaction, so existing values of the property become searchable or stop being. The backfill's
+ * key names the database, so repeated property writes collapse into one queued job. Emails are not
+ * reindexed (mail owns their rows). Outside a tenant scope (only the transitional `warn` mode lets a
+ * write run there) the per-tenant backfill cannot be keyed, so nothing is queued.
+ */
+async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Iterable<string>): Promise<void> {
+  if (currentTenantScope()?.kind !== "tenant") return;
+  for (const databaseId of new Set(databaseIds)) {
+    const database = await databasesStore.getDatabase(client, databaseId);
+    if (!database || database.ownerModuleId === EMAILS_MODULE_ID) continue;
+    await enqueueItemSearchBackfill(client, { databaseId, onlyMissing: false });
+  }
+}
 
 /**
  * Transaction-scoped counterpart to `chokePoint.deleteProperty` (issue #89), factored out so
@@ -53,6 +73,7 @@ export async function propertyDeleteWithClient(
     await assertSourceDeletable(client, property.databaseId, property.key);
   }
   await propertiesStore.deleteProperty(client, id);
+  await enqueuePropertySearchReindex(client, invalidatedDatabaseIds);
   runAfterCommit(client, () => {
     for (const databaseId of invalidatedDatabaseIds)
       notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
@@ -187,6 +208,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
             // An invariant breach, not a domain NotFoundError: the row was created in this transaction.
             throw new Error(`Rollup property ${property.id} created in this transaction could not be read back`);
           }
+          await enqueuePropertySearchReindex(client, [finalProperty.databaseId]);
           runAfterCommit(client, () =>
             notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId, userId: actingUserId }),
           );
@@ -195,6 +217,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       }
       return withTransaction(pool, async (client) => {
         const property = await propertiesStore.createProperty(client, input);
+        await enqueuePropertySearchReindex(client, [property.databaseId]);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
         );
@@ -205,6 +228,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     async renameProperty(id: string, name: string, actingUserId?: string): Promise<PropertyRow> {
       return withTransaction(pool, async (client) => {
         const property = await propertiesStore.renameProperty(client, id, name);
+        await enqueuePropertySearchReindex(client, [property.databaseId]);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
         );
@@ -219,6 +243,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     ): Promise<PropertyRow> {
       return withTransaction(pool, async (client) => {
         const property = await updatePropertyConfigWithClient(client, id, config);
+        await enqueuePropertySearchReindex(client, [property.databaseId]);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
         );
@@ -229,6 +254,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     async changePropertyType(id: string, newType: PropertyType, actingUserId?: string): Promise<PropertyRow> {
       return withTransaction(pool, async (client) => {
         const property = await changePropertyTypeWithClient(client, id, newType);
+        await enqueuePropertySearchReindex(client, [property.databaseId]);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
         );
@@ -250,6 +276,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
       return withTransaction(pool, async (client) => {
         const result = await updatePropertyWithClient(client, id, input);
+        await enqueuePropertySearchReindex(client, [result.property.databaseId]);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: result.property.databaseId, userId: actingUserId }),
         );
@@ -271,6 +298,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     ): Promise<{ property: PropertyRow; typeChanged: boolean; database: DatabaseRow }> {
       return withTransaction(pool, async (client) => {
         const result = await updatePropertyWithClient(client, id, input);
+        await enqueuePropertySearchReindex(client, [result.property.databaseId]);
         const database = await databasesStore.getDatabase(client, result.property.databaseId);
         if (!database) throw new NotFoundError(`Database ${result.property.databaseId} not found`);
         runAfterCommit(client, () =>

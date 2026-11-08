@@ -20,6 +20,7 @@ export { normalizeWallClockTime } from "./timezone.js";
 export { buildItemSearchQuery } from "./search/itemSearchQuery.js";
 export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
+export { enqueueTenantSearchReindex } from "./search/itemSearchFanout.js";
 export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
 export { enqueueMailMessagePreviewBackfill } from "./mail/mailMessagePreviewBackfillJob.js";
 export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
