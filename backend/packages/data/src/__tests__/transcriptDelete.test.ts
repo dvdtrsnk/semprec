@@ -120,10 +120,35 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
   const remove = (id: string, pool: Pool = runtime) =>
     createTranscriptDeleteRouteHandler(pool)({ params: { id }, identity: { user: { id: USER } } });
 
-  /** Every queued job by key and task, read through graphile-worker's public `jobs` view. */
-  async function jobs() {
-    const { rows } = await admin.query<{ key: string | null; task_identifier: string }>(
-      "SELECT key, task_identifier FROM graphile_worker.jobs ORDER BY id",
+  interface JobState {
+    id: string;
+    queue_name: string | null;
+    task_identifier: string;
+    priority: number;
+    run_at: string;
+    attempts: number;
+    max_attempts: number;
+    last_error: string | null;
+    created_at: string;
+    updated_at: string;
+    key: string | null;
+    locked_at: string | null;
+    locked_by: string | null;
+    revision: number;
+    flags: string | null;
+  }
+
+  /**
+   * Every queued job's full public state, in id order, read through graphile-worker 0.17.3's public `jobs`
+   * view. The view does not project the payload; a replacement of an existing key (`add_job`'s replace path)
+   * shows in `revision` and `updated_at`, which every replacement changes.
+   */
+  async function jobs(): Promise<JobState[]> {
+    const { rows } = await admin.query<JobState>(
+      `SELECT id::text AS id, queue_name, task_identifier, priority, run_at::text AS run_at, attempts, max_attempts,
+              last_error, created_at::text AS created_at, updated_at::text AS updated_at, key,
+              locked_at::text AS locked_at, locked_by, revision, flags::text AS flags
+       FROM graphile_worker.jobs ORDER BY id`,
     );
     return rows;
   }
@@ -273,6 +298,15 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
       expect(events).toEqual([]);
       await f.cp.restoreItem(f.db("transcripts"), f.transcript.id, USER, { writerKind: "user" });
       expect((await state([f.file.id, f.transcript.id])).map((row) => row.deleted_at)).toEqual([null, null]);
+      // The later restore really replaces the job the DELETE queued under the transcript's referrers key: the
+      // same row with a new revision. The snapshot above therefore tells a replacement apart from no change,
+      // which a key-and-task listing cannot (R2-2).
+      const referrersKey = `item-search-reindex:referrers:${f.transcript.id}:start`;
+      const queuedByDelete = jobsBefore.find((job) => job.key === referrersKey);
+      const replaced = (await jobs()).find((job) => job.key === referrersKey);
+      expect(queuedByDelete).toBeDefined();
+      expect(replaced).toMatchObject({ id: queuedByDelete?.id, revision: (queuedByDelete?.revision ?? -1) + 1 });
+      expect(replaced?.updated_at).not.toBe(queuedByDelete?.updated_at);
     });
   });
 

@@ -152,12 +152,100 @@ async function cachedTexts(dayId: string): Promise<Array<string | null> | null> 
   return cachedEntries.parse(rows[0]?.entries ?? null)?.map((entry) => entry.text) ?? null;
 }
 
+/** A test-owned barrier. The first `open` decides whether the waiting actor proceeds or aborts. */
 function gate() {
-  let open!: () => void;
-  const opened = new Promise<void>((resolve) => {
-    open = resolve;
+  let open!: (decision?: "proceed" | "abort") => void;
+  const opened = new Promise<"proceed" | "abort">((resolve) => {
+    open = (decision = "proceed") => resolve(decision);
   });
   return { open, opened };
+}
+
+/** What an actor throws when a harness failure opened its gate with `abort`, so its transaction rolls back. */
+const ABORTED = new Error("aborted by the test after a harness failure");
+
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+/** Observes `promise` at once, so a started actor's rejection is never unhandled and can always be awaited. */
+const settle = <T>(promise: Promise<T>): Promise<Outcome<T>> =>
+  promise.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+
+// Re-throws the exact value, including a falsy one, so the primary failure keeps its identity.
+function throwFailure(error: unknown): never {
+  throw error;
+}
+
+/**
+ * A started database actor: its settlement exists from the moment it starts, and `pid` names its own
+ * backend once known, the only handle the harness may cancel.
+ */
+interface Actor {
+  name: string;
+  settled: Promise<Outcome<unknown>>;
+  pid: () => number | undefined;
+  /** An error this actor is expected to end with (its own scripted failure, or `ABORTED`). */
+  expected?: (error: unknown) => boolean;
+}
+
+/** Waits for `signal`; fails with the actor's own error if it ends first, or after the bound. */
+async function ready(signal: Promise<unknown>, actor: Actor, label: string): Promise<void> {
+  const ended = actor.settled.then((outcome) => {
+    if (!outcome.ok) throwFailure(outcome.error);
+    throw new Error(`${label}: ${actor.name} ended before it was ready`);
+  });
+  await bounded(Promise.race([signal, ended]), label);
+}
+
+const UNSETTLED = Symbol("unsettled");
+async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T | typeof UNSETTLED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<typeof UNSETTLED>((resolve) => {
+        timer = setTimeout(() => resolve(UNSETTLED), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Awaits every started actor (callers open all their gates first). A timeout is not treated as settlement:
+ * an actor still running after it gets its own backend cancelled and is awaited again; one that still does
+ * not settle is reported as unsettled, and the caller must then not restore shared state. Returns the
+ * actors' unexpected errors in order, without the primary failure itself.
+ */
+async function settleActors(actors: Actor[], primary: { error: unknown } | undefined, order?: string[]) {
+  const errors: unknown[] = [];
+  let unsettled = false;
+  for (const actor of actors) {
+    let outcome = await within(actor.settled, 10_000);
+    if (outcome === UNSETTLED) {
+      const pid = actor.pid();
+      if (pid !== undefined) await admin.query("SELECT pg_cancel_backend($1::int)", [pid]);
+      outcome = await within(actor.settled, 10_000);
+    }
+    if (outcome === UNSETTLED) {
+      unsettled = true;
+      errors.push(new Error(`${actor.name} did not settle`));
+      continue;
+    }
+    order?.push(`settled:${actor.name}`);
+    if (!outcome.ok && !(primary && outcome.error === primary.error) && !actor.expected?.(outcome.error))
+      errors.push(outcome.error);
+  }
+  return { errors, unsettled };
+}
+
+/** The primary failure with every cleanup error after it, or the primary failure itself when there is none. */
+function failureOf(primary: { error: unknown }, cleanup: unknown[], message: string): unknown {
+  return cleanup.length
+    ? new AggregateError([primary.error, ...cleanup], message, { cause: primary.error })
+    : primary.error;
 }
 
 async function bounded<T>(promise: Promise<T>, label: string, milliseconds = 10_000): Promise<T> {
@@ -197,32 +285,42 @@ async function backendPid(client: PoolClient): Promise<number> {
 
 /**
  * Scratch barrier (R1 D1): a dedicated system transaction holds the tenant's search-flush advisory lock, so a
- * writer that reached its pre-commit flush waits there, observably, until `release`. Always released and
- * awaited by the caller.
+ * writer that reached its pre-commit flush waits there, observably, until `release`. It returns at once, with
+ * the release gate and the settlement, so no wait for `held` can hide the holder; the caller opens the gate
+ * and settles the holder on every path. `failBeforeLock` makes the holder fail before it locks (a control).
  */
-async function holdFlushLock(tenantId: string) {
+function startFlushLockHolder(tenantId: string, failBeforeLock?: { value: unknown }) {
   const held = gate();
   const release = gate();
-  let pid = 0;
-  const holder = runAsSystem("search flush lock holder", () =>
-    withTransaction(admin, async (client) => {
-      pid = await backendPid(client);
-      await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
-        SEARCH_FLUSH_TENANT_LOCK_CLASS,
-        tenantId,
-      ]);
-      held.open();
-      await release.opened;
-    }),
-  );
-  await bounded(held.opened, "flush lock held");
-  return {
+  let pid: number | undefined;
+  const actor: Actor = {
+    name: "flush lock holder",
     pid: () => pid,
-    release: async () => {
-      release.open();
-      await holder;
-    },
+    settled: settle(
+      runAsSystem("search flush lock holder", () =>
+        withTransaction(admin, async (client) => {
+          pid = await backendPid(client);
+          if (failBeforeLock) throwFailure(failBeforeLock.value);
+          await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
+            SEARCH_FLUSH_TENANT_LOCK_CLASS,
+            tenantId,
+          ]);
+          held.open();
+          await release.opened;
+        }),
+      ),
+    ),
   };
+  return { actor, held: held.opened, release: () => release.open() };
+}
+
+/** Whether the backend has an open transaction (an actor that has not settled keeps one). */
+async function inTransaction(pid: number): Promise<boolean> {
+  const { rows } = await admin.query<{ open: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1::int AND xact_start IS NOT NULL) AS open",
+    [pid],
+  );
+  return rows[0]?.open === true;
 }
 
 const graphileWorkerModule = z.object({
@@ -549,21 +647,45 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(event, "ota")).toBe(true);
   });
 
-  it("queues the database's backfill for a property patch and for a property delete, each on its own (R1 P2)", async () => {
+  it("queues the database's backfill for a property patch and for a property delete, each on its own, and each job rewrites the item's document (R1 P2, R2-4)", async () => {
     const collection = await inTenant(() => cp.createDatabase({ name: "Archiv" }));
+    await inTenant(() => cp.createProperty({ databaseId: collection.id, key: "name", name: "Name", type: "title" }));
+    // A select's document text is its option's label; patching the label keeps the stored option key.
     const property = await inTenant(() =>
-      cp.createProperty({ databaseId: collection.id, key: "note", name: "Note", type: "text" }),
+      cp.createProperty({
+        databaseId: collection.id,
+        key: "stage",
+        name: "Stage",
+        type: "select",
+        config: { options: [{ key: "draft", label: "Zelenomodrý" }] },
+      }),
+    );
+    const entry = await inTenant(() =>
+      cp.createItem({ databaseId: collection.id, properties: { name: "Exponát", stage: "draft" } }),
     );
     const backfills = async () => (await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id);
     expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
     await runQueued();
     expect(await backfills()).toEqual([]);
-    await inTenant(() => cp.updateProperty(property.id, { name: "Poznámka" }));
+    expect(await contains(entry.id, "zelenomodrý")).toBe(true);
+    await inTenant(() =>
+      cp.updateProperty(property.id, { config: { options: [{ key: "draft", label: "Fialovočervený" }] } }),
+    );
     expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    // Until the patch's job runs the document still quotes the old label.
+    expect(await contains(entry.id, "fialovočervený")).toBe(false);
     await runQueued();
     expect(await backfills()).toEqual([]);
+    expect(await contains(entry.id, "fialovočervený")).toBe(true);
+    expect(await contains(entry.id, "zelenomodrý")).toBe(false);
     await inTenant(() => cp.deleteProperty(property.id));
     expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await contains(entry.id, "fialovočervený")).toBe(true);
+    await runQueued();
+    expect(await backfills()).toEqual([]);
+    expect(await contains(entry.id, "fialovočervený")).toBe(false);
+    // The retained title property is still in the document.
+    expect(await contains(entry.id, "exponát")).toBe(true);
   });
 
   it("leaves a trashed referrer's document as it was when the project is renamed (R1 P2)", async () => {
@@ -709,51 +831,67 @@ describe("search reindex fan-out (issue #1652)", () => {
    * a lock cycle. The jobs are now added at each transaction's pre-commit flush under the tenant's flush lock;
    * a scratch holder of that lock makes both writers wait observably at their flush before either commits.
    */
-  type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
-  const settle = <T>(promise: Promise<T>): Promise<Outcome<T>> =>
-    promise.then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
+  interface CrossedOptions {
+    /** X throws its own failure after its first edge (the rollback control). */
+    xFails?: boolean;
+    /** The harness fails, with this exact value, once both writers wait at their gates (a settlement control). */
+    failObservation?: { value: unknown };
+    /** The lock holder fails before it locks (a settlement control). */
+    holderFails?: { value: unknown };
+    /** Filled before the call returns or throws: each settled actor in order, and every backend the actors used. */
+    trace?: { order: string[]; pids: number[] };
+  }
 
-  async function crossedWrites(
-    nodes: Awaited<ReturnType<typeof relationNodes>>,
-    xFails: boolean,
-  ): Promise<{ x: Outcome<string>; y: string }> {
-    const holder = await holdFlushLock(tenant);
+  /**
+   * Runs the crossed schedule. Every actor is settled before this returns or throws: on a harness failure the
+   * writers' gates open with `abort`, so their transactions roll back, the holder is released, and the primary
+   * failure is rethrown with its identity (cleanup errors after it). `actors` lists every actor started.
+   */
+  async function crossedWrites(nodes: Awaited<ReturnType<typeof relationNodes>>, options: CrossedOptions = {}) {
+    const holder = startFlushLockHolder(tenant, options.holderFails);
+    const actors: Actor[] = [holder.actor];
     const xLinkedA = gate();
     const xContinue = gate();
     const yLinkedB = gate();
     const yContinue = gate();
-    let xPid = 0;
-    let yPid = 0;
+    let xPid: number | undefined;
+    let yPid: number | undefined;
     const xFailure = new Error("X fails after its first edge");
-    const xWrite = settle(
-      inTenant(() =>
-        withTransaction(pool, async (client) => {
-          xPid = await backendPid(client);
-          const x = await createItemWithClient(client, { databaseId: nodes.source, properties: {} });
-          await createRelationWithClient(client, {
-            relationPropertyId: nodes.first,
-            callerItemId: x.id,
-            targetItemId: nodes.a,
-          });
-          xLinkedA.open();
-          await xContinue.opened;
-          if (xFails) throw xFailure;
-          await createRelationWithClient(client, {
-            relationPropertyId: nodes.second,
-            callerItemId: x.id,
-            targetItemId: nodes.b,
-          });
-          return x.id;
-        }),
-      ),
-    );
+    let xWrite: Promise<Outcome<string>> | undefined;
     let yWrite: Promise<Outcome<string>> | undefined;
-    let failure: { error: unknown } | undefined;
+    let primary: { error: unknown } | undefined;
     try {
-      await bounded(xLinkedA.opened, "X linked A");
+      await ready(holder.held, holder.actor, "flush lock held");
+      xWrite = settle(
+        inTenant(() =>
+          withTransaction(pool, async (client) => {
+            xPid = await backendPid(client);
+            const x = await createItemWithClient(client, { databaseId: nodes.source, properties: {} });
+            await createRelationWithClient(client, {
+              relationPropertyId: nodes.first,
+              callerItemId: x.id,
+              targetItemId: nodes.a,
+            });
+            xLinkedA.open();
+            if ((await xContinue.opened) === "abort") throw ABORTED;
+            if (options.xFails) throw xFailure;
+            await createRelationWithClient(client, {
+              relationPropertyId: nodes.second,
+              callerItemId: x.id,
+              targetItemId: nodes.b,
+            });
+            return x.id;
+          }),
+        ),
+      );
+      const x: Actor = {
+        name: "X",
+        settled: xWrite,
+        pid: () => xPid,
+        expected: (error) => error === ABORTED || (options.xFails === true && error === xFailure),
+      };
+      actors.push(x);
+      await ready(xLinkedA.opened, x, "X linked A");
       yWrite = settle(
         inTenant(() =>
           withTransaction(pool, async (client) => {
@@ -765,7 +903,7 @@ describe("search reindex fan-out (issue #1652)", () => {
               targetItemId: nodes.b,
             });
             yLinkedB.open();
-            await yContinue.opened;
+            if ((await yContinue.opened) === "abort") throw ABORTED;
             await createRelationWithClient(client, {
               relationPropertyId: nodes.fourth,
               callerItemId: y.id,
@@ -775,24 +913,30 @@ describe("search reindex fan-out (issue #1652)", () => {
           }),
         ),
       );
-      await bounded(yLinkedB.opened, "Y linked B");
+      const y: Actor = { name: "Y", settled: yWrite, pid: () => yPid, expected: (error) => error === ABORTED };
+      actors.push(y);
+      await ready(yLinkedB.opened, y, "Y linked B");
+      if (options.failObservation) throwFailure(options.failObservation.value);
       xContinue.open();
-      if (!xFails) await waitBlocked(holder.pid(), xPid);
+      if (!options.xFails) await waitBlocked(holder.actor.pid() ?? 0, xPid ?? 0);
       yContinue.open();
-      await waitBlocked(holder.pid(), yPid);
+      await waitBlocked(holder.actor.pid() ?? 0, yPid ?? 0);
     } catch (error) {
-      failure = { error };
+      primary = { error };
     }
-    xContinue.open();
-    yContinue.open();
-    const released = await settle(holder.release());
-    const [x, y] = await bounded(Promise.all([xWrite, yWrite ?? Promise.resolve(undefined)]), "both writes settled");
-    const cleanup = [released, y].flatMap((result) => (result && !result.ok ? [result.error] : []));
-    if (failure)
-      throw cleanup.length ? new AggregateError([failure.error, ...cleanup], "Crossed writes failed") : failure.error;
-    if (cleanup.length || !y?.ok) throw new AggregateError(cleanup, "A crossed writer or the lock holder failed");
-    if (xFails && !(!x.ok && x.error === xFailure)) throw new Error("Expected X's own failure");
-    return { x, y: y.value };
+    // A writer still at its gate aborts after a harness failure; one already released goes on.
+    xContinue.open(primary ? "abort" : "proceed");
+    yContinue.open(primary ? "abort" : "proceed");
+    holder.release();
+    const settlement = await settleActors(actors, primary, options.trace?.order);
+    options.trace?.pids.push(...[holder.actor.pid(), xPid, yPid].filter((pid): pid is number => pid !== undefined));
+    if (primary) throwFailure(failureOf(primary, settlement.errors, "Crossed writes and their settlement failed"));
+    if (settlement.errors.length)
+      throw new AggregateError(settlement.errors, "A crossed writer or the lock holder failed");
+    const [xOutcome, yOutcome] = await Promise.all([xWrite, yWrite]);
+    if (!xOutcome || !yOutcome?.ok) throw new Error("Expected both writers to have run");
+    if (options.xFails && !(!xOutcome.ok && xOutcome.error === xFailure)) throw new Error("Expected X's own failure");
+    return { x: xOutcome, y: yOutcome.value };
   }
 
   it.each(["warm", "cold"] as const)(
@@ -802,7 +946,7 @@ describe("search reindex fan-out (issue #1652)", () => {
       await runQueued();
       // A cold lane: graphile-worker's public GC removes the drained tenant lane's queue row.
       if (lane === "cold") await collectUnusedQueueMetadata(["GC_JOB_QUEUES"]);
-      const { x, y } = await crossedWrites(nodes, false);
+      const { x, y } = await crossedWrites(nodes);
       if (!x.ok) throw x.error;
       expect(await reindexKeys()).toEqual([nodes.a, nodes.b, x.value, y].map(itemKey).sort());
       const edges = async (itemId: string) =>
@@ -817,7 +961,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     await runQueued();
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
-    const { x, y } = await crossedWrites(nodes, true).finally(() => setInvalidationHook(() => {}));
+    const { x, y } = await crossedWrites(nodes, { xFails: true }).finally(() => setInvalidationHook(() => {}));
     expect(x.ok).toBe(false);
     expect(await reindexKeys()).toEqual([nodes.a, nodes.b, y].map(itemKey).sort());
     const announced = new Set(events.flatMap((event) => (event.scope === "item" ? [event.itemId] : [])));
@@ -830,6 +974,58 @@ describe("search reindex fan-out (issue #1652)", () => {
     );
     expect(rows).toEqual([]);
     for (const id of announced) expect([nodes.a, nodes.b, y]).toContain(id);
+  });
+
+  /** The source database's items, read in the tenant. */
+  async function sourceItems(source: string): Promise<string[]> {
+    const { rows } = await inTenant(() =>
+      pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [source]),
+    );
+    return rows.map((row) => row.id);
+  }
+
+  it.each([
+    ["an error", new Error("observation failed")],
+    ["a falsy value", undefined],
+  ] as const)(
+    "settles the lock holder and both crossed writers before rejecting with a harness failure (%s), leaving no effect (R2-1)",
+    async (_case, value) => {
+      const nodes = await relationNodes();
+      await runQueued();
+      const keysBefore = await reindexKeys();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      const trace = { order: [] as string[], pids: [] as number[] };
+      const outcome = await settle(crossedWrites(nodes, { failObservation: { value }, trace })).finally(() =>
+        setInvalidationHook(() => {}),
+      );
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Expected the harness failure");
+      expect(outcome.error).toBe(value);
+      expect(trace.order).toEqual(["settled:flush lock holder", "settled:X", "settled:Y"]);
+      expect(trace.pids).toHaveLength(3);
+      for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
+      expect(await reindexKeys()).toEqual(keysBefore);
+      expect(await sourceItems(nodes.source)).toEqual([]);
+      expect(events).toEqual([]);
+    },
+  );
+
+  it("rejects with the lock holder's own failure before any writer starts, after the holder settled (R2-1)", async () => {
+    const nodes = await relationNodes();
+    await runQueued();
+    const keysBefore = await reindexKeys();
+    const holderFailure = new Error("holder failed before it locked");
+    const trace = { order: [] as string[], pids: [] as number[] };
+    const outcome = await settle(crossedWrites(nodes, { holderFails: { value: holderFailure }, trace }));
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("Expected the holder's failure");
+    expect(outcome.error).toBe(holderFailure);
+    expect(trace.order).toEqual(["settled:flush lock holder"]);
+    expect(trace.pids).toHaveLength(1);
+    for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
+    expect(await reindexKeys()).toEqual(keysBefore);
+    expect(await sourceItems(nodes.source)).toEqual([]);
   });
 
   it("refuses a search write before any effect while the search task identifiers are unregistered, and writes after the bootstrap (R1 D1)", async () => {
@@ -869,36 +1065,55 @@ describe("search reindex fan-out (issue #1652)", () => {
    * registration holds its own uncommitted search identifier rows while it waits; the writer's flush does not
    * see them registered and refuses before any add_job instead of waiting on them.
    */
-  it.each(["registered", "unregistered"] as const)(
-    "settles a writer holding a fresh inline identifier beside a worker's own registration (search identifiers %s, R1 D1)",
-    async (state) => {
-      const event = await item("events", "Sraz");
-      await runQueued();
-      const otherJobs = await allJobs();
-      const probe = `searchFlushProbe${state === "registered" ? "Registered" : "Unregistered"}`;
-      if (state === "unregistered") await collectUnusedQueueMetadata(["GC_TASK_IDENTIFIERS"]);
-      try {
-        const enqueued = gate();
-        const release = gate();
-        let writerPid = 0;
-        const writer = inTenant(() =>
+  /**
+   * Runs the mixed schedule. The writer and the native worker are settled before the bootstrap restores the
+   * search identifiers, on every path; after a harness failure the writer's gate opens with `abort`, so its
+   * transaction rolls back, and the failure is rethrown with its identity (cleanup errors after it). `order`
+   * records each settlement and the restoration.
+   */
+  async function mixedRegistration(
+    state: "registered" | "unregistered",
+    options: { failObservation?: { value: unknown }; trace?: { order: string[]; pids: number[] } } = {},
+  ) {
+    const { failObservation } = options;
+    const event = await item("events", "Sraz");
+    await runQueued();
+    const otherJobs = await allJobs();
+    const probe = `searchFlushProbe${state === "registered" ? "Registered" : "Unregistered"}${failObservation ? "Failed" : ""}`;
+    if (state === "unregistered") await collectUnusedQueueMetadata(["GC_TASK_IDENTIFIERS"]);
+    const order = options.trace?.order ?? [];
+    const ran: string[] = [];
+    const enqueued = gate();
+    const release = gate();
+    let writerPid: number | undefined;
+    let primary: { error: unknown } | undefined;
+    const writer: Actor = {
+      name: "writer",
+      pid: () => writerPid,
+      expected: (error) =>
+        error === ABORTED || (state === "unregistered" && error instanceof SearchTaskIdentifiersNotRegisteredError),
+      settled: settle(
+        inTenant(() =>
           withTransaction(pool, async (client) => {
             writerPid = await backendPid(client);
             await enqueueJob(client, probe, {});
             await enqueueItemSearchReindex(client, { kind: "item", itemId: event });
             enqueued.open();
-            await release.opened;
+            if ((await release.opened) === "abort") throw ABORTED;
           }),
-        ).then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-        const ran: string[] = [];
-        let worker: Promise<void> | undefined;
-        try {
-          await bounded(enqueued.opened, "writer enqueued");
-          const { reindex, backfill, pageText } = searchHandlers();
-          worker = runOnce(
+        ),
+      ),
+    };
+    const actors: Actor[] = [writer];
+    try {
+      await ready(enqueued.opened, writer, "writer enqueued");
+      const { reindex, backfill, pageText } = searchHandlers();
+      // graphile-worker's connections are not named here, so the worker can only be awaited, never cancelled.
+      actors.push({
+        name: "worker",
+        pid: () => undefined,
+        settled: settle(
+          runOnce(
             { pgPool: admin },
             {
               [BACKFILL]: backfill,
@@ -908,38 +1123,72 @@ describe("search reindex fan-out (issue #1652)", () => {
                 ran.push(probe);
               }),
             },
-          );
-          const deadline = Date.now() + 5000;
-          let registrationWaits = false;
-          while (!registrationWaits && Date.now() < deadline) {
-            const { rows } = await admin.query<{ waiting: boolean }>(
-              `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE position('_private_tasks' IN query) > 0
-                 AND position('unnest' IN query) > 0 AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
-              [writerPid],
-            );
-            registrationWaits = rows[0]?.waiting === true;
-            if (!registrationWaits) await new Promise((resolve) => setTimeout(resolve, 20));
-          }
-          expect(registrationWaits).toBe(true);
-        } finally {
-          release.open();
-        }
-        const outcome = await bounded(writer, "writer settled");
-        await bounded(worker ?? Promise.resolve(), "worker settled");
-        // The worker ran the writer's probe and search jobs, or the writer's rollback left none.
-        expect(await allJobs()).toEqual(otherJobs);
-        if (state === "registered") {
-          expect(outcome).toEqual({ ok: true });
-          expect(ran).toEqual([probe]);
-        } else {
-          expect(outcome).toMatchObject({ ok: false });
-          if (outcome.ok) throw new Error("Expected the writer's refusal");
-          expect(outcome.error).toBeInstanceOf(SearchTaskIdentifiersNotRegisteredError);
-          expect(ran).toEqual([]);
-        }
-      } finally {
-        await ensureQueueSchema(admin);
+          ),
+        ),
+      });
+      if (failObservation) throwFailure(failObservation.value);
+      const deadline = Date.now() + 5000;
+      let registrationWaits = false;
+      while (!registrationWaits && Date.now() < deadline) {
+        const { rows } = await admin.query<{ waiting: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE position('_private_tasks' IN query) > 0
+             AND position('unnest' IN query) > 0 AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
+          [writerPid ?? 0],
+        );
+        registrationWaits = rows[0]?.waiting === true;
+        if (!registrationWaits) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(registrationWaits).toBe(true);
+    } catch (error) {
+      primary = { error };
+    }
+    release.open(primary ? "abort" : "proceed");
+    const settlement = await settleActors(actors, primary, order);
+    if (writerPid !== undefined) options.trace?.pids.push(writerPid);
+    // The identifiers are restored only once every actor settled; an unsettled one keeps the state as it is.
+    if (!settlement.unsettled) {
+      const restored = await settle(ensureQueueSchema(admin));
+      order.push("restored");
+      if (!restored.ok) settlement.errors.push(restored.error);
+    }
+    if (primary) throwFailure(failureOf(primary, settlement.errors, "Mixed registration and its settlement failed"));
+    if (settlement.errors.length) throw new AggregateError(settlement.errors, "A mixed-schedule actor failed");
+    return { writer: await writer.settled, ran, probe, order, otherJobs, writerPid };
+  }
+
+  it.each(["registered", "unregistered"] as const)(
+    "settles a writer holding a fresh inline identifier beside a worker's own registration (search identifiers %s, R1 D1)",
+    async (state) => {
+      const { writer, ran, probe, order, otherJobs } = await mixedRegistration(state);
+      expect(order).toEqual(["settled:writer", "settled:worker", "restored"]);
+      // The worker ran the writer's probe and search jobs, or the writer's rollback left none.
+      expect(await allJobs()).toEqual(otherJobs);
+      if (state === "registered") {
+        expect(writer).toEqual({ ok: true, value: undefined });
+        expect(ran).toEqual([probe]);
+      } else {
+        expect(writer.ok).toBe(false);
+        if (writer.ok) throw new Error("Expected the writer's refusal");
+        expect(writer.error).toBeInstanceOf(SearchTaskIdentifiersNotRegisteredError);
+        expect(ran).toEqual([]);
       }
     },
   );
+
+  it("settles the writer and the native worker before restoring the identifiers when the observation fails (R2-1)", async () => {
+    const failure = new Error("registration observation failed");
+    const trace = { order: [] as string[], pids: [] as number[] };
+    const outcome = await settle(mixedRegistration("unregistered", { failObservation: { value: failure }, trace }));
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("Expected the observation failure");
+    expect(outcome.error).toBe(failure);
+    // Both actors settled before the identifiers were restored, and the aborted writer (which writes only
+    // jobs) left none.
+    expect(trace.order).toEqual(["settled:writer", "settled:worker", "restored"]);
+    expect(trace.pids).toHaveLength(1);
+    for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
+    await expect(assertSearchTaskIdentifiersRegistered(admin)).resolves.toBeUndefined();
+    expect((await allJobs()).filter((job) => job.task_identifier.startsWith("searchFlushProbe"))).toEqual([]);
+    expect(await reindexKeys()).toEqual([]);
+  });
 });
