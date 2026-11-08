@@ -14,7 +14,7 @@ import { createActionRegistry } from "../../scheduler/actions.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createApiCoreTaskList } from "../../worker.js";
-import { enqueueTenantSearchReindex } from "../itemSearchFanout.js";
+import { enqueueTenantSearchReindex, handleItemSearchReindexDependentsTask } from "../itemSearchFanout.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -26,6 +26,8 @@ let scope: string;
 
 const REINDEX = CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS;
 const BACKFILL = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
+/** The Inbox owner's recompute of a Journal day's cached entries (inbox/journalInboxCompute.ts). */
+const RECOMPUTE = CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE;
 const envelope = z.object({ payload: z.record(z.string(), z.unknown()) });
 
 function inTenant<T>(fn: () => Promise<T>): Promise<T> {
@@ -96,22 +98,24 @@ function searchHandlers() {
   const taskList = createApiCoreTaskList(pool, createActionRegistry());
   const reindex = taskList[REINDEX];
   const backfill = taskList[BACKFILL];
-  if (!reindex || !backfill) throw new Error("Search handlers missing from the production API task list");
-  return { reindex, backfill };
+  const recompute = taskList[RECOMPUTE];
+  if (!reindex || !backfill || !recompute) throw new Error("Search handlers missing from the production API task list");
+  return { reindex, backfill, recompute };
 }
 
 /**
- * Runs the queued reindex and backfill jobs with the production API task list's own handlers until
- * none is left, so jobs a running job queues (continuations, an area's project items) run too.
+ * Runs the queued reindex, backfill and Journal recompute jobs with the production API task list's
+ * own handlers until none is left, so jobs a running job queues (continuations, an area's project
+ * items) run too.
  */
 async function runQueued(): Promise<void> {
-  const { reindex, backfill } = searchHandlers();
+  const { reindex, backfill, recompute } = searchHandlers();
   // One run may leave jobs of the serialized tenant lane for the next one, so it repeats while it
   // makes progress.
   let remaining = Number.POSITIVE_INFINITY;
   for (;;) {
-    await runOnce({ pgPool: admin }, { [REINDEX]: reindex, [BACKFILL]: backfill });
-    const left = (await queued(REINDEX)).length + (await queued(BACKFILL)).length;
+    await runOnce({ pgPool: admin }, { [REINDEX]: reindex, [BACKFILL]: backfill, [RECOMPUTE]: recompute });
+    const left = (await queued(REINDEX)).length + (await queued(BACKFILL)).length + (await queued(RECOMPUTE)).length;
     if (left === 0) return;
     if (left >= remaining) {
       const { rows } = await admin.query<{ task_identifier: string; attempts: number; last_error: string | null }>(
@@ -121,6 +125,58 @@ async function runQueued(): Promise<void> {
     }
     remaining = left;
   }
+}
+
+/** A Journal day and one Inbox entry on it, written through the Inbox capture write. */
+async function journalEntry(text: string) {
+  const journal = await db("journal");
+  const inbox = await db("inbox");
+  const day = await inTenant(() =>
+    withTransaction(pool, (client) =>
+      getOrCreateJournalItem(client, journal, "day", new Date("2026-10-27T12:00:00Z"), "UTC"),
+    ),
+  );
+  const entry = await inTenant(() =>
+    withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inbox, date: "2026-10-27", time: "12:00", text }),
+    ),
+  );
+  return { inbox, day, entry };
+}
+
+/**
+ * Fault injection (R1 P2, parent D5): makes the search-index write of exactly one item fail, which no
+ * production input can do on demand. The item id reaches the trigger's WHEN clause as a literal quoted
+ * by Postgres (`format('%L')` in a DO block, read from a session setting), never interpolated here.
+ * Cleanup runs after `run` settled, on the same dedicated client; a failed cleanup discards that
+ * client, and a primary failure and a cleanup failure are reported together.
+ */
+async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Promise<void> {
+  const client = await admin.connect();
+  let primary: { error: unknown } | undefined;
+  try {
+    await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [itemId]);
+    await client.query(`CREATE FUNCTION fanout_index_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test index write failure'; END $$`);
+    await client.query(`DO $$ BEGIN EXECUTE format(
+      'CREATE TRIGGER fanout_index_fault_test BEFORE INSERT OR UPDATE ON item_search_index FOR EACH ROW '
+      'WHEN (NEW.item_id = %L::uuid) EXECUTE FUNCTION fanout_index_fault_test()',
+      current_setting('semprec_test.fault_item')); END $$`);
+    await run();
+  } catch (error) {
+    primary = { error };
+  }
+  let cleanup: { error: unknown } | undefined;
+  try {
+    await client.query("DROP TRIGGER IF EXISTS fanout_index_fault_test ON item_search_index");
+    await client.query("DROP FUNCTION IF EXISTS fanout_index_fault_test()");
+  } catch (error) {
+    cleanup = { error };
+  }
+  client.release(cleanup ? new Error("Fault trigger cleanup failed; the connection is discarded") : undefined);
+  if (primary && cleanup) throw new AggregateError([primary.error, cleanup.error], "Fault test and its cleanup failed");
+  if (primary) throw primary.error;
+  if (cleanup) throw cleanup.error;
 }
 
 describe("search reindex fan-out (issue #1652)", () => {
@@ -224,25 +280,117 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(task, "gamaprojekt")).toBe(true);
   });
 
-  it("rebuilds the Journal day's document when one of its Inbox entries changes", async () => {
-    const journal = await db("journal");
-    const inbox = await db("inbox");
-    const day = await inTenant(() =>
-      withTransaction(pool, (client) =>
-        getOrCreateJournalItem(client, journal, "day", new Date("2026-10-27T12:00:00Z"), "UTC"),
-      ),
-    );
-    const entry = await inTenant(() =>
-      withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, { inboxDatabaseId: inbox, date: "2026-10-27", time: "12:00", text: "Mléko" }),
-      ),
-    );
+  it("puts an Inbox entry's new text into its Journal day's document and drops the old one, through the cache owner (R1 F2)", async () => {
+    const { inbox, day, entry } = await journalEntry("Mléko");
+    // The create queues the day's document (through the new journalDay edge) and the owner's recompute.
+    expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
+    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
     await runQueued();
-    const before = await indexedAt(day.id);
+    expect(await contains(day.id, "mléko")).toBe(true);
     await inTenant(() => cp.updateItem({ databaseId: inbox, itemId: entry.id, propertiesPatch: { text: "Chléb" } }));
     expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
+    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
     await runQueued();
-    expect(await indexedAt(day.id)).not.toBe(before);
+    expect(await contains(day.id, "chléb")).toBe(true);
+    expect(await contains(day.id, "mléko")).toBe(false);
+  });
+
+  it("drops a trashed Inbox entry's text from its Journal day's document and brings it back after the restore (R1 F2)", async () => {
+    const { inbox, day, entry } = await journalEntry("Pečivo");
+    await runQueued();
+    expect(await contains(day.id, "pečivo")).toBe(true);
+    await inTenant(() => cp.softDeleteItem(inbox, entry.id));
+    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
+    await runQueued();
+    expect(await contains(day.id, "pečivo")).toBe(false);
+    await inTenant(() => cp.restoreItem(inbox, entry.id));
+    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
+    await runQueued();
+    expect(await contains(day.id, "pečivo")).toBe(true);
+  });
+
+  it("queues both ends' documents when an edge is written (R1 P2)", async () => {
+    const person = await item("people", "Ota");
+    const event = await item("events", "Schůzka");
+    await runQueued();
+    await link("events", "people", event, person);
+    const payloads = await queued(REINDEX);
+    expect(payloads).toContainEqual({ kind: "item", itemId: event });
+    expect(payloads).toContainEqual({ kind: "item", itemId: person });
+    await runQueued();
+    expect(await contains(event, "ota")).toBe(true);
+  });
+
+  it("queues the database's backfill for a property patch and for a property delete, each on its own (R1 P2)", async () => {
+    const collection = await inTenant(() => cp.createDatabase({ name: "Archiv" }));
+    const property = await inTenant(() =>
+      cp.createProperty({ databaseId: collection.id, key: "note", name: "Note", type: "text" }),
+    );
+    const backfills = async () => (await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id);
+    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    await runQueued();
+    expect(await backfills()).toEqual([]);
+    await inTenant(() => cp.updateProperty(property.id, { name: "Poznámka" }));
+    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    await runQueued();
+    expect(await backfills()).toEqual([]);
+    await inTenant(() => cp.deleteProperty(property.id));
+    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+  });
+
+  it("leaves a trashed referrer's document as it was when the project is renamed (R1 P2)", async () => {
+    const project = await item("projects", "Deltaprojekt");
+    const live = await item("tasks", "Živý");
+    const trashed = await item("tasks", "Smazaný");
+    for (const task of [live, trashed]) await link("tasks", "project", task, project);
+    await runQueued();
+    const tasksDatabase = await db("tasks");
+    await inTenant(() => cp.softDeleteItem(tasksDatabase, trashed));
+    await runQueued();
+    const before = await indexedAt(trashed);
+    await rename("projects", project, "Epsilonprojekt");
+    await runQueued();
+    expect(await contains(live, "epsilonprojekt")).toBe(true);
+    expect(await indexedAt(trashed)).toBe(before);
+    expect(await contains(trashed, "epsilonprojekt")).toBe(false);
+  });
+
+  it("commits each chunk of referrers on its own and rolls back only a failing later chunk (R1 P2)", async () => {
+    const project = await item("projects", "Bořivoj");
+    const tasks: string[] = [];
+    for (let index = 0; index < 101; index++) {
+      const task = await item("tasks", `Úkol ${index}`);
+      await link("tasks", "project", task, project);
+      tasks.push(task);
+    }
+    await runQueued();
+    await rename("projects", project, "Spytihněv");
+    // The production handler is called directly, chunk by chunk, so each chunk's commit is observable.
+    // Chunks follow the referrers' id order.
+    const ordered = [...tasks].sort();
+    const boundary = ordered[99];
+    const last = ordered[100];
+    if (!boundary || !last) throw new Error("Expected 101 referrers");
+    await inTenant(() => handleItemSearchReindexDependentsTask(pool, { kind: "referrers", itemId: project }));
+    const staleFirst: string[] = [];
+    for (const task of ordered.slice(0, 100)) if (!(await contains(task, "spytihněv"))) staleFirst.push(task);
+    expect(staleFirst).toEqual([]);
+    expect(await contains(last, "spytihněv")).toBe(false);
+    expect(await queued(REINDEX)).toContainEqual({ kind: "referrers", itemId: project, afterItemId: boundary });
+    await withIndexWriteFault(last, async () => {
+      await expect(
+        inTenant(() =>
+          handleItemSearchReindexDependentsTask(pool, { kind: "referrers", itemId: project, afterItemId: boundary }),
+        ),
+      ).rejects.toThrow("test index write failure");
+    });
+    // The first chunk stays committed; the failed chunk wrote nothing.
+    const lostFirst: string[] = [];
+    for (const task of ordered.slice(0, 100)) if (!(await contains(task, "spytihněv"))) lostFirst.push(task);
+    expect(lostFirst).toEqual([]);
+    expect(await contains(last, "spytihněv")).toBe(false);
+    await runQueued();
+    expect(await contains(last, "spytihněv")).toBe(true);
   });
 
   it("makes existing values of a newly added text property searchable once the queued backfill ran", async () => {

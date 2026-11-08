@@ -4,6 +4,8 @@
 // as queued reindex jobs. Dependents are looked up when the job runs, in committed chunks
 // (docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md), so a write never expands
 // a referrer set inside its own transaction. Emails are never reindexed here: mail owns their rows.
+// A Journal day quotes its Inbox entries through its cached `computed.inboxItems`, which only the
+// Inbox owner's recompute rewrites, so Inbox writes also queue that recompute (see `journalDaysOf`).
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
@@ -18,6 +20,7 @@ import type {
 import { getPropertyByKey, listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
+import { enqueueJournalInboxRecompute } from "../inbox/journalInboxCompute.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { AREAS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -187,34 +190,56 @@ export const itemSearchTitleUpdateHook: ItemUpdateHook = async ({ client, databa
   await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
 };
 
-/** A soft-deleted row (issue #1601's hook): the items that link to it stop quoting its text. */
-export const itemSearchDeleteHook: ItemDeleteHook = async ({ client, item }) => {
-  await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
-};
-
-/** A restored row: the items that link to it quote its text again. */
-export const itemSearchRestoreHook: ItemRestoreHook = async ({ client, item }) => {
-  await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
-};
-
-/** An Inbox entry created or changed: the document of the Journal day its `journalDay` edge points at. */
-async function enqueueJournalDayOf(
+/**
+ * The Journal days an Inbox entry's `journalDay` edges point at; none for an item of any other
+ * database. A day's document quotes its entries through the day's cached `computed.inboxItems`
+ * (issue #106), which only the Inbox owner's recompute rewrites: it rewrites the cache and reindexes
+ * the day in one transaction under the day's row lock, the lock `indexItem` also takes. So whichever
+ * of that recompute and a search job of the day runs last indexes the committed cache.
+ */
+async function journalDaysOf(
   client: PoolClient,
   database: { id: string; ownerModuleId: string | null; system: boolean },
   itemId: string,
-) {
-  if (!database.system || database.ownerModuleId !== INBOX_MODULE_ID) return;
+): Promise<string[]> {
+  if (!database.system || database.ownerModuleId !== INBOX_MODULE_ID) return [];
   const property = await getPropertyByKey(client, database.id, "journalDay");
   const definition = property && (await getRelationDefinitionByPropertyId(client, property.id));
-  if (!definition) return;
-  for (const edge of await listRelationsForItem(client, definition.id, itemId))
-    await enqueueItemSearchReindex(client, { kind: "item", itemId: otherSide(edge, itemId) });
+  if (!definition) return [];
+  return (await listRelationsForItem(client, definition.id, itemId)).map((edge) => otherSide(edge, itemId));
 }
 
-export const itemSearchInboxCreateHook: ItemCreateHook = async ({ client, database, item }) => {
-  await enqueueJournalDayOf(client, database, item.id);
+/**
+ * A soft-deleted row (issue #1601's hook): the items that link to it stop quoting its text. For an
+ * Inbox entry, its Journal days' cached entry lists are recomputed too, which leaves the trashed
+ * entry out.
+ */
+export const itemSearchDeleteHook: ItemDeleteHook = async ({ client, database, item }) => {
+  await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
+  for (const day of await journalDaysOf(client, database, item.id)) await enqueueJournalInboxRecompute(client, day);
 };
 
+/** A restored row: the items that link to it quote its text again; an Inbox entry's days are recomputed. */
+export const itemSearchRestoreHook: ItemRestoreHook = async ({ client, database, item }) => {
+  await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
+  for (const day of await journalDaysOf(client, database, item.id)) await enqueueJournalInboxRecompute(client, day);
+};
+
+/**
+ * An Inbox entry created: the document of each Journal day its `journalDay` edges point at when this
+ * hook runs. Registered before the Inbox owner's create hook (domainWriteHooks.ts), it finds no edge
+ * for an ordinary capture: that owner hook then writes the `journalDay` edge, whose edge-changed hook
+ * queues the day's document, and queues the day's recompute itself.
+ */
+export const itemSearchInboxCreateHook: ItemCreateHook = async ({ client, database, item }) => {
+  for (const day of await journalDaysOf(client, database, item.id))
+    await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
+};
+
+/** An Inbox entry changed: the Journal day's document, and the owner's recompute of the day's cached entries. */
 export const itemSearchInboxUpdateHook: ItemUpdateHook = async ({ client, database, item }) => {
-  await enqueueJournalDayOf(client, database, item.id);
+  for (const day of await journalDaysOf(client, database, item.id)) {
+    await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
+    await enqueueJournalInboxRecompute(client, day);
+  }
 };
