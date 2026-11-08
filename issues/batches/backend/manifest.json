@@ -3518,8 +3518,8 @@
       "sequence": 36,
       "status": "proposed",
       "title": "[backend-delivery 36/74] Implement data/manifest, data/auth, data/library changes",
-      "bodyCharacters": 55429,
-      "specSha256": "95b575501065976d961b6fd01969f6173151d2d5df3145b2aae2c0746c635fb8",
+      "bodyCharacters": 57952,
+      "specSha256": "ea829a9631e43101936f126e3b9c4031ef98d3c5fd9f543a7786c31e70d4cfd3",
       "members": [
         {
           "id": "gh-1660",
@@ -3552,7 +3552,7 @@
         },
         {
           "id": "gh-1645",
-          "specSha256": "59f97be4b06f9c50dadee507d2d714aa2bbd05e92252dd93cd6b7faa2f1df051",
+          "specSha256": "df30c0eb9a112a278b70440be58bd488860801bae755a4c907b8ec6debef695a",
           "parent": "gh-1346",
           "dependencies": [
             "gh-1642"
@@ -3570,7 +3570,7 @@
         },
         {
           "id": "gh-1739",
-          "specSha256": "90acce3e7849fc5ba7d8099cf7702b376877fa1bed73dcdef2adf2510cda9dcb",
+          "specSha256": "630f9028ea0051e50c701c4483ccff41fece99986ee000db39033a964c2585a7",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1454",
@@ -3580,7 +3580,7 @@
         },
         {
           "id": "gh-1745",
-          "specSha256": "4d8e7fc21659220e960334e87336902f9997466138f2867bd12faa62713339ed",
+          "specSha256": "49903e3d5613b134addfb54026c406614b68f86e1573ff4eb872529bcb6f5e95",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1739"
