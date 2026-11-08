@@ -235,17 +235,10 @@ describe("the fileCompaniesFromProjects link rule (issue #1653)", () => {
     expect(await valueLinkRows(file)).toEqual([]);
   });
 
-  it("leaves a file whose projects have no company empty and without a link", async () => {
+  it("leaves a file whose projects have no company empty", async () => {
     const lone = await item(ids.projects, "Garden");
     const file = await item(ids.files, "Sketch");
     await link(ids.fileProjects, file, lone);
-    expect(await fileCompanies(file)).toEqual([]);
-    expect(await valueLinkRows(file)).toEqual([]);
-
-    // Without a link, a company given to the project later does not reach the file either.
-    const company = await item(ids.companies, "Later s.r.o.");
-    await link(ids.projectCompany, lone, company);
-    await runPropagation();
     expect(await fileCompanies(file)).toEqual([]);
   });
 

@@ -49,8 +49,6 @@ export async function linkRuleEdgeHook(context: RelationEdgeChangedHookContext):
       if (!link) {
         if ((await readTargetValues(context.client, resolved, targetId)).length > 0) continue;
         const values = await sourceUnion(context.client, resolved, [sourceId]);
-        // A source without a value has nothing to hand over: the target stays empty and gets no link (issue #1653).
-        if (values.length === 0) continue;
         if (!targetIsMany(resolved) && values.length > 1) continue;
         link = (
           await insertValueLink(context.client, {

@@ -3380,7 +3380,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             message: "Revised",
             entityKind: "database",
             target: eventsId,
-            properties: { name: "Meeting" },
+            properties: { name: "Meeting", date: "2024-03-01" },
           }),
         );
         await confirm(cardId);

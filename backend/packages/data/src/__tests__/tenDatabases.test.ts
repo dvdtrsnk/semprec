@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import "../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -97,11 +98,15 @@ describe("ten hardcoded databases (issue #24)", () => {
       [projectsId],
     );
     expect(propRows).toHaveLength(1);
-    await chokePoint.createRelation({
-      relationPropertyId: propRows[0].id,
-      callerItemId: project.id,
-      targetItemId: company.id,
-    });
+    // Projects.company is the source of the fileCompaniesFromProjects link rule (issue #1653), whose propagation is
+    // queued in the writer's tenant, so the write runs in the tenant scope every production write has.
+    await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createRelation({
+        relationPropertyId: propRows[0].id,
+        callerItemId: project.id,
+        targetItemId: company.id,
+      }),
+    );
 
     // the inverse ("Companies -> Projects") side exists too and is queryable from the company's item
     const { rows: inverseProp } = await pool.query(
@@ -275,7 +280,10 @@ describe("ten hardcoded databases (issue #24)", () => {
   it("task recurrence does not carry an Events -> Tasks actionItems edge to the next instance (issue #1673)", async () => {
     const tasksId = await databaseIdFor("tasks");
     const eventsId = await databaseIdFor("events");
-    const event = await chokePoint.createItem({ databaseId: eventsId, properties: { name: "Standup" } });
+    const event = await chokePoint.createItem({
+      databaseId: eventsId,
+      properties: { name: "Standup", date: "2026-10-16" },
+    });
     const task = await chokePoint.createItem({
       databaseId: tasksId,
       properties: { name: "Follow up", status: "notDone", date: "2026-08-24" },
