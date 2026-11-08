@@ -1684,40 +1684,106 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     return row.revoked_at;
   }
 
-  async function openSocket(token: string): Promise<{ socket: WebSocket; closed: Promise<number> }> {
-    const socket = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${token}` } });
-    const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code)));
+  interface OpenedSocket {
+    socket: WebSocket;
+    /** The close code, and the closed session's `revoked_at` read the moment the close arrived. */
+    closed: Promise<{ code: number; sessionRevokedAt: Date | null }>;
+  }
+
+  async function sessionRevokedAt(sessionId: string): Promise<Date | null> {
+    const { rows } = await pool.query<{ revoked_at: Date | null }>("SELECT revoked_at FROM sessions WHERE id = $1", [
+      sessionId,
+    ]);
+    const row = rows[0];
+    if (!row) throw new Error("session not found");
+    return row.revoked_at;
+  }
+
+  /**
+   * Opens a sync socket for one session and records it in `opened` before waiting for it to open, so a case's
+   * cleanup ends every socket it started, including one whose opening failed.
+   */
+  async function openSocket(
+    session: { token: string; sessionId: string },
+    opened: OpenedSocket[],
+  ): Promise<OpenedSocket> {
+    const socket = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${session.token}` } });
+    const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code))).then(
+      async (code) => ({ code, sessionRevokedAt: await sessionRevokedAt(session.sessionId) }),
+    );
+    // Read by the case, or by the cleanup; observed here too, so a failed read is never an unhandled rejection.
+    closed.catch(() => undefined);
+    const entry = { socket, closed };
+    opened.push(entry);
     await new Promise<void>((resolve, reject) => {
       socket.once("open", () => resolve());
       socket.once("error", reject);
     });
-    return { socket, closed };
+    return entry;
   }
 
-  it("keeps only the calling session: 200 with the count, 401 for the others, their pushes revoked and sockets closed with 4401", async () => {
+  /** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+  async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+    });
+    try {
+      return await Promise.race([work, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  it("keeps only the calling session: 200 with the count, 401 for the others, their pushes revoked and both other sockets closed with 4401 after the commit", async () => {
     const user = await makeUser("caller@example.com");
     const caller = await signIn(user.email);
     const others = [await signIn(user.email), await signIn(user.email)];
     const callerRegistration = await registration(user.id, caller.sessionId);
     const otherRegistrations = await Promise.all(others.map((other) => registration(user.id, other.sessionId)));
-    const callerSocket = await openSocket(caller.token);
-    const otherSocket = await openSocket(others[0]!.token);
+    const opened: OpenedSocket[] = [];
+    let primary: { error: unknown } | undefined;
     try {
+      const callerSocket = await openSocket(caller, opened);
+      const otherSockets: OpenedSocket[] = [];
+      for (const other of others) otherSockets.push(await openSocket(other, opened));
+
       const res = await revokeOthers(caller.token);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ revokedCount: 2 });
 
-      expect(await otherSocket.closed).toBe(4401);
+      for (const other of otherSockets) {
+        const closed = await within(other.closed, 10_000, "A revoked session's socket close");
+        expect(closed.code).toBe(4401);
+        // Closed after the revocation committed: the row already reads as revoked when the close arrives.
+        expect(closed.sessionRevokedAt).toBeInstanceOf(Date);
+      }
       expect(await sessionStatus(caller.token)).toBe(200);
       for (const other of others) expect(await sessionStatus(other.token)).toBe(401);
       for (const id of otherRegistrations) expect(await revokedAt(id)).toBeInstanceOf(Date);
       expect(await revokedAt(callerRegistration)).toBeNull();
+      expect(await sessionRevokedAt(caller.sessionId)).toBeNull();
       expect(callerSocket.socket.readyState).toBe(WebSocket.OPEN);
-    } finally {
-      callerSocket.socket.terminate();
-      otherSocket.socket.terminate();
-      await Promise.all([callerSocket.closed, otherSocket.closed]);
+    } catch (error) {
+      primary = { error };
     }
+    const failures: unknown[] = [];
+    for (const { socket, closed } of opened) {
+      try {
+        socket.terminate();
+        await within(closed, 5_000, "A terminated socket's close");
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (primary && failures.length > 0) {
+      throw new AggregateError([primary.error, ...failures], "The case and its cleanup failed", {
+        cause: primary.error,
+      });
+    }
+    if (primary) throw primary.error;
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "The case's socket cleanup failed");
   });
 
   it("never revokes another user's sessions, and answers 0 when the caller has no other session", async () => {
