@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -781,18 +781,35 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     expect(lifecycleErrors).toEqual([]);
   });
 
-  it("reads the configuration's formats and key file, naming the key that is wrong and never its value", async () => {
-    const key = await writeServiceAccountKey(ownDirectory());
+  it("reads the configuration's formats and key file, naming the key and a fixed category, never a value", async () => {
+    const directory = ownDirectory();
+    const key = await writeServiceAccountKey(directory);
     const complete = {
       GMAIL_PUBSUB_TOPIC: TOPIC,
       GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
       GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
     };
-    const notAKey = join(ownDirectory(), "not-a-key.json");
-    await writeFile(
-      notAKey,
-      JSON.stringify({ type: "service_account", client_email: SERVICE_ACCOUNT_EMAIL, private_key: "secret-garbage" }),
+    const keyFile = async (name: string, privateKey: string) => {
+      const path = join(directory, name);
+      await writeFile(
+        path,
+        JSON.stringify({ type: "service_account", client_email: SERVICE_ACCOUNT_EMAIL, private_key: privateKey }),
+      );
+      return path;
+    };
+    const garbage = await keyFile("garbage.json", "secret-garbage");
+    const publicOnly = await keyFile(
+      "public.json",
+      generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" }).toString(),
     );
+    const ecKey = await keyFile(
+      "ec.json",
+      generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    );
+    const notJson = join(directory, "not-json.json");
+    await writeFile(notJson, "secret-garbage");
+    const notAKeyReason = "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not a service account key";
+    const withPath = (path: string) => ({ ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: path });
     const cases: [Record<string, string>, string][] = [
       [
         { ...complete, GMAIL_PUBSUB_TOPIC: "topics/gmail" },
@@ -802,14 +819,14 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         { ...complete, GMAIL_PUBSUB_SUBSCRIPTION: TOPIC },
         "GMAIL_PUBSUB_SUBSCRIPTION is not projects/<project>/subscriptions/<subscription>",
       ],
-      [
-        { ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(ownDirectory(), "absent.json") },
-        "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH cannot be read (ENOENT)",
-      ],
-      [
-        { ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: notAKey },
-        "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not a service account key",
-      ],
+      [withPath(join(directory, "absent.json")), "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH does not exist"],
+      [withPath(join(key.path, "beneath-a-file.json")), "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH does not exist"],
+      [withPath(directory), "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is a directory"],
+      [withPath("key\0.json"), "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not a valid path"],
+      [withPath(notJson), notAKeyReason],
+      [withPath(garbage), notAKeyReason],
+      [withPath(publicOnly), notAKeyReason],
+      [withPath(ecKey), notAKeyReason],
       [{ ...complete, GMAIL_PUBSUB_TOPIC: "" }, "missing GMAIL_PUBSUB_TOPIC"],
     ];
     for (const [env, reason] of cases) {
@@ -817,6 +834,167 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     }
     const loaded = await loadGmailPubSubConfig(complete);
     expect(loaded.config).toMatchObject({ topicName: TOPIC, subscriptionName: SUBSCRIPTION });
+  });
+
+  it("propagates an unexpected key file read failure as it is rather than reporting a missing configuration", async () => {
+    const directory = ownDirectory();
+    // Two symlinks pointing at each other: the read fails with ELOOP, which is not a configuration category.
+    await symlink(join(directory, "loop-b"), join(directory, "loop-a"));
+    await symlink(join(directory, "loop-a"), join(directory, "loop-b"));
+    const failure = await loadGmailPubSubConfig({
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(directory, "loop-a"),
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({ code: "ELOOP" });
+  });
+
+  it("settles every failed token response, keeps its own failure first, and caches no failure", async () => {
+    const key = await writeServiceAccountKey(ownDirectory());
+    const loaded = await loadGmailPubSubConfig({
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
+    });
+    if (!loaded.config) throw new Error(loaded.reason);
+    const config = loaded.config;
+    const cancelled: string[] = [];
+    const readFailure = new Error("synthetic socket reset");
+    const cancelFailure = new Error("synthetic cancel failure");
+    const releaseFailure = new Error("synthetic release failure");
+
+    /** A body stream that yields `chunks`, then ends or fails with `fail`; it records each cancel and can fail it. */
+    function body(
+      chunks: string[],
+      options: { fail?: unknown; cancelFails?: boolean } = {},
+    ): ReadableStream<Uint8Array> {
+      let index = 0;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks[index];
+          index += 1;
+          if (chunk !== undefined) controller.enqueue(new TextEncoder().encode(chunk));
+          else if (options.fail !== undefined) controller.error(options.fail);
+          else controller.close();
+        },
+        cancel() {
+          cancelled.push("cancel");
+          if (options.cancelFails) throw cancelFailure;
+        },
+      });
+    }
+    /** A response whose body hands out a reader that reads normally but fails to release its lock. */
+    function unreleasable(text: string): Response {
+      const stream = body([text]);
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, "body", {
+        value: {
+          getReader() {
+            const reader = stream.getReader();
+            return {
+              read: () => reader.read(),
+              cancel: (reason?: unknown) => reader.cancel(reason),
+              releaseLock: () => {
+                throw releaseFailure;
+              },
+            };
+          },
+        },
+      });
+      return response;
+    }
+    const good = () => new Response(JSON.stringify({ access_token: "pubsub-token-good", expires_in: 30 }));
+    const oversized = "x".repeat(40 * 1024);
+    const answers: (() => Response)[] = [
+      () => new Response(body(['{"error":"backend","access_token":"leaked-token"}']), { status: 503 }),
+      good,
+      () => new Response(body(["{}"], { cancelFails: true }), { status: 500 }),
+      good,
+      () => new Response(body([oversized, oversized, oversized, oversized])),
+      good,
+      () => new Response(body([oversized, oversized, oversized, oversized], { cancelFails: true })),
+      good,
+      () => new Response(body(['{"access_token":'], { fail: readFailure })),
+      good,
+      () => new Response(body(["not json: leaked-token"])),
+      good,
+      () => new Response(body([JSON.stringify({ token: "leaked-token" })])),
+      good,
+      () => unreleasable(JSON.stringify({ access_token: "pubsub-token-unsettled", expires_in: 3600 })),
+      good,
+    ];
+    let exchanges = 0;
+    stubProviders({
+      [`POST ${GOOGLE_TOKEN}`]: () => {
+        const answer = answers[exchanges];
+        exchanges += 1;
+        if (!answer) throw new Error("no further token answer");
+        return answer();
+      },
+    });
+    const outcome = () =>
+      config.getPubSubAccessToken().then(
+        (token) => ({ token }),
+        (error: unknown) => ({ error }),
+      );
+
+    const nonOk = await outcome();
+    expect(nonOk).toEqual({ error: new Error("The Pub/Sub token request failed with status 503") });
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    const nonOkCancelFails = await outcome();
+    if (!("error" in nonOkCancelFails) || !(nonOkCancelFails.error instanceof AggregateError)) {
+      throw new Error("expected an AggregateError");
+    }
+    expect(nonOkCancelFails.error.message).toBe("The Pub/Sub token request failed with status 500");
+    expect(nonOkCancelFails.error.errors).toEqual([
+      new Error("The Pub/Sub token request failed with status 500"),
+      cancelFailure,
+    ]);
+    expect(nonOkCancelFails.error.cause).toBe(nonOkCancelFails.error.errors[0]);
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    expect(await outcome()).toEqual({ error: new Error("The Pub/Sub token response exceeded its size cap") });
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    const oversizedCancelFails = await outcome();
+    if (!("error" in oversizedCancelFails) || !(oversizedCancelFails.error instanceof AggregateError)) {
+      throw new Error("expected an AggregateError");
+    }
+    expect(oversizedCancelFails.error.errors).toEqual([
+      new Error("The Pub/Sub token response exceeded its size cap"),
+      cancelFailure,
+    ]);
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    const readFails = await outcome();
+    expect("error" in readFails && readFails.error).toBe(readFailure);
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    expect(await outcome()).toEqual({ error: new Error("The Pub/Sub token response is not a token") });
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+    expect(await outcome()).toEqual({ error: new Error("The Pub/Sub token response is not a token") });
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    const unsettled = await outcome();
+    if (!("error" in unsettled) || !(unsettled.error instanceof AggregateError)) {
+      throw new Error("expected an AggregateError");
+    }
+    expect(unsettled.error.errors).toEqual([
+      new Error("The Pub/Sub token response could not be settled"),
+      releaseFailure,
+    ]);
+    // The token of a response that could not be settled is not cached: the next call exchanges again.
+    expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+    expect(exchanges).toBe(answers.length);
+    // The 503 and 500 bodies were never read and were cancelled, as were both oversized bodies.
+    expect(cancelled).toEqual(["cancel", "cancel", "cancel", "cancel"]);
+    expect(JSON.stringify([nonOk, nonOkCancelFails, readFails, unsettled])).not.toContain("leaked-token");
   });
 
   it("caches the service-account token until shortly before it expires, retries after a failure, and leaks neither key nor token", async () => {
