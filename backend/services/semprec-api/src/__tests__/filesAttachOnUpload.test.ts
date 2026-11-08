@@ -930,14 +930,28 @@ describe("attach uploads to a task through the shared upload headers (issue #165
 });
 
 describe("attach reservations never wait while the upload holds its blob (batch 36 D1)", () => {
+  /** The lock-only statement for each table a holder may hold a row of; constant SQL, the id bound. */
+  const HOLD_ROW = {
+    items: "SELECT id FROM items WHERE id = $1 FOR UPDATE",
+    blobs: "SELECT id FROM blobs WHERE id = $1 FOR UPDATE",
+  } as const;
+
   /** A lock-only admin transaction holding one item row `FOR UPDATE` until `end` commits it. */
-  async function holdItem(itemId: string): Promise<{ end: () => Promise<void> }> {
+  async function holdItem(itemId: string): Promise<{ end: () => Promise<void>; pid: number }> {
+    return holdRow("items", itemId);
+  }
+
+  /** A lock-only admin transaction holding one row of `table` `FOR UPDATE` until `end` commits it. */
+  async function holdRow(table: keyof typeof HOLD_ROW, id: string): Promise<{ end: () => Promise<void>; pid: number }> {
     const holder = await admin.connect();
     let open = false;
+    let pid: number | undefined;
     try {
       await holder.query("BEGIN");
       open = true;
-      const held = await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [itemId]);
+      pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("no holder pid");
+      const held = await holder.query(HOLD_ROW[table], [id]);
       expect(held.rowCount).toBe(1);
     } catch (error) {
       let destroyWith: Error | undefined;
@@ -953,6 +967,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     }
     let ended = false;
     return {
+      pid,
       end: async () => {
         if (ended) return;
         ended = true;
@@ -965,6 +980,59 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         holder.release();
       },
     };
+  }
+
+  /** How long a holder case waits for the refusal a NOWAIT reservation gives at once; well inside the case timeout. */
+  const REFUSAL_MS = 5_000;
+  /** How long a request is given to finish once its holder has ended. */
+  const DRAIN_MS = 10_000;
+
+  /**
+   * Runs `observe` on `request`, a request already observed (`outcomeOf`) and started while `holder` holds a row.
+   * Whatever `observe` does, the holder is ended first, so a request waiting on its row can go on, and the request
+   * is then drained within `DRAIN_MS`. The case's own failure stays first; holder and drain failures follow it.
+   */
+  async function whileHeld<T>(
+    holder: { end: () => Promise<void> },
+    request: Promise<Outcome<Answer>>,
+    observe: (request: Promise<Outcome<Answer>>) => Promise<T>,
+  ): Promise<T> {
+    let primary: { error: unknown } | undefined;
+    let result: { value: T } | undefined;
+    try {
+      result = { value: await observe(request) };
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    try {
+      await holder.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      const drained = await within(request, DRAIN_MS, "The request after its holder ended");
+      if (!drained.ok && !(primary && primary.error === drained.error)) failures.push(drained.error);
+    } catch (error) {
+      failures.push(error);
+    }
+    settle(primary, failures);
+    if (!result) throw new Error("The held request's observation returned nothing");
+    return result.value;
+  }
+
+  /** The answer of a request with no holder, observed at once and awaited within `DRAIN_MS`. */
+  async function answerOf(request: Promise<Answer>, what: string): Promise<Answer> {
+    const outcome = await within(outcomeOf(request), DRAIN_MS, what);
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /** The refusal a held reservation gives, awaited within `REFUSAL_MS`. */
+  async function refusal(request: Promise<Outcome<Answer>>): Promise<Answer> {
+    const outcome = await within(request, REFUSAL_MS, "The upload refused while its row is held");
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
   }
 
   it("answers 409 upload_attach_conflict and rolls back while a PATCH holds the Files item and waits on the upload's blob, then the PATCH commits", async () => {
@@ -1077,21 +1145,9 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       const marked = invalidations.length;
 
       const holder = await holdItem(holdTarget ? record : file.id);
-      let primary: { error: unknown } | undefined;
-      let refused: Answer | undefined;
-      try {
-        refused = await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" });
-      } catch (error) {
-        primary = { error };
-      }
-      const failures: unknown[] = [];
-      try {
-        await holder.end();
-      } catch (error) {
-        failures.push(error);
-      }
-      settle(primary, failures);
-      if (!refused) throw new Error("no answer");
+      // Observed at once, before any await, so it is drained whatever happens while the row is held.
+      const request = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+      const refused = await whileHeld(holder, request, refusal);
 
       expect(refused.status).toBe(409);
       expect(conflictCode(refused, [file.id, record])).toBe("upload_attach_conflict");
@@ -1100,7 +1156,10 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       expect(invalidations.slice(marked)).toEqual([]);
 
       // Not retried by the server: the caller's new, complete request is what succeeds.
-      const retried = await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" });
+      const retried = await answerOf(
+        upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }),
+        "The new request after the holder ended",
+      );
       expect(retried.status, retried.text).toBe(200);
       expect(itemBody.parse(JSON.parse(retried.text)).id).toBe(file.id);
       expect(await linked(a, file.id, "healthRecords")).toEqual([record]);
@@ -1112,38 +1171,62 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     const before = await storedState(a);
     const jobsBefore = await queuedJobs();
     const holder = await holdItem(record);
-    let primary: { error: unknown } | undefined;
-    let refused: Answer | undefined;
-    try {
-      refused = await upload(a, {
-        body: PDF("new to a held target"),
-        targetItemId: record,
-        relationKey: "healthRecords",
-      });
-    } catch (error) {
-      primary = { error };
-    }
-    const failures: unknown[] = [];
-    try {
-      await holder.end();
-    } catch (error) {
-      failures.push(error);
-    }
-    settle(primary, failures);
-    if (!refused) throw new Error("no answer");
+    // Observed at once, before any await, so it is drained whatever happens while the row is held.
+    const request = outcomeOf(
+      upload(a, { body: PDF("new to a held target"), targetItemId: record, relationKey: "healthRecords" }),
+    );
+    const refused = await whileHeld(holder, request, refusal);
     expect(refused.status).toBe(409);
     expect(conflictCode(refused, [record])).toBe("upload_attach_conflict");
     // The new Files item and its blob rolled back, and its streamed bytes were deleted.
     expect(await storedState(a)).toEqual(before);
     expect(await queuedJobs()).toEqual(jobsBefore);
 
-    const retried = await upload(a, {
-      body: PDF("new to a held target"),
-      targetItemId: record,
-      relationKey: "healthRecords",
-    });
+    const retried = await answerOf(
+      upload(a, { body: PDF("new to a held target"), targetItemId: record, relationKey: "healthRecords" }),
+      "The new request after the holder ended",
+    );
     expect(retried.status, retried.text).toBe(201);
     expect(await linked(a, itemBody.parse(JSON.parse(retried.text)).id, "healthRecords")).toEqual([record]);
+  });
+
+  it("ends the holder and drains a request still waiting on the held row when the observation fails early, keeping that failure", async () => {
+    // A request that really waits: an upload of an existing file's bytes waits on that file's held blob row.
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const bytes = PDF("waits on a held blob");
+    const file = itemBody.parse(JSON.parse((await answerOf(upload(a, { body: bytes }), "The fixture upload")).text));
+    const holder = await holdRow("blobs", await onlyBlobId(a));
+    const request = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+    let settledWhenHeld: boolean | undefined;
+    let settled = false;
+    // `request` never rejects (outcomeOf), so this observer cannot either; it is awaited below.
+    const marking = request.then(() => {
+      settled = true;
+    });
+    const early = new Error("The case's observation failed while the request was waiting");
+
+    const thrown = await whileHeld(holder, request, async () => {
+      // The request waits on the holder's row, correlated through pg_blocking_pids.
+      await pollFor(async () => ((await waitersOn(holder.pid)).size === 1 ? true : undefined), "The waiting upload");
+      settledWhenHeld = settled;
+      throw early;
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const settledWhenReturned = settled;
+    await marking;
+
+    // The case's own failure, as it was thrown, and nothing appended: the holder ended and the request drained.
+    expect(thrown).toBe(early);
+    expect(settledWhenHeld).toBe(false);
+    expect(settledWhenReturned).toBe(true);
+    expect((await waitersOn(holder.pid)).size).toBe(0);
+    const outcome = await request;
+    if (!outcome.ok) throw outcome.error;
+    // Released, the request completed as an ordinary deduplicated attach.
+    expect(outcome.value.status).toBe(200);
+    expect(await linked(a, file.id, "healthRecords")).toEqual([record]);
   });
 
   it.each([

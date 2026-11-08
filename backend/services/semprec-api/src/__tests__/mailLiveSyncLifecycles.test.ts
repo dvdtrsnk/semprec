@@ -278,6 +278,118 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   expect(await check()).toBe(true);
 }
 
+/** How long a case waits for one token-owner outcome it drives, well inside the case timeout. */
+const OWNER_MS = 5_000;
+/** How long the cleanup waits for every started token-owner outcome once held provider work is released. */
+const OWNER_DRAIN_MS = 5_000;
+
+/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type OwnerOutcome = { token: string } | { error: unknown };
+
+/**
+ * The held token-provider work of one case, each piece recorded when it is created: every token-owner outcome the
+ * case starts, every fake fetch it holds open (with its own release handle and abort listener), every response
+ * stream it serves (by its controller) and every stream pull or cancel promise it holds. `release` frees all of it
+ * without waiting for any production deadline, then drains every owner outcome.
+ */
+function heldProviders() {
+  const owners: Promise<OwnerOutcome>[] = [];
+  const fetches: { reject: (error: Error) => void; removeListener: () => void }[] = [];
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const holds: (() => void)[] = [];
+  const releasedError = new Error("Released by the case's cleanup");
+  const hold = () => new Promise<void>((resolve) => holds.push(resolve));
+  return {
+    releasedError,
+    /** Starts one token-owner call and records its outcome, which never rejects. */
+    owner(start: () => Promise<string>): Promise<OwnerOutcome> {
+      const outcome = start().then(
+        (token): OwnerOutcome => ({ token }),
+        (error: unknown): OwnerOutcome => ({ error }),
+      );
+      owners.push(outcome);
+      return outcome;
+    },
+    /** A fetch answer that settles only when its request is aborted or the cleanup releases it. */
+    heldFetch(request: Request, onHeld: () => void): Promise<Response> {
+      return new Promise<Response>((_resolve, reject) => {
+        const onAbort = () => {
+          const reason: unknown = request.signal.reason;
+          reject(reason instanceof Error ? reason : new Error("The held fetch was aborted without an Error reason"));
+        };
+        request.signal.addEventListener("abort", onAbort, { once: true });
+        fetches.push({ reject, removeListener: () => request.signal.removeEventListener("abort", onAbort) });
+        onHeld();
+      });
+    },
+    /** A response whose body stream is recorded; its pull (when `onPull` is given) and its cancel are held. */
+    heldStream(options: { onPull?: () => void; onCancel?: () => void; status?: number }): Response {
+      const onPull = options.onPull;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            streams.push(controller);
+          },
+          ...(onPull
+            ? {
+                pull: () => {
+                  onPull();
+                  return hold();
+                },
+              }
+            : {}),
+          cancel: () => {
+            options.onCancel?.();
+            return hold();
+          },
+        }),
+        options.status === undefined ? undefined : { status: options.status },
+      );
+    },
+    /**
+     * Rejects every held fetch and removes its abort listener, errors every served stream (a no-op for one already
+     * closed, errored or cancelled), resolves every held pull and cancel, and only then waits for every started owner
+     * outcome within `drainMs`. Each step is attempted whatever an earlier one did; an outcome still pending is a
+     * failure, never a settlement.
+     */
+    async release(drainMs = OWNER_DRAIN_MS): Promise<void> {
+      const failures: unknown[] = [];
+      const attempt = (step: () => void) => {
+        try {
+          step();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
+      for (const held of fetches) {
+        attempt(() => held.reject(releasedError));
+        attempt(() => held.removeListener());
+      }
+      for (const controller of streams) attempt(() => controller.error(releasedError));
+      for (const resolve of holds) attempt(() => resolve());
+      try {
+        await within(Promise.all(owners), drainMs, "A token-owner outcome after its provider work was released");
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Releasing held provider work failed");
+    },
+  };
+}
+
 describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -1028,52 +1140,31 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       const reason: unknown = entry.controller.signal.reason;
       return reason;
     };
-    // Every deliberately held provider promise, settled by this case before it ends, whatever happens.
-    const held: (() => void)[] = [];
-    function holding(): Promise<void> {
-      return new Promise<void>((resolve) => held.push(resolve));
-    }
+    const providers = heldProviders();
     let fetchHeld = false;
     let readHeld = false;
     let cancelHeld = false;
     const good = () => new Response(JSON.stringify({ access_token: "pubsub-token-good", expires_in: 30 }));
     const answers: ((request: Request) => Response | Promise<Response>)[] = [
       (request) =>
-        new Promise<Response>((_resolve, reject) => {
+        providers.heldFetch(request, () => {
           fetchHeld = true;
-          request.signal.addEventListener(
-            "abort",
-            () => {
-              const reason: unknown = request.signal.reason;
-              reject(
-                reason instanceof Error ? reason : new Error("The held fetch was aborted without an Error reason"),
-              );
-            },
-            { once: true },
-          );
         }),
       good,
       () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            pull: () => {
-              readHeld = true;
-              return holding();
-            },
-            cancel: () => holding(),
-          }),
-        ),
+        providers.heldStream({
+          onPull: () => {
+            readHeld = true;
+          },
+        }),
       good,
       () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            cancel: () => {
-              cancelHeld = true;
-              return holding();
-            },
-          }),
-          { status: 500 },
-        ),
+        providers.heldStream({
+          onCancel: () => {
+            cancelHeld = true;
+          },
+          status: 500,
+        }),
       good,
     ];
     let exchanges = 0;
@@ -1085,21 +1176,31 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         return answer(request);
       },
     });
-    const outcome = () =>
-      config.getPubSubAccessToken().then(
-        (token) => ({ token }),
-        (error: unknown) => ({ error }),
+    // Every owner outcome is recorded by the harness when it starts and awaited here within a bound.
+    const outcome = (what: string) =>
+      within(
+        providers.owner(() => config.getPubSubAccessToken()),
+        OWNER_MS,
+        what,
       );
     let primary: { error: unknown } | undefined;
     try {
-      const fetching = outcome();
+      const fetching = within(
+        providers.owner(() => config.getPubSubAccessToken()),
+        OWNER_MS,
+        "The owner of the held fetch",
+      );
       await waitFor(async () => fetchHeld);
       const fetchReason = expire(0);
       const fetchFailed = await fetching;
       expect("error" in fetchFailed && fetchFailed.error).toBe(fetchReason);
-      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+      expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
 
-      const reading = outcome();
+      const reading = within(
+        providers.owner(() => config.getPubSubAccessToken()),
+        OWNER_MS,
+        "The owner of the held body read",
+      );
       await waitFor(async () => readHeld);
       const readReason = expire(2);
       const readFailed = await reading;
@@ -1111,9 +1212,13 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         new Error("The Pub/Sub token response was not settled before its deadline"),
       );
       expect(readFailed.error.cause).toBe(readReason);
-      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+      expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
 
-      const cancelling = outcome();
+      const cancelling = within(
+        providers.owner(() => config.getPubSubAccessToken()),
+        OWNER_MS,
+        "The owner of the held cancellation",
+      );
       await waitFor(async () => cancelHeld);
       expire(4);
       const cancelFailed = await cancelling;
@@ -1126,16 +1231,72 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       ]);
       expect(cancelFailed.error.cause).toBe(cancelFailed.error.errors[0]);
       // No failure was cached: every later call exchanged again and succeeded.
-      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+      expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
       expect(exchanges).toBe(answers.length);
       expect(deadlines.map((deadline) => deadline.ms)).toEqual(answers.map(() => 15_000));
     } catch (error) {
       primary = { error };
     }
-    await settleAll(
-      primary,
-      held.map((settle) => () => settle()),
+    // Every held fetch, stream and stream promise is released, then every started owner outcome drained, before
+    // afterEach restores the globals and the spy.
+    await settleAll(primary, [() => providers.release()]);
+  });
+
+  it("releases a held fetch and drains its real token owner when the case fails before any deadline, keeping that failure", async () => {
+    const key = await writeServiceAccountKey(ownDirectory());
+    const loaded = await loadGmailPubSubConfig({
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
+    });
+    if (!loaded.config) throw new Error(loaded.reason);
+    const config = loaded.config;
+    // A deadline that never expires: nothing below relies on the production deadline to free the held fetch.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
+    const providers = heldProviders();
+    let fetchHeld = false;
+    stubProviders({
+      [`POST ${GOOGLE_TOKEN}`]: (request) =>
+        providers.heldFetch(request, () => {
+          fetchHeld = true;
+        }),
+    });
+    const owner = providers.owner(() => config.getPubSubAccessToken());
+    const early = new Error("The case's observation failed while the fetch was held");
+    let primary: { error: unknown } | undefined;
+    try {
+      await waitFor(async () => fetchHeld);
+      throw early;
+    } catch (error) {
+      primary = { error };
+    }
+    const thrown = await settleAll(primary, [() => providers.release()]).then(
+      () => null,
+      (error: unknown) => error,
     );
+    expect(thrown).toBe(early);
+    // The real owner settled with the release, not with a deadline.
+    expect(await within(owner, OWNER_MS, "The released owner")).toEqual({ error: providers.releasedError });
+  });
+
+  it("reports an owner outcome that never settles as an unsettled failure after the case's own", async () => {
+    const providers = heldProviders();
+    // A synthetic owner that never settles, standing for a regressed one; it holds no resource.
+    const stuck = providers.owner(() => new Promise<string>(() => {}));
+    const early = new Error("The case's own failure");
+    const thrown = await settleAll({ error: early }, [() => providers.release(50)]).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    if (!(thrown instanceof AggregateError)) throw new Error("expected an AggregateError");
+    expect(thrown.errors).toEqual([
+      early,
+      new Error("A token-owner outcome after its provider work was released did not settle within 50 ms"),
+    ]);
+    expect(thrown.errors[0]).toBe(early);
+    expect(thrown.cause).toBe(early);
+    // Reported as unsettled, and indeed still pending: no settlement was claimed for it.
+    expect(await Promise.race([stuck.then(() => "settled"), Promise.resolve("pending")])).toBe("pending");
   });
 
   it("settles every failed token response, keeps its own failure first, and caches no failure", async () => {

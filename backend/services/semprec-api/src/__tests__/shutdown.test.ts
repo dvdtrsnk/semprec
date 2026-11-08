@@ -385,13 +385,13 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     const order: string[] = [];
     let listeningAtDispatcherStop: boolean | undefined;
     let poolEndedAtRootStop: boolean | undefined;
-    let shutdownStarted = false;
+    // Set only once the graceful shutdown has completed, and so closed the servers and the listener itself.
+    let shutdownCompleted = false;
     let primary: { error: unknown } | undefined;
     try {
       await dispatcher.start();
       await within(pulling, 10_000, "The held pull");
       const { logger, lines } = createCapturingLogger();
-      shutdownStarted = true;
       await createGracefulShutdown({
         server,
         tenantDeactivationListener,
@@ -422,6 +422,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         pool: dedicatedPool,
         logger,
       })("SIGTERM");
+      shutdownCompleted = true;
       expect(order).toEqual([
         "gmailPubSubDispatcher.stop",
         "gmailPubSubDispatcher.stopped",
@@ -438,16 +439,8 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     await settleAll(primary, [
       () => releasePull(),
       () => dispatcher.stop(),
-      // A case that failed before the shutdown ran closes what the shutdown would have closed.
-      async () => {
-        if (shutdownStarted) return;
-        await syncServer.close();
-        await voiceServer.close();
-        await tenantDeactivationListener.close();
-        if (server.listening) {
-          await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-        }
-      },
+      // A case whose shutdown did not complete closes what the shutdown would have closed, each on its own.
+      ...fallbackCloses({ server, syncServer, voiceServer, tenantDeactivationListener }, () => shutdownCompleted),
     ]);
     // Pulled, never dispatched, never acknowledged: Pub/Sub still holds it.
     expect(pubSub.pulls()).toBe(1);
@@ -467,7 +460,94 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     await settleAll(nextPrimary, [() => next.stop()]);
     expect(pubSub.unacknowledged.size).toBe(0);
   });
+
+  it("attempts every fallback close when the first one rejects, after the case's own failure, and none after a completed shutdown", async () => {
+    const attempted: string[] = [];
+    const first = new Error("The sync server's close failed");
+    // Scripted resources of this test alone; no production seam.
+    const resources = {
+      syncServer: {
+        close: async () => {
+          attempted.push("syncServer");
+          throw first;
+        },
+      },
+      voiceServer: {
+        close: async () => {
+          attempted.push("voiceServer");
+        },
+      },
+      tenantDeactivationListener: {
+        close: async () => {
+          attempted.push("tenantDeactivationListener");
+        },
+      },
+      server: {
+        listening: true,
+        close: (callback: (error?: Error) => void) => {
+          attempted.push("server");
+          callback();
+        },
+      },
+    };
+    const early = new Error("The case failed before its shutdown completed");
+
+    const thrown = await settleAll(
+      { error: early },
+      fallbackCloses(resources, () => false),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(attempted).toEqual(["syncServer", "voiceServer", "tenantDeactivationListener", "server"]);
+    if (!(thrown instanceof AggregateError)) throw new Error("expected an AggregateError");
+    expect(thrown.errors).toEqual([early, first]);
+    expect(thrown.errors[0]).toBe(early);
+    expect(thrown.errors[1]).toBe(first);
+    expect(thrown.cause).toBe(early);
+
+    attempted.length = 0;
+    await settleAll(
+      undefined,
+      fallbackCloses(resources, () => true),
+    );
+    expect(attempted).toEqual([]);
+  });
 });
+
+/**
+ * The fallback closes of `startServer`'s resources, one independently attempted cleanup each, in the order the
+ * graceful shutdown closes them, so one rejecting close does not skip the others. Each is skipped only once
+ * `closedByShutdown()` says the graceful shutdown completed and so closed it already; the HTTP server is also
+ * skipped when it no longer listens.
+ */
+function fallbackCloses(
+  resources: {
+    syncServer: { close(): Promise<void> };
+    voiceServer: { close(): Promise<void> };
+    tenantDeactivationListener: { close(): Promise<void> };
+    server: { listening: boolean; close(callback: (error?: Error) => void): unknown };
+  },
+  closedByShutdown: () => boolean,
+): (() => Promise<void>)[] {
+  return [
+    async () => {
+      if (!closedByShutdown()) await resources.syncServer.close();
+    },
+    async () => {
+      if (!closedByShutdown()) await resources.voiceServer.close();
+    },
+    async () => {
+      if (!closedByShutdown()) await resources.tenantDeactivationListener.close();
+    },
+    async () => {
+      if (closedByShutdown() || !resources.server.listening) return;
+      await new Promise<void>((resolve, reject) =>
+        resources.server.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  ];
+}
 
 /** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
