@@ -1,21 +1,26 @@
 // Issue #1645: the one owner of attaching an upload to an item through `POST /api/files`'s
 // `X-Attach-To-Item` and `X-Attach-Relation` headers. The target is resolved read-only before the body is
-// read, then re-checked and linked inside the upload's own ingest transaction, through the choke point's
-// relation write, so the file and its edge commit or roll back together.
-import type { PoolClient } from "pg";
-import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
+// read, then reserved, re-checked and linked inside the upload's own ingest transaction, through the choke
+// point's relation write, so the file and its edge commit or roll back together.
+// Constrained by: docs/adr/2026-11-08-upload-attach-reserves-source-and-target.md
+import { DatabaseError, type PoolClient } from "pg";
+import { getItemsByIds, lockItemByIdNowait } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getItemRelationByTuple, getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 import { normalizeRelationSides } from "../chokePoint/relationEdgeContext.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import type { ItemRow } from "../types.js";
+import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
+import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 
 const ATTACH_TO_ITEM_HEADER = "X-Attach-To-Item";
 const ATTACH_RELATION_HEADER = "X-Attach-Relation";
 
 /** A resolved attach target: the Files relation property to write and the item it leads to. */
 export interface UploadAttachTarget {
+  /** The Files database the uploaded item is filed in. */
+  filesDatabaseId: string;
   relationPropertyId: string;
   targetDatabaseId: string;
   targetItemId: string;
@@ -24,6 +29,28 @@ export interface UploadAttachTarget {
 /** The answer for an unknown, trashed or foreign target: identical for all three, naming no id. */
 function attachTargetNotFound(): NotFoundError {
   return new NotFoundError("The attach target was not found", { field: ATTACH_TO_ITEM_HEADER });
+}
+
+/**
+ * The answer when the target or the uploaded Files item is locked by another transaction at the moment this
+ * upload reserves it, and when the deduplicated Files item is gone by then: one fixed 409, naming no id. The
+ * upload is rolled back and not retried; the caller may send it again.
+ */
+function uploadAttachConflict(): ChokePointError {
+  return new ChokePointError(409, "upload_attach_conflict", "The upload could not be attached; send it again");
+}
+
+/**
+ * Reserves one item row `FOR UPDATE NOWAIT`. Only PostgreSQL's lock-not-available refusal of that statement
+ * (55P03) becomes `uploadAttachConflict`; every other error keeps its identity.
+ */
+async function reserveItemNowait(client: PoolClient, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  try {
+    return await lockItemByIdNowait(client, databaseId, itemId);
+  } catch (error) {
+    if (error instanceof DatabaseError && error.code === "55P03") throw uploadAttachConflict();
+    throw error;
+  }
 }
 
 /**
@@ -53,15 +80,25 @@ export async function resolveUploadAttachTarget(
       field: ATTACH_RELATION_HEADER,
     });
   }
-  return { relationPropertyId: relation.id, targetDatabaseId: target.databaseId, targetItemId: target.id };
+  return {
+    filesDatabaseId: input.filesDatabaseId,
+    relationPropertyId: relation.id,
+    targetDatabaseId: target.databaseId,
+    targetItemId: target.id,
+  };
 }
 
 /**
- * Links an uploaded Files item to its resolved attach target inside the ingest transaction. The target row
- * is re-read under `FOR UPDATE` (`lockItemById`), so a concurrent trash of it waits for this transaction,
- * and a target trashed or purged since the pre-check answers the same 404, which rolls the upload back. An
- * edge that already exists between the two is left as it is; otherwise `createRelationWithClient` writes it,
- * so its cardinality check and edge hooks apply and a cardinality violation keeps its 409.
+ * Links an uploaded Files item to its resolved attach target inside the ingest transaction, which already
+ * holds the item's blob `FOR UPDATE`. First the target row, then the Files item row, is reserved
+ * `FOR UPDATE NOWAIT` in its own database, never waiting while the blob is held: an item update takes its row
+ * before the blob reference lock, so a waiting reservation could close a cycle with it. Either row locked by
+ * another transaction answers `uploadAttachConflict`. Under those locks, a target trashed or purged since the
+ * pre-check answers the same 404 as an unknown one, and a Files item gone or trashed since the deduplicating
+ * lookup answers `uploadAttachConflict`. Only then is an existing edge between the two left as it is, or the
+ * edge written by `createRelationWithClient`, so its cardinality check and edge hooks apply and a cardinality
+ * violation keeps its 409. Any failure here marks the managed upload transaction rollback-only before it
+ * propagates, so a caller that catches it still commits nothing.
  */
 export async function attachUploadedFileWithClient(
   client: PoolClient,
@@ -69,22 +106,30 @@ export async function attachUploadedFileWithClient(
   fileItemId: string,
   options: { writer?: WriterIdentity; actingUserId?: string } = {},
 ): Promise<void> {
-  const locked = await lockItemById(client, target.targetDatabaseId, target.targetItemId);
-  if (!locked || locked.deletedAt) throw attachTargetNotFound();
-  const definition = await getRelationDefinitionByPropertyId(client, target.relationPropertyId);
-  if (!definition) throw new Error("The attach relation has no relation definition");
-  const { itemA, itemB } = normalizeRelationSides(
-    definition,
-    target.relationPropertyId,
-    fileItemId,
-    target.targetItemId,
-  );
-  if (await getItemRelationByTuple(client, definition.id, itemA, itemB)) return;
-  await createRelationWithClient(
-    client,
-    { relationPropertyId: target.relationPropertyId, callerItemId: fileItemId, targetItemId: target.targetItemId },
-    undefined,
-    options.writer,
-    options.actingUserId,
-  );
+  requireManagedTransaction(client);
+  try {
+    const targetRow = await reserveItemNowait(client, target.targetDatabaseId, target.targetItemId);
+    if (!targetRow || targetRow.deletedAt) throw attachTargetNotFound();
+    const fileRow = await reserveItemNowait(client, target.filesDatabaseId, fileItemId);
+    if (!fileRow || fileRow.deletedAt) throw uploadAttachConflict();
+    const definition = await getRelationDefinitionByPropertyId(client, target.relationPropertyId);
+    if (!definition) throw new Error("The attach relation has no relation definition");
+    const { itemA, itemB } = normalizeRelationSides(
+      definition,
+      target.relationPropertyId,
+      fileItemId,
+      target.targetItemId,
+    );
+    if (await getItemRelationByTuple(client, definition.id, itemA, itemB)) return;
+    await createRelationWithClient(
+      client,
+      { relationPropertyId: target.relationPropertyId, callerItemId: fileItemId, targetItemId: target.targetItemId },
+      undefined,
+      options.writer,
+      options.actingUserId,
+    );
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
 }

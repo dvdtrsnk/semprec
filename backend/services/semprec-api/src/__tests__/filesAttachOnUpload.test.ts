@@ -4,24 +4,29 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { Readable } from "node:stream";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
+  attachUploadedFileWithClient,
   createChokePoint,
   createUser,
   getDatabaseByModuleId,
   hashPassword,
+  ingestUploadedFileWithTransaction,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  resolveUploadAttachTarget,
   seedSystem,
+  setInvalidationHook,
   withTransaction,
   type BlobStorageWriter,
   type ChokePoint,
+  type InvalidationEvent,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
@@ -36,12 +41,70 @@ const moduleRegistry = await loadFullModuleRegistry();
 
 let admin: Pool;
 let pool: Pool;
+/**
+ * The dispatcher's own runtime-role pool; no other code borrows from it. Every client it opens is instrumented
+ * by `instrumentReservations`.
+ */
+let uploadPool: Pool;
 let chokePoint: ChokePoint;
 let server: Server;
 let baseUrl: string;
 let storageDir: string;
 /** Set by a test that needs to act while the upload body is streaming; released in that test's `finally`. */
 let streamingGate: { started: () => void; release: Promise<void> } | null = null;
+
+/** Armed by a test that pauses an upload at one attach reservation; one-shot, disarmed when it is reached. */
+let reservationBarrier: { itemId: string; reached: (pid: number) => void; release: Promise<void> } | null = null;
+/** The release of every barrier armed in the current test, called again by its teardown. */
+let barrierReleases: (() => void)[] = [];
+/** Every realtime invalidation this process emitted during the current test. */
+let invalidations: InvalidationEvent[] = [];
+
+/**
+ * Test-local instrumentation of the dispatcher's own pool, installed on each client it opens. When the client is
+ * about to run an attach reservation (`FOR UPDATE NOWAIT`) of the item an armed barrier names, it reports its
+ * backend pid and waits for the barrier's release, then runs that same statement with the original receiver and
+ * arguments; its result or error is the real one. Every other call is passed straight through.
+ */
+function instrumentReservations(client: PoolClient): void {
+  const original: unknown = Reflect.get(client, "query");
+  if (typeof original !== "function") throw new Error("pg client has no query method");
+  const instrumented = (...args: unknown[]): unknown => {
+    const barrier = reservationBarrier;
+    const [text, values] = args;
+    if (
+      barrier &&
+      typeof text === "string" &&
+      text.includes("FOR UPDATE NOWAIT") &&
+      Array.isArray(values) &&
+      values[1] === barrier.itemId &&
+      !args.some((arg) => typeof arg === "function")
+    ) {
+      reservationBarrier = null;
+      const pid: unknown = Reflect.get(client, "processID");
+      if (typeof pid !== "number") throw new Error("pg client has no backend pid");
+      barrier.reached(pid);
+      return barrier.release.then(() => Reflect.apply(original, client, args));
+    }
+    return Reflect.apply(original, client, args);
+  };
+  if (!Reflect.set(client, "query", instrumented)) throw new Error("Could not instrument the pg client");
+}
+
+/** Arms a one-shot barrier at the next attach reservation of `itemId`; `reached` resolves with that backend's pid. */
+function pauseAtReservationOf(itemId: string): { reached: Promise<number>; release: () => void } {
+  let reached: (pid: number) => void = () => {};
+  const arrived = new Promise<number>((resolve) => {
+    reached = resolve;
+  });
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  reservationBarrier = { itemId, reached, release: released };
+  barrierReleases.push(release);
+  return { reached: arrived, release };
+}
 
 interface TenantFixture {
   tenantId: string;
@@ -260,6 +323,41 @@ async function waitersOn(holderPid: number): Promise<Set<number>> {
   return waiting;
 }
 
+/** Every queued job, read through graphile-worker's public `jobs` view. */
+async function queuedJobs(): Promise<unknown[]> {
+  const { rows } = await admin.query<{ row: unknown }>(
+    "SELECT json_build_object('task', task_identifier, 'key', key, 'payload', payload) AS row FROM graphile_worker.jobs ORDER BY id",
+  );
+  return rows.map((row) => row.row);
+}
+
+/** Reads `probe` until it returns a value, failing after 10 s. */
+async function pollFor<T>(probe: () => Promise<T | undefined>, what: string): Promise<T> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const value = await probe();
+    if (value !== undefined) return value;
+    if (Date.now() >= deadline) throw new Error(`${what} was not observed within 10000 ms`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** The id of `tenant`'s one blob; fails when it holds none or several. */
+async function onlyBlobId(tenant: TenantFixture): Promise<string> {
+  const ids = await runInTenant(tenant.tenantId, async () =>
+    (await pool.query<{ id: string }>("SELECT id FROM blobs")).rows.map((row) => row.id),
+  );
+  const [id] = ids;
+  if (ids.length !== 1 || id === undefined) throw new Error(`expected one blob, found ${ids.length}`);
+  return id;
+}
+
+/** The upload answer's error code, with the body checked to name none of `ids`. */
+function conflictCode(answer: Answer, ids: string[]): string {
+  for (const id of ids) expect(answer.text).not.toContain(id);
+  return errorBody.parse(JSON.parse(answer.text)).error.code;
+}
+
 /** Sets a relation definition of `tenant`'s Files relation `relationKey` to one-to-one. */
 async function makeOneToOne(tenant: TenantFixture, relationKey: string): Promise<void> {
   // No writer changes a schema-locked system relation's cardinality, so the one-to-one shape a 409 needs is
@@ -281,6 +379,8 @@ beforeAll(async () => {
   admin = getTestPool();
   pool = await createRuntimeRolePool(admin, "semprec_data");
   chokePoint = createChokePoint(pool);
+  uploadPool = await createRuntimeRolePool(admin, "semprec_data");
+  uploadPool.on("connect", instrumentReservations);
 });
 
 beforeEach(async () => {
@@ -288,7 +388,9 @@ beforeEach(async () => {
   storageDir = await mkdtemp(join(tmpdir(), "semprec-attach-upload-"));
   a = await buildTenant();
   b = await buildTenant();
-  const dispatch = await createDispatcher(pool, {
+  invalidations = [];
+  setInvalidationHook((event) => invalidations.push(event));
+  const dispatch = await createDispatcher(uploadPool, {
     passwordResetMailer: { async sendPasswordResetEmail() {} },
     appBaseUrl: "http://localhost",
     setupToken: "unused-setup-token",
@@ -303,6 +405,10 @@ beforeEach(async () => {
   baseUrl = `http://127.0.0.1:${address.port}`;
   return async () => {
     streamingGate = null;
+    reservationBarrier = null;
+    for (const release of barrierReleases) release();
+    barrierReleases = [];
+    setInvalidationHook(() => {});
     await new Promise<void>((resolve) => server.close(() => resolve()));
     // This test's own storage root, created above.
     await rm(storageDir, { recursive: true, force: true });
@@ -310,6 +416,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await uploadPool?.end();
   await pool?.end();
   await admin?.end();
 });
@@ -730,5 +837,381 @@ describe("attach uploads to a task through the shared upload headers (issue #165
     const answer = await upload(a, { body: JPG("second"), targetItemId: task, relationKey: "tasks" });
     expect(answer.status, answer.text).toBe(409);
     expect(await storedState(a)).toEqual(before);
+  });
+});
+
+describe("attach reservations never wait while the upload holds its blob (batch 36 D1)", () => {
+  /** A lock-only admin transaction holding one item row `FOR UPDATE` until `end` commits it. */
+  async function holdItem(itemId: string): Promise<{ end: () => Promise<void> }> {
+    const holder = await admin.connect();
+    let open = false;
+    try {
+      await holder.query("BEGIN");
+      open = true;
+      const held = await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [itemId]);
+      expect(held.rowCount).toBe(1);
+    } catch (error) {
+      let destroyWith: Error | undefined;
+      if (open) {
+        try {
+          await holder.query("ROLLBACK");
+        } catch {
+          destroyWith = new Error("The holder's ROLLBACK failed; its connection is destroyed");
+        }
+      }
+      holder.release(destroyWith);
+      throw error;
+    }
+    let ended = false;
+    return {
+      end: async () => {
+        if (ended) return;
+        ended = true;
+        try {
+          await holder.query("COMMIT");
+        } catch (error) {
+          holder.release(new Error("The holder's COMMIT failed; its connection is destroyed"));
+          throw error;
+        }
+        holder.release();
+      },
+    };
+  }
+
+  it("answers 409 upload_attach_conflict and rolls back while a PATCH holds the Files item and waits on the upload's blob, then the PATCH commits", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const bytes = PDF("patched while attaching");
+    const filed = await upload(a, { body: bytes });
+    expect(filed.status).toBe(201);
+    const file = itemBody.parse(JSON.parse(filed.text));
+    const blobId = await onlyBlobId(a);
+    const before = await storedState(a);
+    const jobsBefore = await queuedJobs();
+    const marked = invalidations.length;
+
+    // The upload pauses at its target reservation, after it has taken the blob `FOR UPDATE`.
+    const gate = pauseAtReservationOf(record);
+    const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+    let patching: Promise<Outcome<unknown>> | undefined;
+    let primary: { error: unknown } | undefined;
+    let uploaded: Outcome<Answer> | undefined;
+    let patched: Outcome<unknown> | undefined;
+    try {
+      const uploadPid = await within(gate.reached, 10_000, "The upload's target reservation");
+      // The production PATCH owner on the runtime role: it takes the Files item, then its blob reference lock.
+      patching = outcomeOf(
+        runInTenant(a.tenantId, () =>
+          chokePoint.updateItem({
+            databaseId: a.filesId,
+            itemId: file.id,
+            propertiesPatch: { name: "Renamed while attaching", file: { blobId } },
+          }),
+        ),
+      );
+      const waiting = await pollFor(async () => {
+        const { rows } = await admin.query<{ pid: number; query: string }>(
+          "SELECT pid, query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [uploadPid],
+        );
+        return rows.length > 0 ? rows : undefined;
+      }, "The PATCH waiting on the upload's blob");
+      // Exactly one backend waits on the upload: the PATCH, at its blob reference statement.
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0]?.query).toMatch(/FROM blobs .*FOR KEY SHARE/s);
+      gate.release();
+      uploaded = await within(uploading, 10_000, "The paused upload");
+      patched = await within(patching, 10_000, "The waiting PATCH");
+    } catch (error) {
+      primary = { error };
+    }
+    gate.release();
+    const failures: unknown[] = [];
+    for (const [started, what] of [
+      [uploaded ? undefined : uploading, "The paused upload"],
+      [patched ? undefined : patching, "The waiting PATCH"],
+    ] as const) {
+      if (!started) continue;
+      try {
+        await within(started, 10_000, what);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    settle(primary, failures);
+    if (!uploaded || !patched) throw new Error("The upload or the PATCH did not settle");
+    if (!uploaded.ok) throw uploaded.error;
+    if (!patched.ok) throw patched.error;
+
+    expect(uploaded.value.status).toBe(409);
+    expect(conflictCode(uploaded.value, [file.id, record, blobId])).toBe("upload_attach_conflict");
+    const after = await storedState(a);
+    // The upload committed nothing: no edge, no blob, and its streamed copy is gone; only the PATCH's write landed.
+    expect(after.edges).toEqual(before.edges);
+    expect(after.blobs).toEqual(before.blobs);
+    expect(after.bytes).toEqual(before.bytes);
+    expect(await fileIds(a)).toEqual([file.id]);
+    expect(await linked(a, file.id, "healthRecords")).toEqual([]);
+    const patchedFile = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
+    expect(patchedFile?.properties).toMatchObject({ name: "Renamed while attaching", file: { blobId } });
+    // Every invalidation since names the Files item the PATCH wrote; none names the target or an edge.
+    expect(
+      invalidations
+        .slice(marked)
+        .filter((event) => event.scope !== "item" || event.itemId !== file.id || event.op !== "update"),
+    ).toEqual([]);
+    // No job mentions the target beyond those queued before the upload: the upload queued none for it or its edge.
+    const mentioningTarget = (jobs: unknown[]) => jobs.filter((job) => JSON.stringify(job).includes(record));
+    expect(mentioningTarget(await queuedJobs())).toEqual(mentioningTarget(jobsBefore));
+  });
+
+  it.each([
+    ["the target", true],
+    ["the deduplicated Files item", false],
+  ])(
+    "answers 409 upload_attach_conflict at once while another transaction holds %s, stores nothing, and a new request then succeeds",
+    async (_name, holdTarget) => {
+      const record = await createItem(a, a.healthRecordsId, "Record");
+      const bytes = PDF(`held ${holdTarget ? "target" : "file"}`);
+      const filed = await upload(a, { body: bytes });
+      const file = itemBody.parse(JSON.parse(filed.text));
+      const before = await storedState(a);
+      const jobsBefore = await queuedJobs();
+      const marked = invalidations.length;
+
+      const holder = await holdItem(holdTarget ? record : file.id);
+      let primary: { error: unknown } | undefined;
+      let refused: Answer | undefined;
+      try {
+        refused = await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" });
+      } catch (error) {
+        primary = { error };
+      }
+      const failures: unknown[] = [];
+      try {
+        await holder.end();
+      } catch (error) {
+        failures.push(error);
+      }
+      settle(primary, failures);
+      if (!refused) throw new Error("no answer");
+
+      expect(refused.status).toBe(409);
+      expect(conflictCode(refused, [file.id, record])).toBe("upload_attach_conflict");
+      expect(await storedState(a)).toEqual(before);
+      expect(await queuedJobs()).toEqual(jobsBefore);
+      expect(invalidations.slice(marked)).toEqual([]);
+
+      // Not retried by the server: the caller's new, complete request is what succeeds.
+      const retried = await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" });
+      expect(retried.status, retried.text).toBe(200);
+      expect(itemBody.parse(JSON.parse(retried.text)).id).toBe(file.id);
+      expect(await linked(a, file.id, "healthRecords")).toEqual([record]);
+    },
+  );
+
+  it("answers 409 upload_attach_conflict at once for new bytes to a held target, and the new request then answers 201", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const before = await storedState(a);
+    const jobsBefore = await queuedJobs();
+    const holder = await holdItem(record);
+    let primary: { error: unknown } | undefined;
+    let refused: Answer | undefined;
+    try {
+      refused = await upload(a, {
+        body: PDF("new to a held target"),
+        targetItemId: record,
+        relationKey: "healthRecords",
+      });
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    try {
+      await holder.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    settle(primary, failures);
+    if (!refused) throw new Error("no answer");
+    expect(refused.status).toBe(409);
+    expect(conflictCode(refused, [record])).toBe("upload_attach_conflict");
+    // The new Files item and its blob rolled back, and its streamed bytes were deleted.
+    expect(await storedState(a)).toEqual(before);
+    expect(await queuedJobs()).toEqual(jobsBefore);
+
+    const retried = await upload(a, {
+      body: PDF("new to a held target"),
+      targetItemId: record,
+      relationKey: "healthRecords",
+    });
+    expect(retried.status, retried.text).toBe(201);
+    expect(await linked(a, itemBody.parse(JSON.parse(retried.text)).id, "healthRecords")).toEqual([record]);
+  });
+
+  it.each([
+    ["a new edge", false],
+    ["an existing edge", true],
+  ])(
+    "answers 409 upload_attach_conflict when the deduplicated Files item is trashed after the lookup, for %s, and stores nothing",
+    async (_name, alreadyLinked) => {
+      const record = await createItem(a, a.healthRecordsId, "Record");
+      const bytes = PDF(`trashed after lookup ${String(alreadyLinked)}`);
+      const filed = alreadyLinked
+        ? await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })
+        : await upload(a, { body: bytes });
+      expect(filed.status).toBe(201);
+      const file = itemBody.parse(JSON.parse(filed.text));
+
+      // The upload pauses at its Files item reservation: after the deduplicating lookup found the live item.
+      const gate = pauseAtReservationOf(file.id);
+      const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+      let primary: { error: unknown } | undefined;
+      let before: Awaited<ReturnType<typeof storedState>> | undefined;
+      let jobsBefore: unknown[] = [];
+      let marked = 0;
+      let uploaded: Outcome<Answer> | undefined;
+      let trashing: Promise<Outcome<unknown>> | undefined;
+      try {
+        await within(gate.reached, 10_000, "The upload's Files item reservation");
+        trashing = outcomeOf(runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.filesId, file.id)));
+        const trashed = await within(trashing, 10_000, "Trashing the Files item while the upload is paused");
+        if (!trashed.ok) throw trashed.error;
+        before = await storedState(a);
+        jobsBefore = await queuedJobs();
+        marked = invalidations.length;
+        gate.release();
+        uploaded = await within(uploading, 10_000, "The paused upload");
+      } catch (error) {
+        primary = { error };
+      }
+      gate.release();
+      const failures: unknown[] = [];
+      for (const [started, what] of [
+        [uploaded ? undefined : uploading, "The paused upload"],
+        [trashing, "Trashing the Files item"],
+      ] as const) {
+        if (!started) continue;
+        try {
+          await within(started, 10_000, what);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      settle(primary, failures);
+      if (!uploaded || !before) throw new Error("The paused upload did not settle");
+      if (!uploaded.ok) throw uploaded.error;
+
+      expect(uploaded.value.status).toBe(409);
+      expect(conflictCode(uploaded.value, [file.id, record])).toBe("upload_attach_conflict");
+      expect(await storedState(a)).toEqual(before);
+      expect(await queuedJobs()).toEqual(jobsBefore);
+      expect(invalidations.slice(marked)).toEqual([]);
+    },
+  );
+
+  it("answers the same 404 when the target is trashed after the pre-check and before its reservation, and stores nothing", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const gate = pauseAtReservationOf(record);
+    const uploading = outcomeOf(
+      upload(a, { body: PDF("target trashed"), targetItemId: record, relationKey: "healthRecords" }),
+    );
+    let primary: { error: unknown } | undefined;
+    let before: Awaited<ReturnType<typeof storedState>> | undefined;
+    let jobsBefore: unknown[] = [];
+    let marked = 0;
+    let uploaded: Outcome<Answer> | undefined;
+    let trashing: Promise<Outcome<unknown>> | undefined;
+    try {
+      await within(gate.reached, 10_000, "The upload's target reservation");
+      trashing = outcomeOf(runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record)));
+      const trashed = await within(trashing, 10_000, "Trashing the target while the upload is paused");
+      if (!trashed.ok) throw trashed.error;
+      before = await storedState(a);
+      jobsBefore = await queuedJobs();
+      marked = invalidations.length;
+      gate.release();
+      uploaded = await within(uploading, 10_000, "The paused upload");
+    } catch (error) {
+      primary = { error };
+    }
+    gate.release();
+    const failures: unknown[] = [];
+    for (const [started, what] of [
+      [uploaded ? undefined : uploading, "The paused upload"],
+      [trashing, "Trashing the target"],
+    ] as const) {
+      if (!started) continue;
+      try {
+        await within(started, 10_000, what);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    settle(primary, failures);
+    if (!uploaded || !before) throw new Error("The paused upload did not settle");
+    if (!uploaded.ok) throw uploaded.error;
+
+    expect(uploaded.value.status).toBe(404);
+    expect(conflictCode(uploaded.value, [record])).toBe("not_found");
+    const unknown = await upload(a, {
+      body: PDF("unknown target"),
+      targetItemId: randomUUID(),
+      relationKey: "healthRecords",
+    });
+    expect(uploaded.value).toEqual(unknown);
+    expect(await storedState(a)).toEqual(before);
+    expect(await queuedJobs()).toEqual(jobsBefore);
+    expect(invalidations.slice(marked)).toEqual([]);
+  });
+
+  it("marks the upload rollback-only, so a caller that catches the attach conflict still commits nothing", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const gone = itemBody.parse(JSON.parse((await upload(a, { body: PDF("gone") })).text)).id;
+    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.filesId, gone));
+    const before = await storedState(a);
+    const jobsBefore = await queuedJobs();
+    const marked = invalidations.length;
+    const caught: unknown[] = [];
+
+    const failure = await runInTenant(a.tenantId, async () => {
+      const target = await withTransaction(pool, (client) =>
+        resolveUploadAttachTarget(client, {
+          filesDatabaseId: a.filesId,
+          targetItemId: record,
+          relationKey: "healthRecords",
+        }),
+      );
+      return ingestUploadedFileWithTransaction(
+        pool,
+        {
+          filesDatabaseId: a.filesId,
+          filename: "caught.pdf",
+          contentType: "application/pdf",
+          source: Readable.from([PDF("caught")]),
+          storageKeyPrefix: "files",
+          maxBytes: 64 * 1024,
+          storage: new LocalFsBlobStorageWriter(storageDir),
+        },
+        async (client) => {
+          // The trashed Files item as the attach source: the conflict is caught here and not rethrown.
+          try {
+            await attachUploadedFileWithClient(client, target, gone);
+          } catch (error) {
+            caught.push(error);
+          }
+        },
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+    });
+
+    expect(caught).toHaveLength(1);
+    expect(caught[0]).toMatchObject({ status: 409, code: "upload_attach_conflict" });
+    // The managed transaction rethrows that same error at its end instead of committing.
+    expect(failure).toBe(caught[0]);
+    expect(await storedState(a)).toEqual(before);
+    expect(await queuedJobs()).toEqual(jobsBefore);
+    expect(invalidations.slice(marked)).toEqual([]);
   });
 });
