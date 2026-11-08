@@ -1656,7 +1656,9 @@ describe("value link state on writes (issue #1516)", () => {
         const links = await withTenantTransaction(runtime, tenant, (client) =>
           listValueLinksByItemIds(client, [fixture.item.id]),
         );
-        // Issue #1656: the purge removes the purged item's own link rows.
+        // Issue #1656: the purge removes the purged item's own link rows, so the value-link process no
+        // longer holds the `type` handoff and is refused before the item is looked up. A user write still
+        // gets the missing-source error.
         expect(links).toEqual([]);
         const events: InvalidationEvent[] = [];
         setInvalidationHook((event) => events.push(event));
@@ -1671,6 +1673,15 @@ describe("value link state on writes (issue #1516)", () => {
                   SYSTEM_WRITER,
                 ),
               ),
+            ),
+          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          await expect(
+            runInTenant(tenant, () =>
+              cp.deleteRelation({
+                relationPropertyId: property.id,
+                callerItemId: fixture.item.id,
+                targetItemId: fixture.type.id,
+              }),
             ),
           ).rejects.toMatchObject({ status: 404, code: "not_found" });
           expect(events).toEqual([]);
