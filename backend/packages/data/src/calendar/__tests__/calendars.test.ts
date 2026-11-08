@@ -552,7 +552,12 @@ describe("calendars system database (issue #1600)", () => {
           const ids: string[] = [];
           for (let index = 0; index < 501; index += 1) {
             ids.push(
-              (await createItemWithClient(client, { databaseId: eventsId!, properties: { name: `Bulk ${index}` } })).id,
+              (
+                await createItemWithClient(client, {
+                  databaseId: eventsId!,
+                  properties: { name: `Bulk ${index}`, date: "2026-10-16" },
+                })
+              ).id,
             );
           }
           return ids;
@@ -608,7 +613,10 @@ describe("calendars system database (issue #1600)", () => {
       await runInTenant(tenantId, () =>
         withTransaction(dataPool, async (client) => {
           for (let index = 0; index < 501; index += 1) {
-            await createItemWithClient(client, { databaseId: eventsId!, properties: { name: `Bulk ${index}` } });
+            await createItemWithClient(client, {
+              databaseId: eventsId!,
+              properties: { name: `Bulk ${index}`, date: "2026-10-16" },
+            });
           }
         }),
       );

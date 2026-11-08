@@ -42,9 +42,28 @@ async function setTenantZone(zone: string): Promise<void> {
   await chokePoint.updateItem({ databaseId, itemId, propertiesPatch: { timezone: zone } });
 }
 
-function times(item: ItemRow) {
-  const { date, endDate, timeFrom, timeTo, time } = item.properties;
+function timesOf(properties: Record<string, unknown>) {
+  const { date, endDate, timeFrom, timeTo, time } = properties;
   return { date, endDate: endDate ?? null, timeFrom: timeFrom ?? null, timeTo: timeTo ?? null, time: time ?? null };
+}
+
+function times(item: ItemRow) {
+  return timesOf(item.properties);
+}
+
+/** The properties the Events time transform would store for this write, read through its preparation. */
+async function prepared(stored: ItemRow | null, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const result = await prepareEventTime({ stored, patch: { ...patch }, timezone: "Europe/Prague" });
+  return { ...(stored?.properties ?? {}), ...result.patch };
+}
+
+function patchEvent(event: ItemRow, propertiesPatch: Record<string, unknown>): Promise<ItemRow> {
+  return chokePoint.updateItem({ databaseId: eventsId, itemId: event.id, propertiesPatch }, undefined, undefined, USER);
+}
+
+/** The write is refused by the Events validation of issue #1663, naming `field`. */
+async function expectRefused(write: Promise<unknown>, field: string): Promise<void> {
+  await expect(write).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
 }
 
 describe("Events time normalization before the write (issue #1598)", () => {
@@ -131,108 +150,114 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(times(evening)).toMatchObject({ date: "2026-10-16", timeFrom: "22:30", timeTo: "23:30" });
   });
 
+  // Issue #1663 rejects every value the transform leaves unreadable, so the transform's own output for those values is
+  // read through its read-only preparation (the same `deriveEventTimeProperties`), and the write is asserted refused.
   it("reads a date with a time but no offset as wall-clock, and leaves date-only and unreadable dates alone", async () => {
     await setTenantZone("America/New_York");
     const wallClock = await createEvent({ date: "2026-10-16T08:00" });
     expect(times(wallClock)).toMatchObject({ date: "2026-10-16", timeFrom: "08:00", timeTo: "09:00" });
-    const unreadable = await createEvent({ date: "next Tuesday" });
-    expect(times(unreadable)).toEqual({
+    expect(timesOf(await prepared(null, { date: "next Tuesday" }))).toEqual({
       date: "next Tuesday",
       endDate: null,
       timeFrom: null,
       timeTo: null,
       time: null,
     });
+    await expectRefused(createEvent({ date: "next Tuesday" }), "date");
   });
 
   it("leaves a wall-clock date with unreadable seconds unchanged on create and update, and still reads valid seconds", async () => {
     for (const date of ["2026-10-16T10:15:99", "2026-10-16 10:15:60"]) {
-      const created = await createEvent({ date });
-      expect(times(created), date).toEqual({ date, endDate: null, timeFrom: null, timeTo: null, time: null });
+      expect(timesOf(await prepared(null, { date })), date).toEqual({
+        date,
+        endDate: null,
+        timeFrom: null,
+        timeTo: null,
+        time: null,
+      });
+      await expectRefused(createEvent({ date }), "date");
     }
     const valid = await createEvent({ date: "2026-10-16T10:15:30" });
     expect(times(valid)).toMatchObject({ date: "2026-10-16", timeFrom: "10:15", timeTo: "11:15" });
 
     const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
-    const updated = await chokePoint.updateItem(
-      { databaseId: eventsId, itemId: event.id, propertiesPatch: { date: "2026-10-16T10:15:99" } },
-      undefined,
-      undefined,
-      USER,
-    );
-    // The malformed value is kept for the validator of issue #1663 and does not replace the stored start.
-    expect(times(updated)).toEqual({
+    // The malformed value does not replace the stored start in the transform, and issue #1663 refuses the write.
+    expect(timesOf(await prepared(event, { date: "2026-10-16T10:15:99" }))).toEqual({
       date: "2026-10-16T10:15:99",
       endDate: null,
       timeFrom: "09:00",
       timeTo: "10:00",
       time: "09:00–10:00",
     });
+    await expectRefused(patchEvent(event, { date: "2026-10-16T10:15:99" }), "date");
+    expect(times((await chokePoint.getItem(eventsId, event.id))!)).toEqual(times(event));
   });
 
   it("stores time null without a start even when the end is unreadable, on create and update", async () => {
-    const created = await createEvent({ date: "2026-10-16", timeTo: "invalid" });
-    expect(times(created)).toEqual({
+    const created = await prepared(null, { date: "2026-10-16", timeTo: "invalid" });
+    expect(timesOf(created)).toEqual({
       date: "2026-10-16",
       endDate: null,
       timeFrom: null,
       timeTo: "invalid",
       time: null,
     });
-    expect(Object.hasOwn(created.properties, "time")).toBe(true);
+    expect(Object.hasOwn(created, "time")).toBe(true);
+    await expectRefused(createEvent({ date: "2026-10-16", timeTo: "invalid" }), "timeTo");
 
     const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
     expect(times(event).time).toBe("09:00–10:00");
-    const cleared = await chokePoint.updateItem(
-      { databaseId: eventsId, itemId: event.id, propertiesPatch: { timeFrom: null, timeTo: "invalid" } },
-      undefined,
-      undefined,
-      USER,
-    );
-    expect(times(cleared)).toEqual({
+    expect(timesOf(await prepared(event, { timeFrom: null, timeTo: "invalid" }))).toEqual({
       date: "2026-10-16",
       endDate: null,
       timeFrom: null,
       timeTo: "invalid",
       time: null,
     });
-    expect(times((await chokePoint.getItem(eventsId, event.id))!)).toEqual(times(cleared));
+    await expectRefused(patchEvent(event, { timeFrom: null, timeTo: "invalid" }), "timeTo");
 
-    // Clearing only the start drops the derived time and keeps the stored end.
-    const other = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
-    const startCleared = await chokePoint.updateItem(
-      { databaseId: eventsId, itemId: other.id, propertiesPatch: { timeFrom: null } },
-      undefined,
-      undefined,
-      USER,
-    );
-    expect(times(startCleared)).toMatchObject({ timeFrom: null, timeTo: "10:00", time: null });
+    // Clearing only the start drops the derived time and keeps the stored end in the transform; issue #1663 then
+    // refuses an end without a start.
+    expect(timesOf(await prepared(event, { timeFrom: null }))).toMatchObject({
+      timeFrom: null,
+      timeTo: "10:00",
+      time: null,
+    });
+    await expectRefused(patchEvent(event, { timeFrom: null }), "timeTo");
+    expect(times((await chokePoint.getItem(eventsId, event.id))!)).toEqual(times(event));
   });
 
   it("keeps a start of 24:00 as written on create and update and derives no time or end from it", async () => {
-    const created = await createEvent({ date: "2026-10-16", timeFrom: "24:00" });
-    expect(times(created)).toEqual({ date: "2026-10-16", endDate: null, timeFrom: "24:00", timeTo: null, time: null });
+    expect(timesOf(await prepared(null, { date: "2026-10-16", timeFrom: "24:00" }))).toEqual({
+      date: "2026-10-16",
+      endDate: null,
+      timeFrom: "24:00",
+      timeTo: null,
+      time: null,
+    });
+    await expectRefused(createEvent({ date: "2026-10-16", timeFrom: "24:00" }), "timeFrom");
 
     const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
-    const updated = await chokePoint.updateItem(
-      { databaseId: eventsId, itemId: event.id, propertiesPatch: { timeFrom: "24:00" } },
-      undefined,
-      undefined,
-      USER,
-    );
     // Only an end may be 24:00: the start stays unreadable, and the derived time stays as stored.
-    expect(times(updated)).toEqual({
+    expect(timesOf(await prepared(event, { timeFrom: "24:00" }))).toEqual({
       date: "2026-10-16",
       endDate: null,
       timeFrom: "24:00",
       timeTo: "10:00",
       time: "09:00–10:00",
     });
+    await expectRefused(patchEvent(event, { timeFrom: "24:00" }), "timeFrom");
   });
 
   it("leaves an unreadable time unchanged and derives no time from it", async () => {
-    const event = await createEvent({ date: "2026-10-16", timeFrom: "nine", timeTo: "25:00" });
-    expect(times(event)).toEqual({ date: "2026-10-16", endDate: null, timeFrom: "nine", timeTo: "25:00", time: null });
+    expect(timesOf(await prepared(null, { date: "2026-10-16", timeFrom: "nine", timeTo: "25:00" }))).toEqual({
+      date: "2026-10-16",
+      endDate: null,
+      timeFrom: "nine",
+      timeTo: "25:00",
+      time: null,
+    });
+    await expectRefused(createEvent({ date: "2026-10-16", timeFrom: "nine", timeTo: "25:00" }), "timeFrom");
   });
 
   it("recomputes time from the stored timeTo when a patch changes only timeFrom, in the same write", async () => {

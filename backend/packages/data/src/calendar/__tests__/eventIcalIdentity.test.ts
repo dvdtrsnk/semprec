@@ -84,7 +84,10 @@ describe("Events iCalendar UID and sequence (issue #1599)", () => {
     const created = await withTransaction(pool, (client) =>
       createItemWithClient(
         client,
-        { databaseId: eventsId, properties: { name: "Copy", icalUid: "forged@example.com", icalSequence: 7 } },
+        {
+          databaseId: eventsId,
+          properties: { name: "Copy", date: "2026-10-16", icalUid: "forged@example.com", icalSequence: 7 },
+        },
         { allowedSystemKeys: ["icalUid", "icalSequence"] },
       ),
     );

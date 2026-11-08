@@ -333,9 +333,15 @@ describe("item routes (issue #241)", () => {
           return { tasks: taskDb.id, events: eventDb.id, people: peopleDb.id };
         });
         const task = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Task", date: "2099-10-22" } });
-        const event = await cp.createItem({ databaseId: ids.events, properties: { name: "Event" } });
+        const event = await cp.createItem({
+          databaseId: ids.events,
+          properties: { name: "Event", date: "2026-10-16" },
+        });
         const inverseTask = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Inverse Task" } });
-        const inverseEvent = await cp.createItem({ databaseId: ids.events, properties: { name: "Inverse Event" } });
+        const inverseEvent = await cp.createItem({
+          databaseId: ids.events,
+          properties: { name: "Inverse Event", date: "2026-10-16" },
+        });
         const person = await cp.createItem({ databaseId: ids.people, properties: { name: "Person" } });
         return { task, event, inverseTask, inverseEvent, person };
       });

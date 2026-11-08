@@ -495,7 +495,7 @@ describe("value link via-edge union", () => {
       const secondProject = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
       const firstTask = await cp.createItem({ databaseId: tasks, properties: { name: "One" } });
       const secondTask = await cp.createItem({ databaseId: tasks, properties: { name: "Two" } });
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
       for (const [task, project] of [
         [firstTask, firstProject],
         [secondTask, secondProject],
@@ -551,7 +551,10 @@ describe("value link via-edge union", () => {
         ),
       );
       expect(cards.rows).toHaveLength(1);
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Chosen event" } });
+      const event = await cp.createItem({
+        databaseId: events,
+        properties: { name: "Chosen event", date: "2026-10-16" },
+      });
       const config = { processingProposalsDatabaseId: proposals };
       const cardId = cards.rows[0]!.id;
       await withTransaction(data, (client) =>

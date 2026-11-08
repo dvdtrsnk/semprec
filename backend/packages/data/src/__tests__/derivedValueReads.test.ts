@@ -68,7 +68,7 @@ describe("derived values through project relations", () => {
       const second = await cp.createItem({ databaseId: projects, properties: { name: "iOS" } });
       const file = await cp.createItem({ databaseId: files, properties: { name: "Brief" } });
       const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
       await link(files, "area", file.id, home.id);
       await link(projects, "area", first.id, work.id);
       await link(projects, "area", second.id, work.id);
@@ -130,7 +130,7 @@ describe("derived values through project relations", () => {
       await link(projects, "company", project.id, company.id);
       const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
       const day = await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
       const empty = await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-17"));
       await link(tasks, "project", task.id, project.id);
       await link(journal, "project", day.itemId, project.id);

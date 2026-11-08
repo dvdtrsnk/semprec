@@ -778,7 +778,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
       const peoplePropertyId = await propertyIdFor(eventsId, "people");
       const eventId = (
         await withTransaction(pool, (client) =>
-          createItemWithClient(client, { databaseId: eventsId, properties: { name: "Sync" } }),
+          createItemWithClient(client, { databaseId: eventsId, properties: { name: "Sync", date: "2026-10-16" } }),
         )
       ).id;
       const aliceId = await createPerson("Alice");

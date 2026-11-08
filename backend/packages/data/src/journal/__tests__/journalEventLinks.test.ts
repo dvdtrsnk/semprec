@@ -116,7 +116,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
   });
 
   const event = (name: string) =>
-    inTenant(() => cp.createItem({ databaseId: databases.events!, properties: { name } }));
+    inTenant(() => cp.createItem({ databaseId: databases.events!, properties: { name, date: "2026-10-16" } }));
 
   it("adds the edge when a link to an event is added and removes it when the link is removed", async () => {
     const day = await newDay();
@@ -174,7 +174,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const day = await newDay();
     const otherDatabases = await databaseIds(other);
     const foreign = await runInTenant(other, () =>
-      cp.createItem({ databaseId: otherDatabases.events!, properties: { name: "Foreign" } }),
+      cp.createItem({ databaseId: otherDatabases.events!, properties: { name: "Foreign", date: "2026-10-16" } }),
     );
     const own = await event("Standup");
     await writeLine(day, randomUUID(), [link(foreign.id), { insert: " / " }, link(own.id)]);

@@ -191,7 +191,10 @@ describe("transcript detail through the dispatcher", () => {
           { speaker: "SPEAKER_00", text: "We discussed this together at our meeting.", startsAt: 0, endsAt: 1 },
           { speaker: "SPEAKER_01", text: "Another voice contributes to the same discussion.", startsAt: 1, endsAt: 2 },
         ]);
-        const event = await createItemWithClient(client, { databaseId: events.id, properties: { name: "Event" } });
+        const event = await createItemWithClient(client, {
+          databaseId: events.id,
+          properties: { name: "Event", date: "2026-10-16" },
+        });
         const person = await createItemWithClient(client, { databaseId: people.id, properties: { name: "Alice" } });
         const properties = await client.query<{ id: string; database_id: string; key: string }>(
           "SELECT id, database_id, key FROM properties WHERE (database_id = $1 AND key = 'event') OR (database_id = $2 AND key = 'people')",
