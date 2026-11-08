@@ -167,19 +167,22 @@ export function createGmailWatchHosting(pool: Pool, pubSub: GmailPubSubConfig, c
 }
 
 /**
- * Whether this process hosts Gmail watches. With the Pub/Sub configuration incomplete or the Gmail OAuth
- * client missing it returns `null` and logs one warning that names what is missing, never a value: the
- * process still starts, and Gmail accounts keep the noop lifecycle and the periodic sweep.
+ * Whether this process hosts Gmail watches. Without the Gmail OAuth client it returns `null` and logs
+ * nothing: `createMailSyncAdapters` logs that provider's one startup warning, and Gmail accounts cannot
+ * sync at all, so no Pub/Sub configuration is read. With the client configured but the Pub/Sub
+ * configuration missing or invalid it returns `null` and logs one warning naming the reason, never a
+ * value; the process still starts, and Gmail accounts keep the noop lifecycle and the authenticated
+ * periodic sweep. An unexpected failure reading the configuration propagates (`loadGmailPubSubConfig`).
  */
 export async function resolveGmailWatchHosting(pool: Pool, env: NodeJS.ProcessEnv): Promise<GmailWatchHosting | null> {
-  const pubSub = await loadGmailPubSubConfig(env);
   const client = readOAuthClient(env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
-  const reasons = [
-    ...(pubSub.config === null ? [pubSub.reason] : []),
-    ...("missingEnv" in client ? [`missing ${client.missingEnv.join(", ")}`] : []),
-  ];
-  if (pubSub.config === null || "missingEnv" in client) {
-    logger.warn({ reasons }, "Gmail watch lifecycles are not hosted; Gmail accounts are synced by the periodic sweep");
+  if ("missingEnv" in client) return null;
+  const pubSub = await loadGmailPubSubConfig(env);
+  if (pubSub.config === null) {
+    logger.warn(
+      { reason: pubSub.reason },
+      "Gmail watch lifecycles are not hosted; Gmail accounts are synced by the periodic sweep",
+    );
     return null;
   }
   return createGmailWatchHosting(pool, pubSub.config, client);
@@ -214,33 +217,47 @@ export function decideGraphSubscriptionHosting(
 ): GraphSubscriptionHostingDecision {
   if ("missingEnv" in client) return { hosted: false, reason: `missing ${client.missingEnv.join(", ")}` };
   const notAnOrigin = { hosted: false, reason: "APP_BASE_URL is not an https:// origin without a path" } as const;
-  // Scheme, then host (no path, query, fragment or user info), then at most the root `/`.
-  if (!/^https:\/\/[^/?#@\s]+\/?$/.test(appBaseUrl)) return notAnOrigin;
-  let origin: string;
+  // Scheme, then host, then at most the root `/`: no path, query, fragment, user info or whitespace, and no
+  // backslash, which URL parsing of an https URL turns into a path separator.
+  if (!/^https:\/\/[^/?#@\\\s]+\/?$/.test(appBaseUrl)) return notAnOrigin;
+  let url: URL;
   try {
-    origin = new URL(appBaseUrl).origin;
+    url = new URL(appBaseUrl);
   } catch (error) {
     if (error instanceof TypeError) return notAnOrigin;
     throw error;
   }
-  return { hosted: true, notificationUrl: `${origin}${GRAPH_WEBHOOK_PATH}`, client };
+  // The parsed URL must be that origin and nothing else, so no component is dropped by taking `origin`.
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return notAnOrigin;
+  }
+  return { hosted: true, notificationUrl: `${url.origin}${GRAPH_WEBHOOK_PATH}`, client };
 }
 
 /**
- * The Graph subscription lifecycle of every Graph account (`createGraphWebhookLifecycleFactory`), or `null`
- * with one warning when the decision above does not host it: the process still starts, and Graph accounts
- * keep the noop lifecycle and the periodic sweep. Tokens come from the account's own grant
- * (`refreshAndPersistAccessToken` with `MICROSOFT_TOKEN_URL`); failures log ids and error names only.
+ * The Graph subscription lifecycle of every Graph account (`createGraphWebhookLifecycleFactory`), or `null`.
+ * Without the Graph OAuth client it returns `null` and logs nothing: `createMailSyncAdapters` logs that
+ * provider's one startup warning, and Graph accounts cannot sync at all. With the client configured but an
+ * `APP_BASE_URL` the decision above does not host, it returns `null` with one warning: the process still
+ * starts, and Graph accounts keep the noop lifecycle and the authenticated periodic sweep. Tokens come from
+ * the account's own grant (`refreshAndPersistAccessToken` with `MICROSOFT_TOKEN_URL`); failures log ids and
+ * error names only.
  */
 export function resolveGraphSubscriptionHosting(
   pool: Pool,
   env: NodeJS.ProcessEnv,
   appBaseUrl: string,
 ): MailLiveSyncLifecycleFactory | null {
-  const decision = decideGraphSubscriptionHosting(
-    appBaseUrl,
-    readOAuthClient(env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
-  );
+  const oauthClient = readOAuthClient(env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");
+  if ("missingEnv" in oauthClient) return null;
+  const decision = decideGraphSubscriptionHosting(appBaseUrl, oauthClient);
   if (!decision.hosted) {
     logger.warn(
       { reason: decision.reason },

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,8 +34,16 @@ import {
   upsertMailServerSettings,
   withTransaction,
 } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
+import { createMailLiveSyncRoot, type MailLiveSyncRoot } from "@semprec/data";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
+import {
+  createImapIdleLifecycleFactory,
+  createMailLiveSyncLifecycleFactory,
+  resolveGmailWatchHosting,
+  resolveGraphSubscriptionHosting,
+} from "../mailLiveSyncLifecycles.js";
 import { logger } from "../logger.js";
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -572,11 +580,16 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     "MS_GRAPH_OAUTH_CLIENT_SECRET",
     "AI_GATEWAY_INTERNAL_TOKEN",
     "MAIL_ATTACHMENTS_DIR",
+    "GMAIL_PUBSUB_TOPIC",
+    "GMAIL_PUBSUB_SUBSCRIPTION",
+    "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH",
   ] as const;
   let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
   let runtime: ApiQueueRuntime | undefined;
+  let liveRoot: MailLiveSyncRoot | undefined;
   let restoreMailLog: (() => void) | undefined;
   let attachmentDir: string | undefined;
+  let keyDir: string | undefined;
 
   async function captureMailLog(): Promise<string[]> {
     const moduleUrl = new URL("../../../../packages/data/src/mail/logger.ts", import.meta.url).href;
@@ -680,15 +693,26 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     // `createAiGatewayClientForApi` requires this to build the api runtime.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     runtime = undefined;
+    liveRoot = undefined;
     attachmentDir = undefined;
+    keyDir = undefined;
   });
 
   afterEach(async () => {
     const failures: unknown[] = [];
     for (const cleanup of [
+      // The live-sync root stops before the queue runtime, as `createGracefulShutdown` orders them.
+      async () => {
+        const rooted = liveRoot;
+        liveRoot = undefined;
+        await rooted?.stop();
+      },
       async () => runtime?.stop(),
       async () => {
         if (attachmentDir) rmSync(attachmentDir, { recursive: true, force: true });
+      },
+      async () => {
+        if (keyDir) rmSync(keyDir, { recursive: true, force: true });
       },
       async () => {
         restoreMailLog?.();
@@ -1132,6 +1156,231 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       await waitFor(async () => (await syncErrorOf(mailboxId)) !== null);
       expect(await syncErrorOf(mailboxId)).toBe("No Graph adapter configured for this composition root");
       expect(await syncStatusOf(mailboxId)).toBe("error");
+    });
+  });
+
+  describe("startup hosting and the authenticated sweep (issues #1739, #1745, reconciled)", () => {
+    const GMAIL_LIFECYCLE_WARNING =
+      "Gmail watch lifecycles are not hosted; Gmail accounts are synced by the periodic sweep";
+    const GRAPH_LIFECYCLE_WARNING =
+      "Graph subscription lifecycles are not hosted; Graph accounts are synced by the periodic sweep";
+    const GMAIL_ADAPTER_WARNING = "Gmail OAuth client is not configured; Gmail-mode mail accounts cannot sync";
+    const GRAPH_ADAPTER_WARNING =
+      "Microsoft Graph OAuth client is not configured; Graph-mode mail accounts cannot sync";
+    const HOSTING_ORIGIN = "https://semprec.example";
+
+    /** A complete, valid Gmail Pub/Sub configuration over a synthetic service-account key in an owned directory. */
+    function configureGmailPubSub(): void {
+      keyDir = mkdtempSync(join(tmpdir(), "semprec-pubsub-key-"));
+      const keyPath = join(keyDir, "service-account.json");
+      const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+        .privateKey.export({ type: "pkcs8", format: "pem" })
+        .toString();
+      writeFileSync(
+        keyPath,
+        JSON.stringify({
+          type: "service_account",
+          client_email: "pubsub@semprec-test.iam.example",
+          private_key: privateKey,
+        }),
+      );
+      setEnv("GMAIL_PUBSUB_TOPIC", "projects/semprec-test/topics/gmail");
+      setEnv("GMAIL_PUBSUB_SUBSCRIPTION", "projects/semprec-test/subscriptions/gmail");
+      setEnv("GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH", keyPath);
+    }
+
+    /**
+     * Composes this process in `serve.ts`'s order from the environment: the api queue runtime (which builds the
+     * mail sync adapters and runs the registered tasks), then the Gmail and the Graph hosting decisions, then the
+     * live-sync root over them, started. Every provider warning logged on the way is returned, in order.
+     */
+    async function composeStartup(
+      configured: { gmail?: boolean; graph?: boolean },
+      appBaseUrl: string,
+    ): Promise<{ gmailHosted: boolean; graphHosted: boolean; providerWarnings: unknown[][] }> {
+      const warn = vi.spyOn(logger, "warn");
+      await startRuntimeWith(configured);
+      const gmailWatch = await resolveGmailWatchHosting(pool, process.env);
+      const graphSubscriptions = resolveGraphSubscriptionHosting(pool, process.env, appBaseUrl);
+      liveRoot = createMailLiveSyncRoot(
+        pool,
+        createMailLiveSyncLifecycleFactory({
+          pool,
+          hosted: {
+            imap: createImapIdleLifecycleFactory(pool),
+            ...(gmailWatch ? { gmail_api: gmailWatch.lifecycle } : {}),
+            ...(graphSubscriptions ? { graph_api: graphSubscriptions } : {}),
+          },
+        }),
+      );
+      await liveRoot.start();
+      return {
+        gmailHosted: gmailWatch !== null,
+        graphHosted: graphSubscriptions !== null,
+        providerWarnings: warn.mock.calls.filter(([, message]) => /Gmail|Graph/.test(String(message))),
+      };
+    }
+
+    interface SweepStateRow {
+      due: boolean;
+      last_successful_sync_at: Date | null;
+    }
+
+    async function sweepStateOf(mailboxItemId: string): Promise<SweepStateRow> {
+      const { rows } = await pool.query<SweepStateRow>(
+        `SELECT (next_expected_activity_at IS NULL OR next_expected_activity_at <= now()) AS due, last_successful_sync_at
+         FROM mail_account_sync_state WHERE item_id = $1`,
+        [mailboxItemId],
+      );
+      const row = rows[0];
+      if (!row) throw new Error(`fixture: no mail_account_sync_state row for ${mailboxItemId}`);
+      return row;
+    }
+
+    /**
+     * Makes the account due for the sweep, as the 15 minutes its last pass scheduled elapsing would. Raw SQL on
+     * purpose: no write path makes an account due early, and the test must not wait out the interval.
+     */
+    async function elapseUntilDue(mailboxItemId: string): Promise<void> {
+      await pool.query(
+        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 second' WHERE item_id = $1`,
+        [mailboxItemId],
+      );
+    }
+
+    /** Runs the registered `mailAccountSyncSweep` task once, as its crontab entry would, through the runtime. */
+    async function runRegisteredSweep(): Promise<void> {
+      await runAsSystem("test:mail-account-sync-sweep", () =>
+        enqueueJob(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP, {}),
+      );
+    }
+
+    it("with the Gmail OAuth client but no Pub/Sub keys: one lifecycle warning, the noop lifecycle, and the registered sweep completes an authenticated sync", async () => {
+      const mailboxId = await createGmailMailbox("Sweep-synced Gmail");
+      const google = createFakeGoogle();
+      stubProviderFetch(google.fetchImpl, GOOGLE_HOSTS);
+      const startup = await composeStartup({ gmail: true, graph: true }, HOSTING_ORIGIN);
+      expect(startup).toEqual({
+        gmailHosted: false,
+        graphHosted: true,
+        providerWarnings: [
+          [
+            { reason: "missing GMAIL_PUBSUB_TOPIC, GMAIL_PUBSUB_SUBSCRIPTION, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH" },
+            GMAIL_LIFECYCLE_WARNING,
+          ],
+        ],
+      });
+
+      // The noop lifecycle's start enqueues the account's one immediate sync and registers no watch.
+      await waitFor(async () => (await sweepStateOf(mailboxId)).last_successful_sync_at !== null);
+      const first = await sweepStateOf(mailboxId);
+      expect(first.due).toBe(false);
+      expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN]);
+
+      await elapseUntilDue(mailboxId);
+      await runRegisteredSweep();
+      await waitFor(async () => !(await sweepStateOf(mailboxId)).due);
+
+      const swept = await sweepStateOf(mailboxId);
+      expect(swept.last_successful_sync_at?.getTime()).toBeGreaterThan(first.last_successful_sync_at?.getTime() ?? 0);
+      expect(await syncStateOf(mailboxId)).toEqual({ last_error: null, gmail_history_id: "5000" });
+      expect(await syncStatusOf(mailboxId)).toBe("ok");
+      // The sweep's pass authenticated with the stored refresh token and read the history since the first pass.
+      expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN, STORED_REFRESH_TOKEN]);
+      expect(google.calls.gmailRoutes).toContain("/history?startHistoryId=5000");
+      expect(google.calls.gmailRoutes.filter((route) => route.startsWith("/watch"))).toEqual([]);
+      expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).toEqual([]);
+    });
+
+    it("without the Gmail OAuth client: only the adapter's startup warning, and the registered sweep's sync is refused", async () => {
+      const startup = await composeStartup({ graph: true }, HOSTING_ORIGIN);
+      expect(startup).toEqual({
+        gmailHosted: false,
+        graphHosted: true,
+        providerWarnings: [[{ missingEnv: GMAIL_MISSING_BOTH }, GMAIL_ADAPTER_WARNING]],
+      });
+      // Created after the root's discovery pass, so while this test runs (the root rediscovers every 60 s) the
+      // registered sweep is the only producer of this account's sync.
+      const mailboxId = await createGmailMailbox("Unconfigured Gmail");
+      await runRegisteredSweep();
+      await waitFor(
+        async () =>
+          (await syncErrorOf(mailboxId)) !== null && (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0,
+      );
+
+      // The sweep's pass, and any queue retry of it, was refused by the missing adapter and none succeeded.
+      expect(await syncStateOf(mailboxId)).toEqual({
+        last_error: "No Gmail adapter configured for this composition root",
+        gmail_history_id: null,
+      });
+      expect(await syncStatusOf(mailboxId)).toBe("error");
+      expect((await sweepStateOf(mailboxId)).last_successful_sync_at).toBeNull();
+      const errors = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.every((error) => error.includes("No Gmail adapter configured for this composition root"))).toBe(
+        true,
+      );
+    });
+
+    it("with the Graph OAuth client but an http APP_BASE_URL: one lifecycle warning, the noop lifecycle, and the registered sweep completes an authenticated sync", async () => {
+      configureGmailPubSub();
+      const mailboxId = await createGraphMailbox("Sweep-synced Graph");
+      const microsoft = createFakeMicrosoft();
+      stubProviderFetch(microsoft.fetchImpl, MICROSOFT_HOSTS);
+      const startup = await composeStartup({ gmail: true, graph: true }, "http://localhost:3000");
+      expect(startup).toEqual({
+        gmailHosted: true,
+        graphHosted: false,
+        providerWarnings: [
+          [{ reason: "APP_BASE_URL is not an https:// origin without a path" }, GRAPH_LIFECYCLE_WARNING],
+        ],
+      });
+
+      // The noop lifecycle's start enqueues the account's one immediate sync and creates no subscription.
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_1);
+      expect((await sweepStateOf(mailboxId)).due).toBe(false);
+
+      await elapseUntilDue(mailboxId);
+      await runRegisteredSweep();
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_2);
+
+      expect(await syncErrorOf(mailboxId)).toBeNull();
+      expect(await syncStatusOf(mailboxId)).toBe("ok");
+      expect(microsoft.calls.presentedRefreshTokens).toEqual([
+        STORED_MICROSOFT_REFRESH_TOKEN,
+        STORED_MICROSOFT_REFRESH_TOKEN,
+      ]);
+      expect(microsoft.calls.graphRoutes.filter((route) => route.startsWith("/subscriptions"))).toEqual([]);
+      expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).toEqual([]);
+    });
+
+    it("without the Graph OAuth client: only the adapter's startup warning, and the registered sweep's sync is refused", async () => {
+      configureGmailPubSub();
+      const startup = await composeStartup({ gmail: true }, HOSTING_ORIGIN);
+      expect(startup).toEqual({
+        gmailHosted: true,
+        graphHosted: false,
+        providerWarnings: [[{ missingEnv: GRAPH_MISSING_BOTH }, GRAPH_ADAPTER_WARNING]],
+      });
+      // Created after the root's discovery pass, so while this test runs (the root rediscovers every 60 s) the
+      // registered sweep is the only producer of this account's sync.
+      const mailboxId = await createGraphMailbox("Unconfigured Graph");
+      await runRegisteredSweep();
+      await waitFor(
+        async () =>
+          (await syncErrorOf(mailboxId)) !== null && (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0,
+      );
+
+      // The sweep's pass, and any queue retry of it, was refused by the missing adapter and none succeeded.
+      expect(await syncErrorOf(mailboxId)).toBe("No Graph adapter configured for this composition root");
+      expect(await syncStatusOf(mailboxId)).toBe("error");
+      expect(await graphDeltaLinkOf(mailboxId)).toBeNull();
+      expect((await sweepStateOf(mailboxId)).last_successful_sync_at).toBeNull();
+      const errors = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.every((error) => error.includes("No Graph adapter configured for this composition root"))).toBe(
+        true,
+      );
     });
   });
 });

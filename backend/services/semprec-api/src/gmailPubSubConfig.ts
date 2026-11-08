@@ -97,17 +97,44 @@ function withCleanupFailures(primary: unknown, cleanupFailures: readonly unknown
   return new AggregateError([primary, ...cleanupFailures], message, { cause: primary });
 }
 
+/** An operation's outcome by the request deadline: its value, or `settled: false` when the deadline came first. */
+type ByDeadline<T> = { settled: true; value: T } | { settled: false };
+
+/**
+ * Waits for `operation` until `deadline` aborts, and rethrows its failure when it fails first. When the deadline
+ * comes first the operation is not settled: it stays pending, observed so that its later rejection is not an
+ * unhandled one, and the caller reports it as unsettled. The abort listener is removed on every exit.
+ */
+async function byDeadline<T>(operation: Promise<T>, deadline: AbortSignal): Promise<ByDeadline<T>> {
+  const observed = operation.then((value): ByDeadline<T> => ({ settled: true, value }));
+  // Observed here as well as by the race below, so a rejection after the deadline is never unhandled.
+  observed.catch(() => undefined);
+  if (deadline.aborted) return { settled: false };
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<ByDeadline<T>>((resolve) => {
+    onAbort = () => resolve({ settled: false });
+    deadline.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([observed, expired]);
+  } finally {
+    if (onAbort) deadline.removeEventListener("abort", onAbort);
+  }
+}
+
 function base64Url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
 /**
- * Reads a response body up to `maxBytes`; a longer body is refused rather than buffered, and its stream is
- * cancelled. The reader's lock is released on every path. A read or size failure stays the primary error;
- * a failed cancel or release is attached after it (`withCleanupFailures`), and one after a complete read
- * fails the read too, since the body was not settled.
+ * Reads a response body up to `maxBytes`, every read bounded by the request's `deadline`; a longer body is
+ * refused rather than buffered, and its stream is cancelled. A read still pending at the deadline fails with
+ * the deadline's reason; its stream is asked to cancel without waiting further, and the response is reported
+ * as not settled. The reader's lock is released on every path. A read, size or deadline failure stays the
+ * primary error; a failed or unsettled cancel and a failed release are attached after it
+ * (`withCleanupFailures`), and one after a complete read fails the read too, since the body was not settled.
  */
-async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+async function readBoundedText(response: Response, maxBytes: number, deadline: AbortSignal): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
   if (!reader) throw new Error("The Pub/Sub token response has no body");
   const decoder = new TextDecoder();
@@ -118,17 +145,22 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
   let text = "";
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const read = await byDeadline(reader.read(), deadline);
+      if (!read.settled) {
+        failed = true;
+        failure = deadline.reason;
+        // Asked to stop, not awaited: the deadline has passed, so this response is reported as unsettled.
+        reader.cancel(deadline.reason).catch(() => undefined);
+        cleanupFailures.push(new Error("The Pub/Sub token response was not settled before its deadline"));
+        break;
+      }
+      const { done, value } = read.value;
       if (done) break;
       received += value.byteLength;
       if (received > maxBytes) {
         failed = true;
         failure = new Error("The Pub/Sub token response exceeded its size cap");
-        try {
-          await reader.cancel();
-        } catch (error) {
-          cleanupFailures.push(error);
-        }
+        await settleCancel(reader.cancel(), deadline, cleanupFailures);
         break;
       }
       text += decoder.decode(value, { stream: true });
@@ -151,10 +183,27 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
 }
 
 /**
+ * Waits for a body cancellation until the request `deadline`. A rejected cancellation, and one still pending
+ * at the deadline, are recorded in `cleanupFailures`; neither counts as settled.
+ */
+async function settleCancel(cancel: Promise<void>, deadline: AbortSignal, cleanupFailures: unknown[]): Promise<void> {
+  try {
+    const cancelled = await byDeadline(cancel, deadline);
+    if (!cancelled.settled) {
+      cleanupFailures.push(new Error("The Pub/Sub token response's cancellation did not settle before its deadline"));
+    }
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+}
+
+/**
  * The service account's token source: an RS256-signed JWT assertion (`node:crypto`) exchanged at Google's
  * token endpoint, cached until `TOKEN_EXPIRY_MARGIN_MS` before its expiry. Concurrent callers while a
- * request is in flight share it; a failed request is not cached, so the next call asks again. No error
- * message carries the key, the assertion or a token.
+ * request is in flight share it; a failed request is not cached, so the next call asks again. The fetch,
+ * every body read and any body cancellation share one `TOKEN_REQUEST_TIMEOUT_MS` deadline; work still
+ * pending at it fails the request and is reported as not settled. No error message carries the key, the
+ * assertion or a token.
  */
 function createServiceAccountTokenSource(clientEmail: string, privateKey: KeyObject): () => Promise<string> {
   let cached: { token: string; expiresAtMs: number } | null = null;
@@ -174,23 +223,22 @@ function createServiceAccountTokenSource(clientEmail: string, privateKey: KeyObj
     );
     const signingInput = `${header}.${claims}`;
     const assertion = `${signingInput}.${base64Url(sign("RSA-SHA256", Buffer.from(signingInput), privateKey))}`;
+    // One deadline for the whole request: the fetch, every body read and any cancellation.
+    const deadline = AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS);
     const response = await fetch(GOOGLE_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }).toString(),
-      signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+      signal: deadline,
     });
     if (!response.ok) {
       const primary = new Error(`The Pub/Sub token request failed with status ${response.status}`);
       const cleanupFailures: unknown[] = [];
-      try {
-        await response.body?.cancel();
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
+      if (response.body) await settleCancel(response.body.cancel(), deadline, cleanupFailures);
       throw withCleanupFailures(primary, cleanupFailures);
     }
-    const parsed = tokenResponseSchema.safeParse(parseJson(await readBoundedText(response, MAX_TOKEN_RESPONSE_BYTES)));
+    const body = await readBoundedText(response, MAX_TOKEN_RESPONSE_BYTES, deadline);
+    const parsed = tokenResponseSchema.safeParse(parseJson(body));
     if (!parsed.success) throw new Error("The Pub/Sub token response is not a token");
     cached = { token: parsed.data.access_token, expiresAtMs: Date.now() + parsed.data.expires_in * 1000 };
     return parsed.data.access_token;

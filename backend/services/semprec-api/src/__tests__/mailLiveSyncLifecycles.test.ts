@@ -52,6 +52,66 @@ import {
 import { loadGmailPubSubConfig } from "../gmailPubSubConfig.js";
 import { logger } from "../logger.js";
 
+/**
+ * A fault for `node:fs/promises`'s `readFile`, armed by one case and disarmed in `afterEach`: while armed, the
+ * key file read rejects with exactly this error; otherwise every call passes through to the real module.
+ */
+const fsFault = vi.hoisted((): { readFile: Error | undefined } => ({ readFile: undefined }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: async (...args: unknown[]): Promise<unknown> => {
+      if (fsFault.readFile !== undefined) throw fsFault.readFile;
+      return Reflect.apply(actual.readFile, actual, args);
+    },
+  };
+});
+
+/**
+ * Every error `node:crypto`'s `createPrivateKey` threw, recorded and rethrown unchanged; cleared in `afterEach`.
+ * Recording only: every call passes through to the real function, so the owner's decode is the real one.
+ */
+const decodeFailures = vi.hoisted((): unknown[] => []);
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...actual,
+    createPrivateKey: (...args: unknown[]): unknown => {
+      try {
+        return Reflect.apply(actual.createPrivateKey, actual, args);
+      } catch (error) {
+        decodeFailures.push(error);
+        throw error;
+      }
+    },
+  };
+});
+
+/**
+ * Runs every cleanup even when one fails. The case's own failure, `primary`, stays first: it is rethrown, or,
+ * when a cleanup failed too, rethrown inside an `AggregateError` with the cleanup failures after it. A thrown
+ * falsy value counts as a failure because `primary` wraps it.
+ */
+async function settleAll(primary: { error: unknown } | undefined, cleanups: (() => unknown)[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (primary) {
+    if (failures.length === 0) throw primary.error;
+    throw new AggregateError([primary.error, ...failures], "The case and its cleanup failed", { cause: primary.error });
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Cleanup failed");
+}
+
 const DISCOVERY_INTERVAL_MS = 200;
 const RECONNECT_BASE_MS = 5;
 const RECONNECT_MAX_MS = 10;
@@ -634,14 +694,22 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   }
 
   afterEach(async () => {
-    await dispatcher?.stop();
-    await root?.stop();
+    const [stopping, rooted, owned] = [dispatcher, root, directory];
+    dispatcher = undefined;
     root = undefined;
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    // This test's own key directory.
-    if (directory !== undefined) await rm(directory, { recursive: true, force: true });
     directory = undefined;
+    await settleAll(undefined, [
+      () => stopping?.stop(),
+      () => rooted?.stop(),
+      () => {
+        fsFault.readFile = undefined;
+        decodeFailures.length = 0;
+      },
+      () => vi.unstubAllGlobals(),
+      () => vi.restoreAllMocks(),
+      // This test's own key directory.
+      () => (owned === undefined ? undefined : rm(owned, { recursive: true, force: true })),
+    ]);
   });
 
   it("routes a notification for a watched, provider-verified address to one sync per mailbox, never by Mailboxes.addresses", async () => {
@@ -649,15 +717,14 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     const logs = captureServiceLogs();
     // Two tenants: every production read and write runs on a runtime-role pool, under row-level security.
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let primary: { error: unknown } | undefined;
     try {
       const otherTenant = await createTestTenant(pool);
       await runInTenant(otherTenant, () => seedSystem(runtime));
       const first = await insertGmailMailbox(runtime, getTenantZeroId(), "Verified@Example.com", "claimed@example.com");
       const second = await insertGmailMailbox(runtime, otherTenant, "verified@example.com");
-      const pending = [
-        pubSubMessage("ack-verified", "verified@example.com"),
-        pubSubMessage("ack-claimed", "claimed@example.com"),
-      ];
+      // Phase one delivers only the claimed address, so no verified notification's sync can mask a wrong route.
+      const pending = [pubSubMessage("ack-claimed", "claimed@example.com")];
       const acknowledged: string[][] = [];
       let serviceAccountExchanges = 0;
       const seen = stubProviders({
@@ -722,8 +789,15 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       dispatcher = running;
       await running.start();
       await waitFor(async () => acknowledged.length === 1);
+      // Handed off to no mailbox: the claimed address is the first mailbox's Mailboxes.addresses only.
+      expect(acknowledged).toEqual([["ack-claimed"]]);
+      expect(await syncJobsFor(first)).toBe(0);
+      expect(await syncJobsFor(second)).toBe(0);
 
-      expect(acknowledged).toEqual([["ack-verified", "ack-claimed"]]);
+      // Phase two: the provider-verified address reaches both tenants' watching mailboxes.
+      pending.push(pubSubMessage("ack-verified", "verified@example.com"));
+      await waitFor(async () => acknowledged.length === 2);
+      expect(acknowledged).toEqual([["ack-claimed"], ["ack-verified"]]);
       expect(await syncJobsFor(first)).toBe(1);
       expect(await syncJobsFor(second)).toBe(1);
       // One assertion exchange for the pull and the acknowledge: the service-account token is cached.
@@ -734,45 +808,45 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         expect(JSON.stringify(logs.calls)).not.toContain(secret);
         expect(recorded).not.toContain(secret);
       }
-    } finally {
-      // Both run on `runtime`, so they stop before it ends.
-      await dispatcher?.stop();
-      dispatcher = undefined;
-      await root?.stop();
-      root = undefined;
-      await runtime.end();
+    } catch (error) {
+      primary = { error };
     }
+    // Both run on `runtime`, so they stop before it ends; each step runs even when an earlier one fails.
+    const [stopping, rooted] = [dispatcher, root];
+    dispatcher = undefined;
+    root = undefined;
+    await settleAll(primary, [() => stopping?.stop(), () => rooted?.stop(), () => runtime.end()]);
   });
 
-  it("with the Pub/Sub keys or the Gmail OAuth client missing, logs one warning and keeps Gmail accounts on the noop lifecycle", async () => {
+  it("with the Gmail OAuth client but no Pub/Sub keys logs one lifecycle warning, without the client logs none, and keeps Gmail accounts on the noop lifecycle", async () => {
     stubProviders({});
+    const configured = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    expect(
+      await resolveGmailWatchHosting(pool, { GMAIL_OAUTH_CLIENT_ID: "id", GMAIL_OAUTH_CLIENT_SECRET: CLIENT_SECRET }),
+    ).toBeNull();
+    expect(configured.mock.calls).toEqual([
+      [
+        { reason: "missing GMAIL_PUBSUB_TOPIC, GMAIL_PUBSUB_SUBSCRIPTION, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH" },
+        "Gmail watch lifecycles are not hosted; Gmail accounts are synced by the periodic sweep",
+      ],
+    ]);
+    expect(JSON.stringify(configured.mock.calls)).not.toContain(CLIENT_SECRET);
+    configured.mockRestore();
+    // Without the OAuth client the mail sync adapters own the provider warning; the lifecycle adds none, also
+    // when the Pub/Sub keys are present.
     for (const env of [
-      { GMAIL_OAUTH_CLIENT_ID: "id", GMAIL_OAUTH_CLIENT_SECRET: CLIENT_SECRET },
+      {},
       {
         GMAIL_PUBSUB_TOPIC: TOPIC,
         GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
         GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: "/x",
       },
     ]) {
-      const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      const unconfigured = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
       expect(await resolveGmailWatchHosting(pool, env)).toBeNull();
-      expect(warning).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(warning.mock.calls)).not.toContain(CLIENT_SECRET);
-      warning.mockRestore();
+      expect(unconfigured).not.toHaveBeenCalled();
+      unconfigured.mockRestore();
     }
-    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    expect(await resolveGmailWatchHosting(pool, {})).toBeNull();
-    expect(warning.mock.calls).toEqual([
-      [
-        {
-          reasons: [
-            "missing GMAIL_PUBSUB_TOPIC, GMAIL_PUBSUB_SUBSCRIPTION, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH",
-            "missing GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET",
-          ],
-        },
-        "Gmail watch lifecycles are not hosted; Gmail accounts are synced by the periodic sweep",
-      ],
-    ]);
 
     root = composeRoot({});
     const gmailId = await insertMailbox("gmail");
@@ -851,6 +925,212 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     );
     expect(failure).toBeInstanceOf(Error);
     expect(failure).toMatchObject({ code: "ELOOP" });
+  });
+
+  it("maps a denied, a forbidden and an overlong key path to their fixed reasons, never the path", async () => {
+    const directory = ownDirectory();
+    const complete = { GMAIL_PUBSUB_TOPIC: TOPIC, GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION };
+    // A real ENAMETOOLONG: one path component longer than any supported file system allows.
+    expect(
+      await loadGmailPubSubConfig({
+        ...complete,
+        GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(directory, "k".repeat(300)),
+      }),
+    ).toEqual({ config: null, reason: "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not a valid path" });
+    // EACCES and EPERM through the armed read fault: a permission bit does not deny a root user, as CI may run.
+    const keyPath = join(directory, "key.json");
+    for (const code of ["EACCES", "EPERM"]) {
+      fsFault.readFile = Object.assign(new Error(`${code}: synthetic, open '${keyPath}'`), {
+        code,
+        syscall: "open",
+        path: keyPath,
+      });
+      const result = await loadGmailPubSubConfig({ ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: keyPath });
+      expect(result).toEqual({ config: null, reason: "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not readable" });
+      expect(JSON.stringify(result)).not.toContain(directory);
+    }
+    fsFault.readFile = undefined;
+  });
+
+  it("propagates a key file read failure without a code, or with a non-string code, as the same error", async () => {
+    const env = {
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(ownDirectory(), "key.json"),
+    };
+    for (const fault of [
+      new Error("synthetic read failure"),
+      Object.assign(new Error("synthetic code"), { code: 13 }),
+    ]) {
+      fsFault.readFile = fault;
+      const failure = await loadGmailPubSubConfig(env).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBe(fault);
+    }
+    fsFault.readFile = undefined;
+  });
+
+  it("propagates an encrypted key's missing-passphrase decode error as it is, not as a configuration reason", async () => {
+    const directory = ownDirectory();
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem", cipher: "aes-256-cbc", passphrase: "synthetic-passphrase" },
+    });
+    const path = join(directory, "encrypted.json");
+    await writeFile(
+      path,
+      JSON.stringify({ type: "service_account", client_email: SERVICE_ACCOUNT_EMAIL, private_key: privateKey }),
+    );
+    decodeFailures.length = 0;
+    const failure = await loadGmailPubSubConfig({
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: path,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    // The very error the owner's real decode threw, not a wrapper or a copy of it.
+    expect(decodeFailures).toHaveLength(1);
+    expect(failure).toBe(decodeFailures[0]);
+    expect(failure).toMatchObject({ code: "ERR_MISSING_PASSPHRASE" });
+    expect(String(failure)).not.toContain(privateKey.slice(40, 80));
+  });
+
+  it("fails a held fetch, a held body read and a held cancellation at the shared deadline, and caches no failure", async () => {
+    const key = await writeServiceAccountKey(ownDirectory());
+    const loaded = await loadGmailPubSubConfig({
+      GMAIL_PUBSUB_TOPIC: TOPIC,
+      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
+    });
+    if (!loaded.config) throw new Error(loaded.reason);
+    const config = loaded.config;
+    // Each token request's deadline, controlled by this case instead of 15 real seconds.
+    const deadlines: { ms: number; controller: AbortController }[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      deadlines.push({ ms, controller });
+      return controller.signal;
+    });
+    const expire = (index: number): unknown => {
+      const entry = deadlines[index];
+      if (!entry) throw new Error(`no deadline ${index}`);
+      entry.controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      const reason: unknown = entry.controller.signal.reason;
+      return reason;
+    };
+    // Every deliberately held provider promise, settled by this case before it ends, whatever happens.
+    const held: (() => void)[] = [];
+    function holding(): Promise<void> {
+      return new Promise<void>((resolve) => held.push(resolve));
+    }
+    let fetchHeld = false;
+    let readHeld = false;
+    let cancelHeld = false;
+    const good = () => new Response(JSON.stringify({ access_token: "pubsub-token-good", expires_in: 30 }));
+    const answers: ((request: Request) => Response | Promise<Response>)[] = [
+      (request) =>
+        new Promise<Response>((_resolve, reject) => {
+          fetchHeld = true;
+          request.signal.addEventListener(
+            "abort",
+            () => {
+              const reason: unknown = request.signal.reason;
+              reject(
+                reason instanceof Error ? reason : new Error("The held fetch was aborted without an Error reason"),
+              );
+            },
+            { once: true },
+          );
+        }),
+      good,
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull: () => {
+              readHeld = true;
+              return holding();
+            },
+            cancel: () => holding(),
+          }),
+        ),
+      good,
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel: () => {
+              cancelHeld = true;
+              return holding();
+            },
+          }),
+          { status: 500 },
+        ),
+      good,
+    ];
+    let exchanges = 0;
+    stubProviders({
+      [`POST ${GOOGLE_TOKEN}`]: (request) => {
+        const answer = answers[exchanges];
+        exchanges += 1;
+        if (!answer) throw new Error("no further token answer");
+        return answer(request);
+      },
+    });
+    const outcome = () =>
+      config.getPubSubAccessToken().then(
+        (token) => ({ token }),
+        (error: unknown) => ({ error }),
+      );
+    let primary: { error: unknown } | undefined;
+    try {
+      const fetching = outcome();
+      await waitFor(async () => fetchHeld);
+      const fetchReason = expire(0);
+      const fetchFailed = await fetching;
+      expect("error" in fetchFailed && fetchFailed.error).toBe(fetchReason);
+      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+      const reading = outcome();
+      await waitFor(async () => readHeld);
+      const readReason = expire(2);
+      const readFailed = await reading;
+      if (!("error" in readFailed) || !(readFailed.error instanceof AggregateError)) {
+        throw new Error("expected an AggregateError for the held read");
+      }
+      expect(readFailed.error.errors[0]).toBe(readReason);
+      expect(readFailed.error.errors[1]).toEqual(
+        new Error("The Pub/Sub token response was not settled before its deadline"),
+      );
+      expect(readFailed.error.cause).toBe(readReason);
+      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+
+      const cancelling = outcome();
+      await waitFor(async () => cancelHeld);
+      expire(4);
+      const cancelFailed = await cancelling;
+      if (!("error" in cancelFailed) || !(cancelFailed.error instanceof AggregateError)) {
+        throw new Error("expected an AggregateError for the held cancellation");
+      }
+      expect(cancelFailed.error.errors).toEqual([
+        new Error("The Pub/Sub token request failed with status 500"),
+        new Error("The Pub/Sub token response's cancellation did not settle before its deadline"),
+      ]);
+      expect(cancelFailed.error.cause).toBe(cancelFailed.error.errors[0]);
+      // No failure was cached: every later call exchanged again and succeeded.
+      expect(await outcome()).toEqual({ token: "pubsub-token-good" });
+      expect(exchanges).toBe(answers.length);
+      expect(deadlines.map((deadline) => deadline.ms)).toEqual(answers.map(() => 15_000));
+    } catch (error) {
+      primary = { error };
+    }
+    await settleAll(
+      primary,
+      held.map((settle) => () => settle()),
+    );
   });
 
   it("settles every failed token response, keeps its own failure first, and caches no failure", async () => {
@@ -1087,10 +1367,9 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
   });
 
   afterEach(async () => {
-    await root?.stop();
+    const rooted = root;
     root = undefined;
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
+    await settleAll(undefined, [() => rooted?.stop(), () => vi.unstubAllGlobals(), () => vi.restoreAllMocks()]);
   });
 
   it.each([
@@ -1109,6 +1388,13 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
     "https://user@semprec.example",
     "not a url",
     "https://",
+    // URL parsing of an https URL turns a backslash into a path separator: each would otherwise lose its path.
+    "https://semprec.example\\app",
+    "https://semprec.example\\",
+    "https://semprec.example\\?x=1",
+    "https://semprec.example:8443\\app",
+    // Passes the text check but does not parse.
+    "https://semprec.example:99999",
   ])("does not host Graph for APP_BASE_URL %s", (appBaseUrl) => {
     expect(decideGraphSubscriptionHosting(appBaseUrl, { clientId: "id", clientSecret: "secret" })).toEqual({
       hosted: false,
@@ -1228,17 +1514,33 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
   });
 
   it.each([
-    ["an http APP_BASE_URL", "http://localhost:3000", GRAPH_ENV],
-    ["a path-bearing APP_BASE_URL", "https://semprec.example/app", GRAPH_ENV],
-    ["no Graph OAuth client", "https://semprec.example", {}],
-  ])("with %s, logs one warning and keeps Graph accounts on the noop lifecycle", async (_name, appBaseUrl, env) => {
+    ["an http APP_BASE_URL", "http://localhost:3000"],
+    ["a path-bearing APP_BASE_URL", "https://semprec.example/app"],
+  ])(
+    "with the Graph OAuth client and %s, logs one lifecycle warning and keeps Graph accounts on the noop lifecycle",
+    async (_name, appBaseUrl) => {
+      stubProviders({});
+      const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      expect(resolveGraphSubscriptionHosting(pool, GRAPH_ENV, appBaseUrl)).toBeNull();
+      expect(warning.mock.calls).toEqual([
+        [
+          { reason: "APP_BASE_URL is not an https:// origin without a path" },
+          "Graph subscription lifecycles are not hosted; Graph accounts are synced by the periodic sweep",
+        ],
+      ]);
+      root = composeRoot({});
+      const mailboxId = await insertGraphMailbox();
+      await root.start();
+      expect(await syncJobsFor(mailboxId)).toBe(1);
+    },
+  );
+
+  it("without the Graph OAuth client logs no lifecycle warning, hosts nothing and keeps Graph accounts on the noop lifecycle", async () => {
     stubProviders({});
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    expect(resolveGraphSubscriptionHosting(pool, env, appBaseUrl)).toBeNull();
-    expect(warning).toHaveBeenCalledTimes(1);
-    expect(warning.mock.calls[0]?.[1]).toBe(
-      "Graph subscription lifecycles are not hosted; Graph accounts are synced by the periodic sweep",
-    );
+    // The mail sync adapters own this provider's one startup warning (mailSyncAdapters.test.ts).
+    expect(resolveGraphSubscriptionHosting(pool, {}, "https://semprec.example")).toBeNull();
+    expect(warning).not.toHaveBeenCalled();
     root = composeRoot({});
     const mailboxId = await insertGraphMailbox();
     await root.start();
