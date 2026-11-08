@@ -36,6 +36,7 @@ import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
+import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
@@ -87,6 +88,9 @@ registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async
 // Events: the time transform first, so the iCalendar sequence compares normalized times (issues #1598, #1599).
 registerItemPreWriteTransform(EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime);
 registerItemPreWriteTransform(EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity);
+// Events: the date and time rules judge what the transforms above stored (issue #1663).
+registerItemCreateHook(eventValidationItemCreateHook);
+registerItemUpdateHook(eventValidationItemUpdateHook);
 registerItemCreateHook(blobReferenceItemCreateHook);
 registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);
