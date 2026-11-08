@@ -1,9 +1,11 @@
 import "../../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import type { Notification, Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@semprec/queue";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -31,8 +33,10 @@ import { ingestEmailMessage } from "../../mail/ingest.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { createLinkEmailToPeopleAction } from "../../mail/personLinkingActions.js";
 import { reindexPersonEmails } from "../../mail/personEmailIndexStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import {
+  enqueuePersonLastContactRecompute,
   handlePeopleLastContactSweep,
   peopleLastContactJobKey,
   readContactMoment,
@@ -45,15 +49,17 @@ import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 /**
  * Issue #1660: People `lastContact`, derived from linked Events, Emails and Transcripts. Every production
  * write goes through the choke point or the owning mail writers on a `semprec_data` pool, so row-level
- * security applies; the recompute runs through the production `createCoreTaskList` handler drained with
- * `runOnce`, except where a case needs a clock other than the real one (the sweep's next day, an Event's
- * start later today), which calls `recomputePersonLastContact` with that `now`, the job's own entry point.
+ * security applies; the recompute and the sweep run through the production `createCoreTaskList` handlers
+ * drained with `runOnce`, except where a case needs a clock other than the real one (the sweep's next day, an
+ * Event's start later today), which calls `recomputePersonLastContact` or `handlePeopleLastContactSweep` with
+ * that `now`, the job's own entry point.
  */
 
 let admin: Pool;
 let pool: Pool;
 let chokePoint: ChokePoint;
 let recomputeTaskList: TaskList;
+let sweepTaskList: TaskList;
 let tenantA: string;
 let tenantB: string;
 
@@ -184,6 +190,228 @@ async function runRecomputes(): Promise<void> {
   expect(await queuedRecomputes()).toEqual([]);
 }
 
+/** Every queued job of any task, read through graphile-worker's public `jobs` view. */
+async function allQueuedJobs(): Promise<{ task_identifier: string; key: string | null }[]> {
+  const { rows } = await admin.query<{ task_identifier: string; key: string | null }>(
+    "SELECT task_identifier, key FROM graphile_worker.jobs ORDER BY id",
+  );
+  return rows;
+}
+
+/**
+ * One item's whole stored row and its tuple version. `xmin` changes on every UPDATE, even one that writes
+ * equal values, so an unchanged pair shows that no write reached the row. Read on the runtime pool in `tenant`.
+ */
+async function storedItem(tenant: string, itemId: string): Promise<{ row: unknown; xmin: string }> {
+  const { rows } = await runInTenant(tenant, () =>
+    pool.query<{ row: unknown; xmin: string }>(
+      "SELECT to_jsonb(i) AS row, i.xmin::text AS xmin FROM items i WHERE i.id = $1",
+      [itemId],
+    ),
+  );
+  const stored = rows[0];
+  if (!stored) throw new Error("item not found");
+  return stored;
+}
+
+/** Rejects with a message naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type Outcome = { failed: false } | { failed: true; error: unknown };
+
+/** `work`'s outcome as a value, so a started actor is observed from the start and read when the case is ready. */
+function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
+  return work.then(
+    (): Outcome => ({ failed: false }),
+    (error: unknown): Outcome => ({ failed: true, error }),
+  );
+}
+
+/** Reads `probe` until it returns a value, failing after `ms`. */
+async function pollFor<T>(probe: () => Promise<T | undefined>, ms: number, what: string): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = await probe();
+    if (value !== undefined) return value;
+    if (Date.now() >= deadline) throw new Error(`${what} was not observed within ${ms} ms`);
+    await sleep(20);
+  }
+}
+
+/**
+ * Rethrows the case's own failure first: alone, or inside an `AggregateError` with the cleanup failures after it.
+ * A thrown falsy value counts, because `primary` wraps it.
+ */
+function settle(primary: { error: unknown } | undefined, cleanupFailures: unknown[]): void {
+  if (primary && cleanupFailures.length > 0) {
+    throw new AggregateError([primary.error, ...cleanupFailures], "The case and its cleanup failed", {
+      cause: primary.error,
+    });
+  }
+  if (primary) throw primary.error;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, "The case's cleanup failed");
+}
+
+interface ObservedEffects {
+  /** Every realtime invalidation this process emitted: the in-process hook `@semprec/realtime` publishes as NOTIFYs. */
+  invalidations: InvalidationEvent[];
+  /** The payload of every graphile-worker `jobs:insert` NOTIFY, the one any job enqueue sends, before the sentinel. */
+  jobInserts: string[];
+}
+
+/**
+ * The side effects `operation` announced. Realtime invalidations are recorded through `setInvalidationHook`,
+ * because this package's tests wire no realtime publisher, so no realtime NOTIFY could reach a listener here.
+ * Job enqueues are observed on a dedicated LISTEN connection subscribed before `operation` runs; afterwards a
+ * sentinel is sent on the same channel, and Postgres delivers notifications in commit order, so once the
+ * sentinel has arrived every `jobs:insert` committed by `operation` has too. The hook and the subscription are
+ * removed on every path, and a connection whose UNLISTEN failed is destroyed rather than returned to the pool.
+ */
+async function observeEffects(operation: () => Promise<unknown>): Promise<ObservedEffects> {
+  const effects: ObservedEffects = { invalidations: [], jobInserts: [] };
+  const sentinel = JSON.stringify({ sentinel: randomUUID() });
+  let sentinelSeen: () => void = () => undefined;
+  const sentinelArrived = new Promise<void>((resolve) => {
+    sentinelSeen = resolve;
+  });
+  const onNotification = (message: Notification) => {
+    if (message.channel !== "jobs:insert") return;
+    if (message.payload === sentinel) sentinelSeen();
+    else effects.jobInserts.push(message.payload ?? "");
+  };
+  const listener = await admin.connect();
+  listener.on("notification", onNotification);
+  let listening = false;
+  let primary: { error: unknown } | undefined;
+  try {
+    await listener.query('LISTEN "jobs:insert"');
+    listening = true;
+    setInvalidationHook((event) => effects.invalidations.push(event));
+    await operation();
+    await admin.query("SELECT pg_notify('jobs:insert', $1)", [sentinel]);
+    await within(sentinelArrived, 10_000, "The sentinel NOTIFY");
+  } catch (error) {
+    primary = { error };
+  }
+  const failures: unknown[] = [];
+  setInvalidationHook(() => {});
+  listener.off("notification", onNotification);
+  let destroyWith: Error | undefined;
+  if (listening) {
+    try {
+      await listener.query('UNLISTEN "jobs:insert"');
+    } catch (error) {
+      failures.push(error);
+      destroyWith = new Error("UNLISTEN failed; the connection is destroyed");
+    }
+  }
+  listener.release(destroyWith);
+  settle(primary, failures);
+  return effects;
+}
+
+/**
+ * A mailbox with its inbox in `tenant`, and an ingest there of one message, followed by the production
+ * `mail.linkPeopleByEmail` action as the Emails onItemEvent heartbeat runs it. Returns the Emails item id.
+ */
+async function mailIngest(
+  tenant: string,
+  c: Catalog,
+): Promise<(input: { messageId: string; date: Date; from: string; to: string }) => Promise<string>> {
+  const mail = await runInTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const mailboxesId = await requireDatabaseId(client, MAILBOXES_MODULE_ID);
+      const foldersId = await requireDatabaseId(client, FOLDERS_MODULE_ID);
+      const mailbox = await createItemWithClient(client, {
+        databaseId: mailboxesId,
+        properties: { name: "Mailbox", provider: "generic" },
+      });
+      const inboxItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: foldersId,
+        mailboxItemId: mailbox.id,
+        mailboxRelationPropertyId: await requirePropertyId(client, foldersId, "mailbox"),
+        providerId: "INBOX",
+        name: "INBOX",
+        behavior: "folder",
+        specialPurpose: "inbox",
+      });
+      return {
+        mailboxItemId: mailbox.id,
+        inboxItemId,
+        filesId: await requireDatabaseId(client, FILES_MODULE_ID),
+        folderPropertyId: await requirePropertyId(client, c.emailsId, "folder"),
+        attachmentsPropertyId: await requirePropertyId(client, c.emailsId, "attachments"),
+      };
+    }),
+  );
+  return (input) =>
+    runInTenant(tenant, async () => {
+      const { itemId } = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: c.emailsId,
+          filesDatabaseId: mail.filesId,
+          folderRelationPropertyId: mail.folderPropertyId,
+          attachmentsRelationPropertyId: mail.attachmentsPropertyId,
+          folderItemId: mail.inboxItemId,
+          mailboxItemId: mail.mailboxItemId,
+          messageId: input.messageId,
+          subject: input.messageId,
+          date: input.date,
+          envelope: { from: { address: input.from }, to: [{ address: input.to }] },
+          bodyText: "hi",
+          attachments: [],
+          storage: unusedStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
+      await createLinkEmailToPeopleAction(pool)(
+        { emailsDatabaseId: c.emailsId, senderPeopleKey: "senderPeople", recipientsPeopleKey: "recipientsPeople" },
+        { heartbeatId: "hb", projectItemId: "proj", itemId },
+      );
+      return itemId;
+    });
+}
+
+/** A transcript dated `date` at 10:00 UTC, written by the transcription owner, with `personId` as its speaker. */
+async function createTranscriptWithSpeaker(
+  tenant: string,
+  c: Catalog,
+  date: string,
+  personId: string,
+): Promise<string> {
+  return runInTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const created = await createItemWithClient(client, { databaseId: c.transcriptsId, properties: { name: "Call" } });
+      await writeComputed(client, c.transcriptsId, created.id, "segments", [
+        { speaker: "SPEAKER_00", text: "Hello", startsAt: 0, endsAt: 1 },
+      ]);
+      await updateItemWithClient(
+        client,
+        { databaseId: c.transcriptsId, itemId: created.id, propertiesPatch: { date: `${date}T10:00:00.000Z` } },
+        { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      await createRelationWithClient(client, {
+        relationPropertyId: c.speakersPropertyId,
+        callerItemId: created.id,
+        targetItemId: personId,
+        metadata: { speaker: "SPEAKER_00" },
+      });
+      return created.id;
+    }),
+  );
+}
+
 beforeAll(async () => {
   admin = getTestPool();
   pool = await createRuntimeRolePool(admin, "semprec_data");
@@ -192,6 +420,9 @@ beforeAll(async () => {
   const recompute = full[CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE];
   if (!recompute) throw new Error("createCoreTaskList has no peopleLastContactRecompute handler");
   recomputeTaskList = { [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: recompute };
+  const sweep = full[CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP];
+  if (!sweep) throw new Error("createCoreTaskList has no peopleLastContactSweep handler");
+  sweepTaskList = { [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: sweep };
 });
 
 beforeEach(async () => {
@@ -576,6 +807,272 @@ describe("People lastContact (issue #1660)", () => {
     expect(await lastContactOf(tenantA, a, personA)).toBe(dateA);
     expect(await queuedRecomputes()).toEqual([]);
   });
+
+  it("an email linked to a person through recipientsPeople sets lastContact to its date in the tenant zone", async () => {
+    const c = await catalog(tenantA);
+    const bob = await runInTenant(tenantA, async () => {
+      const person = await chokePoint.createItem({
+        databaseId: c.peopleId,
+        properties: { name: "Bob", emails: "bob@example.com" },
+      });
+      await withTransaction(pool, (client) => reindexPersonEmails(client, person.id, ["bob@example.com"]));
+      return person.id;
+    });
+    await discardQueuedJobs();
+    const ingest = await mailIngest(tenantA, c);
+    const year = Number(today(ZONE).slice(0, 4)) - 1;
+    // From someone who is no person, to Bob: only the recipients relation can link him.
+    const email = await ingest({
+      messageId: "<to-bob@example.com>",
+      date: new Date(`${year}-10-15T23:30:00.000Z`),
+      from: "carol@example.com",
+      to: "bob@example.com",
+    });
+
+    const linked = await runInTenant(tenantA, () => chokePoint.listItemRelations(email));
+    expect(linked?.map(({ propertyKey, targetItemId }) => ({ propertyKey, targetItemId }))).toContainEqual({
+      propertyKey: "recipientsPeople",
+      targetItemId: bob,
+    });
+    expect(linked?.filter((entry) => entry.propertyKey === "senderPeople")).toEqual([]);
+    expect(await queuedRecomputes()).toEqual([
+      { key: peopleLastContactJobKey(bob), queue_name: `people-last-contact:${tenantA}` },
+    ]);
+    await runRecomputes();
+    // 23:30 UTC on 15 October is already 16 October in Prague.
+    expect(await lastContactOf(tenantA, c, bob)).toBe(`${year}-10-16`);
+  });
+
+  it("an event's date patch requeues its people and moves lastContact to the new date", async () => {
+    const c = await catalog(tenantA);
+    const person = await createPerson(tenantA, c);
+    const first = dayFromToday(-10);
+    const second = dayFromToday(-2);
+    const event = await createEvent(tenantA, c, first);
+    await linkEvent(tenantA, c, event, person);
+    await runRecomputes();
+    expect(await lastContactOf(tenantA, c, person)).toBe(first);
+
+    await runInTenant(tenantA, () =>
+      chokePoint.updateItem({ databaseId: c.eventsId, itemId: event, propertiesPatch: { date: second } }),
+    );
+    expect(await queuedRecomputes()).toEqual([
+      { key: peopleLastContactJobKey(person), queue_name: `people-last-contact:${tenantA}` },
+    ]);
+    await runRecomputes();
+    expect(await lastContactOf(tenantA, c, person)).toBe(second);
+  });
+
+  it("a transcript's date patch by the transcription owner requeues its speakers and moves lastContact", async () => {
+    const c = await catalog(tenantA);
+    const person = await createPerson(tenantA, c);
+    const first = dayFromToday(-9);
+    const second = dayFromToday(-3);
+    const transcript = await createTranscriptWithSpeaker(tenantA, c, first, person);
+    await runRecomputes();
+    expect(await lastContactOf(tenantA, c, person)).toBe(first);
+
+    await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: c.transcriptsId, itemId: transcript, propertiesPatch: { date: `${second}T10:00:00.000Z` } },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        ),
+      ),
+    );
+    expect(await queuedRecomputes()).toEqual([
+      { key: peopleLastContactJobKey(person), queue_name: `people-last-contact:${tenantA}` },
+    ]);
+    await runRecomputes();
+    expect(await lastContactOf(tenantA, c, person)).toBe(second);
+  });
+
+  it("a recompute that finds the stored date current writes nothing, queues nothing and emits nothing", async () => {
+    const c = await catalog(tenantA);
+    const person = await createPerson(tenantA, c);
+    const date = dayFromToday(-5);
+    await linkEvent(tenantA, c, await createEvent(tenantA, c, date), person);
+    await runRecomputes();
+    expect(await lastContactOf(tenantA, c, person)).toBe(date);
+    await discardQueuedJobs();
+    // A second recompute of the same person, queued by the production enqueue before the observation starts.
+    await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) => enqueuePersonLastContactRecompute(client, person)),
+    );
+    const before = await storedItem(tenantA, person);
+
+    const effects = await observeEffects(() => runRecomputes());
+
+    expect(effects).toEqual({ invalidations: [], jobInserts: [] });
+    expect(await storedItem(tenantA, person)).toEqual(before);
+    expect(await allQueuedJobs()).toEqual([]);
+  });
+
+  it("a recompute of a trashed person is a no-op that leaves the trashed row as it is", async () => {
+    const c = await catalog(tenantA);
+    const person = await createPerson(tenantA, c);
+    const date = dayFromToday(-5);
+    await linkEvent(tenantA, c, await createEvent(tenantA, c, date), person);
+    await runRecomputes();
+    // A newer source the recompute would otherwise pick up, linked while the person is live.
+    await linkEvent(tenantA, c, await createEvent(tenantA, c, dayFromToday(-1)), person);
+    await runInTenant(tenantA, () => chokePoint.softDeleteItem(c.peopleId, person));
+    await discardQueuedJobs();
+    await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) => enqueuePersonLastContactRecompute(client, person)),
+    );
+    const before = await storedItem(tenantA, person);
+    expect(before.row).toMatchObject({ deleted_at: expect.any(String), properties: { lastContact: date } });
+
+    // `runRecomputes` fails when the job fails, since a failed job stays queued for its retry.
+    const effects = await observeEffects(() => runRecomputes());
+
+    expect(effects).toEqual({ invalidations: [], jobInserts: [] });
+    expect(await storedItem(tenantA, person)).toEqual(before);
+    expect(await allQueuedJobs()).toEqual([]);
+  });
+
+  it("the registered sweep queues every person of a source dated within the last day, across sweep batches and in each person's tenant", async () => {
+    const a = await catalog(tenantA);
+    const b = await catalog(tenantB);
+    // An hour before the sweep, which runs at the actual time; the minute is truncated, so never later than now.
+    const hourAgo = DateTime.now().setZone(ZONE).minus({ hours: 1 });
+    const date = hourAgo.toISODate();
+    if (date === null) throw new Error("invalid day");
+    const start = { date, timeFrom: hourAgo.toFormat("HH:mm") };
+    // 501 edges of one Event: one more than a sweep batch holds, so the sweep needs two batches.
+    const peopleA = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const event = await createItemWithClient(client, {
+          databaseId: a.eventsId,
+          properties: { name: "All hands", ...start },
+        });
+        const ids: string[] = [];
+        for (let index = 0; index < 501; index += 1) {
+          const person = await createItemWithClient(client, {
+            databaseId: a.peopleId,
+            properties: { name: `Attendee ${index}` },
+          });
+          await createRelationWithClient(client, {
+            relationPropertyId: a.eventsPeoplePropertyId,
+            callerItemId: event.id,
+            targetItemId: person.id,
+          });
+          ids.push(person.id);
+        }
+        return ids;
+      }),
+    );
+    const personB = await createPerson(tenantB, b, "B");
+    await linkEvent(tenantB, b, await createEvent(tenantB, b, start.date, { timeFrom: start.timeFrom }), personB);
+    await discardQueuedJobs();
+
+    await runAsSystem("test:people-last-contact-sweep", () =>
+      enqueueJob(pool, CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP, {}),
+    );
+    await runOnce({ pgPool: admin, taskList: sweepTaskList });
+
+    const byKey = (left: QueuedJob, right: QueuedJob) => (left.key ?? "").localeCompare(right.key ?? "");
+    expect((await queuedRecomputes()).sort(byKey)).toEqual(
+      [
+        ...peopleA.map((id) => ({ key: peopleLastContactJobKey(id), queue_name: `people-last-contact:${tenantA}` })),
+        { key: peopleLastContactJobKey(personB), queue_name: `people-last-contact:${tenantB}` },
+      ].sort(byKey),
+    );
+    expect(new Set(peopleA).size).toBe(501);
+    expect(
+      (await allQueuedJobs()).filter((job) => job.task_identifier === CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP),
+    ).toEqual([]);
+  });
+
+  it("a recompute waiting on the person's row lock reads the sources committed while it waited", async () => {
+    const c = await catalog(tenantA);
+    const person = await createPerson(tenantA, c);
+    const older = dayFromToday(-20);
+    const newer = dayFromToday(-4);
+    await linkEvent(tenantA, c, await createEvent(tenantA, c, older), person);
+    const newerEvent = await createEvent(tenantA, c, newer);
+    expect((await queuedRecomputes()).map((job) => job.key)).toEqual([peopleLastContactJobKey(person)]);
+
+    // A lock-only admin transaction: FOR NO KEY UPDATE conflicts with the recompute's FOR UPDATE of the person,
+    // but not with the FOR KEY SHARE that a new edge's foreign key check takes on it.
+    const holder = await admin.connect();
+    let holding = false;
+    let recompute: Promise<Outcome> | undefined;
+    let linking: Promise<Outcome> | undefined;
+    // The actors whose outcome the case itself already read.
+    const read = new Set<Promise<Outcome>>();
+    let primary: { error: unknown } | undefined;
+    try {
+      await holder.query("BEGIN");
+      holding = true;
+      const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("no holder pid");
+      const locked = await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [person]);
+      expect(locked.rowCount).toBe(1);
+
+      recompute = outcomeOf(runOnce({ pgPool: admin, taskList: recomputeTaskList }));
+      const blocked = await pollFor(
+        async () => {
+          const { rows } = await admin.query<{ pid: number }>(
+            "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [pid],
+          );
+          return rows.length > 0 ? rows.map((row) => row.pid) : undefined;
+        },
+        10_000,
+        "A backend blocked by the held person row",
+      );
+      // Exactly one other backend, the recompute's, waits on this holder.
+      expect(blocked).toHaveLength(1);
+      expect(blocked[0]).not.toBe(pid);
+
+      linking = outcomeOf(linkEvent(tenantA, c, newerEvent, person));
+      const linked = await within(linking, 10_000, "Linking the newer event while the person is held");
+      read.add(linking);
+      if (linked.failed) throw linked.error;
+      // The link requeued the person as a new job beside the running one; that one is completed unrun, so only
+      // the waiting recompute can store the newer date.
+      expect((await queuedRecomputes()).filter((job) => job.key === peopleLastContactJobKey(person))).toHaveLength(1);
+      await discardQueuedJobs();
+
+      await holder.query("COMMIT");
+      holding = false;
+      const recomputed = await within(recompute, 10_000, "The waiting recompute");
+      read.add(recompute);
+      if (recomputed.failed) throw recomputed.error;
+      expect(await lastContactOf(tenantA, c, person)).toBe(newer);
+      expect(await queuedRecomputes()).toEqual([]);
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    if (holding) {
+      try {
+        await holder.query("ROLLBACK");
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    holder.release(
+      failures.length > 0 ? new Error("The holder's ROLLBACK failed; its connection is destroyed") : undefined,
+    );
+    // Every started actor settles before the pools can end; one that does not, or fails unread, is a failure.
+    for (const [actor, what] of [
+      [recompute, "The waiting recompute"],
+      [linking, "Linking the newer event"],
+    ] as const) {
+      if (!actor || read.has(actor)) continue;
+      try {
+        const outcome = await within(actor, 10_000, what);
+        if (outcome.failed) failures.push(outcome.error);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    settle(primary, failures);
+  });
 });
 
 /** A tenant provisioned before issue #1660: its People database has no lastContact property. */
@@ -664,9 +1161,9 @@ describe("People lastContact cutover (issue #1660)", () => {
     expect(await lastContactOf(tenantA, a, person)).toBeNull();
   });
 
-  it("fails a tenant whose lastContact is not a date before writing or queuing anything", async () => {
+  it("fails a tenant whose lastContact is not a date before writing, queuing or emitting anything", async () => {
     const a = await catalog(tenantA);
-    await createPerson(tenantA, a);
+    const person = await createPerson(tenantA, a);
     // An incompatible populated state: a text property under the key, which only direct SQL produces now.
     await admin.query(
       `UPDATE properties SET type = 'text', owner = 'user', owner_process = NULL
@@ -674,14 +1171,20 @@ describe("People lastContact cutover (issue #1660)", () => {
       [tenantA, a.peopleId],
     );
     await discardQueuedJobs();
+    const before = await storedItem(tenantA, person);
 
-    await expect(runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool))).rejects.toThrow(
-      "The People lastContact property has type 'text', not 'date'",
+    const effects = await observeEffects(() =>
+      expect(runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool))).rejects.toThrow(
+        "The People lastContact property has type 'text', not 'date'",
+      ),
     );
+    expect(effects).toEqual({ invalidations: [], jobInserts: [] });
     expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
       { type: "text", owner: "user", owner_process: null, config: {} },
     ]);
+    expect(await storedItem(tenantA, person)).toEqual(before);
     expect(await queuedRecomputes()).toEqual([]);
+    expect(await allQueuedJobs()).toEqual([]);
   });
 
   it("is registered in runTenantCutoverMigrations and restores the property in every tenant", async () => {
