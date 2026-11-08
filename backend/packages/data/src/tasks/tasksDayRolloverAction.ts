@@ -34,7 +34,8 @@ type CompletedInEventSide = "item_a" | "item_b" | null;
 /**
  * The candidates of one chunk, locked: live, `notDone`, not recurring (no `seriesId`), whose effective day
  * (`effectiveDate` when set, else `date`, until #1780 and #1798 define it fully) is a calendar day before `today`, and
- * visible as in the Tasks today view: `hiddenUntil` empty or before now, and no `completedInEvent` edge. The first pass
+ * visible by the predicate the Tasks today view (#1798) is to use: `hiddenUntil` empty or before now, and no
+ * `completedInEvent` edge. The first pass
  * skips rows another transaction holds and pages by id; the second waits for them.
  */
 async function lockCandidates(

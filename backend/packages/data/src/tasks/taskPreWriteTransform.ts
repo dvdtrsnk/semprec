@@ -40,8 +40,9 @@ export const prepareTaskWrite = async ({
 };
 
 /**
- * `missed` is written only by the Tasks module and the nightly job (issue #1668), both system writers; a user's or an
- * agent's write that names it is refused. Moving away from `missed`, to `done` say, is an ordinary status write.
+ * `missed` is for the Tasks module and the nightly job (#1677), which write as the system (issue #1668): the transform
+ * admits a system writer's `missed` and refuses a user's or an agent's write that names it. Moving away from `missed`,
+ * to `done` say, is an ordinary status write.
  */
 function assertMissedWritable(patch: Record<string, unknown>, writerKind: WriterKind): void {
   if (patch.status === "missed" && writerKind !== "system") {
