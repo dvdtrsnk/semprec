@@ -314,12 +314,78 @@ function startFlushLockHolder(tenantId: string, failBeforeLock?: { value: unknow
   return { actor, held: held.opened, release: () => release.open() };
 }
 
-/** Whether the backend has an open transaction (an actor that has not settled keeps one). */
-async function inTransaction(pid: number): Promise<boolean> {
-  const { rows } = await admin.query<{ open: boolean }>(
-    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1::int AND xact_start IS NOT NULL) AS open",
+/**
+ * The observer's positive control (R2-1): a system transaction on the admin pool, the pool the flush lock
+ * holder uses, held open from `opened` until `end` commits it (`proceed`) or rolls it back (`abort`). It
+ * returns at once with its settlement; the caller ends and settles it on every path.
+ */
+function startHeldTransaction() {
+  const opened = gate();
+  const end = gate();
+  let pid: number | undefined;
+  const actor: Actor = {
+    name: "held transaction",
+    pid: () => pid,
+    expected: (error) => error === ABORTED,
+    settled: settle(
+      runAsSystem("observer positive control", () =>
+        withTransaction(admin, async (client) => {
+          pid = await backendPid(client);
+          opened.open();
+          if ((await end.opened) === "abort") throw ABORTED;
+        }),
+      ),
+    ),
+  };
+  return { actor, opened: opened.opened, end: end.open };
+}
+
+/** A dedicated admin connection that observes the actors' backends, and its own backend pid. */
+interface Observer {
+  client: PoolClient;
+  pid: number;
+}
+
+/**
+ * Runs `observe` with an observation connection checked out first. The observed actors start inside
+ * `observe` and are settled there, before its state assertions. While it runs, no actor can be given the
+ * observer's backend, and no observation can borrow a backend an actor released to the pool, as
+ * `admin.query` could. The observer is released once `observe` ended. A failure of `observe` keeps its
+ * identity (a falsy one too), followed by a release failure.
+ */
+async function withObserver(observe: (observer: Observer) => Promise<void>): Promise<void> {
+  const client = await admin.connect();
+  let primary: { error: unknown } | undefined;
+  try {
+    await observe({ client, pid: await backendPid(client) });
+  } catch (error) {
+    primary = { error };
+  }
+  const cleanup: unknown[] = [];
+  try {
+    client.release();
+  } catch (error) {
+    cleanup.push(error);
+  }
+  if (primary) throwFailure(failureOf(primary, cleanup, "An observed control and its observer release failed"));
+  if (cleanup.length) throwFailure(cleanup[0]);
+}
+
+/**
+ * Whether the actor backend `pid` has an open transaction. An actor that has not settled keeps one.
+ * The observer asserts first that `pid` is not its own backend. It then reads `pg_stat_activity` on
+ * its own connection, and that statement reports the observer's pid as well. Each call is its own
+ * autocommit statement, so it reads a fresh activity snapshot; Postgres holds one until the end of the
+ * transaction that took it.
+ */
+async function inTransaction(observer: Observer, pid: number): Promise<boolean> {
+  expect(pid).not.toBe(observer.pid);
+  const { rows } = await observer.client.query<{ observer: number; open: boolean }>(
+    `SELECT pg_backend_pid() AS observer,
+       EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1::int AND xact_start IS NOT NULL) AS open`,
     [pid],
   );
+  expect(rows[0]?.observer).toBe(observer.pid);
   return rows[0]?.open === true;
 }
 
@@ -984,6 +1050,37 @@ describe("search reindex fan-out (issue #1652)", () => {
     return rows.map((row) => row.id);
   }
 
+  it("sees an exact-owned held transaction open, and closed once it committed and once it rolled back (R2-1 observer control)", async () => {
+    await withObserver(async (observer) => {
+      for (const ending of ["proceed", "abort"] as const) {
+        const held = startHeldTransaction();
+        const order: string[] = [];
+        let pid: number | undefined;
+        let open: boolean | undefined;
+        let primary: { error: unknown } | undefined;
+        try {
+          await ready(held.opened, held.actor, "transaction held");
+          pid = held.actor.pid();
+          if (pid === undefined) throw new Error("Expected the held transaction's backend");
+          open = await inTransaction(observer, pid);
+        } catch (error) {
+          primary = { error };
+        }
+        held.end(primary ? "abort" : ending);
+        const settlement = await settleActors([held.actor], primary, order);
+        if (primary) throwFailure(failureOf(primary, settlement.errors, "The held transaction control failed"));
+        if (settlement.errors.length) throw new AggregateError(settlement.errors, "The held transaction failed");
+        if (pid === undefined) throw new Error("Expected the held transaction's backend");
+        expect(open).toBe(true);
+        expect(order).toEqual(["settled:held transaction"]);
+        expect(await held.actor.settled).toEqual(
+          ending === "proceed" ? { ok: true, value: undefined } : { ok: false, error: ABORTED },
+        );
+        expect(await inTransaction(observer, pid)).toBe(false);
+      }
+    });
+  });
+
   it.each([
     ["an error", new Error("observation failed")],
     ["a falsy value", undefined],
@@ -993,21 +1090,23 @@ describe("search reindex fan-out (issue #1652)", () => {
       const nodes = await relationNodes();
       await runQueued();
       const keysBefore = await reindexKeys();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      const trace = { order: [] as string[], pids: [] as number[] };
-      const outcome = await settle(crossedWrites(nodes, { failObservation: { value }, trace })).finally(() =>
-        setInvalidationHook(() => {}),
-      );
-      expect(outcome.ok).toBe(false);
-      if (outcome.ok) throw new Error("Expected the harness failure");
-      expect(outcome.error).toBe(value);
-      expect(trace.order).toEqual(["settled:flush lock holder", "settled:X", "settled:Y"]);
-      expect(trace.pids).toHaveLength(3);
-      for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
-      expect(await reindexKeys()).toEqual(keysBefore);
-      expect(await sourceItems(nodes.source)).toEqual([]);
-      expect(events).toEqual([]);
+      await withObserver(async (observer) => {
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        const trace = { order: [] as string[], pids: [] as number[] };
+        const outcome = await settle(crossedWrites(nodes, { failObservation: { value }, trace })).finally(() =>
+          setInvalidationHook(() => {}),
+        );
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) throw new Error("Expected the harness failure");
+        expect(outcome.error).toBe(value);
+        expect(trace.order).toEqual(["settled:flush lock holder", "settled:X", "settled:Y"]);
+        expect(trace.pids).toHaveLength(3);
+        for (const pid of trace.pids) expect(await inTransaction(observer, pid)).toBe(false);
+        expect(await reindexKeys()).toEqual(keysBefore);
+        expect(await sourceItems(nodes.source)).toEqual([]);
+        expect(events).toEqual([]);
+      });
     },
   );
 
@@ -1015,17 +1114,19 @@ describe("search reindex fan-out (issue #1652)", () => {
     const nodes = await relationNodes();
     await runQueued();
     const keysBefore = await reindexKeys();
-    const holderFailure = new Error("holder failed before it locked");
-    const trace = { order: [] as string[], pids: [] as number[] };
-    const outcome = await settle(crossedWrites(nodes, { holderFails: { value: holderFailure }, trace }));
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error("Expected the holder's failure");
-    expect(outcome.error).toBe(holderFailure);
-    expect(trace.order).toEqual(["settled:flush lock holder"]);
-    expect(trace.pids).toHaveLength(1);
-    for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
-    expect(await reindexKeys()).toEqual(keysBefore);
-    expect(await sourceItems(nodes.source)).toEqual([]);
+    await withObserver(async (observer) => {
+      const holderFailure = new Error("holder failed before it locked");
+      const trace = { order: [] as string[], pids: [] as number[] };
+      const outcome = await settle(crossedWrites(nodes, { holderFails: { value: holderFailure }, trace }));
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Expected the holder's failure");
+      expect(outcome.error).toBe(holderFailure);
+      expect(trace.order).toEqual(["settled:flush lock holder"]);
+      expect(trace.pids).toHaveLength(1);
+      for (const pid of trace.pids) expect(await inTransaction(observer, pid)).toBe(false);
+      expect(await reindexKeys()).toEqual(keysBefore);
+      expect(await sourceItems(nodes.source)).toEqual([]);
+    });
   });
 
   it("refuses a search write before any effect while the search task identifiers are unregistered, and writes after the bootstrap (R1 D1)", async () => {
@@ -1176,19 +1277,21 @@ describe("search reindex fan-out (issue #1652)", () => {
   );
 
   it("settles the writer and the native worker before restoring the identifiers when the observation fails (R2-1)", async () => {
-    const failure = new Error("registration observation failed");
-    const trace = { order: [] as string[], pids: [] as number[] };
-    const outcome = await settle(mixedRegistration("unregistered", { failObservation: { value: failure }, trace }));
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error("Expected the observation failure");
-    expect(outcome.error).toBe(failure);
-    // Both actors settled before the identifiers were restored, and the aborted writer (which writes only
-    // jobs) left none.
-    expect(trace.order).toEqual(["settled:writer", "settled:worker", "restored"]);
-    expect(trace.pids).toHaveLength(1);
-    for (const pid of trace.pids) expect(await inTransaction(pid)).toBe(false);
-    await expect(assertSearchTaskIdentifiersRegistered(admin)).resolves.toBeUndefined();
-    expect((await allJobs()).filter((job) => job.task_identifier.startsWith("searchFlushProbe"))).toEqual([]);
-    expect(await reindexKeys()).toEqual([]);
+    await withObserver(async (observer) => {
+      const failure = new Error("registration observation failed");
+      const trace = { order: [] as string[], pids: [] as number[] };
+      const outcome = await settle(mixedRegistration("unregistered", { failObservation: { value: failure }, trace }));
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Expected the observation failure");
+      expect(outcome.error).toBe(failure);
+      // Both actors settled before the identifiers were restored, and the aborted writer (which writes only
+      // jobs) left none.
+      expect(trace.order).toEqual(["settled:writer", "settled:worker", "restored"]);
+      expect(trace.pids).toHaveLength(1);
+      for (const pid of trace.pids) expect(await inTransaction(observer, pid)).toBe(false);
+      await expect(assertSearchTaskIdentifiersRegistered(admin)).resolves.toBeUndefined();
+      expect((await allJobs()).filter((job) => job.task_identifier.startsWith("searchFlushProbe"))).toEqual([]);
+      expect(await reindexKeys()).toEqual([]);
+    });
   });
 });
