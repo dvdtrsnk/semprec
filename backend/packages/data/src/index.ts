@@ -467,6 +467,7 @@ export {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
 } from "./tasks/taskRecurrenceRoutes.js";
+export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,

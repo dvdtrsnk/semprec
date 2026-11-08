@@ -371,6 +371,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "task recurrence set", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
+  { name: "task series edit", method: "PATCH", path: `/api/tasks/series/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
   { name: "task recurrence clear", method: "DELETE", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
   {
     name: "journal period ensure",

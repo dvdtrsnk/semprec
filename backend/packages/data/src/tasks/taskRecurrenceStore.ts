@@ -152,6 +152,23 @@ export async function replaceTaskRecurrenceRule(
   return mapRow(requireSingleRow(rows, "task_recurrence series row"));
 }
 
+/**
+ * Stores the merged template of series `seriesId` (issue #1667). Call it holding the series row lock, after locking the
+ * occurrences the series edit writes.
+ */
+export async function updateTaskRecurrenceTemplate(
+  client: PoolClient,
+  seriesId: string,
+  template: TaskRecurrenceTemplate,
+): Promise<void> {
+  const parsed = parseTaskRecurrenceTemplate(template);
+  const result = await client.query("UPDATE task_recurrence SET template = $2::jsonb WHERE series_id = $1::uuid", [
+    seriesId,
+    JSON.stringify(parsed),
+  ]);
+  requireAffectedRows(result, "task_recurrence series row");
+}
+
 /** Turns series `seriesId` off (issue #1665): the row stays, inactive, so the advance creates no next occurrence. */
 export async function deactivateTaskRecurrenceSeries(client: PoolClient, seriesId: string): Promise<void> {
   const result = await client.query("UPDATE task_recurrence SET active = false WHERE series_id = $1::uuid", [seriesId]);

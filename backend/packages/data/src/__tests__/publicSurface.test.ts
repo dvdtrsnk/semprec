@@ -313,6 +313,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createTaskRecurrence",
   "createTaskRecurrenceClearRouteHandler",
   "createTaskRecurrenceSetRouteHandler",
+  "createTaskSeriesPatchRouteHandler",
   "createTranscriptDeleteRouteHandler",
   "createTranscriptListRouteHandler",
   "createTranscriptionRequeueSweepAction",

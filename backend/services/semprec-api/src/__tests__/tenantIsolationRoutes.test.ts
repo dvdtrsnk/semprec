@@ -1466,6 +1466,35 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(result.status).toBe(404);
     expect(await recurrenceState(a, foreign)).toEqual(before);
   },
+  "task series edit": async () => {
+    const seriesOf = async (tenant: TenantFixture): Promise<string> => {
+      const task = await datedTask(tenant);
+      const answer = await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/tasks/${task}/recurrence`,
+        body: { preset: "daily" },
+      });
+      return readString(answer, "properties", "seriesId");
+    };
+    const [own, foreign] = [await seriesOf(b), await seriesOf(a)];
+    const request = (id: string) => ({ method: "PATCH", path: `/api/tasks/series/${id}`, body: { timeFrom: "08:00" } });
+    const answer = await sendOk(b.member, request(own));
+    expect(readString(answer, "seriesId")).toBe(own);
+    const before = await inTenantTransaction(
+      a.tenantId,
+      async (client) =>
+        (await client.query("SELECT template FROM task_recurrence WHERE series_id = $1::uuid", [foreign])).rows,
+    );
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
+    expect(result.status).toBe(404);
+    expect(
+      await inTenantTransaction(
+        a.tenantId,
+        async (client) =>
+          (await client.query("SELECT template FROM task_recurrence WHERE series_id = $1::uuid", [foreign])).rows,
+      ),
+    ).toEqual(before);
+  },
   "task recurrence clear": async () => {
     const [own, foreign] = [await datedTask(b), await datedTask(a)];
     const path = (id: string) => `/api/tasks/${id}/recurrence`;

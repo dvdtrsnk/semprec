@@ -27,6 +27,7 @@ export {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
 } from "../tasks/taskRecurrenceRoutes.js";
+export { createTaskSeriesPatchRouteHandler } from "../tasks/taskSeriesRoutes.js";
 export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
@@ -389,6 +390,14 @@ export const manifest: ModuleManifest = {
       path: "/api/tasks/:id/recurrence",
       handlerExport: "createTaskRecurrenceClearRouteHandler",
       // Deactivating the series and clearing the task's series properties commit together (issue #1665).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "editTaskSeries",
+      method: "PATCH",
+      path: "/api/tasks/series/:seriesId",
+      handlerExport: "createTaskSeriesPatchRouteHandler",
+      // The series template and its open occurrences change together under the occurrence and series locks (issue #1667).
       justification: "transactional-semantics",
     },
     {
