@@ -22,6 +22,7 @@ export {
   createJournalPeriodEnsureRouteHandler,
 } from "../journal/journalRouteHandlers.js";
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
+export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
 export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
@@ -327,6 +328,14 @@ export const manifest: ModuleManifest = {
       fromVersion: "1.0.0",
       toVersion: "1.1.0",
       converterExport: "backfillTaskTimeProperties",
+    },
+    // Issue #1657: repairs dates and times stored before the Tasks write rules existed. The manifest `version`
+    // above was already past 1.2.0 when this transition was added and is not lowered for it.
+    {
+      databaseKey: TASKS_MODULE_ID,
+      fromVersion: "1.1.0",
+      toVersion: "1.2.0",
+      converterExport: "normalizeTaskDatesAndTimes",
     },
   ],
   linkRules: [
