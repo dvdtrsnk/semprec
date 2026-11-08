@@ -13,7 +13,7 @@ import {
   TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
-  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+  TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   transcriptionSourceLink,
@@ -26,6 +26,7 @@ import {
   findIdempotentReplay,
   getTenantUserId,
   getItemById,
+  getSystemTimezone,
   getDatabaseByModuleId,
   lockItemAutomation,
   lockItemById,
@@ -76,10 +77,11 @@ import {
 import { logger } from "./logger.js";
 import { mergeTranscriptSegments, type TranscriptSegment } from "./segmentMerge.js";
 import {
-  buildSummaryRequest,
-  DEFAULT_SUMMARY_INSTRUCTION,
-  parseSummaryContent,
-  type SummaryInstruction,
+  buildMeetingNotesRequest,
+  emptyMeetingNotes,
+  normalizeMeetingNotes,
+  parseMeetingNotesContent,
+  recordingDay,
 } from "./transcriptSummary.js";
 import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
 
@@ -602,8 +604,6 @@ const segmentsSchema = z.array(
   z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
 );
 
-const summaryByInstructionSchema = z.record(z.string(), z.string());
-
 async function requireTranscriptsDatabaseId(client: PoolClient): Promise<string> {
   const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
   if (!transcripts) throw new NotFoundError("Transcripts database not found");
@@ -627,11 +627,9 @@ function requireSegments(transcript: ItemRow): TranscriptSegment[] {
   return parsed.data;
 }
 
-/** The summaries cached so far, or none before step 5 first writes one. */
-function readSummaries(transcript: ItemRow): Record<string, string> {
-  const raw = transcript.computed[TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY];
-  if (raw === undefined) return {};
-  return summaryByInstructionSchema.parse(raw);
+/** Whether step 5 has stored the transcript's `meetingNotes` (issue #1695). */
+function hasMeetingNotes(transcript: ItemRow): boolean {
+  return Object.hasOwn(transcript.computed, TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY);
 }
 
 /**
@@ -686,49 +684,54 @@ async function runMergeStep({
 }
 
 /**
- * Step 5 (`summarize`): calls `gateway.complete()` over the merged transcript for `instruction`
- * and caches the result under the instruction's key in `summaryByInstruction`, next to any other
- * instruction's summary. Bracketed like steps 2 and 3, so no transaction stays open across the
- * gateway call; `segments` is written once by step 4, so the write transaction only has to
- * re-check that no concurrent run cached this instruction first. A transcript with no segments
- * (no speech) gets an empty summary without a paid call.
+ * Step 5 (`summarize`, issue #1695): asks `gateway.complete()` for structured meeting notes over the
+ * merged transcript and stores them, normalized, as `computed.meetingNotes`. The prompt carries the
+ * recording's calendar day and weekday in the tenant's time zone (`Transcripts.date` with
+ * `getSystemTimezone`), so the model can resolve a relative due date. Skipped when `meetingNotes`
+ * already exists, so a retry after a stored result makes no second paid call. Bracketed like steps 2
+ * and 3: the gateway call runs outside any transaction, and the write transaction re-checks the key
+ * under the transcript's row lock, so a concurrent run's notes are kept. A transcript with no
+ * segments (no speech) gets empty notes without a paid call. Older `summaryByInstruction` values are
+ * left as they are; no new one is written.
  */
 async function runSummarizeStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
   summaryClient: AiGatewayClientPort,
-  instruction: SummaryInstruction,
 ): Promise<void> {
   const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
     const transcript = requireTranscript(await getItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
-    if (Object.hasOwn(readSummaries(transcript), instruction.key)) return null;
+    if (hasMeetingNotes(transcript)) return null;
     const language = z.string().nullable().parse(transcript.computed[TRANSCRIPT_LANGUAGE_COMPUTED_KEY]);
-    return { transcriptsDatabaseId, segments: requireSegments(transcript), language };
+    const recordedAt = z.string().nullish().parse(transcript.properties.date) ?? null;
+    const day = recordedAt === null ? null : recordingDay(recordedAt, await getSystemTimezone(client));
+    return { transcriptsDatabaseId, segments: requireSegments(transcript), language, day };
   });
   if (!snapshot) return;
 
-  let summary = "";
+  let notes = emptyMeetingNotes();
   if (snapshot.segments.length > 0) {
-    const result = await summaryClient.complete(buildSummaryRequest(snapshot.segments, snapshot.language, instruction));
-    summary = parseSummaryContent(result.content);
+    const result = await summaryClient.complete(
+      buildMeetingNotesRequest(snapshot.segments, snapshot.language, snapshot.day),
+    );
+    notes = normalizeMeetingNotes(parseMeetingNotesContent(result.content), snapshot.segments);
   }
 
   await withTransaction(pool, async (client) => {
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
-    // Locked, so a concurrent run's summary for another instruction is kept, and one for this instruction wins.
+    // Locked, so notes a concurrent run stored first are kept.
     const transcript = requireTranscript(
       await lockItemById(client, snapshot.transcriptsDatabaseId, transcriptId),
       transcriptId,
     );
-    const summaries = readSummaries(transcript);
-    if (Object.hasOwn(summaries, instruction.key)) return;
+    if (hasMeetingNotes(transcript)) return;
     await writeComputedAndAnnounce(
       client,
       snapshot.transcriptsDatabaseId,
       transcriptId,
-      TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
-      { ...summaries, [instruction.key]: summary },
+      TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
+      notes,
     );
   });
 }
@@ -796,16 +799,18 @@ async function runSuggestSpeakersStep(
 /**
  * Step 8 (`finalize`): sets `status = done` and `item_automation` to `done` (clearing any earlier
  * attempt's `error`) in one transaction, and only once that transaction itself sees the committed
- * `segments` and this instruction's summary — a run that failed before either landed leaves the
+ * `segments` and `meetingNotes` (issue #1695) — a run that failed before either landed leaves the
  * row as the failure handling in `createTranscriptionTask` records it. `status` goes through
  * `updateItemWithClient`, which announces it over the generic realtime channel. A row that is
  * already `done` only has its `item_automation` settled again, since the attempt that reached this
  * step reopened it as `pending`.
  */
-async function runFinalizeStep(
-  { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
-  instruction: SummaryInstruction,
-): Promise<void> {
+async function runFinalizeStep({
+  pool,
+  filesDatabaseId,
+  fileItemId,
+  transcriptId,
+}: TranscriptionStepContext): Promise<void> {
   await withTransaction(pool, async (client) => {
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
@@ -815,11 +820,14 @@ async function runFinalizeStep(
       return;
     }
     requireSegments(transcript);
-    if (!Object.hasOwn(readSummaries(transcript), instruction.key))
-      throw new NotFoundError(`Transcripts item '${transcriptId}' has no '${instruction.key}' summary yet`, {
-        resource: "item",
-        itemId: transcriptId,
-      });
+    if (!hasMeetingNotes(transcript))
+      throw new NotFoundError(
+        `Transcripts item '${transcriptId}' has no '${TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY}' yet`,
+        {
+          resource: "item",
+          itemId: transcriptId,
+        },
+      );
 
     await updateItemWithClient(
       client,
@@ -842,17 +850,16 @@ function createTranscriptionSteps(
   blobStorage: BlobStorageWriter,
   gatewayClient: AudioGatewayClient,
   summaryClient: AiGatewayClientPort,
-  summaryInstruction: SummaryInstruction,
 ): readonly TranscriptionStep[] {
   return [
     (context) => runPrepareStep(context, blobStorage),
     (context) => runDiarizeStep(context, blobStorage, gatewayClient),
     (context) => runAsrStep(context, blobStorage, gatewayClient),
     runMergeStep,
-    (context) => runSummarizeStep(context, summaryClient, summaryInstruction),
+    (context) => runSummarizeStep(context, summaryClient),
     runMatchStep,
     (context) => runSuggestSpeakersStep(context, summaryClient),
-    (context) => runFinalizeStep(context, summaryInstruction),
+    runFinalizeStep,
   ];
 }
 
@@ -1032,14 +1039,12 @@ export function createTranscriptionCreateTask(pool: Pool) {
  * with (issue #185) — both configured via
  * `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from this service to an AI
  * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
- * `summaryInstruction` selects the instruction step 5 summarizes with and step 8 requires.
  */
 export function createTranscriptionTask(
   pool: Pool,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
   gatewayClient?: AudioGatewayClient,
   summaryClient?: AiGatewayClientPort,
-  summaryInstruction: SummaryInstruction = DEFAULT_SUMMARY_INSTRUCTION,
 ) {
   // Constructed lazily (only when a run actually reaches step 2), not as an eagerly-evaluated
   // default parameter: callers who omit `gatewayClient` and never run a job that reaches
@@ -1074,12 +1079,7 @@ export function createTranscriptionTask(
       shutdownRequested: () => helpers.abortSignal?.aborted === true,
     };
 
-    const transcriptionSteps = createTranscriptionSteps(
-      blobStorage,
-      resolveGatewayClient(),
-      resolveSummaryClient(),
-      summaryInstruction,
-    );
+    const transcriptionSteps = createTranscriptionSteps(blobStorage, resolveGatewayClient(), resolveSummaryClient());
     try {
       for (const step of transcriptionSteps) {
         throwIfShutdownRequested(context, "between steps");

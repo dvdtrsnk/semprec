@@ -16,6 +16,8 @@ import { readBlobId } from "./transcriptionActions.js";
 import { readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
 import { transcriptSpeakerCardContextSchema } from "./transcriptSpeakerCardContext.js";
 import { listTranscriptSpeakers, type TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
+import { parseStoredMeetingNotes, renderMeetingNotes } from "./meetingNotesRendering.js";
+import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 
 const segmentsSchema = z.array(
   z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
@@ -45,7 +47,8 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
   const transcript = transcripts && (await getItemById(client, transcripts.id, transcriptId));
   if (!transcript || transcript.deletedAt || !transcripts) throw new NotFoundError("Transcript not found");
   const segments = segmentsSchema.parse(transcript.computed.segments ?? []);
-  const labels = await labelTranscriptSpeakers(await listTranscriptSpeakers(client, transcriptId, transcript), locale);
+  const transcriptSpeakers = await listTranscriptSpeakers(client, transcriptId, transcript);
+  const labels = await labelTranscriptSpeakers(transcriptSpeakers, locale);
   const speakers = labels.map(({ speaker, ordinal, label, personId }) => {
     const first = segments.find((segment) => segment.speaker === speaker);
     if (!first) throw new Error("Speaker has no segment");
@@ -127,6 +130,9 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
       language: z.string().nullish(),
     })
     .parse(transcript.computed);
+  // Issue #1695: rendered from the stored notes and the current speaker edges on every read.
+  const storedNotes = parseStoredMeetingNotes(transcript.computed[TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY]);
+  const meetingNotes = storedNotes ? await renderMeetingNotes(storedNotes, transcriptSpeakers, locale) : null;
   return {
     id: transcript.id,
     displayName: properties.name ?? null,
@@ -137,7 +143,7 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
     speakerCount: speakers.length,
     speakers,
     segments: renderedSegments,
-    meetingNotes: null,
+    meetingNotes,
     notes: properties.notes ?? null,
     event,
     playback,

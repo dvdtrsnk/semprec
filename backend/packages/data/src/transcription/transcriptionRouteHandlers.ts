@@ -197,9 +197,10 @@ export function createTranscriptDetailRouteHandler(pool: Pool) {
 
 const transcriptListCursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }).nullable(), id: z.uuid() }).strict();
 
-/** The request context of `GET /api/transcripts`: its query string is read from the request URL. */
+/** The request context of `GET /api/transcripts`: its query string is read from the request URL, the labels' locale from the user. */
 interface TranscriptListRouteRequestContext {
   req: { url?: string };
+  identity: { user: { locale: string } };
 }
 
 function readTranscriptListCursor(raw: string | null): TranscriptListCursor | null {
@@ -255,6 +256,7 @@ export function createTranscriptListRouteHandler(pool: Pool) {
         order: rawOrder,
         cursor,
         filters: { eventId, personId, projectId, pairing },
+        locale: ctx.identity.user.locale,
       }),
     );
     const page = rows.slice(0, limit);

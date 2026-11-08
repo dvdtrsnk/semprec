@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { Queryable } from "../db/pool.js";
 import { ITEM_AUTOMATION_ERROR_CODES, ITEM_AUTOMATION_STATUSES } from "../library/itemAutomationStore.js";
+import { parseStoredMeetingNotes, renderMeetingNotes } from "./meetingNotesRendering.js";
+import type { TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
 
 export const TRANSCRIPT_PAIRINGS = ["processing", "event", "awaitingEvent", "none"] as const;
 export type TranscriptPairing = (typeof TRANSCRIPT_PAIRINGS)[number];
@@ -32,6 +34,10 @@ const rowSchema = z.object({
   proposalId: z.uuid().nullable(),
   questions: z.array(z.object({ proposalId: z.uuid(), speaker: z.string() })),
   speakerKeys: z.array(z.string()).nullable(),
+  meetingNotes: z.unknown(),
+  mappedSpeakers: z
+    .array(z.object({ speaker: z.string(), personId: z.uuid(), name: z.string().nullable() }))
+    .nullable(),
   automation: z
     .object({
       status: z.enum(ITEM_AUTOMATION_STATUSES),
@@ -65,7 +71,14 @@ const rowSchema = z.object({
  */
 export async function listTranscriptsPage(
   client: Queryable,
-  input: { limit: number; order: "asc" | "desc"; cursor: TranscriptListCursor | null; filters: TranscriptListFilters },
+  input: {
+    limit: number;
+    order: "asc" | "desc";
+    cursor: TranscriptListCursor | null;
+    filters: TranscriptListFilters;
+    /** The reader's locale, for the speaker labels of the rendered notes text. */
+    locale: string;
+  },
 ) {
   // `direction` and `after` come from the closed union `input.order`, never from request text.
   const direction = input.order === "asc" ? "ASC" : "DESC";
@@ -90,7 +103,7 @@ WITH schema_ids AS (
 ), linked AS (
   -- Every live endpoint of a transcript's event, speakers, people and project edges.
   SELECT tr.key, CASE WHEN tr.transcript_is_a THEN r.item_a ELSE r.item_b END AS transcript_id, target.id AS target_id,
-    target.properties AS target_properties
+    target.properties AS target_properties, r.metadata
   FROM transcript_relation tr
   JOIN item_relations r ON r.tenant_id = app_tenant_default() AND r.relation_definition_id = tr.id
   JOIN items target ON target.tenant_id = app_tenant_default()
@@ -151,7 +164,13 @@ SELECT jsonb_build_object(
   'event', CASE WHEN p.event_id IS NULL THEN NULL ELSE jsonb_build_object('id', p.event_id, 'name', p.event_name) END,
   'proposalId', CASE WHEN p.pairing = 'awaitingEvent' THEN p.awaiting_id END,
   'questions', COALESCE(questions.value, '[]'::jsonb),
-  'speakerKeys', CASE WHEN questions.value IS NOT NULL THEN (
+  'meetingNotes', p.computed->'meetingNotes',
+  'mappedSpeakers', CASE WHEN p.computed ? 'meetingNotes' THEN (
+    SELECT COALESCE(jsonb_agg(jsonb_build_object('speaker', l.metadata->>'speaker', 'personId', l.target_id,
+      'name', CASE WHEN jsonb_typeof(l.target_properties->'name') = 'string' THEN l.target_properties->>'name' END)
+      ORDER BY l.target_id), '[]'::jsonb)
+    FROM linked l WHERE l.key = 'speakers' AND l.transcript_id = p.id AND jsonb_typeof(l.metadata->'speaker') = 'string') END,
+  'speakerKeys', CASE WHEN questions.value IS NOT NULL OR p.computed ? 'meetingNotes' THEN (
     SELECT COALESCE(jsonb_agg(s.speaker ORDER BY s.first), '[]'::jsonb)
     FROM (SELECT segment.value->>'speaker' AS speaker, min(segment.ordinality) AS first
           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.computed->'segments') = 'array' THEN p.computed->'segments' ELSE '[]'::jsonb END)
@@ -187,34 +206,60 @@ ORDER BY p.sort_at IS NULL, p.sort_at ${direction}, p.id ${direction}
       input.filters.projectId,
     ],
   );
-  return result.rows.map((row) => {
-    const parsed = rowSchema.parse(row.row);
-    const keys = parsed.speakerKeys ?? [];
-    const questions = parsed.questions
-      .map((question) => {
-        const index = keys.indexOf(question.speaker);
-        return { proposalId: question.proposalId, speaker: question.speaker, ordinal: index < 0 ? null : index + 1 };
-      })
-      .sort(
-        (left, right) =>
-          (left.ordinal ?? Number.MAX_SAFE_INTEGER) - (right.ordinal ?? Number.MAX_SAFE_INTEGER) ||
-          (left.proposalId < right.proposalId ? -1 : left.proposalId > right.proposalId ? 1 : 0),
-      );
+  const rows = result.rows.map((row) => rowSchema.parse(row.row));
+  return Promise.all(
+    rows.map(async (parsed) => {
+      const keys = parsed.speakerKeys ?? [];
+      const questions = parsed.questions
+        .map((question) => {
+          const index = keys.indexOf(question.speaker);
+          return { proposalId: question.proposalId, speaker: question.speaker, ordinal: index < 0 ? null : index + 1 };
+        })
+        .sort(
+          (left, right) =>
+            (left.ordinal ?? Number.MAX_SAFE_INTEGER) - (right.ordinal ?? Number.MAX_SAFE_INTEGER) ||
+            (left.proposalId < right.proposalId ? -1 : left.proposalId > right.proposalId ? 1 : 0),
+        );
+      return {
+        cursor: { at: parsed.sortAt, id: parsed.id },
+        transcript: {
+          id: parsed.id,
+          displayName: parsed.name,
+          date: parsed.date,
+          durationSeconds: parsed.durationSeconds,
+          status: parsed.status,
+          pairing: parsed.pairing,
+          event: parsed.event,
+          proposalId: parsed.proposalId,
+          shortSummary: await renderShortSummary(parsed, keys, input.locale),
+          openQuestions: { count: questions.length, first: questions[0] ?? null },
+          automation: parsed.automation,
+        },
+      };
+    }),
+  );
+}
+
+/**
+ * Issue #1695: the stored notes' short summary rendered with `renderMeetingNotes`, from the speaker
+ * keys and the mapped speakers the same statement returned, so it costs no further query; `null`
+ * without notes.
+ */
+async function renderShortSummary(
+  row: z.infer<typeof rowSchema>,
+  speakerKeys: string[],
+  locale: string,
+): Promise<string | null> {
+  const notes = parseStoredMeetingNotes(row.meetingNotes ?? undefined);
+  if (!notes) return null;
+  const mapped = new Map((row.mappedSpeakers ?? []).map((entry) => [entry.speaker, entry]));
+  const speakers: TranscriptSpeaker[] = speakerKeys.map((speaker, index) => {
+    const person = mapped.get(speaker);
     return {
-      cursor: { at: parsed.sortAt, id: parsed.id },
-      transcript: {
-        id: parsed.id,
-        displayName: parsed.name,
-        date: parsed.date,
-        durationSeconds: parsed.durationSeconds,
-        status: parsed.status,
-        pairing: parsed.pairing,
-        event: parsed.event,
-        proposalId: parsed.proposalId,
-        shortSummary: null,
-        openQuestions: { count: questions.length, first: questions[0] ?? null },
-        automation: parsed.automation,
-      },
+      speaker,
+      ordinal: index + 1,
+      person: person ? { id: person.personId, name: person.name && person.name.length > 0 ? person.name : null } : null,
     };
   });
+  return (await renderMeetingNotes(notes, speakers, locale)).shortSummary;
 }

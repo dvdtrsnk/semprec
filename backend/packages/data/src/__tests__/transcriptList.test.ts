@@ -170,8 +170,11 @@ describe("GET /api/transcripts (issue #1636)", () => {
     return { cp, db, transcript, relate, item, pairingCard, speakerCards, cardsOf, reject };
   }
 
-  const list = (query = "", pool: Pool = runtime) =>
-    createTranscriptListRouteHandler(pool)({ req: { url: `/api/transcripts${query}` } });
+  const list = (query = "", pool: Pool = runtime, locale = "en") =>
+    createTranscriptListRouteHandler(pool)({
+      req: { url: `/api/transcripts${query}` },
+      identity: { user: { locale } },
+    });
 
   /** A pool whose connections record every statement they run, to count what one list request issues. */
   function recordingPool(statements: string[]): Pool {
