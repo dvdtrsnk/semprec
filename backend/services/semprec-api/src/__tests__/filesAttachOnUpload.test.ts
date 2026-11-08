@@ -420,6 +420,20 @@ async function onlyBlobId(tenant: TenantFixture): Promise<string> {
   return id;
 }
 
+/**
+ * The stored bytes `paused` holds beyond `preRequest`, the bytes stored before a paused upload started: exactly
+ * one file, that upload's own streamed copy of `body`, with every other file as it was. Returns its key.
+ */
+function onlyInFlightCopy(preRequest: Record<string, string>, paused: Record<string, string>, body: Buffer): string {
+  const extra = Object.keys(paused).filter((key) => !Object.hasOwn(preRequest, key));
+  expect(extra).toHaveLength(1);
+  const [key] = extra;
+  if (key === undefined) throw new Error("no in-flight copy");
+  expect(paused[key]).toBe(createHash("sha256").update(body).digest("hex"));
+  expect(Object.fromEntries(Object.entries(paused).filter(([other]) => other !== key))).toEqual(preRequest);
+  return key;
+}
+
 /** The ids of `tenant`'s blobs. */
 async function blobIdsOf(tenant: TenantFixture): Promise<string[]> {
   return runInTenant(tenant.tenantId, async () =>
@@ -1147,8 +1161,11 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       const file = itemBody.parse(JSON.parse(filed.text));
 
       // The upload pauses at its Files item reservation: after the deduplicating lookup found the live item.
+      // Every stored byte file before the request starts, once all fixture uploads have finished.
+      const preRequestBytes = await storedBytes();
       const gate = pauseAtReservationOf(file.id);
       const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+      let inFlightKey: string | undefined;
       let primary: { error: unknown } | undefined;
       let before: Awaited<ReturnType<typeof storedState>> | undefined;
       let jobsBefore: unknown[] = [];
@@ -1161,6 +1178,9 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         const trashed = await within(trashing, 10_000, "Trashing the Files item while the upload is paused");
         if (!trashed.ok) throw trashed.error;
         before = await storedState(a);
+        // The deliberate writer stored or removed no byte file; the one file beyond the pre-request bytes is the
+        // paused upload's own streamed copy.
+        inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, bytes);
         jobsBefore = await queuedJobs();
         marked = invalidations.length;
         gate.release();
@@ -1182,12 +1202,15 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         }
       }
       settle(primary, failures);
-      if (!uploaded || !before) throw new Error("The paused upload did not settle");
+      if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
       if (!uploaded.ok) throw uploaded.error;
 
       expect(uploaded.value.status).toBe(409);
       expect(conflictCode(uploaded.value, [file.id, record])).toBe("upload_attach_conflict");
-      expect(await storedState(a)).toEqual(before);
+      // The writer's rows with the pre-request bytes: the upload's streamed copy is gone, every other file intact.
+      const after = await storedState(a);
+      expect(after).toEqual({ ...before, bytes: preRequestBytes });
+      expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
       expect(await queuedJobs()).toEqual(jobsBefore);
       expect(invalidations.slice(marked)).toEqual([]);
     },
@@ -1218,8 +1241,11 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       expect(otherBlobId).not.toBe(uploadedBlobId);
 
       // The upload pauses at its Files item reservation: after the deduplicating lookup found the item filing B.
+      // Every stored byte file before the request starts, once all fixture uploads have finished.
+      const preRequestBytes = await storedBytes();
       const gate = pauseAtReservationOf(file.id);
       const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
+      let inFlightKey: string | undefined;
       let primary: { error: unknown } | undefined;
       let before: Awaited<ReturnType<typeof storedState>> | undefined;
       let jobsBefore: QueuedJob[] = [];
@@ -1241,6 +1267,9 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         const patched = await within(patching, 10_000, "Repointing the Files item while the upload is paused");
         if (!patched.ok) throw patched.error;
         before = await storedState(a);
+        // The deliberate writer stored or removed no byte file; the one file beyond the pre-request bytes is the
+        // paused upload's own streamed copy.
+        inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, bytes);
         jobsBefore = await queuedJobs();
         marked = invalidations.length;
         gate.release();
@@ -1262,16 +1291,18 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         }
       }
       settle(primary, failures);
-      if (!uploaded || !before) throw new Error("The paused upload did not settle");
+      if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
       if (!uploaded.ok) throw uploaded.error;
 
       expect(uploaded.value.status).toBe(409);
       expect(conflictCode(uploaded.value, [file.id, record, uploadedBlobId, otherBlobId])).toBe(
         "upload_attach_conflict",
       );
-      // Exactly the state the PATCH left: the item still files C, no edge was added or changed, and the upload's
-      // streamed copy of B's bytes is gone again while B's own bytes stay.
-      expect(await storedState(a)).toEqual(before);
+      // Exactly the rows the PATCH left, with the pre-request bytes: the item still files C, no edge was added or
+      // changed, and the upload's streamed copy of B's bytes is gone again while B's own bytes stay.
+      const after = await storedState(a);
+      expect(after).toEqual({ ...before, bytes: preRequestBytes });
+      expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
       expect(await queuedJobs()).toEqual(jobsBefore);
       expect(invalidations.slice(marked)).toEqual([]);
       const repointed = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
@@ -1282,10 +1313,12 @@ describe("attach reservations never wait while the upload holds its blob (batch 
 
   it("answers the same 404 when the target is trashed after the pre-check and before its reservation, and stores nothing", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
+    const body = PDF("target trashed");
+    // Every stored byte file before the request starts.
+    const preRequestBytes = await storedBytes();
     const gate = pauseAtReservationOf(record);
-    const uploading = outcomeOf(
-      upload(a, { body: PDF("target trashed"), targetItemId: record, relationKey: "healthRecords" }),
-    );
+    const uploading = outcomeOf(upload(a, { body, targetItemId: record, relationKey: "healthRecords" }));
+    let inFlightKey: string | undefined;
     let primary: { error: unknown } | undefined;
     let before: Awaited<ReturnType<typeof storedState>> | undefined;
     let jobsBefore: unknown[] = [];
@@ -1298,6 +1331,9 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       const trashed = await within(trashing, 10_000, "Trashing the target while the upload is paused");
       if (!trashed.ok) throw trashed.error;
       before = await storedState(a);
+      // The trash stored or removed no byte file; the one file beyond the pre-request bytes is the paused upload's
+      // own streamed copy.
+      inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, body);
       jobsBefore = await queuedJobs();
       marked = invalidations.length;
       gate.release();
@@ -1319,7 +1355,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       }
     }
     settle(primary, failures);
-    if (!uploaded || !before) throw new Error("The paused upload did not settle");
+    if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
     if (!uploaded.ok) throw uploaded.error;
 
     expect(uploaded.value.status).toBe(404);
@@ -1330,7 +1366,10 @@ describe("attach reservations never wait while the upload holds its blob (batch 
       relationKey: "healthRecords",
     });
     expect(uploaded.value).toEqual(unknown);
-    expect(await storedState(a)).toEqual(before);
+    // The trash's rows with the pre-request bytes: the new file, its blob and its streamed bytes are gone.
+    const after = await storedState(a);
+    expect(after).toEqual({ ...before, bytes: preRequestBytes });
+    expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
     expect(await queuedJobs()).toEqual(jobsBefore);
     expect(invalidations.slice(marked)).toEqual([]);
   });
