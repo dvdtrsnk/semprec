@@ -550,13 +550,15 @@ export async function seedTenDatabasesInTransaction(
     owner: "user",
     inverse: { key: "events", name: "Events", owner: "user" },
   });
-  // Events -> People: one-directional only (People's own relation list doesn't name Events).
+  // Events <-> People: an Event's participants, read from the person as `People.events` (issue #1664). Populated
+  // installs get the inverse from `calendar/peopleEventsInverseCutoverMigration.ts`.
   await relate({
     sourceDatabaseId: events.id,
     key: "people",
     name: "People",
     targetDatabaseId: people.id,
     cardinality: "many_to_many",
+    inverse: { key: "events", name: "Events" },
   });
   // Events <-> Transcripts: explicit bidirectional. One Event has many transcripts (the parts of one
   // meeting, each with its own summary); a transcript has at most one Event. `property_id_a` is
