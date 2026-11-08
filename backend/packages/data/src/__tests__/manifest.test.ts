@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry, type ModuleDatabaseProjection } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -28,6 +28,10 @@ import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../systemSettings.js";
+import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { parseFilterNode, type FilterNode } from "../views/filterTree.js";
+import type { PropertyRow } from "../types.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
 
@@ -731,6 +735,227 @@ describe("number filter presets in the schema projection (issue #1622)", () => {
       const valid = { filterPresets: [{ value: 15, op: "lte", labelKey: "k", label: "Up to 15 min" }], default: 10 };
       const { property } = await cp.updatePropertyWithDatabase(prep.id, { config: valid });
       expect(property.config).toEqual(valid);
+    });
+  });
+});
+
+/** The property keys a filter tree names, each with the hop path that leads to its database. */
+function filterKeys(node: FilterNode): string[][] {
+  if (node.type === "and" || node.type === "or") return node.nodes.flatMap(filterKeys);
+  if (node.type === "not") return filterKeys(node.node);
+  if (node.type === "relation_path_contains") return [[node.path[0]], [node.path[0], node.path[1]]];
+  if (node.type === "date_relative" && node.endProperty !== undefined) return [[node.property], [node.endProperty]];
+  return [[node.property]];
+}
+
+/**
+ * Every property key a manifest's view hints name (issue #1647) that the seeded database of the same key
+ * does not have, as `<database>.<where>: <key path>`. Filters are parsed with the data package's own
+ * filter schema first, so a tree that does not parse is reported too.
+ */
+async function unknownReferencedKeys(
+  client: Parameters<typeof listPropertiesByDatabase>[0],
+  databases: ModuleDatabaseProjection[],
+): Promise<string[]> {
+  const unknown: string[] = [];
+  const propertiesOf = async (moduleId: string): Promise<PropertyRow[] | null> => {
+    const database = await getDatabaseByModuleId(client, moduleId);
+    return database ? listPropertiesByDatabase(client, database.id) : null;
+  };
+  const hasKeyPath = async (properties: PropertyRow[], path: string[]): Promise<boolean> => {
+    const [head, ...rest] = path;
+    const property = properties.find((candidate) => candidate.key === head);
+    if (!property) return false;
+    if (rest.length === 0) return true;
+    const target = property.config.targetDatabaseId;
+    if (typeof target !== "string") return false;
+    return hasKeyPath(await listPropertiesByDatabase(client, target), rest);
+  };
+  for (const db of databases) {
+    const properties = await propertiesOf(db.key);
+    if (!properties) {
+      unknown.push(`${db.key}: no seeded database`);
+      continue;
+    }
+    const trees: [string, unknown][] = [
+      ...(db.quickFilters ?? []).flatMap((chip): [string, unknown][] =>
+        chip.filter === undefined ? [] : [[`quickFilters.${chip.key}`, chip.filter]],
+      ),
+      ...(db.collectionFilter === undefined ? [] : [["collectionFilter", db.collectionFilter] as [string, unknown]]),
+      ...(db.pickerFilter === undefined ? [] : [["pickerFilter", db.pickerFilter] as [string, unknown]]),
+    ];
+    for (const [where, tree] of trees) {
+      for (const path of filterKeys(parseFilterNode(tree))) {
+        if (!(await hasKeyPath(properties, path))) unknown.push(`${db.key}.${where}: ${path.join(".")}`);
+      }
+    }
+    const sorts: [string, string][] = [
+      ...(db.quickFilters ?? []).flatMap((chip) =>
+        (chip.sort ?? []).map((spec): [string, string] => [`quickFilters.${chip.key}.sort`, spec.property]),
+      ),
+      ...(db.defaultSort === undefined ? [] : [["defaultSort", db.defaultSort.property] as [string, string]]),
+    ];
+    for (const [where, key] of sorts) {
+      if (!(await hasKeyPath(properties, [key]))) unknown.push(`${db.key}.${where}: ${key}`);
+    }
+  }
+  return unknown;
+}
+
+describe("quick filters, default sorts and collection and picker filters (issue #1647)", () => {
+  let runtimePool: Pool;
+  let tenant: string;
+  let registry: ModuleRegistry;
+
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    registry = await loadFullModuleRegistry();
+  });
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    tenant = await createTestTenant(pool);
+    await runInTenant(tenant, () => seedSystem(runtimePool));
+  });
+  afterAll(async () => {
+    await runtimePool?.end();
+    await pool?.end();
+  });
+
+  async function schema(locale: "cs" | "en") {
+    return runInTenant(tenant, () =>
+      withTransaction(runtimePool, (client) => generateSchemaProjection(client, registry, { locale })),
+    );
+  }
+
+  it("names only property keys the seeded databases have, and reports one they do not", async () => {
+    const declared = await registry.getDatabases();
+    const withHints = declared.filter((db) => db.quickFilters !== undefined || db.defaultSort !== undefined);
+    expect(withHints.length).toBe(8);
+    expect(
+      await runInTenant(tenant, () =>
+        withTransaction(runtimePool, (client) => unknownReferencedKeys(client, declared)),
+      ),
+    ).toEqual([]);
+
+    const projects = declared.find((db) => db.key === "projects");
+    if (!projects) throw new Error("Projects is not declared");
+    const misspelled: ModuleDatabaseProjection = {
+      ...projects,
+      quickFilters: [{ key: "typo", labelKey: "x", filter: { type: "in", property: "stauts", value: ["done"] } }],
+      defaultSort: { property: "deadline", direction: "asc" },
+      pickerFilter: { type: "not", node: { type: "is_empty", property: "systemActiv" } },
+    };
+    expect(
+      await runInTenant(tenant, () =>
+        withTransaction(runtimePool, (client) => unknownReferencedKeys(client, [misspelled])),
+      ),
+    ).toEqual([
+      "projects.quickFilters.typo: stauts",
+      "projects.pickerFilter: systemActiv",
+      "projects.defaultSort: deadline",
+    ]);
+  });
+
+  it.each([
+    ["en", { active: "Active", toRead: "To read", past: "Overdue", noDate: "No due date", recent: "Recent" }],
+    ["cs", { active: "Aktivní", toRead: "Chci číst", past: "Po termínu", noDate: "Bez termínu", recent: "Nedávné" }],
+  ] as const)("projects localized chips and date labels for %s", async (locale, labels) => {
+    const { databases } = await schema(locale);
+    const byKey = new Map(databases.map((db) => [db.key, db]));
+    expect(byKey.get("projects")?.quickFilters[0]).toEqual({
+      key: "active",
+      label: labels.active,
+      filter: { type: "in", property: "status", value: ["inProgress", "longTerm"] },
+      isDefault: true,
+    });
+    expect(byKey.get("projects")?.dateLabels).toEqual({ past: labels.past, noDate: labels.noDate });
+    const books = byKey.get("books")?.quickFilters ?? [];
+    expect(books.find((chip) => chip.key === "toRead")).toEqual({
+      key: "toRead",
+      label: labels.toRead,
+      filter: { type: "in", property: "status", value: ["toRead"] },
+      isDefault: false,
+    });
+    expect(books.filter((chip) => chip.isDefault)).toEqual([]);
+    expect(byKey.get("files")?.quickFilters.find((chip) => chip.key === "recent")).toEqual({
+      key: "recent",
+      label: labels.recent,
+      filter: { type: "date_relative", property: "date", preset: "last30" },
+      isDefault: false,
+    });
+    for (const key of ["events", "tasks"]) {
+      expect(byKey.get(key)?.defaultSort, key).toEqual({ property: "date", direction: "asc" });
+    }
+    // Every chip label is resolved text, never its catalog key.
+    for (const db of databases) {
+      for (const chip of db.quickFilters) expect(chip.label, `${db.key}.${chip.key}`).not.toMatch(/^quickFilter\./);
+    }
+  });
+
+  it("gives a database without declarations, and a user-created one, empty quick filters and nothing else", async () => {
+    const userDatabase = await runInTenant(tenant, () =>
+      createChokePoint(runtimePool).createDatabase({ name: "Recipes" }),
+    );
+    const { databases } = await schema("en");
+    for (const db of databases.filter(
+      (candidate) => candidate.key === "companies" || candidate.databaseId === userDatabase.id,
+    )) {
+      expect(db.quickFilters, db.name).toEqual([]);
+      for (const field of ["dateLabels", "collectionFilter", "pickerFilter"]) {
+        expect(Object.hasOwn(db, field), `${db.name}.${field}`).toBe(false);
+      }
+    }
+    expect(databases.some((db) => db.databaseId === userDatabase.id)).toBe(true);
+  });
+
+  it("queries Projects with the projected collection and picker filters, and links a task to a done project", async () => {
+    const { databases } = await schema("en");
+    const projectsSchema = databases.find((db) => db.key === "projects");
+    if (!projectsSchema?.collectionFilter || !projectsSchema.pickerFilter) throw new Error("Projects filters missing");
+    const { collectionFilter, pickerFilter } = projectsSchema;
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(runtimePool);
+      const projectsId = projectsSchema.databaseId;
+      const create = async (properties: Record<string, unknown>) =>
+        (await cp.createItem({ databaseId: projectsId, properties: { name: "Project", ...properties } })).id;
+      const active = await create({ status: "inProgress" });
+      const longTerm = await create({ status: "longTerm" });
+      const done = await create({ status: "done" });
+      const archived = await create({ status: "archived" });
+      const noStatus = await create({ status: null });
+      const system = await create({ status: "inProgress", systemActive: true });
+      const deactivated = await create({ status: "inProgress", systemActive: false });
+      const ids = async (filter: unknown) =>
+        new Set((await cp.queryDatabaseItems(projectsId, { filter, limit: 200 })).items.map((item) => item.id));
+
+      const collection = await ids(collectionFilter);
+      for (const id of [active, longTerm, done, archived, noStatus]) expect(collection.has(id)).toBe(true);
+      expect(collection.has(system)).toBe(false);
+      expect(collection.has(deactivated)).toBe(false);
+      // The seeded system-module projects are not user projects either.
+      const all = await ids(undefined);
+      const seeded = [...all].filter(
+        (id) => ![active, longTerm, done, archived, noStatus, system, deactivated].includes(id),
+      );
+      expect(seeded.length).toBeGreaterThan(0);
+      for (const id of seeded) expect(collection.has(id)).toBe(false);
+
+      const picker = await ids(pickerFilter);
+      expect([...picker].sort()).toEqual([active, longTerm, noStatus].sort());
+
+      // The picker filter is a read hint: a done project stays a valid relation target.
+      const tasks = await withTransaction(runtimePool, (client) => getDatabaseByModuleId(client, "tasks"));
+      if (!tasks) throw new Error("Tasks not seeded");
+      const projectProperty = (await cp.listProperties(tasks.id)).find((property) => property.key === "project");
+      if (!projectProperty) throw new Error("Tasks.project not seeded");
+      const task = await cp.createItem({ databaseId: tasks.id, properties: { name: "Task" } });
+      const edge = await cp.createRelation({
+        relationPropertyId: projectProperty.id,
+        callerItemId: task.id,
+        targetItemId: done,
+      });
+      expect([edge.itemA, edge.itemB].sort()).toEqual([task.id, done].sort());
     });
   });
 });

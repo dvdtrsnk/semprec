@@ -65,6 +65,34 @@ interface SchemaProjectionBody {
   agentTools: { moduleId: string; name: string; label: string }[];
 }
 
+const sortSpec = z.union([
+  z.strictObject({ property: z.string(), direction: z.enum(["asc", "desc"]) }),
+  z.strictObject({ system: z.enum(["createdAt", "updatedAt"]), direction: z.enum(["asc", "desc"]) }),
+]);
+
+/** The view-hint fields of `/api/schema` (issues #1647, #1995), parsed rather than cast. */
+const viewHintsBody = z.object({
+  databases: z.array(
+    z.object({
+      databaseId: z.string(),
+      key: z.string().nullable(),
+      quickFilters: z.array(
+        z.strictObject({
+          key: z.string(),
+          label: z.string(),
+          filter: z.record(z.string(), z.unknown()).optional(),
+          sort: z.array(sortSpec).optional(),
+          isDefault: z.boolean(),
+        }),
+      ),
+      defaultSort: sortSpec.optional(),
+      dateLabels: z.strictObject({ past: z.string(), noDate: z.string() }).optional(),
+      collectionFilter: z.record(z.string(), z.unknown()).optional(),
+      pickerFilter: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
+});
+
 describe("createSchemaRequestListener (issue #147)", () => {
   let server: Server;
   let baseUrl: string;
@@ -830,6 +858,51 @@ describe("createSchemaRequestListener (issue #147)", () => {
     const body = (await res.json()) as SchemaProjectionBody;
     expect(body.viewTypes).toEqual(expect.arrayContaining([{ key: "gallery", name: "Gallery" }]));
   });
+
+  it.each([
+    ["en", { active: "Active", toRead: "To read", past: "Overdue", noDate: "No due date" }],
+    ["cs", { active: "Aktivní", toRead: "Chci číst", past: "Po termínu", noDate: "Bez termínu" }],
+  ] as const)(
+    "serves quick filters with %s labels, the declared date sorts and no hints for a user-created database (issue #1647)",
+    async (locale, labels) => {
+      const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
+      const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
+      expect(res.status).toBe(200);
+      const body = viewHintsBody.parse(await res.json());
+      const byKey = new Map(body.databases.map((db) => [db.key, db]));
+      const projects = byKey.get("projects");
+      expect(projects?.quickFilters.map((chip) => chip.key)).toEqual(["active", "done", "archived", "all"]);
+      expect(projects?.quickFilters[0]).toEqual({
+        key: "active",
+        label: labels.active,
+        filter: { type: "in", property: "status", value: ["inProgress", "longTerm"] },
+        isDefault: true,
+      });
+      expect(projects?.dateLabels).toEqual({ past: labels.past, noDate: labels.noDate });
+      expect(projects?.collectionFilter).toEqual({ type: "is_empty", property: "systemActive" });
+      const books = byKey.get("books")?.quickFilters ?? [];
+      expect(books.find((chip) => chip.key === "toRead")).toEqual({
+        key: "toRead",
+        label: labels.toRead,
+        filter: { type: "in", property: "status", value: ["toRead"] },
+        isDefault: false,
+      });
+      expect(books.filter((chip) => chip.isDefault)).toEqual([]);
+      for (const key of ["events", "tasks"]) {
+        expect(byKey.get(key)?.defaultSort, key).toEqual({ property: "date", direction: "asc" });
+      }
+      expect(byKey.get("files")?.quickFilters.find((chip) => chip.key === "recent")?.filter).toEqual({
+        type: "date_relative",
+        property: "date",
+        preset: "last30",
+      });
+      const user = body.databases.find((db) => db.databaseId === custom.id);
+      expect(user?.quickFilters).toEqual([]);
+      for (const field of ["dateLabels", "collectionFilter", "pickerFilter"] as const) {
+        expect(user?.[field], field).toBeUndefined();
+      }
+    },
+  );
 
   it("ignores a query-parameter locale override — locale comes only from users.locale", async () => {
     const res = await fetch(`${baseUrl}/api/schema?locale=cs`, { headers: await authHeader("en") });

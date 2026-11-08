@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry, type ModuleDatabaseProjection } from "@semprec/module-registry";
+import { filterNodeSchema } from "../views/filterTree.js";
+import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
@@ -21,6 +23,7 @@ const SCHEMA_CORE_PATH = manifestPath("chokePoint/schemaCoreModuleManifest.js");
 const VIEWS_PATH = manifestPath("views/viewsModuleManifest.js");
 const DOCS_PATH = manifestPath("docs/docsModuleManifest.js");
 const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.js");
+const LIBRARY_PATH = manifestPath("library/libraryModuleManifest.js");
 
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["schemaCore", "views", "docs", "systemDatabases"]);
 
@@ -119,5 +122,186 @@ describe("core module manifests (module-contract issue #226)", () => {
 
     expect(registry.listModuleIds().sort()).toEqual(["docs", "schemaCore", "systemDatabases", "views"]);
     expect((await registry.getDatabases()).length).toBe(TEN_DATABASE_MODULE_IDS.length);
+  });
+});
+
+/** Every filter tree a database declares (issue #1647), named by where it is declared. */
+function declaredFilters(databases: ModuleDatabaseProjection[]): [string, unknown][] {
+  return databases.flatMap((db) => [
+    ...(db.quickFilters ?? []).flatMap((chip): [string, unknown][] =>
+      chip.filter === undefined ? [] : [[`${db.key}.quickFilters.${chip.key}`, chip.filter]],
+    ),
+    ...(db.collectionFilter === undefined
+      ? []
+      : [[`${db.key}.collectionFilter`, db.collectionFilter] as [string, unknown]]),
+    ...(db.pickerFilter === undefined ? [] : [[`${db.key}.pickerFilter`, db.pickerFilter] as [string, unknown]]),
+  ]);
+}
+
+/** Every sort spec a database declares, named by where it is declared. */
+function declaredSorts(databases: ModuleDatabaseProjection[]): [string, unknown][] {
+  return databases.flatMap((db) => [
+    ...(db.quickFilters ?? []).flatMap((chip) =>
+      (chip.sort ?? []).map((spec, index): [string, unknown] => [
+        `${db.key}.quickFilters.${chip.key}.sort.${index}`,
+        spec,
+      ]),
+    ),
+    ...(db.defaultSort === undefined ? [] : [[`${db.key}.defaultSort`, db.defaultSort] as [string, unknown]]),
+  ]);
+}
+
+/** The declarations whose tree or spec the data package's own schema refuses, with the refusal. */
+function refusedDeclarations(databases: ModuleDatabaseProjection[]): string[] {
+  return [
+    ...declaredFilters(databases).filter(([, tree]) => !filterNodeSchema.safeParse(tree).success),
+    ...declaredSorts(databases).filter(([, spec]) => !sortSpecSchema.safeParse(spec).success),
+  ].map(([where]) => where);
+}
+
+async function loadViewHintManifests(): Promise<ModuleDatabaseProjection[]> {
+  const registry = new ModuleRegistry(() => new Set(["systemDatabases", "library"]));
+  await registry.loadModule(SYSTEM_DATABASES_PATH);
+  await registry.loadModule(LIBRARY_PATH);
+  return registry.getDatabases();
+}
+
+describe("declared quick filters, default sorts and collection and picker filters (issue #1647)", () => {
+  it("parses every declared filter with the data package's filter schema and every sort with its sort schema", async () => {
+    const databases = await loadViewHintManifests();
+    expect(declaredFilters(databases).length).toBeGreaterThan(20);
+    expect(refusedDeclarations(databases)).toEqual([]);
+  });
+
+  it("refuses a malformed filter or sort declaration through the same check", async () => {
+    const [projects] = (await loadViewHintManifests()).filter((db) => db.key === "projects");
+    if (!projects) throw new Error("Projects is not declared");
+    const malformed: ModuleDatabaseProjection = {
+      ...projects,
+      quickFilters: [
+        { key: "typo", labelKey: "x", filter: { type: "in", property: "status", value: "done" } },
+        { key: "unknownType", labelKey: "x", filter: { type: "status_is", property: "status" } },
+        { key: "sorted", labelKey: "x", sort: [{ property: "date", direction: "up" as "asc" }] },
+      ],
+      pickerFilter: { type: "and", nodes: [] },
+    };
+    expect(refusedDeclarations([malformed])).toEqual([
+      "projects.quickFilters.typo",
+      "projects.quickFilters.unknownType",
+      "projects.pickerFilter",
+      "projects.quickFilters.sorted.sort.0",
+    ]);
+  });
+
+  it("declares the chips, sorts, date labels and filters the issue lists, exactly", async () => {
+    const byKey = new Map((await loadViewHintManifests()).map((db) => [db.key, db]));
+    const chips = (key: string) =>
+      (byKey.get(key)?.quickFilters ?? []).map(({ key: chip, filter, sort, isDefault }) => ({
+        chip,
+        filter,
+        sort,
+        isDefault,
+      }));
+    const inStatus = (value: string[]) => ({ type: "in", property: "status", value });
+    expect(chips("projects")).toEqual([
+      { chip: "active", filter: inStatus(["inProgress", "longTerm"]), sort: undefined, isDefault: true },
+      { chip: "done", filter: inStatus(["done"]), sort: undefined, isDefault: undefined },
+      { chip: "archived", filter: inStatus(["archived"]), sort: undefined, isDefault: undefined },
+      { chip: "all", filter: undefined, sort: undefined, isDefault: undefined },
+    ]);
+    expect(byKey.get("projects")?.dateLabels).toEqual({
+      pastLabelKey: "dateLabel.projects.past",
+      noDateLabelKey: "dateLabel.projects.noDate",
+    });
+    expect(byKey.get("projects")?.collectionFilter).toEqual({ type: "is_empty", property: "systemActive" });
+    expect(byKey.get("projects")?.pickerFilter).toEqual({
+      type: "and",
+      nodes: [
+        { type: "is_empty", property: "systemActive" },
+        {
+          type: "or",
+          nodes: [
+            { type: "is_empty", property: "status" },
+            { type: "not", node: inStatus(["done", "archived"]) },
+          ],
+        },
+      ],
+    });
+    const relative = (preset: string) => ({ type: "date_relative", property: "date", preset });
+    expect(chips("events")).toEqual([
+      {
+        chip: "upcoming",
+        filter: relative("upcoming"),
+        sort: [{ property: "date", direction: "asc" }],
+        isDefault: true,
+      },
+      { chip: "today", filter: relative("today"), sort: undefined, isDefault: undefined },
+      { chip: "thisWeek", filter: relative("thisWeek"), sort: undefined, isDefault: undefined },
+      { chip: "nextWeek", filter: relative("nextWeek"), sort: undefined, isDefault: undefined },
+      { chip: "past", filter: relative("past"), sort: [{ property: "date", direction: "desc" }], isDefault: undefined },
+      { chip: "all", filter: undefined, sort: undefined, isDefault: undefined },
+    ]);
+    for (const key of ["events", "tasks"]) {
+      expect(byKey.get(key)?.defaultSort, key).toEqual({ property: "date", direction: "asc" });
+    }
+    expect(byKey.get("tasks")?.quickFilters).toBeUndefined();
+    const values = (key: string) =>
+      chips(key).map(({ chip, filter, isDefault }) => [chip, filter === undefined ? null : filter, isDefault ?? false]);
+    const relationship = (value: string[]) => ({ type: "in", property: "relationship", value });
+    expect(values("people")).toEqual([
+      ["all", null, false],
+      ["clients", relationship(["client"]), false],
+      ["close", relationship(["closeFriend", "parent", "girlfriend"]), false],
+      ["others", relationship(["therapist", "neighbor"]), false],
+    ]);
+    const type = (value: string[]) => ({ type: "in", property: "type", value });
+    expect(values("files")).toEqual([
+      ["all", null, false],
+      ["recent", relative("last30"), false],
+      ["pdf", type(["pdf"]), false],
+      ["images", type(["jpg"]), false],
+      ["spreadsheets", type(["xlsx"]), false],
+      ["documents", type(["docx"]), false],
+    ]);
+    expect(values("healthRecords")).toEqual([
+      ["all", null, false],
+      ["monitoring", inStatus(["monitoring"]), false],
+      ["resolved", inStatus(["resolved"]), false],
+    ]);
+    expect(values("books")).toEqual([
+      ["all", null, false],
+      ["toRead", inStatus(["toRead"]), false],
+      ["reading", inStatus(["reading"]), false],
+      ["read", inStatus(["read"]), false],
+    ]);
+    expect(values("movies")).toEqual([
+      ["all", null, false],
+      ["planned", inStatus(["planned"]), false],
+      ["watching", inStatus(["watching"]), false],
+      ["watched", inStatus(["watched"]), false],
+    ]);
+    // Every chip label is its own catalog key, `quickFilter.<database>.<chip>`.
+    for (const db of byKey.values()) {
+      for (const chip of db.quickFilters ?? []) expect(chip.labelKey).toBe(`quickFilter.${db.key}.${chip.key}`);
+    }
+    // No other database declares any view hint.
+    const declaring = [...byKey.values()].filter(
+      (db) =>
+        db.quickFilters !== undefined ||
+        db.defaultSort !== undefined ||
+        db.dateLabels !== undefined ||
+        db.collectionFilter !== undefined ||
+        db.pickerFilter !== undefined,
+    );
+    expect(declaring.map((db) => db.key).sort()).toEqual([
+      "books",
+      "events",
+      "files",
+      "healthRecords",
+      "movies",
+      "people",
+      "projects",
+      "tasks",
+    ]);
   });
 });

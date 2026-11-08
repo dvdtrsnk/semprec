@@ -1,5 +1,10 @@
 import type { PoolClient } from "pg";
-import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
+import {
+  resolveCatalogLabel,
+  type ModuleCatalogs,
+  type ModuleDatabaseProjection,
+  type ModuleRegistry,
+} from "@semprec/module-registry";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
@@ -27,6 +32,30 @@ export interface SchemaDatabaseProjection {
   switcherOrder: number | null;
   clientVisible: boolean;
   properties: ResolvedProperty[];
+  /** The collection's quick-filter chips in display order, labels resolved for the locale; empty without declarations (issue #1647). */
+  quickFilters: SchemaQuickFilterProjection[];
+  /** The declared default order (issue #1647); absent when the manifest declares none. */
+  defaultSort?: SchemaSortProjection;
+  /** The resolved past and no-date labels of a date-grouped collection (issue #1647). */
+  dateLabels?: { past: string; noDate: string };
+  /** The filter tree of the items that belong in the collection (issue #1647). */
+  collectionFilter?: Record<string, unknown>;
+  /** The filter tree a picker for this database applies by default (issue #1647). */
+  pickerFilter?: Record<string, unknown>;
+}
+
+export interface SchemaSortProjection {
+  property: string;
+  direction: "asc" | "desc";
+}
+
+export interface SchemaQuickFilterProjection {
+  key: string;
+  label: string;
+  /** Absent for the chip that shows every item. */
+  filter?: Record<string, unknown>;
+  sort?: SchemaSortProjection[];
+  isDefault: boolean;
 }
 
 export interface SchemaViewTypeProjection {
@@ -69,6 +98,47 @@ export interface GenerateSchemaProjectionOptions {
   now?: Date;
 }
 
+type DatabaseViewHints = Pick<
+  SchemaDatabaseProjection,
+  "quickFilters" | "defaultSort" | "dateLabels" | "collectionFilter" | "pickerFilter"
+>;
+
+/**
+ * A database's view hints from its manifest descriptor (issue #1647), with every `labelKey` resolved
+ * against the owning module's catalog for `locale`. A database without a descriptor, every user-created
+ * database among them, gets empty quick filters and nothing else.
+ */
+function resolveDatabaseViewHints(
+  descriptor: ModuleDatabaseProjection | undefined,
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
+): DatabaseViewHints {
+  if (descriptor === undefined) return { quickFilters: [] };
+  const label = (key: string) => (catalogs ? resolveCatalogLabel(null, catalogs[locale], catalogs.en, key) : key);
+  return {
+    quickFilters: (descriptor.quickFilters ?? []).map((quickFilter) => ({
+      key: quickFilter.key,
+      label: label(quickFilter.labelKey),
+      ...(quickFilter.filter !== undefined ? { filter: structuredClone(quickFilter.filter) } : {}),
+      ...(quickFilter.sort !== undefined ? { sort: quickFilter.sort.map((spec) => ({ ...spec })) } : {}),
+      isDefault: quickFilter.isDefault === true,
+    })),
+    ...(descriptor.defaultSort !== undefined ? { defaultSort: { ...descriptor.defaultSort } } : {}),
+    ...(descriptor.dateLabels !== undefined
+      ? {
+          dateLabels: {
+            past: label(descriptor.dateLabels.pastLabelKey),
+            noDate: label(descriptor.dateLabels.noDateLabelKey),
+          },
+        }
+      : {}),
+    ...(descriptor.collectionFilter !== undefined
+      ? { collectionFilter: structuredClone(descriptor.collectionFilter) }
+      : {}),
+    ...(descriptor.pickerFilter !== undefined ? { pickerFilter: structuredClone(descriptor.pickerFilter) } : {}),
+  };
+}
+
 /**
  * The system-wide counterpart to `generatePermissionManifest` (issue #147): every non-archived
  * database (including the ten hardcoded system databases, which carry no `owner_project_item_id`
@@ -88,6 +158,9 @@ export async function generateSchemaProjection(
   const tenant: SchemaTenantProjection = { timezone: calendarClock.zone, today: calendarClock.today(options.now) };
   const catalogResolver = await createCatalogResolver(moduleRegistry);
   const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+  const descriptorsByKey = new Map(
+    (await moduleRegistry.getDatabases()).map((descriptor) => [descriptor.key, descriptor]),
+  );
 
   const databaseRows = await listAllDatabases(client);
   // One batch query for every database's properties (issue #147 review: the naive per-database
@@ -114,6 +187,11 @@ export async function generateSchemaProjection(
       searchPlaceholder: await resolveDatabasePlaceholderForRow(catalogResolver, db, locale),
       ...metadataResolver.resolve(db),
       properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale, relationDefinitions)),
+      ...resolveDatabaseViewHints(
+        db.system && db.key !== null ? descriptorsByKey.get(db.key) : undefined,
+        catalogs,
+        locale,
+      ),
     });
   }
 

@@ -38,5 +38,13 @@
   "property.movies.notes.name": "Notes",
   "property.movies.watchedWith.name": "Watched with",
 
-  "viewType.library-grid.name": "Grid"
+  "viewType.library-grid.name": "Grid",
+  "quickFilter.books.all": "All",
+  "quickFilter.books.toRead": "To read",
+  "quickFilter.books.reading": "Reading",
+  "quickFilter.books.read": "Read",
+  "quickFilter.movies.all": "All",
+  "quickFilter.movies.planned": "Planned",
+  "quickFilter.movies.watching": "Watching",
+  "quickFilter.movies.watched": "Watched"
 }

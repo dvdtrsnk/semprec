@@ -88,6 +88,42 @@ export interface ModuleDatabaseDescriptor {
   clientVisible?: boolean;
   /** How this database's items are filtered by an area; absent means the database is not area-filterable. */
   areaFilter?: AreaFilterTemplate;
+  /** The collection screen's quick-filter chips, in display order (issue #1647); absent means none. */
+  quickFilters?: ModuleQuickFilterDescriptor[];
+  /** The order a collection opens with when no chip sorts it (issue #1647). */
+  defaultSort?: ModuleSortDescriptor;
+  /** Catalog keys of the labels a date-grouped collection shows for past and undated items (issue #1647). */
+  dateLabels?: { pastLabelKey: string; noDateLabelKey: string };
+  /** The items that belong in the collection; an opaque filter tree the data package parses (issue #1647). */
+  collectionFilter?: ModuleOpaqueFilter;
+  /** The items a picker for this database offers by default; an opaque filter tree (issue #1647). */
+  pickerFilter?: ModuleOpaqueFilter;
+}
+
+/**
+ * A filter tree declared by a manifest. The filter grammar belongs to the data package, so this package
+ * only requires a JSON object and never interprets it; the data package's own tests parse every
+ * declaration with its filter schema (issue #1647).
+ */
+export type ModuleOpaqueFilter = Record<string, unknown>;
+
+/** One sort key of a quick filter or default sort: a property of the database, ascending or descending. */
+export interface ModuleSortDescriptor {
+  property: string;
+  direction: "asc" | "desc";
+}
+
+/**
+ * One quick-filter chip (issue #1647). `labelKey` is a catalog key of the owning module; `filter` absent
+ * means the chip shows every item ("All"); `sort` absent leaves the database's order. At most one chip of a
+ * database is `isDefault`, and keys are unique within the database.
+ */
+export interface ModuleQuickFilterDescriptor {
+  key: string;
+  labelKey: string;
+  filter?: ModuleOpaqueFilter;
+  sort?: ModuleSortDescriptor[];
+  isDefault?: boolean;
 }
 
 /**
@@ -346,25 +382,67 @@ const areaFilterTemplateSchema = buildAreaFilterTemplateSchema(MAX_AREA_FILTER_D
   message: "An area filter needs at least one { areaValue: true } slot",
 });
 
-const moduleDatabaseDescriptorSchema = z.object({
-  key: z.string().min(1),
-  name: z.string().min(1),
-  defaultViewType: z.string().min(1).optional(),
-  searchFields: z.array(z.string().min(1)).max(1000).optional(),
-  relatedOrder: moduleRelatedOrderSchema.optional(),
-  icon: z
-    .string()
-    .regex(/^[a-z][a-z0-9-]{0,63}$/)
-    .optional(),
-  color: z
-    .string()
-    .regex(/^#[0-9A-Fa-f]{6}$/)
-    .optional(),
-  overviewOrder: z.number().int().positive().nullable().optional(),
-  switcherOrder: z.number().int().positive().nullable().optional(),
-  clientVisible: z.boolean().optional(),
-  areaFilter: areaFilterTemplateSchema.optional(),
+/** A JSON object, never an array or a scalar; its content is the data package's to validate. */
+const opaqueFilterSchema = z.custom<ModuleOpaqueFilter>(
+  (value) => typeof value === "object" && value !== null && !Array.isArray(value),
+  { message: "must be a JSON object" },
+);
+
+const moduleSortDescriptorSchema = z.strictObject({
+  property: z.string().min(1),
+  direction: z.enum(["asc", "desc"]),
 });
+
+const moduleQuickFilterDescriptorSchema = z.strictObject({
+  key: z.string().min(1),
+  labelKey: z.string().min(1),
+  filter: opaqueFilterSchema.optional(),
+  sort: z.array(moduleSortDescriptorSchema).optional(),
+  isDefault: z.boolean().optional(),
+});
+
+const moduleDatabaseDescriptorSchema = z
+  .object({
+    key: z.string().min(1),
+    name: z.string().min(1),
+    defaultViewType: z.string().min(1).optional(),
+    searchFields: z.array(z.string().min(1)).max(1000).optional(),
+    relatedOrder: moduleRelatedOrderSchema.optional(),
+    icon: z
+      .string()
+      .regex(/^[a-z][a-z0-9-]{0,63}$/)
+      .optional(),
+    color: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/)
+      .optional(),
+    overviewOrder: z.number().int().positive().nullable().optional(),
+    switcherOrder: z.number().int().positive().nullable().optional(),
+    clientVisible: z.boolean().optional(),
+    areaFilter: areaFilterTemplateSchema.optional(),
+    quickFilters: z.array(moduleQuickFilterDescriptorSchema).optional(),
+    defaultSort: moduleSortDescriptorSchema.optional(),
+    dateLabels: z.strictObject({ pastLabelKey: z.string().min(1), noDateLabelKey: z.string().min(1) }).optional(),
+    collectionFilter: opaqueFilterSchema.optional(),
+    pickerFilter: opaqueFilterSchema.optional(),
+  })
+  .superRefine((database, ctx) => {
+    const quickFilters = database.quickFilters ?? [];
+    const seen = new Set<string>();
+    quickFilters.forEach((quickFilter, index) => {
+      if (seen.has(quickFilter.key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["quickFilters", index, "key"],
+          message: `Duplicate quick filter key '${quickFilter.key}'`,
+        });
+      }
+      seen.add(quickFilter.key);
+    });
+    if (quickFilters.filter((quickFilter) => quickFilter.isDefault === true).length > 1) {
+      ctx.addIssue({ code: "custom", path: ["quickFilters"], message: "At most one quick filter may be the default" });
+    }
+  });
 
 const moduleDataMigrationDescriptorSchema = z.object({
   databaseKey: z.string().min(1),

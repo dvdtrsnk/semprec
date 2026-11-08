@@ -692,3 +692,123 @@ describe("related collection order", () => {
     expect(await registry.getRelatedOrder("projects")).toBeUndefined();
   });
 });
+
+describe("database quick filters, default sorts and collection and picker filters (issue #1647)", () => {
+  const filter = { type: "in", property: "status", value: ["done"] };
+  const declared = {
+    key: "projects",
+    name: "Projects",
+    quickFilters: [
+      { key: "active", labelKey: "quickFilter.projects.active", filter, isDefault: true },
+      { key: "past", labelKey: "quickFilter.projects.past", sort: [{ property: "date", direction: "desc" }] },
+      { key: "all", labelKey: "quickFilter.projects.all" },
+    ],
+    defaultSort: { property: "date", direction: "asc" },
+    dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
+    collectionFilter: { type: "is_empty", property: "systemActive" },
+    pickerFilter: { type: "and", nodes: [{ type: "is_empty", property: "systemActive" }] },
+  };
+  const base = {
+    id: "quickFilters",
+    version: "1.0.0",
+    name: "Quick filters",
+    removable: true,
+    systemProject: false,
+    capabilities: [],
+    agentTools: [],
+  };
+  function manifestWith(database: Record<string, unknown>): unknown {
+    return { ...base, databases: [database] };
+  }
+
+  let directory: string;
+  let ordinal = 0;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "semprec-quick-filters-"));
+  });
+  afterAll(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function load(registry: ModuleRegistry, manifest: unknown): Promise<void> {
+    const path = join(directory, `manifest-${ordinal++}.mjs`);
+    await writeFile(path, `export const manifest = ${JSON.stringify(manifest)};`);
+    await registry.loadModule(pathToFileURL(path).href);
+  }
+
+  it("loads the declarations and projects a copy of them; a database without any projects none", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    await load(registry, { ...base, databases: [declared, { key: "plain", name: "Plain" }] });
+    const databases = await registry.getDatabases();
+    expect(databases).toEqual([
+      { moduleId: "quickFilters", ...declared },
+      { moduleId: "quickFilters", key: "plain", name: "Plain" },
+    ]);
+    // Editing a projection cannot change what the next projection returns.
+    databases[0]?.quickFilters?.splice(0);
+    const collectionFilter = databases[0]?.collectionFilter;
+    if (collectionFilter) collectionFilter.property = "changed";
+    expect((await registry.getDatabases())[0]).toEqual({ moduleId: "quickFilters", ...declared });
+  });
+
+  it("rejects a manifest declaring two default quick filters when the module is loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    const twoDefaults = {
+      ...declared,
+      quickFilters: [
+        { key: "active", labelKey: "a", isDefault: true },
+        { key: "done", labelKey: "b", isDefault: true },
+      ],
+    };
+    await expect(load(registry, manifestWith(twoDefaults))).rejects.toThrow(/invalid manifest/);
+    expect(registry.listModuleIds()).toEqual([]);
+    expect(moduleManifestSchema.safeParse(manifestWith(twoDefaults)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters"],
+        message: "At most one quick filter may be the default",
+      }),
+    ]);
+  });
+
+  it("rejects duplicate quick-filter keys within one database", () => {
+    const duplicate = {
+      ...declared,
+      quickFilters: [
+        { key: "all", labelKey: "a" },
+        { key: "all", labelKey: "b" },
+      ],
+    };
+    expect(moduleManifestSchema.safeParse(manifestWith(duplicate)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters", 1, "key"],
+        message: "Duplicate quick filter key 'all'",
+      }),
+    ]);
+  });
+
+  it("accepts a single default, no default, and the same chip key in two databases", () => {
+    expect(moduleManifestSchema.safeParse(manifestWith(declared)).success).toBe(true);
+    const noDefault = { ...declared, quickFilters: [{ key: "all", labelKey: "a", isDefault: false }] };
+    expect(moduleManifestSchema.safeParse(manifestWith(noDefault)).success).toBe(true);
+    const twoDatabases = { ...base, databases: [declared, { ...declared, key: "other" }] };
+    expect(moduleManifestSchema.safeParse(twoDatabases).success).toBe(true);
+  });
+
+  it.each([
+    ["a quick filter whose filter is an array", { quickFilters: [{ key: "a", labelKey: "a", filter: [filter] }] }],
+    ["a quick filter whose filter is a string", { quickFilters: [{ key: "a", labelKey: "a", filter: "status=done" }] }],
+    ["a null collection filter", { collectionFilter: null }],
+    ["a picker filter that is a number", { pickerFilter: 1 }],
+    ["a quick filter without a label key", { quickFilters: [{ key: "a" }] }],
+    ["a quick filter with an unknown field", { quickFilters: [{ key: "a", labelKey: "a", label: "A" }] }],
+    ["a default sort with an unknown direction", { defaultSort: { property: "date", direction: "up" } }],
+    [
+      "a quick-filter sort with an empty property",
+      { quickFilters: [{ key: "a", labelKey: "a", sort: [{ property: "", direction: "asc" }] }] },
+    ],
+    ["date labels missing the no-date key", { dateLabels: { pastLabelKey: "p" } }],
+  ])("rejects %s", (_name, change) => {
+    expect(moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).success).toBe(
+      false,
+    );
+  });
+});
