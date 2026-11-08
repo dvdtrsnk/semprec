@@ -430,6 +430,7 @@ export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromR
 export { loadBlobMetadataForItems } from "./blobs/blobMetadata.js";
 export type { BlobMetadata, ItemBlobMetadata } from "./blobs/blobMetadata.js";
 export { detectFileType } from "./blobs/fileTypeDetection.js";
+export { recomputePersonLastContact } from "./people/lastContact.js";
 export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";

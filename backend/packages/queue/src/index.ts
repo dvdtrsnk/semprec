@@ -125,6 +125,10 @@ export const CORE_TASK_NAMES = {
   TENANT_PURGE: "tenantPurge",
   // Issue #1401: the daily sweep that deletes standalone upload blobs nothing references 24 hours after creation.
   BLOBS_UNREFERENCED_SWEEP: "blobsUnreferencedSweep",
+  // Issue #1660: recomputes one person's derived People `lastContact`, and the daily sweep that queues a
+  // recompute for every person whose linked source's date fell within the last 24 hours.
+  PEOPLE_LAST_CONTACT_RECOMPUTE: "peopleLastContactRecompute",
+  PEOPLE_LAST_CONTACT_SWEEP: "peopleLastContactSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -178,6 +182,8 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.TENANT_PURGE]: "api",
   [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "api",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "api",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "api",
 };
 
 /**
@@ -243,6 +249,8 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.TENANT_PURGE]: "system",
   [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "system",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "tenant",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

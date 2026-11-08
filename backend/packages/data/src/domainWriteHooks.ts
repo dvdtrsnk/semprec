@@ -67,6 +67,12 @@ import {
 } from "./inbox/inboxSourceWriteHook.js";
 import { blobReferenceItemCreateHook, blobReferenceItemUpdateHook } from "./blobs/blobReferenceWriteHook.js";
 import { filesItemPreWriteTransform } from "./blobs/filesItemPreWriteTransform.js";
+import {
+  peopleLastContactEdgeChangedHook,
+  peopleLastContactItemDeleteHook,
+  peopleLastContactItemRestoreHook,
+  peopleLastContactItemUpdateHook,
+} from "./people/lastContactHooks.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
 registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (context) => ({
@@ -137,3 +143,9 @@ registerItemUpdateHook(linkRuleItemHook);
 registerRelationEdgeChangedHook(linkRuleEdgeHook);
 registerItemDeleteHook(valueLinkSourceDeleteHook);
 registerAutomationBatchReader(readAutomationForItems);
+
+// Issue #1660: People `lastContact` follows its source edges, the sources' dates and their trash state.
+registerRelationEdgeChangedHook(peopleLastContactEdgeChangedHook);
+registerItemUpdateHook(peopleLastContactItemUpdateHook);
+registerItemDeleteHook(peopleLastContactItemDeleteHook);
+registerItemRestoreHook(peopleLastContactItemRestoreHook);

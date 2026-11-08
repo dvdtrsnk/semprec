@@ -90,6 +90,7 @@
   "property.people.relationship.option.doctor": "Doctor",
   "property.people.contact.name": "Contact",
   "property.people.phones.name": "Phones",
+  "property.people.lastContact.name": "Last contact",
   "property.people.contact.option.phone": "Phone",
   "property.people.contact.option.email": "Email",
   "property.people.projects.name": "Projects",

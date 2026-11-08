@@ -234,6 +234,9 @@ export async function seedTenDatabasesInTransaction(
     // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
     { key: "phones", name: "Phones", type: "longText", owner: "user" },
+    // Issue #1660: derived from the person's past Events, Emails and Transcripts, written only by
+    // `people/lastContact.ts`'s recompute; populated installs get it from the People lastContact cutover.
+    { key: "lastContact", name: "Last contact", type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID },
   ]);
 
   const files = await createDb(client, FILES_MODULE_ID);

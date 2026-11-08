@@ -90,6 +90,7 @@
   "property.people.relationship.option.doctor": "Lékař",
   "property.people.contact.name": "Kontakt",
   "property.people.phones.name": "Telefon",
+  "property.people.lastContact.name": "Poslední kontakt",
   "property.people.contact.option.phone": "Telefon",
   "property.people.contact.option.email": "E-mail",
   "property.people.projects.name": "Projekty",

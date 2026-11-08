@@ -48,7 +48,9 @@ import {
   finishSempMessageTurn,
   getDatabaseByModuleId,
   getOrCreateJournalItem,
+  getSystemTimezone,
   insertAgentRunEvent,
+  instantToWallClock,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   mergeModuleTaskListForAffinity,
@@ -542,6 +544,48 @@ async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: s
 }
 
 /** A trashed item whose `deleted_at` lies past the 30-day retention. */
+/**
+ * A person of `tenant` linked to an Event dated `date` (and starting at `timeFrom`, when given) through
+ * `Events.people`, through the choke point. The link queues the person's `lastContact` recompute; it is
+ * removed here, so only the job under test can set the value.
+ */
+async function createPersonWithEvent(
+  tenant: Tenant,
+  date: string,
+  timeFrom?: string,
+): Promise<{ personId: string; eventId: string }> {
+  const peopleId = await requireModuleDatabaseId(tenant, "people");
+  const eventsId = await requireModuleDatabaseId(tenant, "events");
+  return inTenant(tenant, async () => {
+    const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Contact" } });
+    const event = await chokePoint.createItem({
+      databaseId: eventsId,
+      properties: { name: "Meeting", date, ...(timeFrom === undefined ? {} : { timeFrom }) },
+    });
+    const peopleProperty = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "people");
+    if (!peopleProperty) throw new Error("expected Events.people to be seeded");
+    await chokePoint.createRelation({
+      relationPropertyId: peopleProperty.id,
+      callerItemId: event.id,
+      targetItemId: person.id,
+    });
+    await removeJob(`people-last-contact:${person.id}`);
+    return { personId: person.id, eventId: event.id };
+  });
+}
+
+async function lastContactOf(tenant: Tenant, personId: string): Promise<unknown> {
+  const found = await rows<{ last_contact: unknown }>(
+    tenant,
+    "SELECT properties -> 'lastContact' AS last_contact FROM items WHERE id = $1",
+    [personId],
+  );
+  return found[0]?.last_contact;
+}
+
+/** A date with a fixed past value, so the case does not depend on the wall clock. */
+const PAST_EVENT_DATE = "2025-06-15";
+
 async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
   const { databaseId, itemId } = await inTenant(tenant, async () => {
     const database = await chokePoint.createDatabase({ name: `Trash ${randomUUID()}` });
@@ -1240,6 +1284,29 @@ const cases: Record<string, TaskCase> = {
       );
       return marked([blobId], async () => {
         expect(await rows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId])).toEqual([]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const { personId } = await createPersonWithEvent(tenant, PAST_EVENT_DATE);
+      return { personId };
+    },
+    async expectDone(tenant, payload) {
+      expect(await lastContactOf(tenant, requirePayloadString(payload, "personId"))).toBe(PAST_EVENT_DATE);
+    },
+  },
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      // An Event that started an hour ago, inside the sweep's last 24 hours.
+      const zone = await inTenant(tenant, () => withTransaction(pool, getSystemTimezone));
+      const start = instantToWallClock(new Date(Date.now() - 60 * 60 * 1000), zone);
+      const { personId, eventId } = await createPersonWithEvent(tenant, start.date, start.time);
+      return marked([personId, eventId], async () => {
+        expect(await lastContactOf(tenant, personId)).toBe(start.date);
       });
     },
   },

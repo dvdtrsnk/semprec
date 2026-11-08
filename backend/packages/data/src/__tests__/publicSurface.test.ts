@@ -614,6 +614,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "rebaselineDocHistory",
   "reclassifyMcpTool",
   "recomputeAllForTimezoneChange",
+  "recomputePersonLastContact",
   "recomputeRollupCell",
   "recordAdminAction",
   "recordAudioGatewayCall",
