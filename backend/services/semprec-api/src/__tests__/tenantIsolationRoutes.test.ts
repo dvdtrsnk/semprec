@@ -2090,6 +2090,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
+      // Issue #1645: A's project as B's attach target answers exactly like a random id, before B's body is read.
+      const attach = ([target]: readonly string[]): Request => ({
+        method: "POST",
+        path: "/api/files",
+        body: `ID3 attached audio of ${randomUUID()}`,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "X-Filename": "b.mp3",
+          "X-Attach-To-Item": target!,
+          "X-Attach-Relation": "projects",
+        },
+      });
+      const attached = await expectForeignLikeRandom(b.member, [a.projectItemId], attach);
+      expect(attached.status, attached.text).toBe(404);
     }),
   "upload blob": () =>
     leavesAUnchanged(async () => {

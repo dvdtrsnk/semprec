@@ -424,6 +424,11 @@ export {
 } from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
 export { ingestUploadedFile, ingestUploadedFileWithTransaction, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
+export {
+  attachUploadedFileWithClient,
+  resolveUploadAttachTarget,
+  type UploadAttachTarget,
+} from "./blobs/uploadAttachTarget.js";
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
