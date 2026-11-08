@@ -102,8 +102,8 @@ export interface ModuleDatabaseDescriptor {
 
 /**
  * A filter tree declared by a manifest. The filter grammar belongs to the data package, so this package
- * only requires a JSON object and never interprets it; the data package's own tests parse every
- * declaration with its filter schema (issue #1647).
+ * only requires a bounded JSON object (`isOpaqueJsonObject`) and never interprets it; the data package's
+ * own tests parse every declaration with its filter schema (issue #1647).
  */
 export type ModuleOpaqueFilter = Record<string, unknown>;
 
@@ -382,11 +382,96 @@ const areaFilterTemplateSchema = buildAreaFilterTemplateSchema(MAX_AREA_FILTER_D
   message: "An area filter needs at least one { areaValue: true } slot",
 });
 
-/** A JSON object, never an array or a scalar; its content is the data package's to validate. */
-const opaqueFilterSchema = z.custom<ModuleOpaqueFilter>(
-  (value) => typeof value === "object" && value !== null && !Array.isArray(value),
-  { message: "must be a JSON object" },
-);
+/** The deepest nesting of objects and arrays an opaque filter may have; its root object is level 1. */
+const MAX_OPAQUE_FILTER_DEPTH = 32;
+
+/** The most values an opaque filter may hold: every object, array and scalar, the root included, per occurrence. */
+const MAX_OPAQUE_FILTER_VALUES = 1024;
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * The values held by a JSON container, or `undefined` when `container` is not one: a plain object (prototype
+ * `Object.prototype` or `null`) with only string-keyed, enumerable data properties, or an array with the
+ * `Array` prototype, no holes and no property other than its indices and `length`. Property descriptors are
+ * read, never the properties themselves, so no accessor runs. `budget` is the number of values the caller can
+ * still accept; a container holding more is refused before any of its descriptors is read.
+ */
+function jsonContainerValues(container: object, budget: number): unknown[] | undefined {
+  const keys = Reflect.ownKeys(container);
+  if (Array.isArray(container)) {
+    if (Object.getPrototypeOf(container) !== Array.prototype) return undefined;
+    // Every index plus `length`: a hole or an extra property makes the counts differ.
+    if (keys.length !== container.length + 1 || container.length > budget) return undefined;
+    const values: unknown[] = [];
+    for (let index = 0; index < container.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(container, String(index));
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return undefined;
+      values.push(descriptor.value);
+    }
+    return values;
+  }
+  if (!isPlainJsonObject(container) || keys.length > budget) return undefined;
+  const values: unknown[] = [];
+  for (const key of keys) {
+    if (typeof key === "symbol") return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(container, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return undefined;
+    values.push(descriptor.value);
+  }
+  return values;
+}
+
+/**
+ * Whether `root` is a JSON object this package can hold as an opaque filter (issue #1647): a plain object
+ * (`isPlainJsonObject`) holding only plain objects, arrays, strings, booleans, `null` and finite numbers
+ * (`jsonContainerValues`). `undefined`, functions, symbols, bigints, non-finite numbers, class instances such
+ * as a `Date`, and accessors are refused. A container reached again inside itself (a cycle) is refused; the
+ * same acyclic value reached on two paths is accepted and counted on each. Nesting deeper than
+ * `MAX_OPAQUE_FILTER_DEPTH` containers or holding more than `MAX_OPAQUE_FILTER_VALUES` values is refused. The
+ * walk is iterative, so these bounds, not the call stack, are what stop it.
+ */
+function isOpaqueJsonObject(root: unknown): root is ModuleOpaqueFilter {
+  if (!isPlainJsonObject(root)) return false;
+  type Step = { enter: unknown; depth: number } | { leave: object };
+  const steps: Step[] = [{ enter: root, depth: 1 }];
+  // The containers on the path from the root to the value being visited.
+  const ancestors = new Set<object>();
+  // Values counted so far: each is counted when it is scheduled, so no container is expanded past the bound.
+  let counted = 1;
+  for (let step = steps.pop(); step !== undefined; step = steps.pop()) {
+    if ("leave" in step) {
+      ancestors.delete(step.leave);
+      continue;
+    }
+    const value = step.enter;
+    if (value === null || typeof value === "string" || typeof value === "boolean") continue;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return false;
+      continue;
+    }
+    if (typeof value !== "object") return false;
+    if (step.depth > MAX_OPAQUE_FILTER_DEPTH || ancestors.has(value)) return false;
+    const children = jsonContainerValues(value, MAX_OPAQUE_FILTER_VALUES - counted);
+    if (children === undefined) return false;
+    counted += children.length;
+    ancestors.add(value);
+    steps.push({ leave: value });
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      steps.push({ enter: children[index], depth: step.depth + 1 });
+    }
+  }
+  return true;
+}
+
+/** A bounded JSON object (`isOpaqueJsonObject`), never an array or a scalar; its grammar is the data package's to validate. */
+const opaqueFilterSchema = z.custom<ModuleOpaqueFilter>(isOpaqueJsonObject, {
+  message: `must be a JSON object of at most ${MAX_OPAQUE_FILTER_DEPTH} nested levels and ${MAX_OPAQUE_FILTER_VALUES} values`,
+});
 
 const moduleSortDescriptorSchema = z.strictObject({
   property: z.string().min(1),

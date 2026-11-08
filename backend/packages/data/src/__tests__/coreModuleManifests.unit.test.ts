@@ -5,6 +5,7 @@ import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
  * Load tests (module-contract issue #226) proving each retrofit manifest for the schema/data
@@ -23,7 +24,6 @@ const SCHEMA_CORE_PATH = manifestPath("chokePoint/schemaCoreModuleManifest.js");
 const VIEWS_PATH = manifestPath("views/viewsModuleManifest.js");
 const DOCS_PATH = manifestPath("docs/docsModuleManifest.js");
 const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.js");
-const LIBRARY_PATH = manifestPath("library/libraryModuleManifest.js");
 
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["schemaCore", "views", "docs", "systemDatabases"]);
 
@@ -159,15 +159,23 @@ function refusedDeclarations(databases: ModuleDatabaseProjection[]): string[] {
   ].map(([where]) => where);
 }
 
+/** The databases of every manifest the processes load (`loadFullModuleRegistry`), so no module's declaration is skipped. */
 async function loadViewHintManifests(): Promise<ModuleDatabaseProjection[]> {
-  const registry = new ModuleRegistry(() => new Set(["systemDatabases", "library"]));
-  await registry.loadModule(SYSTEM_DATABASES_PATH);
-  await registry.loadModule(LIBRARY_PATH);
-  return registry.getDatabases();
+  return (await loadFullModuleRegistry()).getDatabases();
 }
 
 describe("declared quick filters, default sorts and collection and picker filters (issue #1647)", () => {
-  it("parses every declared filter with the data package's filter schema and every sort with its sort schema", async () => {
+  it("parses every filter any loaded manifest declares with the data package's filter schema and every sort with its sort schema", async () => {
+    expect((await loadFullModuleRegistry()).listModuleIds()).toEqual([
+      "schemaCore",
+      "views",
+      "docs",
+      "systemDatabases",
+      "library",
+      "mailSync",
+      "inboxPipeline",
+      "calendar",
+    ]);
     const databases = await loadViewHintManifests();
     expect(declaredFilters(databases).length).toBeGreaterThan(20);
     expect(refusedDeclarations(databases)).toEqual([]);

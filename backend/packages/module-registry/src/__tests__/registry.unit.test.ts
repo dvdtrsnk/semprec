@@ -811,4 +811,129 @@ describe("database quick filters, default sorts and collection and picker filter
       false,
     );
   });
+
+  describe("opaque filters are bounded JSON objects", () => {
+    /** `levels` objects nested in one another, the outermost first: `{ child: { child: { type: "leaf" } } }`. */
+    function nestedObjects(levels: number): Record<string, unknown> {
+      let value: Record<string, unknown> = { type: "leaf" };
+      for (let level = 1; level < levels; level += 1) value = { child: value };
+      return value;
+    }
+    /** A root object holding `arrays` arrays nested in one another, around one string. */
+    function nestedArrays(arrays: number): Record<string, unknown> {
+      let value: unknown = "leaf";
+      for (let level = 0; level < arrays; level += 1) value = [value];
+      return { nodes: value };
+    }
+    /** A root object with `values - 1` numeric properties: `values` values in all, the root included. */
+    function flatObject(values: number): Record<string, unknown> {
+      return Object.fromEntries(Array.from({ length: values - 1 }, (_, index) => [`k${index}`, index]));
+    }
+    /** A root holding one array that holds `shared` twice: 2 + 2 × (values of `shared`) values. */
+    function twoAliases(sharedValues: number): Record<string, unknown> {
+      const shared = flatObject(sharedValues);
+      return { nodes: [shared, shared] };
+    }
+    function parsesAsCollectionFilter(collectionFilter: unknown): boolean {
+      return moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", collectionFilter }))
+        .success;
+    }
+    class FilterNode {
+      type = "is_empty";
+    }
+    class FilterNodes extends Array<unknown> {}
+
+    const selfCycle: Record<string, unknown> = { type: "and", nodes: [] };
+    selfCycle.self = selfCycle;
+    const arrayCycle: Record<string, unknown> = { type: "and" };
+    arrayCycle.nodes = [{ type: "or", nodes: [arrayCycle] }];
+    const sparse: unknown[] = ["a"];
+    sparse[2] = "c";
+    const arrayWithExtra = Object.assign(["a"], { extra: true });
+    const hidden: Record<string, unknown> = { type: "is_empty" };
+    Object.defineProperty(hidden, "property", { value: "systemActive", enumerable: false });
+
+    it.each([
+      ["a Date", new Date(0)],
+      ["a class instance", new FilterNode()],
+      ["a Map", new Map([["type", "is_empty"]])],
+      ["a nested Date", { type: "in", value: new Date(0) }],
+      ["a nested class instance", { type: "and", nodes: [new FilterNode()] }],
+      ["a nested boxed string", { type: "in", value: new String("done") }],
+      ["a nested function", { type: "in", value: () => "done" }],
+      ["a nested undefined", { type: "in", value: undefined }],
+      ["a nested symbol", { type: "in", value: Symbol("done") }],
+      ["a symbol key", { type: "in", [Symbol("key")]: "done" }],
+      ["a nested bigint", { type: "in", value: 1n }],
+      ["a nested NaN", { type: "in", value: Number.NaN }],
+      ["a nested Infinity", { type: "in", value: Number.POSITIVE_INFINITY }],
+      ["a nested -Infinity", { type: "in", value: Number.NEGATIVE_INFINITY }],
+      ["an object that contains itself", selfCycle],
+      ["an object that contains itself through an array", arrayCycle],
+      ["an array with a hole", { type: "in", value: sparse }],
+      ["an array with a property beyond its indices", { type: "in", value: arrayWithExtra }],
+      ["an Array subclass instance", { type: "and", nodes: FilterNodes.from([{ type: "is_empty" }]) }],
+      ["a non-enumerable property", hidden],
+      ["33 nested objects", nestedObjects(33)],
+      ["a root object around 32 nested arrays", nestedArrays(32)],
+      ["1025 values", flatObject(1025)],
+      ["one value shared on two paths, counted on each, past 1024 values", twoAliases(512)],
+    ])("refuses %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(false);
+    });
+
+    it.each([
+      ["a null-prototype root", Object.assign(Object.create(null) as Record<string, unknown>, { type: "is_empty" })],
+      ["32 nested objects", nestedObjects(32)],
+      ["a root object around 31 nested arrays", nestedArrays(31)],
+      ["1024 values", flatObject(1024)],
+      ["one acyclic value shared on two paths, 1024 values counted on each", twoAliases(511)],
+      ["strings, booleans, null and finite numbers, with -0", { a: "s", b: true, c: null, d: 1.5, e: -0, f: [] }],
+    ])("accepts %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(true);
+    });
+
+    it("reads no accessor while refusing it", () => {
+      let read = false;
+      const accessor = {
+        type: "is_empty",
+        get property(): string {
+          read = true;
+          return "systemActive";
+        },
+      };
+      expect(parsesAsCollectionFilter(accessor)).toBe(false);
+      expect(read).toBe(false);
+    });
+
+    it.each([
+      [
+        "a quick filter's filter",
+        { quickFilters: [{ key: "a", labelKey: "a", filter: { type: "in", value: () => 1 } }] },
+      ],
+      ["a collection filter", { collectionFilter: { type: "in", value: () => 1 } }],
+      ["a picker filter", { pickerFilter: { type: "in", value: () => 1 } }],
+    ])("refuses a function inside %s", (_name, change) => {
+      expect(
+        moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).error?.issues,
+      ).toEqual([
+        expect.objectContaining({ message: "must be a JSON object of at most 32 nested levels and 1024 values" }),
+      ]);
+    });
+
+    it("refuses a module whose manifest declares a function inside a filter when it is loaded", async () => {
+      const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+      const path = join(directory, `manifest-${ordinal++}.mjs`);
+      await writeFile(
+        path,
+        [
+          `export const manifest = ${JSON.stringify(manifestWith({ key: "projects", name: "Projects" }))};`,
+          `manifest.databases[0].pickerFilter = { type: "in", property: "status", value: () => "done" };`,
+        ].join("\n"),
+      );
+      await expect(registry.loadModule(pathToFileURL(path).href)).rejects.toThrow(/invalid manifest/);
+      expect(registry.listModuleIds()).toEqual([]);
+      expect(await registry.getDatabases()).toEqual([]);
+    });
+  });
 });

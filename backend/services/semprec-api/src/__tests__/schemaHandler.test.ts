@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
@@ -959,6 +960,123 @@ describe("createSchemaRequestListener (issue #147)", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("queries Projects with the projected filters through database.query and links a task to a done project through relation.put, on the runtime role (issue #1647)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const directory = join(tmpdir(), `semprec-schema-filters-${randomUUID()}`);
+    let routes: Server | undefined;
+    let primary: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const email = `${randomUUID()}@example.com`;
+      await createUser(pool, { tenantId: tenant, email, passwordHash: await hashPassword(PASSWORD), locale: "en" });
+      const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+      await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));
+      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+      routes = createServer(
+        await createDispatcher(runtime, {
+          moduleRegistry,
+          passwordResetMailer: { async sendPasswordResetEmail() {} },
+          appBaseUrl: "http://localhost",
+          setupToken: "unused-setup-token",
+          blobStorage: new LocalFsBlobStorageWriter(directory),
+          maxFileSizeBytes: 1048576,
+        }),
+      );
+      const listening = routes;
+      await new Promise<void>((resolve, reject) => {
+        listening.once("error", reject);
+        listening.listen(0, "127.0.0.1", resolve);
+      });
+      const address = listening.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      const base = `http://127.0.0.1:${address.port}`;
+
+      const schemaResponse = await fetch(`${base}/api/schema`, { headers });
+      expect(schemaResponse.status).toBe(200);
+      const schemaDatabases = viewHintsBody.parse(await schemaResponse.json()).databases;
+      const projects = schemaDatabases.find((db) => db.key === "projects");
+      const tasks = schemaDatabases.find((db) => db.key === "tasks");
+      if (!projects?.collectionFilter || !projects.pickerFilter || !tasks) {
+        throw new Error("Projects' filters or Tasks missing from the schema");
+      }
+      const { collectionFilter, pickerFilter } = projects;
+
+      const chokePoint = createChokePoint(runtime);
+      const create = (databaseId: string, properties: Record<string, unknown>) =>
+        runInTenant(tenant, async () => (await chokePoint.createItem({ databaseId, properties })).id);
+      const project = (properties: Record<string, unknown>) =>
+        create(projects.databaseId, { name: "Project", ...properties });
+      const active = await project({ status: "inProgress" });
+      const longTerm = await project({ status: "longTerm" });
+      const done = await project({ status: "done" });
+      const archived = await project({ status: "archived" });
+      const noStatus = await project({ status: null });
+      const system = await project({ status: "inProgress", systemActive: true });
+      const deactivated = await project({ status: "inProgress", systemActive: false });
+      const created = [active, longTerm, done, archived, noStatus, system, deactivated];
+
+      const page = z.object({ items: z.array(z.object({ id: z.string() })) });
+      const query = async (filter: Record<string, unknown> | undefined): Promise<string[]> => {
+        const response = await fetch(`${base}/api/databases/${projects.databaseId}/query`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...(filter === undefined ? {} : { filter }), limit: 200 }),
+        });
+        expect(response.status).toBe(200);
+        return page
+          .parse(await response.json())
+          .items.map((item) => item.id)
+          .sort();
+      };
+      // The seeded system-module projects are no user's projects, so the collection leaves them out too.
+      const seeded = (await query(undefined)).filter((id) => !created.includes(id));
+      expect(seeded.length).toBeGreaterThan(0);
+      expect(await query(collectionFilter)).toEqual([active, longTerm, done, archived, noStatus].sort());
+      expect(await query(pickerFilter)).toEqual([active, longTerm, noStatus].sort());
+
+      // The picker filter is a read hint: a done project stays a valid relation target.
+      const task = await create(tasks.databaseId, { name: "Task" });
+      const put = await fetch(`${base}/api/items/${task}/relations/project/${done}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({}),
+      });
+      expect(put.status).toBe(200);
+      const edge = z.object({ itemA: z.string(), itemB: z.string() }).parse(await put.json());
+      expect([edge.itemA, edge.itemB].sort()).toEqual([task, done].sort());
+      const linked = await runInTenant(tenant, () => chokePoint.listItemRelations(task));
+      expect(linked?.filter((entry) => entry.propertyKey === "project").map((entry) => entry.targetItemId)).toEqual([
+        done,
+      ]);
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    for (const cleanup of [
+      async () => {
+        const owned = routes;
+        if (owned?.listening)
+          await new Promise<void>((resolve, reject) => owned.close((error) => (error ? reject(error) : resolve())));
+      },
+      () => runtime.end(),
+      () => rm(directory, { recursive: true, force: true }),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (primary && failures.length > 0) {
+      throw new AggregateError([primary.error, ...failures], "The case and its cleanup failed", {
+        cause: primary.error,
+      });
+    }
+    if (primary) throw primary.error;
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "The case's cleanup failed");
   });
 
   it("ignores a query-parameter locale override — locale comes only from users.locale", async () => {
