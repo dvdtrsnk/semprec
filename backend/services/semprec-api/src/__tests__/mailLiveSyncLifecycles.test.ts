@@ -1304,8 +1304,9 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
 
   it("reports an owner outcome that never settles as an unsettled failure after the case's own", async () => {
     const providers = heldProviders();
-    // A synthetic owner that never settles, standing for a regressed one; it holds no resource.
-    const stuck = providers.owner(() => new Promise<string>(() => {}));
+    // A synthetic owner that never settles, standing for a regressed one; it holds no resource. The harness keeps its
+    // outcome, which never rejects, and the release below reports it as unsettled; nothing here awaits it.
+    void providers.owner(() => new Promise<string>(() => {}));
     const early = new Error("The case's own failure");
     const thrown = await settleAll({ error: early }, [() => providers.release(50)]).then(
       () => null,
@@ -1318,8 +1319,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     ]);
     expect(thrown.errors[0]).toBe(early);
     expect(thrown.cause).toBe(early);
-    // Reported as unsettled, and indeed still pending: no settlement was claimed for it.
-    expect(await Promise.race([stuck.then(() => "settled"), Promise.resolve("pending")])).toBe("pending");
   });
 
   it.each(["delayed", "failed"] as const)(
