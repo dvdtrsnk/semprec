@@ -5,11 +5,14 @@ import type {
   ItemPreWriteTransformContext,
 } from "../chokePoint/hooks.js";
 import type { ItemRow } from "../types.js";
+import type { WriterKind } from "../chokePoint/writerKind.js";
 import { ValidationError } from "../errors.js";
 import { assertValidTimezone, normalizeWallClockTime } from "../timezone.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { deriveTaskTime } from "./deriveTaskTime.js";
 import { taskSinceRule } from "./taskSinceRule.js";
+import { firstOccurrenceAfter } from "./nextDueDate.js";
+import { getTaskRecurrenceBySeriesId } from "./taskRecurrenceStore.js";
 
 const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -36,7 +39,19 @@ export const prepareTaskWrite = async ({
   return deriveTimeAndCheckSchedule(stored, patch);
 };
 
+/**
+ * `missed` is written only by the Tasks module and the nightly job (issue #1668), both system writers; a user's or an
+ * agent's write that names it is refused. Moving away from `missed`, to `done` say, is an ordinary status write.
+ */
+function assertMissedWritable(patch: Record<string, unknown>, writerKind: WriterKind): void {
+  if (patch.status === "missed" && writerKind !== "system") {
+    throw new ValidationError("Status 'missed' is set only by the system", { field: "status" });
+  }
+}
+
 export const prepareTaskProposal: ItemPreWritePreparation = async ({ stored, patch }) => {
+  // A proposal is always a user's or an agent's write.
+  assertMissedWritable(patch, "user");
   let prepared = await prepareTaskWrite({ stored, patch });
   const oldStatus = stored?.properties.status;
   const status = Object.hasOwn(patch, "status") ? patch.status : oldStatus;
@@ -52,6 +67,7 @@ export const prepareTaskProposal: ItemPreWritePreparation = async ({ stored, pat
 
 export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
   const { stored, patch, client } = context;
+  assertMissedWritable(patch, context.writer.writerKind);
   let output = await prepareTaskWrite({ stored, patch });
   const old = stored?.properties ?? {};
   const status = Object.hasOwn(patch, "status") ? patch.status : old.status;
@@ -61,8 +77,20 @@ export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
     Object.hasOwn(patch, "status") &&
     status !== old.status &&
     (status === "notDone" || status === "wontDo");
+  // Issue #1668: a past occurrence of a series set back from done to notDone is missed once its next date has come.
+  const reopenedOccurrence =
+    stored !== null &&
+    old.status === "done" &&
+    status === "notDone" &&
+    typeof old.seriesId === "string" &&
+    typeof old.occurrenceDate === "string" &&
+    CALENDAR_DATE_PATTERN.test(old.occurrenceDate) &&
+    DateTime.fromISO(old.occurrenceDate, { zone: "utc" }).isValid;
   const needsDay =
-    enteringDone || Object.hasOwn(patch, "completedOn") || (stored !== null && Object.hasOwn(patch, "date"));
+    enteringDone ||
+    reopenedOccurrence ||
+    Object.hasOwn(patch, "completedOn") ||
+    (stored !== null && Object.hasOwn(patch, "date"));
   if (!needsDay && !leavingDone) return output;
   const now = DateTime.utc();
   let today = "";
@@ -97,6 +125,15 @@ export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
     output = { ...output, completedOn: null, completedAt: null };
   }
   if (stored && Object.hasOwn(patch, "date")) output = { ...output, ...taskSinceRule(old, output, today) };
+  if (reopenedOccurrence && typeof old.seriesId === "string" && typeof old.occurrenceDate === "string") {
+    // The rule is read from the series row after the choke point locked the item (items before `task_recurrence`).
+    const series = await getTaskRecurrenceBySeriesId(client, old.seriesId);
+    if (series) {
+      const occurrenceDate = old.occurrenceDate;
+      const next = firstOccurrenceAfter(series.rule, occurrenceDate, occurrenceDate, occurrenceDate);
+      if (next <= today) output = { ...output, status: "missed" };
+    }
+  }
   return output;
 };
 

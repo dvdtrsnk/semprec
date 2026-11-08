@@ -28,7 +28,10 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["database.tasks.name"]).toBe("Tasks");
     expect(catalogs?.cs["database.tasks.name"]).toBe("Úkoly");
     expect(catalogs?.en["property.tasks.status.option.notDone"]).toBe("Open");
-    expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Otevřeno");
+    // Issue #1668: the open status reads "Nehotovo" / "Open", and `missed` "Nesplněno" / "Missed".
+    expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Nehotovo");
+    expect(catalogs?.en["property.tasks.status.option.missed"]).toBe("Missed");
+    expect(catalogs?.cs["property.tasks.status.option.missed"]).toBe("Nesplněno");
 
     expect(catalogs?.en["database.areas.name"]).toBe("Areas");
     expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");
