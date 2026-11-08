@@ -329,6 +329,15 @@ export const manifest: ModuleManifest = {
       converterExport: "backfillTaskTimeProperties",
     },
   ],
+  linkRules: [
+    // A file's companies are the union of its projects' companies (issue #1653).
+    {
+      key: "fileCompaniesFromProjects",
+      source: { databaseKey: PROJECTS_MODULE_ID, propertyKey: "company" },
+      target: { databaseKey: FILES_MODULE_ID, propertyKey: "companies" },
+      via: { databaseKey: FILES_MODULE_ID, relationKey: "projects" },
+    },
+  ],
   customRoutes: [
     {
       name: "readProjectAgentGuidance",
