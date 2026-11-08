@@ -995,8 +995,8 @@ describe("People lastContact (issue #1660)", () => {
     const newerEvent = await createEvent(tenantA, c, newer);
     expect((await queuedRecomputes()).map((job) => job.key)).toEqual([peopleLastContactJobKey(person)]);
 
-    // A lock-only admin transaction: FOR NO KEY UPDATE conflicts with the recompute's FOR UPDATE of the person,
-    // but not with the FOR KEY SHARE that a new edge's foreign key check takes on it.
+    // A lock-only admin transaction: its FOR NO KEY UPDATE conflicts with the recompute's FOR UPDATE of the
+    // person. The link below has to commit while the person is held, which `within` bounds.
     const holder = await admin.connect();
     let holding = false;
     let recompute: Promise<Outcome> | undefined;
