@@ -385,10 +385,13 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     const order: string[] = [];
     let listeningAtDispatcherStop: boolean | undefined;
     let poolEndedAtRootStop: boolean | undefined;
-    await dispatcher.start();
+    let shutdownStarted = false;
+    let primary: { error: unknown } | undefined;
     try {
-      await pulling;
+      await dispatcher.start();
+      await within(pulling, 10_000, "The held pull");
       const { logger, lines } = createCapturingLogger();
+      shutdownStarted = true;
       await createGracefulShutdown({
         server,
         tenantDeactivationListener,
@@ -429,10 +432,23 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
       expect(poolEndedAtRootStop).toBe(false);
       expect(dedicatedPool.ended).toBe(true);
       expect(lines.filter((line) => line.level === "error")).toEqual([]);
-    } finally {
-      releasePull();
-      await dispatcher.stop();
+    } catch (error) {
+      primary = { error };
     }
+    await settleAll(primary, [
+      () => releasePull(),
+      () => dispatcher.stop(),
+      // A case that failed before the shutdown ran closes what the shutdown would have closed.
+      async () => {
+        if (shutdownStarted) return;
+        await syncServer.close();
+        await voiceServer.close();
+        await tenantDeactivationListener.close();
+        if (server.listening) {
+          await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+        }
+      },
+    ]);
     // Pulled, never dispatched, never acknowledged: Pub/Sub still holds it.
     expect(pubSub.pulls()).toBe(1);
     expect(pubSub.acknowledged).toEqual([]);
@@ -441,12 +457,49 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     // The next process's dispatcher receives it again and, once handed off (no mailbox watches the
     // address), acknowledges it.
     const next = createGmailPubSubDispatcher(sharedPool, pubSub.transport, { pullEmptyBackoffMs: 10 });
-    await next.start();
+    let nextPrimary: { error: unknown } | undefined;
     try {
+      await next.start();
       await vi.waitFor(() => expect(pubSub.acknowledged).toEqual([["ack-held"]]));
-    } finally {
-      await next.stop();
+    } catch (error) {
+      nextPrimary = { error };
     }
+    await settleAll(nextPrimary, [() => next.stop()]);
     expect(pubSub.unacknowledged.size).toBe(0);
   });
 });
+
+/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Runs every cleanup even when one fails. The case's own failure, `primary`, stays first: it is rethrown, or,
+ * when a cleanup failed too, rethrown inside an `AggregateError` with the cleanup failures after it. A thrown
+ * falsy value counts as a failure because `primary` wraps it.
+ */
+async function settleAll(primary: { error: unknown } | undefined, cleanups: (() => unknown)[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (primary && failures.length > 0) {
+    throw new AggregateError([primary.error, ...failures], "The case and its cleanup failed", { cause: primary.error });
+  }
+  if (primary) throw primary.error;
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "The case's cleanup failed");
+}
