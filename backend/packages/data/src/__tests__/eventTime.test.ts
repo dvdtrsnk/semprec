@@ -114,14 +114,16 @@ describe("Events time normalization before the write (issue #1598)", () => {
   });
 
   it("does not invent an end for a multi-day Event", async () => {
-    const event = await createEvent({ date: "2026-10-16", endDate: "2026-10-18", timeFrom: "08:00" });
-    expect(times(event)).toEqual({
+    const multiDay = { date: "2026-10-16", endDate: "2026-10-18", timeFrom: "08:00" };
+    expect(timesOf(await prepared(null, multiDay))).toEqual({
       date: "2026-10-16",
       endDate: "2026-10-18",
       timeFrom: "08:00",
       timeTo: null,
       time: "08:00",
     });
+    // Issue #1663: a timed Event spanning days needs an explicit end, so the write itself is refused.
+    await expectRefused(createEvent(multiDay), "timeTo");
   });
 
   it("stores time null for an all-day Event", async () => {
@@ -307,7 +309,8 @@ describe("Events time normalization before the write (issue #1598)", () => {
     for (const zone of ["Europe/Prague", "America/New_York"]) {
       // The row as this iteration's write will find it: the previous iteration wrote and restored it.
       const current = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
-      const patch = { date: "2026-10-16T14:00:00Z" };
+      // The end is cleared so the moved start gets its one-hour end: a start after the stored end is refused (#1663).
+      const patch = { date: "2026-10-16T14:00:00Z", timeTo: null };
       const instant = await prepareUserItemPatch(properties, patch, database, current, zone);
       await setTenantZone(zone);
       const written = await chokePoint.updateItem(

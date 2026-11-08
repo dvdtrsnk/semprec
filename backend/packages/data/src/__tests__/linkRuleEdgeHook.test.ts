@@ -277,8 +277,14 @@ describe("value link via-edge union", () => {
         return db.id;
       });
       const items = [];
+      // Index 3 is Events, whose create requires a date (issue #1663).
       for (const [index, databaseId] of ids.entries())
-        items.push(await cp.createItem({ databaseId, properties: index === 0 ? { name: "Chain source" } : {} }));
+        items.push(
+          await cp.createItem({
+            databaseId,
+            properties: index === 0 ? { name: "Chain source" } : index === 3 ? { date: "2026-10-16" } : {},
+          }),
+        );
       const viaKeys = ["area", "project", "actionItems", "people", "people", "companies"];
       const sourceSide = new Set([4]);
       const edges = [];

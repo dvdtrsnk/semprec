@@ -178,8 +178,14 @@ describe("item routes (issue #241)", () => {
           if (!match) throw new Error(`Missing ${key}`);
           return match.id;
         };
-        const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
-        const open = await cp.createItem({ databaseId: db("events"), properties: { name: "Open" } });
+        const event = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Event", date: "2026-10-16" },
+        });
+        const open = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Open", date: "2026-10-16" },
+        });
         const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const openFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Open file" } });
         const health = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Health" } });
