@@ -26,6 +26,7 @@ import {
   createBoundedImapIdleLifecycleFactory,
   createItemWithClient,
   createMailLiveSyncRoot,
+  handleGraphChangeNotification,
   MailServerUnreachableError,
   resolveMailModuleIds,
   seedSystem,
@@ -42,7 +43,9 @@ import {
   createGmailPubSubDispatcherFor,
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
+  decideGraphSubscriptionHosting,
   resolveGmailWatchHosting,
+  resolveGraphSubscriptionHosting,
   type MailLiveSyncLifecycleDispatchOptions,
 } from "../mailLiveSyncLifecycles.js";
 import { loadGmailPubSubConfig } from "../gmailPubSubConfig.js";
@@ -466,6 +469,8 @@ const TOPIC = "projects/semprec-test/topics/gmail";
 const SUBSCRIPTION = "projects/semprec-test/subscriptions/gmail-push";
 const PUBSUB_PULL = `https://pubsub.googleapis.com/v1/${SUBSCRIPTION}:pull`;
 const PUBSUB_ACK = `https://pubsub.googleapis.com/v1/${SUBSCRIPTION}:acknowledge`;
+const MICROSOFT_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+const GRAPH_SUBSCRIPTIONS = "https://graph.microsoft.com/v1.0/subscriptions";
 const SERVICE_ACCOUNT_EMAIL = "semprec-push@semprec-test.iam.gserviceaccount.com";
 const REFRESH_TOKEN = "synthetic-refresh-token-that-must-never-be-logged";
 const CLIENT_SECRET = "synthetic-client-secret-that-must-never-be-logged";
@@ -820,5 +825,220 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     expect(exchanges).toBe(4);
     expect(JSON.stringify(failure)).not.toContain("leaked-in-error-body");
     expect(String(failure)).not.toContain(key.pem.slice(40, 80));
+  });
+});
+
+/** A Graph-mode mailbox in tenant zero with its refresh token and sync state. */
+async function insertGraphMailbox(): Promise<string> {
+  return inTenantZero(() =>
+    withTransaction(pool, async (client) => {
+      const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+      const mailbox = await createItemWithClient(client, {
+        databaseId: mailboxesDatabaseId,
+        properties: { name: `Mailbox ${randomUUID()}`, provider: "outlook" },
+      });
+      await storeCredential(client, {
+        itemId: mailbox.id,
+        credentialType: "oauth2_refresh_token",
+        plaintext: REFRESH_TOKEN,
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "graph_api" });
+      return mailbox.id;
+    }),
+  );
+}
+
+const GRAPH_ENV = { MS_GRAPH_OAUTH_CLIENT_ID: "synthetic-graph-client", MS_GRAPH_OAUTH_CLIENT_SECRET: CLIENT_SECRET };
+
+describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    await createTenantZeroUser(pool);
+    lifecycleErrors = [];
+    idleErrors = [];
+    root = undefined;
+  });
+
+  afterEach(async () => {
+    await root?.stop();
+    root = undefined;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["https://semprec.example", "https://semprec.example/api/mail/graph/webhook"],
+    ["https://semprec.example/", "https://semprec.example/api/mail/graph/webhook"],
+    ["https://semprec.example:8443", "https://semprec.example:8443/api/mail/graph/webhook"],
+  ])("hosts Graph for the plain https origin %s", (appBaseUrl, notificationUrl) => {
+    const decision = decideGraphSubscriptionHosting(appBaseUrl, { clientId: "id", clientSecret: "secret" });
+    expect(decision).toEqual({ hosted: true, notificationUrl, client: { clientId: "id", clientSecret: "secret" } });
+  });
+
+  it.each([
+    "http://localhost:3000",
+    "https://semprec.example/app",
+    "https://semprec.example?x=1",
+    "https://user@semprec.example",
+    "not a url",
+    "https://",
+  ])("does not host Graph for APP_BASE_URL %s", (appBaseUrl) => {
+    expect(decideGraphSubscriptionHosting(appBaseUrl, { clientId: "id", clientSecret: "secret" })).toEqual({
+      hosted: false,
+      reason: "APP_BASE_URL is not an https:// origin without a path",
+    });
+  });
+
+  it("does not host Graph without its OAuth client, naming the missing keys", () => {
+    expect(
+      decideGraphSubscriptionHosting("https://semprec.example", { missingEnv: ["MS_GRAPH_OAUTH_CLIENT_SECRET"] }),
+    ).toEqual({
+      hosted: false,
+      reason: "missing MS_GRAPH_OAUTH_CLIENT_SECRET",
+    });
+  });
+
+  it("creates a subscription at the deployment's webhook, a notification enqueues a sync, and a restart re-registers after a 404", async () => {
+    const logs = captureServiceLogs();
+    const created: { notificationUrl: string; clientState: string }[] = [];
+    const renewals: string[] = [];
+    let renewStatus = 404;
+    const seen = stubProviders({
+      [`POST ${MICROSOFT_TOKEN}`]: async (request) => {
+        const form = await formOf(request);
+        expect(form.get("client_secret")).toBe(CLIENT_SECRET);
+        return Response.json({ access_token: "graph-user-access", expires_in: 3600, refresh_token: REFRESH_TOKEN });
+      },
+      [`POST ${GRAPH_SUBSCRIPTIONS}`]: async (request) => {
+        expect(request.headers.get("authorization")).toBe("Bearer graph-user-access");
+        const body = z.object({ notificationUrl: z.string(), clientState: z.string() }).parse(await request.json());
+        created.push(body);
+        return Response.json({
+          id: `sub-${created.length}`,
+          expirationDateTime: new Date(Date.now() + 3600_000).toISOString(),
+        });
+      },
+      [`PATCH ${GRAPH_SUBSCRIPTIONS}/*`]: (request) => {
+        renewals.push(request.url);
+        if (renewStatus === 404) return new Response(null, { status: 404 });
+        return Response.json({
+          id: request.url.split("/").at(-1),
+          expirationDateTime: new Date(Date.now() + 7200_000).toISOString(),
+        });
+      },
+    });
+    const graph = resolveGraphSubscriptionHosting(pool, GRAPH_ENV, "https://semprec.example");
+    if (!graph) throw new Error("expected the Graph lifecycle to be hosted");
+    const mailboxId = await insertGraphMailbox();
+
+    root = composeRoot({ graph_api: graph });
+    await root.start();
+    await waitFor(async () => (await syncStateOf(mailboxId))?.graph_subscription_id === "sub-1");
+    expect(created.map((entry) => entry.notificationUrl)).toEqual(["https://semprec.example/api/mail/graph/webhook"]);
+
+    await clearSyncJobsFor(mailboxId);
+    const clientState = created[0]?.clientState ?? "";
+    await expect(handleGraphChangeNotification(pool, { subscriptionId: "sub-1", clientState })).resolves.toBe(
+      "accepted",
+    );
+    expect(await syncJobsFor(mailboxId)).toBe(1);
+
+    await root.stop();
+    root = undefined;
+    const requestsAtStop = seen.length;
+    await sleep(50);
+    expect(seen.length).toBe(requestsAtStop);
+
+    // A restart renews the persisted subscription; Graph no longer has it, so a new one is registered.
+    root = composeRoot({ graph_api: graph });
+    await root.start();
+    await waitFor(async () => (await syncStateOf(mailboxId))?.graph_subscription_id === "sub-2");
+    expect(renewals).toEqual([`${GRAPH_SUBSCRIPTIONS}/sub-1`]);
+    await root.stop();
+
+    // A renewal Graph accepts moves only the expiry.
+    renewStatus = 200;
+    const before = await syncStateOf(mailboxId);
+    root = composeRoot({ graph_api: graph });
+    await root.start();
+    await waitFor(async () => renewals.length === 2);
+    await waitFor(
+      async () =>
+        (await syncStateOf(mailboxId))?.graph_subscription_expires_at?.getTime() !==
+        before?.graph_subscription_expires_at?.getTime(),
+    );
+    expect((await syncStateOf(mailboxId))?.graph_subscription_id).toBe("sub-2");
+    expect(created).toHaveLength(2);
+    expect(lifecycleErrors).toEqual([]);
+    for (const secret of [REFRESH_TOKEN, CLIENT_SECRET, "graph-user-access"]) {
+      expect(JSON.stringify(logs.calls)).not.toContain(secret);
+    }
+  });
+
+  it("logs a failed subscription create by its error name only", async () => {
+    const logs = captureServiceLogs();
+    stubProviders({
+      [`POST ${MICROSOFT_TOKEN}`]: () => Response.json({ access_token: "graph-user-access", expires_in: 3600 }),
+      [`POST ${GRAPH_SUBSCRIPTIONS}`]: () =>
+        Response.json({ error: { message: "graph-user-access" } }, { status: 500 }),
+    });
+    const graph = resolveGraphSubscriptionHosting(pool, GRAPH_ENV, "https://semprec.example");
+    if (!graph) throw new Error("expected the Graph lifecycle to be hosted");
+    const mailboxId = await insertGraphMailbox();
+    root = composeRoot({ graph_api: graph });
+    await root.start();
+    await waitFor(async () => logs.calls.some((call) => call[2] === "Graph subscription lifecycle failed"));
+    expect(logs.calls.filter((call) => call[2] === "Graph subscription lifecycle failed")).toEqual([
+      [
+        "warn",
+        { mailboxItemId: mailboxId, phase: "subscription", errorName: "Error" },
+        "Graph subscription lifecycle failed",
+      ],
+    ]);
+    for (const secret of [REFRESH_TOKEN, CLIENT_SECRET, "graph-user-access"]) {
+      expect(JSON.stringify(logs.calls)).not.toContain(secret);
+    }
+  });
+
+  it.each([
+    ["an http APP_BASE_URL", "http://localhost:3000", GRAPH_ENV],
+    ["a path-bearing APP_BASE_URL", "https://semprec.example/app", GRAPH_ENV],
+    ["no Graph OAuth client", "https://semprec.example", {}],
+  ])("with %s, logs one warning and keeps Graph accounts on the noop lifecycle", async (_name, appBaseUrl, env) => {
+    stubProviders({});
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    expect(resolveGraphSubscriptionHosting(pool, env, appBaseUrl)).toBeNull();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning.mock.calls[0]?.[1]).toBe(
+      "Graph subscription lifecycles are not hosted; Graph accounts are synced by the periodic sweep",
+    );
+    root = composeRoot({});
+    const mailboxId = await insertGraphMailbox();
+    await root.start();
+    expect(await syncJobsFor(mailboxId)).toBe(1);
+  });
+
+  it("leaves the other sync modes as they were when Graph is hosted", async () => {
+    stubProviders({
+      [`POST ${MICROSOFT_TOKEN}`]: () => Response.json({ access_token: "graph-user-access", expires_in: 3600 }),
+      [`POST ${GRAPH_SUBSCRIPTIONS}`]: () =>
+        Response.json({ id: "sub-only", expirationDateTime: new Date(Date.now() + 3600_000).toISOString() }),
+    });
+    const graph = resolveGraphSubscriptionHosting(pool, GRAPH_ENV, "https://semprec.example");
+    if (!graph) throw new Error("expected the Graph lifecycle to be hosted");
+    const fake = createFakeIdleTransport();
+    root = composeRoot({ imap: imapIdleOver(fake.transport), graph_api: graph });
+    const imapId = await insertMailbox("generic");
+    const gmailId = await insertMailbox("gmail");
+    const graphId = await insertGraphMailbox();
+    await root.start();
+    await waitFor(async () => fake.connections.length === 1);
+    await waitFor(async () => (await syncStateOf(graphId))?.graph_subscription_id === "sub-only");
+    expect(fake.connections[0]?.mailboxItemId).toBe(imapId);
+    expect(fake.resolvedMailboxes).not.toContain(graphId);
+    expect(await syncJobsFor(gmailId)).toBe(1);
+    expect(lifecycleErrors).toEqual([]);
   });
 });

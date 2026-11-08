@@ -277,7 +277,7 @@ export {
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
-// Issue #1739: the existing Gmail watch owners, hosted by semprec-api.
+// Issues #1739 and #1745: the existing Gmail watch and Graph subscription owners, hosted by semprec-api.
 export {
   createGmailPubSubDispatcher,
   createGmailWatchLifecycleFactory,
@@ -285,6 +285,8 @@ export {
   type GmailWatchTransport,
 } from "./mail/gmailWatchLifecycle.js";
 export { createGmailPubSubTransport } from "./mail/gmailPubSubClient.js";
+export { createGraphWebhookLifecycleFactory, type GraphSubscriptionTransport } from "./mail/graphWebhookLifecycle.js";
+export { createGraphSubscriptionRestClient } from "./mail/graphSubscriptionClient.js";
 export { getProviderAccountAddress } from "./mail/mailAccountSyncStateStore.js";
 export {
   deleteMailServerSettings,

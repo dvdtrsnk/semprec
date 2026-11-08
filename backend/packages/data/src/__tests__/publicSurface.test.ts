@@ -263,6 +263,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createGmailPubSubTransport",
   "createGmailWatchLifecycleFactory",
   "createGraphMailFlagWritebackAdapter",
+  "createGraphSubscriptionRestClient",
+  "createGraphWebhookLifecycleFactory",
   "createGuidanceManifestPort",
   "createGuidanceProblemWriter",
   "createHeartbeat",

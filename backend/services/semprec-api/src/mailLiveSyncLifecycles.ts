@@ -1,10 +1,13 @@
 import type { Pool } from "pg";
 import {
   GOOGLE_TOKEN_URL,
+  MICROSOFT_TOKEN_URL,
   createBoundedImapIdleLifecycleFactory,
   createGmailPubSubDispatcher,
   createGmailPubSubTransport,
   createGmailWatchLifecycleFactory,
+  createGraphSubscriptionRestClient,
+  createGraphWebhookLifecycleFactory,
   createImapFlowIdleTransport,
   createNoopMailLiveSyncLifecycleFactory,
   getDecryptedCredential,
@@ -192,4 +195,71 @@ export function createGmailPubSubDispatcherFor(pool: Pool, hosting: GmailWatchHo
       );
     },
   });
+}
+
+/** Where every Graph subscription posts its change notifications (`app.ts` routes it). */
+const GRAPH_WEBHOOK_PATH = "/api/mail/graph/webhook";
+
+export type GraphSubscriptionHostingDecision =
+  { hosted: true; notificationUrl: string; client: OAuthClient } | { hosted: false; reason: string };
+
+/**
+ * Issue #1745's rule, pure: Graph accepts only a public HTTPS `notificationUrl`, so subscriptions are hosted
+ * when `appBaseUrl` is an `https://` origin without a path (a trailing `/` is the root, not a path) and the
+ * Graph OAuth client is configured; the URL is that origin plus `/api/mail/graph/webhook`.
+ */
+export function decideGraphSubscriptionHosting(
+  appBaseUrl: string,
+  client: OAuthClient | { missingEnv: string[] },
+): GraphSubscriptionHostingDecision {
+  if ("missingEnv" in client) return { hosted: false, reason: `missing ${client.missingEnv.join(", ")}` };
+  const notAnOrigin = { hosted: false, reason: "APP_BASE_URL is not an https:// origin without a path" } as const;
+  // Scheme, then host (no path, query, fragment or user info), then at most the root `/`.
+  if (!/^https:\/\/[^/?#@\s]+\/?$/.test(appBaseUrl)) return notAnOrigin;
+  let origin: string;
+  try {
+    origin = new URL(appBaseUrl).origin;
+  } catch (error) {
+    if (error instanceof TypeError) return notAnOrigin;
+    throw error;
+  }
+  return { hosted: true, notificationUrl: `${origin}${GRAPH_WEBHOOK_PATH}`, client };
+}
+
+/**
+ * The Graph subscription lifecycle of every Graph account (`createGraphWebhookLifecycleFactory`), or `null`
+ * with one warning when the decision above does not host it: the process still starts, and Graph accounts
+ * keep the noop lifecycle and the periodic sweep. Tokens come from the account's own grant
+ * (`refreshAndPersistAccessToken` with `MICROSOFT_TOKEN_URL`); failures log ids and error names only.
+ */
+export function resolveGraphSubscriptionHosting(
+  pool: Pool,
+  env: NodeJS.ProcessEnv,
+  appBaseUrl: string,
+): MailLiveSyncLifecycleFactory | null {
+  const decision = decideGraphSubscriptionHosting(
+    appBaseUrl,
+    readOAuthClient(env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
+  );
+  if (!decision.hosted) {
+    logger.warn(
+      { reason: decision.reason },
+      "Graph subscription lifecycles are not hosted; Graph accounts are synced by the periodic sweep",
+    );
+    return null;
+  }
+  const { client, notificationUrl } = decision;
+  return createGraphWebhookLifecycleFactory(
+    pool,
+    createGraphSubscriptionRestClient((mailboxItemId) =>
+      mailboxAccessToken(pool, mailboxItemId, MICROSOFT_TOKEN_URL, client, "graph_subscription"),
+    ),
+    {
+      getCredential: (mailboxItemId) => requireCredential(pool, mailboxItemId, "graph_subscription"),
+      notificationUrl,
+      onError: (mailboxItemId, phase, err) => {
+        logger.warn({ mailboxItemId, phase, errorName: errorName(err) }, "Graph subscription lifecycle failed");
+      },
+    },
+  );
 }

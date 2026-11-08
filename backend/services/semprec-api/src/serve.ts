@@ -31,6 +31,7 @@ import {
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
   resolveGmailWatchHosting,
+  resolveGraphSubscriptionHosting,
 } from "./mailLiveSyncLifecycles.js";
 import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createVoiceChannel } from "./voiceChannel.js";
@@ -203,11 +204,12 @@ const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
 // Issue #650: this long-lived process hosts the one mail live-sync root that
 // `createMailLiveSyncRoot`'s contract requires. The root discovers each active tenant's
-// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550) and Gmail accounts the
-// watch lifecycle (issue #1739) when its configuration is complete; otherwise, and for every other sync
-// mode, the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync` and leaves the
-// account to the periodic sweep, until the Graph lifecycle is hosted (#1745).
+// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550), Gmail accounts the
+// watch lifecycle (issue #1739) and Graph accounts the subscription lifecycle (issue #1745) when their
+// configuration is complete; otherwise, and for every other sync mode, the noop lifecycle, whose
+// `start()` enqueues one immediate `mailAccountSync` and leaves the account to the periodic sweep.
 const gmailWatch = await resolveGmailWatchHosting(pool, process.env);
+const graphSubscriptions = resolveGraphSubscriptionHosting(pool, process.env, appBaseUrl);
 const mailLiveSync = createMailLiveSyncRoot(
   pool,
   createMailLiveSyncLifecycleFactory({
@@ -215,6 +217,7 @@ const mailLiveSync = createMailLiveSyncRoot(
     hosted: {
       imap: createImapIdleLifecycleFactory(pool),
       ...(gmailWatch ? { gmail_api: gmailWatch.lifecycle } : {}),
+      ...(graphSubscriptions ? { graph_api: graphSubscriptions } : {}),
     },
   }),
   {
