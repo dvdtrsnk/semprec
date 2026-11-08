@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import * as relationStore from "../../chokePoint/relationsStore.js";
 import "../../domainWriteHooks.js";
 import {
@@ -27,6 +28,7 @@ import {
   reviseProposalWithClient,
 } from "../../inbox/proposalActions.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
+import { peopleLastContactJobKey } from "../../people/lastContact.js";
 import { transcriptSpeakerCardContextSchema } from "../transcriptSpeakerCardContext.js";
 import {
   proposeSpeakerMappings,
@@ -743,11 +745,20 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                     ? secondFailure
                     : new Error("Second concurrent operation failed", { cause: secondFailure });
                 expect(secondPid).not.toBe(0);
-                const blocked = await runtime.query<{ blocked: boolean; insertion: boolean }>(
-                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion FROM pg_stat_activity WHERE pid = $1::int",
+                const blocked = await runtime.query<{ blocked: boolean; insertion: boolean; enqueue: boolean }>(
+                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue FROM pg_stat_activity WHERE pid = $1::int",
                   [secondPid, firstPid],
                 );
-                expect(blocked.rows[0]).toEqual({ blocked: true, insertion: true });
+                // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted participant
+                // edge. User-first: the confirm writes its speakers edge first, and that edge's People `lastContact`
+                // enqueue (issue #1660) waits on the user write's uncommitted job under the same person's key, before
+                // the confirm reaches its participant INSERT; this order no longer waits on an uncommitted participant
+                // edge.
+                expect(blocked.rows[0]).toEqual(
+                  order === "user-first"
+                    ? { blocked: true, insertion: false, enqueue: true }
+                    : { blocked: true, insertion: true, enqueue: false },
+                );
               },
               { timeout: 5000 },
             );
@@ -761,6 +772,17 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             );
             expect(rows.rows).toHaveLength(1);
             expect(rows.rows[0]?.metadata).toEqual({ invitation: "accepted" });
+            // Both writers queued the same person's recompute; job-key deduplication left one job.
+            const lastContactJobs = await pool.query<{ task_identifier: string; key: string | null }>(
+              "SELECT task_identifier, key FROM graphile_worker.jobs WHERE key = $1",
+              [peopleLastContactJobKey(person.id)],
+            );
+            expect(lastContactJobs.rows).toEqual([
+              {
+                task_identifier: CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE,
+                key: peopleLastContactJobKey(person.id),
+              },
+            ]);
             const card = await runtime.query<{ history: unknown }>(
               "SELECT properties->'history' AS history FROM items WHERE database_id = $1 AND id = $2",
               [proposalsId, cardId],

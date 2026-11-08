@@ -22,6 +22,7 @@ import { writeComputed } from "../../chokePoint/itemsStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
+import { peopleLastContactJobKey } from "../../people/lastContact.js";
 import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandlers.js";
 
 let pool: Pool;
@@ -47,12 +48,17 @@ async function queuedJobKeys(): Promise<QueuedJobKey[]> {
   return rows.map(({ task_identifier, key }) => ({ task_identifier, key })).sort(compareJobKeys);
 }
 
-/** `jobs` with the given search reindex keys added once each, as job-key deduplication leaves them. */
-function withReindexKeys(jobs: QueuedJobKey[], keys: string[]): QueuedJobKey[] {
+/** `jobs` with the given keys of `taskIdentifier` added once each, as job-key deduplication leaves them. */
+function withQueuedKeys(jobs: QueuedJobKey[], taskIdentifier: string, keys: string[]): QueuedJobKey[] {
   const added = keys
     .filter((key) => !jobs.some((job) => job.key === key))
-    .map((key) => ({ task_identifier: CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, key }));
+    .map((key) => ({ task_identifier: taskIdentifier, key }));
   return [...jobs, ...added].sort(compareJobKeys);
+}
+
+/** `jobs` with the given search reindex keys added once each, as job-key deduplication leaves them. */
+function withReindexKeys(jobs: QueuedJobKey[], keys: string[]): QueuedJobKey[] {
+  return withQueuedKeys(jobs, CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, keys);
 }
 
 function throwFailure(error: unknown): never {
@@ -550,15 +556,20 @@ describe("Transcript speaker mappings (issue #185)", () => {
               ]);
               events.length = 0;
               // Issue #1652's search reindex jobs, keyed as `enqueueItemSearchReindex` keys them: the held
-              // rename queued the transcript's referrers, the written edge both ends' documents. Nothing else
+              // rename queued the transcript's referrers, the written edge both ends' documents. Issue #1660's
+              // edge hook queued the People `lastContact` recompute of the person the edge maps. Nothing else
               // was queued, and the two refusals below must add nothing.
               const afterEdgeJobs = await queuedJobKeys();
               expect(afterEdgeJobs).toEqual(
-                withReindexKeys(beforeJobs, [
-                  `item-search-reindex:referrers:${transcriptId}:start`,
-                  `item-search-reindex:item:${transcriptId}`,
-                  `item-search-reindex:item:${personId}`,
-                ]),
+                withQueuedKeys(
+                  withReindexKeys(beforeJobs, [
+                    `item-search-reindex:referrers:${transcriptId}:start`,
+                    `item-search-reindex:item:${transcriptId}`,
+                    `item-search-reindex:item:${personId}`,
+                  ]),
+                  CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE,
+                  [peopleLastContactJobKey(personId)],
+                ),
               );
               await expectAttempt(
                 { speaker: "SPEAKER_99" },

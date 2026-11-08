@@ -25,6 +25,7 @@ import { allowLoopbackOutboundForTests } from "@semprec/data/testSupport/mcpCont
 import {
   createChokePoint,
   createItemWithClient,
+  createPool,
   getDatabaseByModuleId,
   loadFullModuleRegistry,
   MailConnectionLimitError,
@@ -587,6 +588,19 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
   let runtime: ApiQueueRuntime | undefined;
   let liveRoot: MailLiveSyncRoot | undefined;
+  /**
+   * The pool each case's runtime, live-sync root and hosting resolvers run on, built by `createPool` as `serve.ts`
+   * builds theirs: it opens every physical connection detached from the caller's tenant scope
+   * (docs/adr/2026-10-05-tenant-scope-propagation.md). The shared test pool opens a connection in whatever scope
+   * first needs one, and a socket's callbacks, the runtime's LISTEN notifications included, run in the scope that
+   * opened it. Fixtures, readers and job producers keep using `pool`.
+   */
+  let runtimePool: Pool | undefined;
+
+  function requireRuntimePool(): Pool {
+    if (!runtimePool) throw new Error("The runtime pool was not created");
+    return runtimePool;
+  }
   let restoreMailLog: (() => void) | undefined;
   let attachmentDir: string | undefined;
   let keyDir: string | undefined;
@@ -633,7 +647,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     setEnv("GMAIL_OAUTH_CLIENT_SECRET", configured.gmail ? GMAIL_CLIENT_SECRET : undefined);
     setEnv("MS_GRAPH_OAUTH_CLIENT_ID", configured.graph ? GRAPH_CLIENT_ID : undefined);
     setEnv("MS_GRAPH_OAUTH_CLIENT_SECRET", configured.graph ? GRAPH_CLIENT_SECRET : undefined);
-    runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
+    runtime = await createApiQueueRuntime(requireRuntimePool(), await loadFullModuleRegistry());
   }
 
   async function enqueueAccountSync(mailboxItemId: string): Promise<void> {
@@ -696,6 +710,9 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     liveRoot = undefined;
     attachmentDir = undefined;
     keyDir = undefined;
+    const connectionString = process.env.TEST_DATABASE_URL;
+    if (!connectionString) throw new Error("TEST_DATABASE_URL is not set; the integration globalSetup provides it");
+    runtimePool = createPool(connectionString);
   });
 
   afterEach(async () => {
@@ -708,6 +725,12 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         await rooted?.stop();
       },
       async () => runtime?.stop(),
+      // Ended only after the root and the runtime above were stopped, whatever either did.
+      async () => {
+        const owned = runtimePool;
+        runtimePool = undefined;
+        await owned?.end();
+      },
       async () => {
         if (attachmentDir) rmSync(attachmentDir, { recursive: true, force: true });
       },
@@ -1190,9 +1213,10 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     }
 
     /**
-     * Composes this process in `serve.ts`'s order from the environment: the api queue runtime (which builds the
-     * mail sync adapters and runs the registered tasks), then the Gmail and the Graph hosting decisions, then the
-     * live-sync root over them, started. Every provider warning logged on the way is returned, in order.
+     * Composes this process in `serve.ts`'s order from the environment, over the case's runtime pool as `serve.ts`
+     * composes it over its one pool: the api queue runtime (which builds the mail sync adapters and runs the
+     * registered tasks), then the Gmail and the Graph hosting decisions, then the live-sync root over them, started.
+     * Every provider warning logged on the way is returned, in order.
      */
     async function composeStartup(
       configured: { gmail?: boolean; graph?: boolean },
@@ -1200,14 +1224,15 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     ): Promise<{ gmailHosted: boolean; graphHosted: boolean; providerWarnings: unknown[][] }> {
       const warn = vi.spyOn(logger, "warn");
       await startRuntimeWith(configured);
-      const gmailWatch = await resolveGmailWatchHosting(pool, process.env);
-      const graphSubscriptions = resolveGraphSubscriptionHosting(pool, process.env, appBaseUrl);
+      const composed = requireRuntimePool();
+      const gmailWatch = await resolveGmailWatchHosting(composed, process.env);
+      const graphSubscriptions = resolveGraphSubscriptionHosting(composed, process.env, appBaseUrl);
       liveRoot = createMailLiveSyncRoot(
-        pool,
+        composed,
         createMailLiveSyncLifecycleFactory({
-          pool,
+          pool: composed,
           hosted: {
-            imap: createImapIdleLifecycleFactory(pool),
+            imap: createImapIdleLifecycleFactory(composed),
             ...(gmailWatch ? { gmail_api: gmailWatch.lifecycle } : {}),
             ...(graphSubscriptions ? { graph_api: graphSubscriptions } : {}),
           },
@@ -1246,6 +1271,40 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 second' WHERE item_id = $1`,
         [mailboxItemId],
       );
+    }
+
+    /** pg-pool's default `max`, which `createPool` keeps: the slots the runtime pool can hold at once. */
+    const RUNTIME_POOL_SLOTS = 10;
+
+    /**
+     * Holds every connection slot of the case's fresh runtime pool at once inside tenant zero, then releases them
+     * all, so every physical connection the pool holds when the runtime starts, the one its LISTEN client takes
+     * included, was first opened from inside a tenant. Every started checkout is awaited and released even when
+     * another one failed.
+     */
+    async function openEveryRuntimeSlotInsideTenant(): Promise<void> {
+      const owned = requireRuntimePool();
+      const slots = owned.options.max;
+      if (slots !== RUNTIME_POOL_SLOTS) throw new Error(`Unexpected runtime pool size: ${String(slots)}`);
+      expect(owned.totalCount).toBe(0);
+      const checkouts = await inTenantZero(() =>
+        Promise.allSettled(Array.from({ length: slots }, () => owned.connect())),
+      );
+      const failures: unknown[] = [];
+      for (const checkout of checkouts) {
+        if (checkout.status === "rejected") {
+          failures.push(checkout.reason);
+          continue;
+        }
+        try {
+          checkout.value.release();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Opening the runtime pool inside a tenant failed");
+      expect(owned.totalCount).toBe(slots);
     }
 
     /** Runs the registered `mailAccountSyncSweep` task once, as its crontab entry would, through the runtime. */
@@ -1352,6 +1411,38 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       ]);
       expect(microsoft.calls.graphRoutes.filter((route) => route.startsWith("/subscriptions"))).toEqual([]);
       expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).toEqual([]);
+    });
+
+    it("runs the registered sweep as system when every connection of the runtime pool was first opened inside a tenant", async () => {
+      configureGmailPubSub();
+      const mailboxId = await createGraphMailbox("Tenant-opened Graph");
+      const microsoft = createFakeMicrosoft();
+      stubProviderFetch(microsoft.fetchImpl, MICROSOFT_HOSTS);
+      await openEveryRuntimeSlotInsideTenant();
+      const startup = await composeStartup({ gmail: true, graph: true }, "http://localhost:3000");
+      expect(startup).toEqual({
+        gmailHosted: true,
+        graphHosted: false,
+        providerWarnings: [
+          [{ reason: "APP_BASE_URL is not an https:// origin without a path" }, GRAPH_LIFECYCLE_WARNING],
+        ],
+      });
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_1);
+
+      await elapseUntilDue(mailboxId);
+      await runRegisteredSweep();
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_2);
+
+      // The sweep ran as system although every connection the pool held when the runtime started, the LISTEN
+      // client's included, was first opened from inside a tenant.
+      expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP)).toEqual([]);
+      expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).toEqual([]);
+      expect(await syncErrorOf(mailboxId)).toBeNull();
+      expect(await syncStatusOf(mailboxId)).toBe("ok");
+      expect(microsoft.calls.presentedRefreshTokens).toEqual([
+        STORED_MICROSOFT_REFRESH_TOKEN,
+        STORED_MICROSOFT_REFRESH_TOKEN,
+      ]);
     });
 
     it("without the Graph OAuth client: only the adapter's startup warning, and the registered sweep's sync is refused", async () => {
