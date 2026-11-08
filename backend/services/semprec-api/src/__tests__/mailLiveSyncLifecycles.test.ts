@@ -996,7 +996,12 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     // The very error the owner's real decode threw, not a wrapper or a copy of it.
     expect(decodeFailures).toHaveLength(1);
     expect(failure).toBe(decodeFailures[0]);
-    expect(failure).toMatchObject({ code: "ERR_MISSING_PASSPHRASE" });
+    // An unrecognized decoder error: an Error whose string code lies outside the one decoder code the owner maps
+    // to a configuration reason (`ERR_OSSL_UNSUPPORTED`), whichever code this host's OpenSSL gives it.
+    expect(failure).toBeInstanceOf(Error);
+    const code: unknown = failure instanceof Error ? Reflect.get(failure, "code") : undefined;
+    expect(typeof code).toBe("string");
+    expect(code).not.toBe("ERR_OSSL_UNSUPPORTED");
     expect(String(failure)).not.toContain(privateKey.slice(40, 80));
   });
 
