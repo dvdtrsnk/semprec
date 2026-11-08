@@ -24,10 +24,13 @@ import {
   registerRelationEdgeDeleteHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
+  registerItemRestoreHook,
+  registerItemDeleteHook,
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
 import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
 import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
+import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
@@ -37,7 +40,16 @@ import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHo
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
+import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
+import {
+  itemSearchDeleteHook,
+  itemSearchEdgeChangedHook,
+  itemSearchInboxCreateHook,
+  itemSearchInboxUpdateHook,
+  itemSearchRestoreHook,
+  itemSearchTitleUpdateHook,
+} from "./search/itemSearchFanout.js";
 import {
   libraryRatingItemCreateHook,
   libraryRatingItemUpdateHook,
@@ -77,7 +89,15 @@ registerItemUpdateHook(mcpServerItemUpdateHook);
 registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
+// Issue #1652: the documents that quote another item's text, rebuilt by queued jobs.
+registerRelationEdgeChangedHook(itemSearchEdgeChangedHook);
+registerItemUpdateHook(itemSearchTitleUpdateHook);
+registerItemDeleteHook(itemSearchDeleteHook);
+registerItemRestoreHook(itemSearchRestoreHook);
+registerItemCreateHook(itemSearchInboxCreateHook);
+registerItemUpdateHook(itemSearchInboxUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
+registerItemRestoreHook(transcriptRestoreHook);
 registerRelationEdgeWriteHook(threadValueEdgeWriteHook);
 registerRelationEdgeDeleteHook(threadValueEdgeDeleteHook);
 registerItemCreateHook(libraryRatingItemCreateHook);
@@ -115,4 +135,5 @@ registerItemUpdateHook(areaItemUpdateHook);
 
 registerItemUpdateHook(linkRuleItemHook);
 registerRelationEdgeChangedHook(linkRuleEdgeHook);
+registerItemDeleteHook(valueLinkSourceDeleteHook);
 registerAutomationBatchReader(readAutomationForItems);

@@ -22,11 +22,33 @@ const thread = z.object({
   hasSempDraft: z.literal(false),
 });
 
+/**
+ * The lowercased, trimmed addresses of the tenant's live mailboxes (their `addresses` property): a
+ * message whose sender is one of them is the user's own. Fixed SQL over the query's `schema_ids`.
+ */
+export const MAIL_OWN_ADDRESSES_SQL = `
+  SELECT DISTINCT lower(btrim(a.address, E' \\t\\n\\r')) AS address
+  FROM items i CROSS JOIN LATERAL regexp_split_to_table(
+    CASE WHEN jsonb_typeof(i.properties->'addresses') = 'string' THEN i.properties->>'addresses' ELSE '' END,
+    E'[,\\n\\r]+') a(address)
+  WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT mailboxes FROM schema_ids)
+    AND i.deleted_at IS NULL AND btrim(a.address, E' \\t\\n\\r') <> ''
+`;
+
 export async function listMailThreads(
   client: PoolClient,
   limit: number,
   cursor: { at: string; id: string } | null,
-  filters: MailThreadFilters & { projectId?: string | null; areaId?: string | null; personId?: string | null } = {
+  filters: MailThreadFilters & {
+    projectId?: string | null;
+    areaId?: string | null;
+    personId?: string | null;
+    /**
+     * Detail-only mode (issue #1632): one thread, in any box or folder, aggregated over every live copy
+     * of it, drafts included. The list itself never sets it and keeps leaving drafts out.
+     */
+    threadId?: string | null;
+  } = {
     box: "inbox",
     folderId: null,
     unread: false,
@@ -43,7 +65,8 @@ export async function listMailThreads(
     if (!folder.rows.length) throw new NotFoundError("Folder not found");
   }
   const predicates: string[] = [
-    `($4::uuid IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
+    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
+    `($9::uuid IS NULL OR l.thread_id = $9::uuid)`,
     `($4::uuid IS NULL OR ${mailThreadPredicates.inFolder(4)})`,
     `($5::uuid IS NULL OR ${mailThreadPredicates.inMailbox(5)})`,
   ];
@@ -57,7 +80,7 @@ export async function listMailThreads(
   predicates.push(
     `($8::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $8))`,
   );
-  const search = filters.search ? matchesSearch(filters.search, 9) : null;
+  const search = filters.search ? matchesSearch(filters.search, 10) : null;
   if (search) predicates.push(search.sql);
   const result = await client.query<Record<string, unknown>>(
     `
@@ -104,14 +127,7 @@ WITH schema_ids AS (
   SELECT rd.id, rd.property_id_a = p.id AS email_is_a
   FROM properties p JOIN relation_definitions rd ON p.id IN (rd.property_id_a, rd.property_id_b)
   WHERE p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
-), own_addresses AS (
-  SELECT DISTINCT lower(btrim(a.address, E' \\t\\n\\r')) AS address
-  FROM items i CROSS JOIN LATERAL regexp_split_to_table(
-    CASE WHEN jsonb_typeof(i.properties->'addresses') = 'string' THEN i.properties->>'addresses' ELSE '' END,
-    E'[,\\n\\r]+') a(address)
-  WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT mailboxes FROM schema_ids)
-    AND i.deleted_at IS NULL AND btrim(a.address, E' \\t\\n\\r') <> ''
-), search_messages AS (
+), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), search_messages AS (
   SELECT m.thread_id, m.item_id, m.envelope,
     NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
     COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
@@ -151,8 +167,10 @@ WITH schema_ids AS (
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
   ) f ON true
   WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
-    AND NOT (f.n > 0 AND COALESCE(f.only_drafts, false))
-    AND NOT EXISTS (SELECT 1 FROM mail_drafts d WHERE d.tenant_id = m.tenant_id AND d.email_item_id = i.id AND d.sent_at IS NULL)
+    AND ($9::uuid IS NULL OR m.thread_id = $9::uuid)
+    -- The list leaves drafts out; the detail-only mode ($9) aggregates every live copy, drafts included.
+    AND ($9::uuid IS NOT NULL OR (NOT (f.n > 0 AND COALESCE(f.only_drafts, false))
+      AND NOT EXISTS (SELECT 1 FROM mail_drafts d WHERE d.tenant_id = m.tenant_id AND d.email_item_id = i.id AND d.sent_at IS NULL)))
 ), dedup AS (
   SELECT DISTINCT ON (thread_id, message_id) thread_id, message_id, item_id, activity, subject, envelope, preview_text
   FROM copies ORDER BY thread_id, message_id, activity DESC NULLS LAST, item_id DESC
@@ -216,6 +234,7 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
       filters.projectId ?? null,
       filters.areaId ?? null,
       filters.personId ?? null,
+      filters.threadId ?? null,
       ...(search?.params ?? []),
     ],
   );

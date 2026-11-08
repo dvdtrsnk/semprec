@@ -2,6 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, tryLockRelationDefinition } from "../chokePoint/relationsStore.js";
@@ -12,6 +13,7 @@ import { ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { enqueueItemSearchReindex } from "../search/itemSearchFanout.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -305,79 +307,110 @@ describe("derived value creation guard", () => {
       expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
     });
   });
-  it("reports busy while a real project insertion holds the definition and rejects after commit", async () => {
-    await runInTenant(tenant, async () => {
-      const { cp, db, property } = await fixture();
-      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
-      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
-      const unrelatedEvent = await cp.createItem({ databaseId: db("events"), properties: { name: "Unrelated" } });
-      const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const projectProperty = await property("files", "projects");
-      const areaProperty = await property("files", "area");
-      const unrelatedProperty = await property("events", "company");
-      let release!: () => void;
-      let ready!: (pid: number) => void;
-      const barrier = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const entered = new Promise<number>((resolve) => {
-        ready = resolve;
-      });
-      const holder = withTransaction(data, async (client) => {
-        const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-        await createRelationWithClient(client, {
-          relationPropertyId: projectProperty,
-          callerItemId: file.id,
-          targetItemId: project.id,
+  /*
+   * The edge writes below queue issue #1652's search reindex jobs, which are added at each transaction's
+   * pre-commit flush (R1 D1): the holder's edge holds no queue row while it waits at the barrier, whether or not
+   * an earlier search enqueue of this tenant committed first ("warm") or none did ("cold").
+   */
+  it.each(["cold", "warm"] as const)(
+    "reports busy while a real project insertion holds the definition and rejects after commit (%s search enqueue)",
+    async (start) => {
+      await runInTenant(tenant, async () => {
+        const { cp, db, property } = await fixture();
+        const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+        const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+        const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+        const unrelatedEvent = await cp.createItem({ databaseId: db("events"), properties: { name: "Unrelated" } });
+        const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
+        const projectProperty = await property("files", "projects");
+        const areaProperty = await property("files", "area");
+        const unrelatedProperty = await property("events", "company");
+        if (start === "warm")
+          await withTransaction(data, (client) => enqueueItemSearchReindex(client, { kind: "item", itemId: area.id }));
+        let rolledBack = "";
+        let release!: () => void;
+        let ready!: (pid: number) => void;
+        const barrier = new Promise<void>((resolve) => {
+          release = resolve;
         });
-        ready(pid.rows[0]!.pid);
-        await barrier;
+        const entered = new Promise<number>((resolve) => {
+          ready = resolve;
+        });
+        const holder = withTransaction(data, async (client) => {
+          const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          await createRelationWithClient(client, {
+            relationPropertyId: projectProperty,
+            callerItemId: file.id,
+            targetItemId: project.id,
+          });
+          ready(pid.rows[0]!.pid);
+          await barrier;
+        });
+        await withReleasedGate(
+          async () => {
+            expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
+            await expect(
+              cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+            ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+            await expect(
+              cp.createRelation({
+                relationPropertyId: unrelatedProperty,
+                callerItemId: unrelatedEvent.id,
+                targetItemId: unrelatedCompany.id,
+              }),
+            ).resolves.toBeDefined();
+            let priorId = "";
+            await expect(
+              withTransaction(data, async (client) => {
+                priorId = (
+                  await createItemWithClient(client, {
+                    databaseId: db("files"),
+                    properties: { name: "Rollback on busy" },
+                  })
+                ).id;
+                try {
+                  await createRelationWithClient(client, {
+                    relationPropertyId: areaProperty,
+                    callerItemId: file.id,
+                    targetItemId: area.id,
+                  });
+                } catch (error) {
+                  expect(error).toMatchObject({ details: { reason: "resource_busy" } });
+                }
+              }),
+            ).rejects.toMatchObject({ details: { reason: "resource_busy" } });
+            expect(priorId).not.toBe("");
+            expect(await cp.findItem(priorId)).toBeNull();
+            rolledBack = priorId;
+          },
+          release,
+          () => [holder],
+        );
+        await expect(
+          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+        ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
+        // Exactly the committed edges' documents are queued: the holder's file and project, the unrelated
+        // event and company, the warm-up's area; nothing for the rolled-back item or the refused edges.
+        expect(rolledBack).not.toBe("");
+        const scenario = [file.id, project.id, area.id, unrelatedEvent.id, unrelatedCompany.id, rolledBack];
+        const { rows } = await admin.query<{ key: string | null }>(
+          "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+          [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS],
+        );
+        const queued = rows.flatMap((row) =>
+          row.key !== null && scenario.some((id) => row.key?.endsWith(id)) ? [row.key] : [],
+        );
+        const expected = [
+          file.id,
+          project.id,
+          unrelatedEvent.id,
+          unrelatedCompany.id,
+          ...(start === "warm" ? [area.id] : []),
+        ];
+        expect(queued).toEqual(expected.map((id) => `item-search-reindex:item:${id}`).sort());
       });
-      await withReleasedGate(
-        async () => {
-          expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
-          await expect(
-            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-          ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
-          await expect(
-            cp.createRelation({
-              relationPropertyId: unrelatedProperty,
-              callerItemId: unrelatedEvent.id,
-              targetItemId: unrelatedCompany.id,
-            }),
-          ).resolves.toBeDefined();
-          let priorId = "";
-          await expect(
-            withTransaction(data, async (client) => {
-              priorId = (
-                await createItemWithClient(client, {
-                  databaseId: db("files"),
-                  properties: { name: "Rollback on busy" },
-                })
-              ).id;
-              try {
-                await createRelationWithClient(client, {
-                  relationPropertyId: areaProperty,
-                  callerItemId: file.id,
-                  targetItemId: area.id,
-                });
-              } catch (error) {
-                expect(error).toMatchObject({ details: { reason: "resource_busy" } });
-              }
-            }),
-          ).rejects.toMatchObject({ details: { reason: "resource_busy" } });
-          expect(priorId).not.toBe("");
-          expect(await cp.findItem(priorId)).toBeNull();
-        },
-        release,
-        () => [holder],
-      );
-      await expect(
-        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-      ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
-    });
-  });
+    },
+  );
   it("orders an inverse project insertion after a reserved manual edge", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();

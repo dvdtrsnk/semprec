@@ -5,7 +5,13 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { rejectProposalWithClient } from "../inbox/proposalActions.js";
+import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
+import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { lockItemAutomation } from "../library/itemAutomationStore.js";
 import { readBlobId } from "./transcriptionActions.js";
 import {
@@ -15,6 +21,7 @@ import {
 } from "./transcriptionJob.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 import { labelTranscriptSpeakers, readTranscriptDetail } from "./transcriptDetail.js";
+import { listTranscriptsPage, TRANSCRIPT_PAIRINGS, type TranscriptListCursor } from "./transcriptListQuery.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -185,5 +192,147 @@ export function createTranscriptDetailRouteHandler(pool: Pool) {
         readTranscriptDetail(client, parsedId.data, ctx.identity.user.locale),
       ),
     };
+  };
+}
+
+const transcriptListCursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }).nullable(), id: z.uuid() }).strict();
+
+/** The request context of `GET /api/transcripts`: its query string is read from the request URL, the labels' locale from the user. */
+interface TranscriptListRouteRequestContext {
+  req: { url?: string };
+  identity: { user: { locale: string } };
+}
+
+function readTranscriptListCursor(raw: string | null): TranscriptListCursor | null {
+  if (raw === null) return null;
+  if (raw.length > 256 || !/^[A-Za-z0-9_-]+$/.test(raw))
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  let decoded: unknown;
+  try {
+    const bytes = Buffer.from(raw, "base64url");
+    if (bytes.toString("base64url") !== raw) throw new Error("Invalid encoding");
+    decoded = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  }
+  const parsed = transcriptListCursorSchema.safeParse(decoded);
+  if (!parsed.success) throw new ValidationError("Invalid cursor", { field: "cursor" });
+  return parsed.data;
+}
+
+/**
+ * `GET /api/transcripts` (issue #1636): the lightweight recordings list, `limit` (1-200, default 50)
+ * transcripts per page with a keyset `nextCursor`. `eventId`, `personId` (a speaker or a participant,
+ * issue #1581), `projectId` (issue #1581) and `pairing` filter it;
+ * `order=asc` sorts by date ascending (default `desc`). A filter id that is unknown, foreign or not a
+ * live item of its database matches nothing, so the list is empty rather than an error.
+ */
+export function createTranscriptListRouteHandler(pool: Pool) {
+  return async (ctx: TranscriptListRouteRequestContext): Promise<CustomRouteResult> => {
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const rawLimit = url.searchParams.get("limit");
+    if (rawLimit !== null && !/^[0-9]{1,3}$/.test(rawLimit))
+      throw new ValidationError("Invalid limit", { field: "limit" });
+    const limit = rawLimit === null ? 50 : Number(rawLimit);
+    if (limit < 1 || limit > 200) throw new ValidationError("Invalid limit", { field: "limit" });
+    const cursor = readTranscriptListCursor(url.searchParams.get("cursor"));
+    const rawOrder = url.searchParams.get("order") ?? "desc";
+    if (rawOrder !== "asc" && rawOrder !== "desc") throw new ValidationError("Invalid order", { field: "order" });
+    const uuidParam = (field: string) => {
+      const value = url.searchParams.get(field);
+      if (value !== null && !z.uuid().safeParse(value).success)
+        throw new ValidationError(`Invalid ${field}`, { field });
+      return value;
+    };
+    const eventId = uuidParam("eventId");
+    const personId = uuidParam("personId");
+    const projectId = uuidParam("projectId");
+    const rawPairing = url.searchParams.get("pairing");
+    const pairing = rawPairing === null ? null : TRANSCRIPT_PAIRINGS.find((value) => value === rawPairing);
+    if (pairing === undefined) throw new ValidationError("Invalid pairing", { field: "pairing" });
+    const rows = await withTransaction(pool, (client) =>
+      listTranscriptsPage(client, {
+        limit,
+        order: rawOrder,
+        cursor,
+        filters: { eventId, personId, projectId, pairing },
+        locale: ctx.identity.user.locale,
+      }),
+    );
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    const nextCursor =
+      rows.length > limit && last ? Buffer.from(JSON.stringify(last.cursor)).toString("base64url") : null;
+    return { status: 200, body: { transcripts: page.map((row) => row.transcript), nextCursor } };
+  };
+}
+
+/**
+ * Rejects every open card of the transcript (kind `transcript`, status `proposed` or
+ * `needsClarification`, linked through `sourceTranscript`): the pairing card and the speaker cards.
+ * Each card is locked first, in id order, and rejected through the proposal owner's own reject, so a
+ * card confirmed or rejected meanwhile is left as it is. Returns the ids it rejected.
+ */
+async function rejectOpenTranscriptCards(client: PoolClient, transcriptId: string): Promise<string[]> {
+  const proposals = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+  if (!proposals) throw new NotFoundError(`Database for module '${PROCESSING_PROPOSALS_MODULE_ID}' not found`);
+  const property = await getPropertyByKey(client, proposals.id, "sourceTranscript");
+  const definition = property && (await getRelationDefinitionByPropertyId(client, property.id));
+  if (!definition) throw new NotFoundError("Relation definition for Processing proposals 'sourceTranscript' not found");
+  const cardIds = (await listRelationsForItem(client, definition.id, transcriptId))
+    .map((edge) => otherSide(edge, transcriptId))
+    .sort();
+  const rejected: string[] = [];
+  for (const cardId of cardIds) {
+    const card = await itemsStore.lockItemById(client, proposals.id, cardId);
+    if (!card || card.deletedAt || card.properties.kind !== "transcript") continue;
+    if (card.properties.status !== "proposed" && card.properties.status !== "needsClarification") continue;
+    await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposals.id }, card.id);
+    rejected.push(card.id);
+  }
+  return rejected;
+}
+
+/** `DELETE /api/transcripts/:id`'s request context: the deleting user is the writer of every trash it causes. */
+interface TranscriptDeleteRouteRequestContext {
+  params: Record<string, string>;
+  identity: { user: { id: string } };
+}
+
+/**
+ * `DELETE /api/transcripts/:id` (issue #1642): one transaction trashes the recording as a unit into
+ * the generic Trash, in the lock order the transcription pipeline uses for the pair (the source
+ * Files item, then the transcript): it trashes the Files item the transcript's `link` names, rejects
+ * the transcript's open cards, then trashes the transcript and checks that the locked transcript
+ * still links the Files item it trashed; otherwise everything rolls back. Both trashes share the
+ * transaction's `now()`, the epoch `transcriptRestoreHook` restores them together by. An item already
+ * in the Trash is left as it is, so a repeat call changes nothing. An unknown id, an id of another
+ * database and another tenant's id answer the same 404. A running pipeline stops on its own next
+ * check of the trashed items (issue #1582).
+ */
+export function createTranscriptDeleteRouteHandler(
+  pool: Pool,
+  queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
+) {
+  return async (ctx: TranscriptDeleteRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const transcriptId = parsedId.data;
+    const options = { queueAffinity, actingUserId: ctx.identity.user.id, writer: { writerKind: "user" as const } };
+    return withTransaction(pool, async (client) => {
+      const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
+      if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
+      const transcript = await itemsStore.getItemById(client, transcripts.id, transcriptId);
+      if (!transcript) throw new NotFoundError("Transcript not found", { resource: "item", itemId: transcriptId });
+      const fileItemId = readTranscriptionSourceFileItemId(transcript.properties.link);
+      if (fileItemId) await itemDeleteWithClient(client, await resolveFilesDatabaseId(client), fileItemId, options);
+      await rejectOpenTranscriptCards(client, transcriptId);
+      const deleted = await itemDeleteWithClient(client, transcripts.id, transcriptId, options);
+      if (!deleted) throw new NotFoundError("Transcript not found", { resource: "item", itemId: transcriptId });
+      if (readTranscriptionSourceFileItemId(deleted.properties.link) !== fileItemId) {
+        throw new ConflictError("The transcript's source file changed during the delete", { field: "link" });
+      }
+      return { status: 200, body: { id: transcriptId, fileItemId } };
+    });
   };
 }

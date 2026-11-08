@@ -1,12 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, DatabaseError, Pool, type PoolClient } from "pg";
+import { z } from "zod";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  CORE_TASK_NAMES,
+  prepareJob,
+  SEARCH_TASK_IDENTIFIERS,
+  SearchTaskIdentifiersNotRegisteredError,
+} from "@semprec/queue";
 import {
   createPool,
   markManagedTransactionRollbackOnly,
+  registerSearchJob,
   requireAffectedRows,
   requireManagedTransaction,
   runAfterCommit,
   runAfterCommitKeyed,
+  SEARCH_FLUSH_SYSTEM_LOCK_CLASS,
+  SEARCH_FLUSH_TENANT_LOCK_CLASS,
   withClient,
   withTransaction,
 } from "../db/pool.js";
@@ -632,5 +643,247 @@ describe("withTransaction", () => {
     } finally {
       loggerError.mockRestore();
     }
+  });
+});
+
+describe("search-lane pre-commit flush (R1 D1)", () => {
+  const TENANT = "9d1f6a2e-3b4c-4d5e-8f60-718293a4b5c6";
+  const OTHER = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
+  const REINDEX = CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS;
+  const BACKFILL = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
+  const offlinePools: Pool[] = [];
+  const offlineClients: Client[] = [];
+  afterEach(async () => {
+    for (const pool of offlinePools.splice(0)) await pool.end();
+    for (const client of offlineClients.splice(0)) client.removeAllListeners();
+  });
+
+  interface FakeOptions {
+    /** Identifier rows the registration check sees; all three by default. */
+    registered?: readonly string[];
+    /** A statement (matched by substring) that fails, and its error. */
+    fail?: { match: string; error: unknown; call?: number };
+  }
+
+  function fakeClient(options: FakeOptions = {}) {
+    let failures = 0;
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (options.fail && sql.includes(options.fail.match) && ++failures === (options.fail.call ?? 1))
+        throw options.fail.error;
+      if (sql.includes("graphile_worker._private_tasks"))
+        return {
+          rows: (options.registered ?? SEARCH_TASK_IDENTIFIERS).map((identifier) => ({ identifier })),
+          rowCount: 0,
+        };
+      return { rows: [], rowCount: 0 };
+    });
+    const client = Object.assign(new Client(), { query, release: vi.fn() });
+    const pool = Object.assign(new Pool(), { connect: vi.fn().mockResolvedValue(client) });
+    offlineClients.push(client);
+    offlinePools.push(pool);
+    return { client, pool, query };
+  }
+
+  const addJobCall = z.tuple([z.string(), z.tuple([z.string(), z.string()]).rest(z.unknown())]);
+  const envelope = z.object({ payload: z.record(z.string(), z.unknown()) });
+
+  /** The statements in order: the SQL text, or the identifier, key and payload of each add_job. */
+  function statements(query: ReturnType<typeof fakeClient>["query"]): unknown[] {
+    return query.mock.calls.map((call) => {
+      const [sql] = call;
+      if (!sql.includes("graphile_worker.add_job")) {
+        if (sql.includes("pg_advisory_xact_lock")) return ["lock", call[1]];
+        if (sql.includes("graphile_worker._private_tasks")) return "check";
+        return sql;
+      }
+      const [, values] = addJobCall.parse(call);
+      const [identifier, envelopeJson, , , , jobKey] = values;
+      return ["add_job", identifier, jobKey, envelope.parse(JSON.parse(envelopeJson)).payload];
+    });
+  }
+
+  const SET_TENANT = "SELECT set_config('app.tenant_id', $1, $2)";
+  const TENANT_LOCK = ["lock", [SEARCH_FLUSH_TENANT_LOCK_CLASS, TENANT]];
+
+  it("adds the registered jobs after the body, in identifier and key order and each key's calls in order", async () => {
+    const { pool, query } = fakeClient();
+    await runInTenant(TENANT, () =>
+      withTransaction(pool, async (client) => {
+        registerSearchJob(client, prepareJob(REINDEX, { n: 1 }, { jobKey: "k2" }));
+        registerSearchJob(client, prepareJob(BACKFILL, { n: 2 }, { jobKey: "k9" }));
+        registerSearchJob(client, prepareJob(REINDEX, { n: 3 }, { jobKey: "k1" }));
+        registerSearchJob(client, prepareJob(REINDEX, { n: 4 }, { jobKey: "k2" }));
+        await client.query("SELECT 'body'");
+      }),
+    );
+    expect(statements(query)).toEqual([
+      "BEGIN",
+      SET_TENANT,
+      "SELECT 'body'",
+      "check",
+      TENANT_LOCK,
+      ["add_job", BACKFILL, "k9", { n: 2 }],
+      ["add_job", REINDEX, "k1", { n: 3 }],
+      ["add_job", REINDEX, "k2", { n: 1 }],
+      ["add_job", REINDEX, "k2", { n: 4 }],
+      "COMMIT",
+    ]);
+  });
+
+  it("takes the system lock for a system invocation and runs nothing extra without registrations", async () => {
+    const { pool, query } = fakeClient();
+    await runAsSystem("test", () =>
+      withTransaction(pool, async (client) => {
+        registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k" }));
+      }),
+    );
+    await runAsSystem("test", () => withTransaction(pool, async () => "nothing registered"));
+    expect(statements(query)).toEqual([
+      "BEGIN",
+      SET_TENANT,
+      "check",
+      ["lock", [SEARCH_FLUSH_SYSTEM_LOCK_CLASS]],
+      ["add_job", REINDEX, "k", {}],
+      "COMMIT",
+      "BEGIN",
+      SET_TENANT,
+      "COMMIT",
+    ]);
+  });
+
+  it("refuses unmanaged, foreign, detached and after-commit registrations and adds nothing for them", async () => {
+    const { client, pool, query } = fakeClient();
+    const other = fakeClient().client;
+    const job = () => runInTenant(TENANT, () => prepareJob(REINDEX, {}, { jobKey: "k" }));
+    expect(() => registerSearchJob(client, job())).toThrow("active managed transaction");
+    let releaseDetached!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseDetached = resolve;
+    });
+    let detached: Promise<void> | undefined;
+    let afterCommit: unknown;
+    await runInTenant(TENANT, () =>
+      withTransaction(pool, async (managed) => {
+        expect(() => registerSearchJob(other, job())).toThrow("active managed transaction");
+        detached = gate.then(() => {
+          expect(() => registerSearchJob(managed, job())).toThrow("active managed transaction");
+        });
+        runAfterCommit(managed, () => {
+          try {
+            registerSearchJob(managed, job());
+          } catch (error) {
+            afterCommit = error;
+          }
+        });
+      }),
+    );
+    releaseDetached();
+    await detached;
+    expect(afterCommit).toBeInstanceOf(Error);
+    expect(statements(query)).toEqual(["BEGIN", SET_TENANT, "COMMIT"]);
+  });
+
+  it("refuses a non-search task, another tenant's job and a key of another task, keeping the valid registration", async () => {
+    const { pool, query } = fakeClient();
+    // Prepared in the other tenant's own scope before the target tenant's transaction opens: a tenant scope
+    // cannot enter another tenant, so a foreign job can only arrive as a handle prepared elsewhere.
+    const foreign = runInTenant(OTHER, () => prepareJob(REINDEX, {}, { jobKey: "b" }));
+    await runInTenant(TENANT, () =>
+      withTransaction(pool, async (client) => {
+        expect(() => registerSearchJob(client, prepareJob("someTask", {}, { jobKey: "a" }))).toThrow(
+          "item-search task",
+        );
+        expect(() => registerSearchJob(client, foreign)).toThrow("tenant its transaction was opened in");
+        registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "c" }));
+        expect(() => registerSearchJob(client, prepareJob(BACKFILL, {}, { jobKey: "c" }))).toThrow(
+          "already registered for another task",
+        );
+      }),
+    );
+    expect(statements(query)).toEqual([
+      "BEGIN",
+      SET_TENANT,
+      "check",
+      TENANT_LOCK,
+      ["add_job", REINDEX, "c", {}],
+      "COMMIT",
+    ]);
+  });
+
+  it("skips the flush after a body failure and after a recorded rollback-only failure", async () => {
+    const { pool, query } = fakeClient();
+    const bodyError = new Error("body");
+    await expect(
+      runInTenant(TENANT, () =>
+        withTransaction(pool, async (client) => {
+          registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k" }));
+          throw bodyError;
+        }),
+      ),
+    ).rejects.toBe(bodyError);
+    const busy = new Error("busy");
+    await expect(
+      runInTenant(TENANT, () =>
+        withTransaction(pool, async (client) => {
+          registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k" }));
+          markManagedTransactionRollbackOnly(client, busy);
+        }),
+      ),
+    ).rejects.toBe(busy);
+    expect(statements(query)).toEqual(["BEGIN", SET_TENANT, "ROLLBACK", "BEGIN", SET_TENANT, "ROLLBACK"]);
+  });
+
+  it.each([
+    ["the registration check refuses", { registered: [BACKFILL] }, ["check"]],
+    ["the check's read fails", { fail: { match: "_private_tasks", error: new Error("no schema") } }, ["check"]],
+    [
+      "the tenant lock fails",
+      { fail: { match: "pg_advisory_xact_lock", error: new Error("lock") } },
+      ["check", TENANT_LOCK],
+    ],
+    [
+      "the second add_job fails",
+      { fail: { match: "graphile_worker.add_job", error: new Error("add"), call: 2 } },
+      ["check", TENANT_LOCK, ["add_job", REINDEX, "k1", {}], ["add_job", REINDEX, "k2", {}]],
+    ],
+  ] as const)("rolls back with the flush's own failure when %s", async (_case, options, flushed) => {
+    const { pool, query } = fakeClient(options);
+    const callback = vi.fn();
+    const failure = await runInTenant(TENANT, () =>
+      withTransaction(pool, async (client) => {
+        registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k1" }));
+        registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k2" }));
+        runAfterCommit(client, callback);
+      }),
+    ).catch((error: unknown) => error);
+    if ("fail" in options) expect(failure).toBe(options.fail.error);
+    else expect(failure).toBeInstanceOf(SearchTaskIdentifiersNotRegisteredError);
+    expect(statements(query)).toEqual(["BEGIN", SET_TENANT, ...flushed, "ROLLBACK"]);
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("keeps a COMMIT failure after the flush and starts the next borrower without earlier registrations", async () => {
+    const commitError = new Error("commit");
+    const { pool, query } = fakeClient({ fail: { match: "COMMIT", error: commitError } });
+    await expect(
+      runInTenant(TENANT, () =>
+        withTransaction(pool, async (client) => {
+          registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "k" }));
+        }),
+      ),
+    ).rejects.toBe(commitError);
+    await runInTenant(TENANT, () => withTransaction(pool, async () => "next borrower"));
+    expect(statements(query)).toEqual([
+      "BEGIN",
+      SET_TENANT,
+      "check",
+      TENANT_LOCK,
+      ["add_job", REINDEX, "k", {}],
+      "COMMIT",
+      "ROLLBACK",
+      "BEGIN",
+      SET_TENANT,
+      "COMMIT",
+    ]);
   });
 });

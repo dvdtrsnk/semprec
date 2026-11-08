@@ -4,6 +4,7 @@ import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { parseMailSearchQuery } from "./search.js";
 import { listMailThreads } from "./mailThreadListQuery.js";
+import { getMailThreadDetail } from "./mailThreadDetail.js";
 
 const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
 
@@ -79,5 +80,24 @@ export function createMailThreadListRouteHandler(pool: Pool) {
         ? Buffer.from(JSON.stringify({ at: last.lastMessageAt, id: last.threadId })).toString("base64url")
         : null;
     return { status: 200, body: { threads, nextCursor } };
+  };
+}
+
+/**
+ * `GET /api/mail/threads/:threadId[?allowRemoteImages=true]` (issue #1632). Remote images are an
+ * explicit opt-in: only `true` allows them, `false` or no parameter keeps them stripped, anything
+ * else is a 400.
+ */
+export function createMailThreadDetailRouteHandler(pool: Pool) {
+  return async (ctx: { req: { url?: string }; params: Record<string, string> }) => {
+    const threadId = z.uuid().safeParse(ctx.params.threadId);
+    if (!threadId.success) throw new ValidationError("Invalid threadId", { field: "threadId" });
+    const raw = new URL(ctx.req.url ?? "/", "http://localhost").searchParams.get("allowRemoteImages");
+    if (raw !== null && raw !== "true" && raw !== "false")
+      throw new ValidationError("Invalid allowRemoteImages", { field: "allowRemoteImages" });
+    const body = await withTransaction(pool, (client) => getMailThreadDetail(client, threadId.data, raw === "true"), {
+      isolation: "repeatable_read",
+    });
+    return { status: 200, body };
   };
 }

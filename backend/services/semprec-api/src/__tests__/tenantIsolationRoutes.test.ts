@@ -9,6 +9,7 @@ import { logger } from "../logger.js";
 import { Pool, type PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
+  fingerprintGuidanceDriftSubject,
   GENERIC_OPERATION_NAMES,
   runAsSystem,
   runInTenant,
@@ -28,6 +29,7 @@ import {
   type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
+  agentGuidanceDriftFindingsStore,
   createActionRegistry,
   coreAgentRunAction,
   CORE_AGENT_RUN_ACTION_ID,
@@ -40,6 +42,8 @@ import {
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
+  transcriptionSourceLink,
+  TRANSCRIPTION_OWNER_PROCESS,
   getOrCreateJournalItem,
   hashPassword,
   handleObservabilityCheckSystemTask,
@@ -814,6 +818,74 @@ async function createInviteAsAdmin(): Promise<string> {
   return readString(text, "invite", "id");
 }
 
+/** Ingests one Gmail message for the fixture's tenant through the real reconcile path; returns its thread id. */
+/** `providerId` names the provider's message; a second seed in one tenant needs its own, or it converges on the first. */
+function seedMailThread(
+  fixture: TenantFixture,
+  messageId: string,
+  providerId = "message",
+  providerThreadId = "thread",
+): Promise<string> {
+  return runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const cp = createChokePoint(pool);
+      const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+      const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+      const find = (properties: typeof emailProperties, key: string) => {
+        const property = properties.find((entry) => entry.key === key);
+        if (!property) throw new Error(`Missing ${key}`);
+        return property.id;
+      };
+      const mailbox = await createItemWithClient(client, {
+        databaseId: ids.mailboxesDatabaseId,
+        properties: { name: "Mailbox", provider: "gmail" },
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+      const gmail: GmailMailClient = {
+        getCurrentHistoryId: async () => "1",
+        listHistorySince: async () => ({
+          invalidated: false,
+          newHistoryId: "2",
+          changedMessageIds: [],
+          removedMessageIds: [],
+        }),
+        listAllMessageIds: async () => [providerId],
+        listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+        fetchMessage: async () => ({
+          id: providerId,
+          threadId: providerThreadId,
+          labelIds: ["INBOX"],
+          message: {
+            messageId,
+            subject: "Isolation",
+            envelope: { from: { address: "sender@example.test" } },
+            attachments: [],
+          },
+        }),
+        modifyMessageLabels: async () => undefined,
+      };
+      await reconcileGmailAccount(client, gmail, {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        foldersDatabaseId: ids.foldersDatabaseId,
+        folderRelationPropertyId: find(emailProperties, "folder"),
+        attachmentsRelationPropertyId: find(emailProperties, "attachments"),
+        mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
+        storage: filesStorage,
+        storageKeyPrefix: "thread-isolation",
+      });
+      const result = await client.query<{ thread_id: string }>(
+        "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
+        [mailbox.id],
+      );
+      if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
+      return result.rows[0].thread_id;
+    }),
+  );
+}
+
 const ROUTE_CASES: Record<string, RouteCase> = {
   "project guidance read": async () => {
     const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` });
@@ -843,6 +915,55 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
       expect(result.status).toBe(404);
     }),
+  // Each tenant's project gets one active finding through the findings store; B's list must show
+  // only its own, and A's project id must answer exactly like a random id.
+  "project guidance drift read": async () => {
+    const findingIds: string[] = [];
+    for (const fixture of [a, b]) {
+      const subject = { operation: "items.delete", databaseId: null };
+      const finding = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          agentGuidanceDriftFindingsStore.upsertActive(client, {
+            projectItemId: fixture.projectItemId,
+            fingerprint: fingerprintGuidanceDriftSubject(fixture.projectItemId, "permission", subject),
+            payload: {
+              kind: "permission",
+              subject,
+              claim: "Guidance allows deleting tasks",
+              guidanceExcerpt: "Delete tasks freely",
+              manifestFacts: ["items.delete is not granted"],
+              severity: "blocking",
+            },
+            seenAt: new Date("2026-10-01T08:00:00.000Z"),
+          }),
+        ),
+      );
+      findingIds.push(finding.finding.id);
+    }
+    // R1 F4: a project lists its findings only once it has guidance, so B saves its guidance through
+    // the real route first, against its current version (an earlier case may already have saved one).
+    const current: unknown = JSON.parse(
+      await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` }),
+    );
+    const expectedUpdatedAt = isRecord(current) && typeof current.updatedAt === "string" ? current.updatedAt : null;
+    await sendOk(b.member, {
+      method: "PUT",
+      path: `/api/projects/${b.projectItemId}/agent-guidance`,
+      body: { sections: { purpose: "Drift", allowed: "", notAllowed: "", generalInstructions: "" }, expectedUpdatedAt },
+    });
+    const own = await sendOk(b.member, {
+      method: "GET",
+      path: `/api/projects/${b.projectItemId}/agent-guidance/drift`,
+    });
+    expect(own).toContain(findingIds[1]);
+    expect(own).not.toContain(findingIds[0]);
+    const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/agent-guidance/drift`,
+    }));
+    expect(result.status).toBe(404);
+    expect(result.text).not.toContain(findingIds[0]);
+  },
   "server identity": async () => {
     const answer = await send(null, { method: "GET", path: "/api/server-info" });
     expect(answer.status).toBe(200);
@@ -1153,6 +1274,31 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.headers["cache-control"]).toBe("no-store");
     expect(answer.text).not.toContain(ids[0]);
   },
+  // Each tenant gets one critical agents problem, its banner candidate; B's banner and count must be
+  // B's own only.
+  "semp status summary": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const result = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: fixture.member.userId,
+            category: "agents",
+            kind: "processStale",
+            severity: "critical",
+            sourceTable: "project_heartbeats",
+            sourceId: fixture.heartbeatId,
+            dedupeKey: `agents:summary:${fixture.heartbeatId}`,
+          }),
+        ),
+      );
+      ids.push(result.problemId);
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status/summary" }, [ids[1]!]);
+    expect(answer.text).not.toContain(ids[0]);
+    const body: unknown = JSON.parse(answer.text);
+    expect(body).toMatchObject({ banner: { problemId: ids[1], instanceId: ids[1] } });
+  },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },
@@ -1190,70 +1336,53 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain("foreign-contact@example.com");
   },
   "mail threads": async () => {
-    const seed = (fixture: TenantFixture) =>
-      runInTenant(fixture.tenantId, () =>
-        withTransaction(pool, async (client) => {
-          const ids = await resolveMailModuleIds(client);
-          const cp = createChokePoint(pool);
-          const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
-          const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
-          const find = (properties: typeof emailProperties, key: string) => {
-            const property = properties.find((entry) => entry.key === key);
-            if (!property) throw new Error(`Missing ${key}`);
-            return property.id;
-          };
-          const mailbox = await createItemWithClient(client, {
-            databaseId: ids.mailboxesDatabaseId,
-            properties: { name: "Mailbox", provider: "gmail" },
-          });
-          await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
-          const gmail: GmailMailClient = {
-            getCurrentHistoryId: async () => "1",
-            listHistorySince: async () => ({
-              invalidated: false,
-              newHistoryId: "2",
-              changedMessageIds: [],
-              removedMessageIds: [],
-            }),
-            listAllMessageIds: async () => ["message"],
-            listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
-            fetchMessage: async () => ({
-              id: "message",
-              threadId: "thread",
-              labelIds: ["INBOX"],
-              message: {
-                messageId: `<${fixture.tenantId}@example.test>`,
-                subject: "Isolation",
-                envelope: { from: { address: "sender@example.test" } },
-                attachments: [],
-              },
-            }),
-            modifyMessageLabels: async () => undefined,
-          };
-          await reconcileGmailAccount(client, gmail, {
-            mailboxItemId: mailbox.id,
-            emailsDatabaseId: ids.emailsDatabaseId,
-            filesDatabaseId: ids.filesDatabaseId,
-            foldersDatabaseId: ids.foldersDatabaseId,
-            folderRelationPropertyId: find(emailProperties, "folder"),
-            attachmentsRelationPropertyId: find(emailProperties, "attachments"),
-            mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
-            storage: filesStorage,
-            storageKeyPrefix: "thread-isolation",
-          });
-          const result = await client.query<{ thread_id: string }>(
-            "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
-            [mailbox.id],
-          );
-          if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
-          return result.rows[0].thread_id;
-        }),
-      );
+    const seed = (fixture: TenantFixture) => seedMailThread(fixture, `<${fixture.tenantId}@example.test>`);
     const first = await seed(a);
     const second = await seed(b);
     const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/threads" }, [second]);
     expect(answer.headers["cache-control"]).toBe("no-store");
     expect(answer.text).not.toContain(first);
+  },
+  "mail thread detail": async () => {
+    const foreign = await seedMailThread(
+      a,
+      `<${randomUUID()}@example.test>`,
+      `detail-${randomUUID()}`,
+      `thread-${randomUUID()}`,
+    );
+    const own = await seedMailThread(
+      b,
+      `<${randomUUID()}@example.test>`,
+      `detail-${randomUUID()}`,
+      `thread-${randomUUID()}`,
+    );
+    const answer = await expectExcludesA(b.member, { method: "GET", path: `/api/mail/threads/${own}` }, [own]);
+    expect(answer.text).not.toContain(foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+      method: "GET",
+      path: `/api/mail/threads/${id}`,
+    }));
+    expect(result.status).toBe(404);
+  },
+  // No writer of the grant exists by design (issue #1635 is read only): both tenants' projects get
+  // `emailSendAutonomous` by direct SQL, as the server operator would set it.
+  "mail autonomous send projects": async () => {
+    for (const fixture of [a, b]) {
+      await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query(
+          "UPDATE items SET properties = properties || '{\"emailSendAutonomous\": true}'::jsonb WHERE tenant_id = app_tenant_default() AND id = $1",
+          [fixture.projectItemId],
+        ),
+      );
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/autonomous-send-projects" }, [
+      b.projectItemId,
+    ]);
+    expect(answer.text).not.toContain(a.projectItemId);
+    const mailboxes = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/mailboxes" }, [
+      b.mailboxItemId,
+    ]);
+    expect(mailboxes.text).toContain('"autonomousSendProjectCount":1');
   },
   "mailbox list": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/mail/mailboxes" }, [b.mailboxItemId]);
@@ -1342,6 +1471,63 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: `/api/transcriptions/${id}/rerun`,
         body: {},
       }));
+    }),
+  "transcript list": async () => {
+    await expectExcludesA(b.member, { method: "GET", path: "/api/transcripts" }, [b.transcriptItemId]);
+    // A foreign filter id narrows to nothing, exactly like a random one.
+    for (const field of ["eventId", "personId", "projectId"]) {
+      const answer = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+        method: "GET",
+        path: `/api/transcripts?${field}=${id}`,
+      }));
+      expect(answer.status).toBe(200);
+      expect(answer.text).toBe('{"transcripts":[],"nextCursor":null}');
+    }
+  },
+  // B deletes its own recording through the route and restores it through the generic Trash route;
+  // A's transcript answers like a random id and A's rows stay as A reads them.
+  "transcript delete": () =>
+    leavesAUnchanged(async () => {
+      const fileId = readString(
+        await sendOk(b.member, {
+          method: "POST",
+          path: "/api/files",
+          body: `ID3 audio of ${randomUUID()}`,
+          headers: { "Content-Type": "audio/mpeg", "X-Filename": "delete.mp3" },
+        }),
+        "id",
+      );
+      const transcriptId = await runInTenant(b.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const transcripts = await getDatabaseByModuleId(client, "transcripts");
+          if (!transcripts) throw new Error("Missing transcripts");
+          // The link only the transcription process writes, as its step 0 writes it.
+          const item = await createItemWithClient(
+            client,
+            { databaseId: transcripts.id, properties: { name: "Delete me", link: transcriptionSourceLink(fileId) } },
+            { allowedSystemKeys: ["link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          return item.id;
+        }),
+      );
+      const deleted = await sendOk(b.member, { method: "DELETE", path: `/api/transcripts/${transcriptId}` });
+      expect(deleted).toContain(fileId);
+      const trashed = () =>
+        inTenantTransaction(b.tenantId, async (client) => {
+          const { rows } = await client.query<{ id: string; trashed: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS trashed FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+            [[fileId, transcriptId]],
+          );
+          return rows.map((row) => row.trashed);
+        });
+      expect(await trashed()).toEqual([true, true]);
+      await sendOk(b.member, { method: "POST", path: `/api/items/${transcriptId}/restore`, body: {} });
+      expect(await trashed()).toEqual([false, false]);
+      const result = await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
+        method: "DELETE",
+        path: `/api/transcripts/${id}`,
+      }));
+      expect(result.status).toBe(404);
     }),
   "transcript detail": async () => {
     await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({

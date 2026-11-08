@@ -162,9 +162,10 @@ export default async function setup(): Promise<() => Promise<void>> {
         await runDocHistoryCutoverMigration(pool);
         await runAgentRunsActorUserIdCutoverMigration(pool);
         await runApprovalRequestExecutionStatusCutoverMigration(pool);
-        await runTenantCutoverMigrations(tenantPool);
+        // Before the tenant cutovers, as in runMigrationsCli.ts: their writes queue search jobs.
         await ensureQueueSchema(pool);
         await grantQueueSchemaPrivileges(pool);
+        await runTenantCutoverMigrations(tenantPool);
         await runHeartbeatFireQueueSplitMigration(pool);
         await runLegacyJobEnvelopeStampMigration(pool);
       });

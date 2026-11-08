@@ -18,8 +18,19 @@ export const TRANSCRIPTION_ASR_COMPUTED_KEY = "asr";
 export const TRANSCRIPT_SEGMENTS_COMPUTED_KEY = "segments";
 /** Step 4 stores the language detected on ASR chunk 0 (`null` when Whisper reported none) on the Transcripts item, alongside `segments`. */
 export const TRANSCRIPT_LANGUAGE_COMPUTED_KEY = "language";
-/** Step 5 stores `{ [instructionKey]: summary }` on the Transcripts item: one cached summary per instruction, never overwritten. */
+/**
+ * `{ [instructionKey]: summary }` on the Transcripts item, one free-text summary per instruction,
+ * written by step 5 before issue #1695. No longer written; stored values are kept as they are.
+ */
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";
+/**
+ * Step 5 (issue #1695) stores the structured meeting notes on the Transcripts item, written once:
+ * `{ title, summary, shortSummary, decisions, actionItems: [{ text, ownerSpeaker, due, startsAt }] }`.
+ * Speakers appear in the text only as `{SPEAKER_NN}` tokens; readers render names with
+ * `renderMeetingNotes` (meetingNotesRendering.ts). An action item's id is its array position, so the
+ * array is never rewritten or reordered.
+ */
+export const TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY = "meetingNotes";
 /** Step 7 stores `{ proposedSpeakers }` on the source Files item once its one speaker-suggestion call has been turned into cards: the keys that got a card. */
 export const TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY = "suggestSpeakers";
 

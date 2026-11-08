@@ -17,6 +17,7 @@ import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewB
 import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
 import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
+import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
 import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
@@ -145,6 +146,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: async (payload) => {
+      await handleItemSearchReindexDependentsTask(pool, payload);
     },
     [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: async (payload) => {
       await handleItemSearchPageTextTask(pool, payload);

@@ -22,7 +22,7 @@ export {
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
-export { createSempStatusRouteHandler } from "../semp/sempStatusRouteHandler.js";
+export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "../semp/sempStatusRouteHandler.js";
 export {
   createGetNotificationPreferencesRouteHandler,
   createPatchNotificationPreferencesRouteHandler,
@@ -91,6 +91,14 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/semp-status",
       handlerExport: "createSempStatusRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "sempStatusSummary",
+      method: "GET",
+      path: "/api/semp-status/summary",
+      handlerExport: "createSempStatusSummaryRouteHandler",
+      // Serves the profile's problem count and the chat banner from the same report read.
       justification: "single-consumer-read",
     },
     {

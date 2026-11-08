@@ -14,6 +14,7 @@ import { runItemDeleteHooks, runItemRestoreHooks } from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
+import * as valueLinksStore from "./valueLinksStore.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
@@ -127,17 +128,29 @@ export async function itemDeleteWithClient(
  * locked `FOR UPDATE` in subtree (root-first) order, the order the delete and restore cascades write
  * in, so a concurrent trash or restore of one of them waits for this transaction instead of changing
  * the epoch it was matched on.
+ *
+ * Also returns that epoch as Postgres renders it, UTC with all six fraction digits
+ * (`YYYY-MM-DDTHH:MI:SS.ffffffZ`), for the restore hooks' `deletedAtExact`. It is read in this same
+ * statement, from the root row the caller already locked and before anything is restored. The root
+ * itself is always one of the matched rows (its `deleted_at` equals itself), so a matched row always
+ * carries the epoch.
  */
-async function lockCascadeEpochRowIds(client: PoolClient, root: ItemRow, subtree: ItemRow[]): Promise<Set<string>> {
-  const { rows } = await client.query<{ id: string }>(
-    `SELECT id FROM items
+async function lockCascadeEpochRowIds(
+  client: PoolClient,
+  root: ItemRow,
+  subtree: ItemRow[],
+): Promise<{ ids: Set<string>; deletedAtExact: string }> {
+  const { rows } = await client.query<{ id: string; deleted_at_exact: string }>(
+    `SELECT id, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deleted_at_exact FROM items
       WHERE database_id = ANY($1::uuid[]) AND id = ANY($2::uuid[])
         AND deleted_at = (SELECT deleted_at FROM items WHERE database_id = $3 AND id = $4)
       ORDER BY array_position($2::uuid[], id)
       FOR UPDATE`,
     [[...new Set(subtree.map((row) => row.databaseId))], subtree.map((row) => row.id), root.databaseId, root.id],
   );
-  return new Set(rows.map((row) => row.id));
+  const epoch = rows.find((row) => row.id === root.id)?.deleted_at_exact;
+  if (epoch === undefined) throw new Error(`Trashed root ${root.id} is missing from its own cascade epoch`);
+  return { ids: new Set(rows.map((row) => row.id)), deletedAtExact: epoch };
 }
 
 /**
@@ -153,9 +166,12 @@ async function lockCascadeEpochRowIds(client: PoolClient, root: ItemRow, subtree
  * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
  * (issue #1604), and runs the item restore hooks (issue #1601) right after its restore; a skipped
  * row runs none, and a restore of a live root returns it without running any. A hook's rejection
- * rolls the whole cascade back.
+ * rolls the whole cascade back. Each hook also receives the epoch at full precision
+ * (`deletedAtExact`) and this call's `queueAffinity`. Exported for a domain restore hook that
+ * restores a related item in the same transaction (issue #1642); it is not part of the package's
+ * public barrel.
  */
-async function restoreItemWithClient(
+export async function restoreItemWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
@@ -176,13 +192,13 @@ async function restoreItemWithClient(
 
   const subtree = await collectItemSubtree(client, before);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
-  const epochRowIds = await lockCascadeEpochRowIds(client, before, subtree);
+  const epoch = await lockCascadeEpochRowIds(client, before, subtree);
 
   const writerFields = hookWriterFields(writer, actingUserId);
   const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
-    if (!epochRowIds.has(row.id)) continue; // not trashed together with the root: leave as-is
+    if (!epoch.ids.has(row.id)) continue; // not trashed together with the root: leave as-is
     const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
@@ -192,6 +208,8 @@ async function restoreItemWithClient(
       item,
       rootItemId: itemId,
       deletedAt: cascadeEpoch,
+      deletedAtExact: epoch.deletedAtExact,
+      queueAffinity,
       ...writerFields,
     });
     await triggerOnItemEventHeartbeats(client, row.databaseId, "update", row.id, queueAffinity);
@@ -282,7 +300,8 @@ function derivedBlobIds(row: ItemRow): string[] {
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state, origin and search-index row, and its Inbox attachment rows (issue #1564).
+ * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), and its
+ * value links and the value-link sources naming it (issue #1656).
  * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
  * the blob checks below rely on the row already being gone.
  *
@@ -299,6 +318,25 @@ function derivedBlobIds(row: ItemRow): string[] {
  */
 export async function deleteItemDependents(client: PoolClient, row: ItemRow): Promise<{ blobStorageKeys: string[] }> {
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
+  // Issue #1656: the purged item's own value links (their sources cascade), every source naming it,
+  // and each link that is left without a source; the items of those links refetch them after commit.
+  await valueLinksStore.deleteValueLinksByItemId(client, row.id);
+  const detached = await valueLinksStore.deleteValueLinkSourcesBySourceItem(client, row.id);
+  await valueLinksStore.deleteValueLinksWithoutSources(
+    client,
+    detached.map((entry) => entry.linkId),
+  );
+  for (const item of await itemsStore.getItemsByIds(client, [...new Set(detached.map((entry) => entry.itemId))])) {
+    runAfterCommit(client, () =>
+      notifyInvalidation({
+        scope: "item",
+        databaseId: item.databaseId,
+        itemId: item.id,
+        op: "update",
+        updatedAt: item.updatedAt,
+      }),
+    );
+  }
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
   await docsStore.deleteDocByItemId(client, row.id);

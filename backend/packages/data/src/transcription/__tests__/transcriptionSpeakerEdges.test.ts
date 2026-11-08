@@ -17,6 +17,7 @@ import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
@@ -24,6 +25,35 @@ import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
 import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandlers.js";
 
 let pool: Pool;
+
+interface QueuedJobKey {
+  task_identifier: string;
+  key: string | null;
+}
+
+/** Task, then key in code-unit order, unkeyed jobs last. */
+function compareJobKeys(a: QueuedJobKey, b: QueuedJobKey): number {
+  const order = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  const byTask = order(a.task_identifier, b.task_identifier);
+  if (byTask !== 0 || a.key === b.key) return byTask;
+  if (a.key === null) return 1;
+  if (b.key === null) return -1;
+  return order(a.key, b.key);
+}
+
+/** Every queued job's task and key, read through graphile-worker's public `jobs` view, in code-unit order. */
+async function queuedJobKeys(): Promise<QueuedJobKey[]> {
+  const { rows } = await pool.query<QueuedJobKey>("SELECT task_identifier, key FROM graphile_worker.jobs");
+  return rows.map(({ task_identifier, key }) => ({ task_identifier, key })).sort(compareJobKeys);
+}
+
+/** `jobs` with the given search reindex keys added once each, as job-key deduplication leaves them. */
+function withReindexKeys(jobs: QueuedJobKey[], keys: string[]): QueuedJobKey[] {
+  const added = keys
+    .filter((key) => !jobs.some((job) => job.key === key))
+    .map((key) => ({ task_identifier: CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, key }));
+  return [...jobs, ...added].sort(compareJobKeys);
+}
 
 function throwFailure(error: unknown): never {
   // Re-throw the exact value, including undefined, from a test-owned operation.
@@ -383,9 +413,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
             await withTenantTransaction(runtime, tenant, (client) =>
               insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
             );
-            const beforeJobs = await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM graphile_worker.jobs",
-            );
+            const beforeJobs = await queuedJobKeys();
             const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
               listValueLinksByItemIds(client, [transcriptId]),
             );
@@ -489,9 +517,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
                   listValueLinksByItemIds(client, [transcriptId]),
                 ),
               ).toEqual(beforeLinks);
-              expect(
-                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-              ).toEqual(beforeJobs.rows);
+              expect(await queuedJobKeys()).toEqual(beforeJobs);
               expect(events).toEqual([]);
               release();
               requireSuccessful(await bounded(holder));
@@ -523,6 +549,17 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 },
               ]);
               events.length = 0;
+              // Issue #1652's search reindex jobs, keyed as `enqueueItemSearchReindex` keys them: the held
+              // rename queued the transcript's referrers, the written edge both ends' documents. Nothing else
+              // was queued, and the two refusals below must add nothing.
+              const afterEdgeJobs = await queuedJobKeys();
+              expect(afterEdgeJobs).toEqual(
+                withReindexKeys(beforeJobs, [
+                  `item-search-reindex:referrers:${transcriptId}:start`,
+                  `item-search-reindex:item:${transcriptId}`,
+                  `item-search-reindex:item:${personId}`,
+                ]),
+              );
               await expectAttempt(
                 { speaker: "SPEAKER_99" },
                 {
@@ -542,9 +579,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 otherPersonId,
               );
               expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
-              expect(
-                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-              ).toEqual(beforeJobs.rows);
+              expect(await queuedJobKeys()).toEqual(afterEdgeJobs);
               expect(events).toEqual([]);
             } catch (error) {
               failure = { error };

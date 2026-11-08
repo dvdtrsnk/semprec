@@ -1385,6 +1385,61 @@ describe("HTML sanitization (issue #26)", () => {
     expect(sanitized).not.toContain("tracker.example");
     expect(sanitized).toContain("hi");
   });
+
+  // A protocol-relative source names a remote host without a scheme (R1 F1). The forms below are the
+  // ones the sanitizer is known to classify as protocol-relative today; entities reach it decoded.
+  const PROTOCOL_RELATIVE_SOURCES = [
+    ["two slashes", "//tracker.example/p.gif"],
+    ["two backslashes", "\\\\tracker.example\\p.gif"],
+    ["a slash and a backslash", "/\\tracker.example/p.gif"],
+    ["a leading space", " //tracker.example/p.gif"],
+    ["an embedded tab", "/\t/tracker.example/p.gif"],
+    ["an embedded newline", "/\n/tracker.example/p.gif"],
+    ["an embedded comment", "/<!-- x -->/tracker.example/p.gif"],
+    ["decimal entities", "&#47;&#47;tracker.example/p.gif"],
+    ["hexadecimal entities", "&#x2F;&#x2f;tracker.example/p.gif"],
+    ["named entities", "&sol;&sol;tracker.example/p.gif"],
+  ] as const;
+  const DEFAULT_AND_FALSE = [
+    ["by default", undefined],
+    ["with allowRemoteImages false", false],
+  ] as const;
+
+  it.each(
+    PROTOCOL_RELATIVE_SOURCES.flatMap(([form, source]) =>
+      DEFAULT_AND_FALSE.map(([mode, allow]) => [form, mode, source, allow] as const),
+    ),
+  )("strips a protocol-relative image source written with %s %s", (_form, _mode, source, allow) => {
+    const html = `<p>hi</p><img src="${source}" alt="pixel">`;
+    const sanitized =
+      allow === undefined ? sanitizeMailHtml(html) : sanitizeMailHtml(html, { allowRemoteImages: allow });
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).toContain('alt="pixel"');
+    expect(sanitized).toContain("hi");
+  });
+
+  it.each(PROTOCOL_RELATIVE_SOURCES)(
+    "keeps a protocol-relative image source written with %s when remote images are allowed",
+    (_form, source) => {
+      const sanitized = sanitizeMailHtml(`<img src="${source}" alt="pixel">`, { allowRemoteImages: true });
+      expect(sanitized).toContain("tracker.example");
+      expect(sanitized).toContain('alt="pixel"');
+    },
+  );
+
+  it.each([...DEFAULT_AND_FALSE, ["with allowRemoteImages true", true]] as const)(
+    "keeps protocol-relative links, inline data:/cid: images and relative sources as before %s",
+    (_mode, allow) => {
+      const html =
+        '<a href="//example.com/x">link</a><img src="data:image/png;base64,AAAA"><img src="cid:logo"><img src="/local.png">';
+      const sanitized =
+        allow === undefined ? sanitizeMailHtml(html) : sanitizeMailHtml(html, { allowRemoteImages: allow });
+      expect(sanitized).toContain('href="//example.com/x"');
+      expect(sanitized).toContain('src="data:image/png;base64,AAAA"');
+      expect(sanitized).toContain('src="cid:logo"');
+      expect(sanitized).toContain('src="/local.png"');
+    },
+  );
 });
 
 describe("full-text search over Emails (issue #26)", () => {

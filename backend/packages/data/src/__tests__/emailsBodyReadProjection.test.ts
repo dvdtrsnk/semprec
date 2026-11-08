@@ -60,6 +60,23 @@ describe("Emails body read projection", () => {
       expect(found?.properties.body).not.toMatch(/<script|onclick|https:\/\/tracker/i);
     },
   );
+  it("strips a protocol-relative remote image from a generic read (R1 F1)", async () => {
+    const body = '<p>safe</p><img src="//tracker.example/pixel.gif" alt="pixel"><img src="cid:logo">';
+    const stored = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: item.databaseId, properties: { body } },
+        { allowedSystemKeys: ["body"] },
+      ),
+    );
+    const read = await cp.findItem(stored.id);
+    expect(read?.properties.body).toContain("safe");
+    expect(read?.properties.body).toContain('src="cid:logo"');
+    expect(read?.properties.body).not.toContain("tracker.example");
+    await withTransaction(pool, async (client) => {
+      expect((await getItemById(client, item.databaseId, stored.id))?.properties.body).toBe(body);
+    });
+  });
   it("projects the public create response on an idempotent replay", async () => {
     await withTransaction(pool, (client) =>
       createItemWithClient(

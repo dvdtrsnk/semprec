@@ -26,12 +26,15 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
+export { createProjectGuidanceDriftReadRouteHandler } from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
 
 export {
   createCreateTranscriptionRouteHandler,
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
+  createTranscriptDeleteRouteHandler,
   createTranscriptDetailRouteHandler,
+  createTranscriptListRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -246,6 +249,15 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "listProjectGuidanceDrift",
+      method: "GET",
+      path: "/api/projects/:id/agent-guidance/drift",
+      handlerExport: "createProjectGuidanceDriftReadRouteHandler",
+      // Serves the AGENT page's drift cards: the project's active findings together with the
+      // guidance version they are resolved against, which no generic item read returns.
+      justification: "single-consumer-read",
+    },
+    {
       name: "ensureJournalPeriodDoc",
       method: "PUT",
       path: "/api/journal/periods/:type/:period/doc",
@@ -278,11 +290,29 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "listTranscripts",
+      method: "GET",
+      path: "/api/transcripts",
+      handlerExport: "createTranscriptListRouteHandler",
+      // Shaped for exactly one consumer, the recordings lists: one statement joins each transcript with
+      // its event, pairing card, open speaker cards and automation state, which the generic query cannot.
+      justification: "single-consumer-read",
+    },
+    {
       name: "getTranscript",
       method: "GET",
       path: "/api/transcripts/:id",
       handlerExport: "createTranscriptDetailRouteHandler",
       justification: "single-consumer-read",
+    },
+    {
+      name: "deleteTranscript",
+      method: "DELETE",
+      path: "/api/transcripts/:id",
+      handlerExport: "createTranscriptDeleteRouteHandler",
+      // The transcript, its source Files item and its open cards change together in one
+      // transaction (issue #1642), a shape the generic item delete cannot express.
+      justification: "transactional-semantics",
     },
     {
       name: "listTranscriptSpeakers",

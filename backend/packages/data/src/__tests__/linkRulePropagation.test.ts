@@ -552,7 +552,7 @@ describe("link rule propagation", () => {
     });
   });
 
-  it("recomputes from live sources when the queued source is trashed", async () => {
+  it("keeps the value as own and propagates nothing when the queued source is trashed (issue #1656)", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
@@ -565,11 +565,19 @@ describe("link rule propagation", () => {
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
       expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
-      await withTransaction(data, (client) =>
-        itemDeleteWithClient(client, areas.id, area.id, {
-          queueAffinity: createActionQueueAffinity(),
-        }),
-      );
+      const trashEvents: InvalidationEvent[] = [];
+      setInvalidationHook((event) => trashEvents.push(event));
+      try {
+        await withTransaction(data, (client) =>
+          itemDeleteWithClient(client, areas.id, area.id, {
+            queueAffinity: createActionQueueAffinity(),
+          }),
+        );
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      // The trash detached the only source: the link is gone and the target was told to refetch it.
+      expect(trashEvents.some((event) => event.scope === "item" && event.itemId === target.id)).toBe(true);
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
@@ -577,14 +585,14 @@ describe("link rule propagation", () => {
       } finally {
         setInvalidationHook(() => {});
       }
-      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBeNull();
-      expect(events.some((event) => event.scope === "item" && event.itemId === target.id)).toBe(true);
+      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
+      expect(events.some((event) => event.scope === "item" && event.itemId === target.id)).toBe(false);
       const links = await withTransaction(data, (client) =>
         client.query<{ state: string }>("SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'", [
           target.id,
         ]),
       );
-      expect(links.rows).toEqual([{ state: "on" }]);
+      expect(links.rows).toEqual([]);
     });
   });
 

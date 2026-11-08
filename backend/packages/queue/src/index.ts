@@ -43,6 +43,9 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
+  // Issue #1652: rebuilds the search documents that quote another item's text after an edge, title, trash
+  // state or Inbox entry change, looking the dependents up when it runs, in committed chunks.
+  ITEM_SEARCH_REINDEX_DEPENDENTS: "itemSearchReindexDependents",
   // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
   // with a 30-second debounce (`preserve_run_at`).
   ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
@@ -136,6 +139,7 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
@@ -200,6 +204,7 @@ export type TaskTenancy = "tenant" | "system";
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "tenant",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
@@ -244,9 +249,61 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [AGENT_TASK_NAMES.SEMP_MESSAGE]: "tenant",
 };
 
-/** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
+/**
+ * The item-search tasks whose enqueues a managed transaction adds at its pre-commit flush, in
+ * code-unit order (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md).
+ * `ensureQueueSchema` registers exactly these identifiers.
+ */
+export const SEARCH_TASK_IDENTIFIERS = [
+  CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL,
+  CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT,
+  CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS,
+] as const;
+export type SearchTaskIdentifier = (typeof SEARCH_TASK_IDENTIFIERS)[number];
+
+/**
+ * graphile-worker 0.17.3's own registration statement (`dist/taskIdentifiers.js`): one idempotent
+ * insert of the identifier rows, committed on its own, creating no job and no queue. The ADR above
+ * grants this package alone this one write to graphile-worker's private metadata; it depends on that
+ * version's `_private_tasks` shape.
+ */
+const REGISTER_SEARCH_TASK_IDENTIFIERS_SQL = `INSERT INTO graphile_worker._private_tasks AS tasks (identifier)
+  SELECT unnest($1::text[]) ON CONFLICT DO NOTHING`;
+
+/**
+ * Creates/updates graphile-worker's own schema, then registers `SEARCH_TASK_IDENTIFIERS`, so a
+ * search enqueue never inserts a task row itself. Call once at startup, before enqueueJob/runWorker.
+ */
 export async function ensureQueueSchema(pool: Pool): Promise<void> {
-  await runAsSystem("queue-schema", () => runMigrations({ pgPool: pool }));
+  await runAsSystem("queue-schema", async () => {
+    await runMigrations({ pgPool: pool });
+    await pool.query(REGISTER_SEARCH_TASK_IDENTIFIERS_SQL, [SEARCH_TASK_IDENTIFIERS]);
+  });
+}
+
+/** `SEARCH_TASK_IDENTIFIERS` that the reading transaction did not see registered. */
+export class SearchTaskIdentifiersNotRegisteredError extends Error {
+  constructor(readonly missing: readonly string[]) {
+    super(`Search task identifiers are not registered (run ensureQueueSchema): ${missing.join(", ")}`);
+    this.name = "SearchTaskIdentifiersNotRegisteredError";
+  }
+}
+
+const registeredIdentifierRowSchema = z.object({ identifier: z.string() });
+
+/**
+ * Fails closed unless every `SEARCH_TASK_IDENTIFIERS` row is visible to `client`'s statement: an
+ * error from the read itself (no queue schema) propagates as it is. A read only; it never registers
+ * a missing identifier.
+ */
+export async function assertSearchTaskIdentifiersRegistered(client: Queryable): Promise<void> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    "SELECT identifier FROM graphile_worker._private_tasks WHERE identifier = ANY($1::text[])",
+    [SEARCH_TASK_IDENTIFIERS],
+  );
+  const registered = new Set(rows.map((row) => registeredIdentifierRowSchema.parse(row).identifier));
+  const missing = SEARCH_TASK_IDENTIFIERS.filter((identifier) => !registered.has(identifier));
+  if (missing.length > 0) throw new SearchTaskIdentifiersNotRegisteredError(missing);
 }
 
 /**
@@ -336,6 +393,31 @@ export async function enqueueJob(
     tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
     payload,
   };
+  await addJob(client, [
+    identifier,
+    JSON.stringify(envelope),
+    options.queueName ?? null,
+    options.runAt ?? null,
+    options.maxAttempts ?? null,
+    options.jobKey ?? null,
+    options.jobKeyMode ?? "replace",
+    options.priority ?? 0,
+  ]);
+}
+
+/** The bound values of one `graphile_worker.add_job` call, in parameter order. */
+type AddJobValues = [
+  identifier: string,
+  envelopeJson: string,
+  queueName: string | null,
+  runAt: Date | null,
+  maxAttempts: number | null,
+  jobKey: string | null,
+  jobKeyMode: string,
+  priority: number,
+];
+
+async function addJob(client: Queryable, values: AddJobValues): Promise<void> {
   await client.query(
     `SELECT graphile_worker.add_job(
        identifier => $1,
@@ -347,17 +429,90 @@ export async function enqueueJob(
        job_key_mode => $7,
        priority => $8
      )`,
-    [
-      identifier,
-      JSON.stringify(envelope),
-      options.queueName ?? null,
-      options.runAt ?? null,
-      options.maxAttempts ?? null,
-      options.jobKey ?? null,
-      options.jobKeyMode ?? "replace",
-      options.priority ?? 0,
-    ],
+    values,
   );
+}
+
+const preparedJobOptionsSchema = z
+  .object({
+    jobKey: z.string().min(1),
+    jobKeyMode: z.enum(["replace", "preserve_run_at"]).default("replace"),
+    maxAttempts: z.number().int().positive().optional(),
+    runAt: z.date().optional(),
+    queueName: z.string().min(1).optional(),
+    priority: z.number().int().optional(),
+  })
+  .strict();
+/** A prepared enqueue is always keyed, and only in the two modes whose same-key calls replay in order. */
+export type PreparedJobOptions = z.input<typeof preparedJobOptionsSchema>;
+
+/**
+ * An enqueue call captured when it was prepared: its identifier, key and the tenant stamped into its
+ * envelope. The handle is opaque: `addPreparedJob` accepts only a handle `prepareJob` returned.
+ */
+export interface PreparedJob {
+  readonly identifier: string;
+  readonly jobKey: string;
+  readonly tenantId: string | null;
+}
+
+interface CapturedJob {
+  readonly envelopeJson: string;
+  readonly queueName: string | null;
+  /** Milliseconds since the epoch; a `Date` stays mutable through `setTime`, a number does not. */
+  readonly runAtMs: number | null;
+  readonly maxAttempts: number | null;
+  readonly jobKeyMode: "replace" | "preserve_run_at";
+  readonly priority: number;
+}
+
+const capturedJobs = new WeakMap<PreparedJob, CapturedJob>();
+
+/**
+ * Captures one keyed `enqueueJob` call to be added later with `addPreparedJob`. The envelope is
+ * stamped and serialized now, exactly as `enqueueJob` stamps it (the producer's tenant scope and
+ * trace), and the options are copied, so nothing a caller or the ambient scope does afterwards
+ * changes the job.
+ */
+export function prepareJob(
+  identifier: CoreTaskName | (string & {}),
+  payload: Record<string, unknown>,
+  options: PreparedJobOptions,
+): PreparedJob {
+  const parsedIdentifier = z.string().min(1).parse(identifier);
+  const parsed = preparedJobOptionsSchema.parse(options);
+  const scope = currentTenantScope() ?? enforceTenantScope("prepareJob");
+  const tenantId = scope?.kind === "tenant" ? scope.tenantId : null;
+  const envelope: QueueJobEnvelope = { traceId: getTraceId() ?? mintTraceId(), tenantId, payload };
+  const job: PreparedJob = Object.freeze({ identifier: parsedIdentifier, jobKey: parsed.jobKey, tenantId });
+  capturedJobs.set(
+    job,
+    Object.freeze({
+      envelopeJson: JSON.stringify(envelope),
+      queueName: parsed.queueName ?? null,
+      runAtMs: parsed.runAt?.getTime() ?? null,
+      maxAttempts: parsed.maxAttempts ?? null,
+      jobKeyMode: parsed.jobKeyMode,
+      priority: parsed.priority ?? 0,
+    }),
+  );
+  return job;
+}
+
+/** Adds a prepared job through the same `graphile_worker.add_job` call `enqueueJob` makes. */
+export async function addPreparedJob(client: Queryable, job: PreparedJob): Promise<void> {
+  const captured = capturedJobs.get(job);
+  if (!captured) throw new TypeError("addPreparedJob accepts only a job returned by prepareJob");
+  await addJob(client, [
+    job.identifier,
+    captured.envelopeJson,
+    captured.queueName,
+    captured.runAtMs === null ? null : new Date(captured.runAtMs),
+    captured.maxAttempts,
+    job.jobKey,
+    captured.jobKeyMode,
+    captured.priority,
+  ]);
 }
 
 /**

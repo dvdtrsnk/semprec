@@ -172,10 +172,31 @@ describe("value link via-edge union", () => {
         sourceItemId: firstProject.id,
         hop: 1,
       });
+      // Issue #1656: the trash detached the first project only. The link keeps the second project as
+      // its source, the inherited companies stay, and the queued propagation reaches no link.
       const remaining = (await cp.listItemRelations(otherFile.id))
         ?.filter((edge) => edge.relationPropertyId === targetProperty)
+        .map((edge) => edge.targetItemId)
+        .sort();
+      expect(remaining).toEqual([firstCompany.id, secondCompany.id].sort());
+      const sources = await withTransaction(data, (client) =>
+        client.query<{ source_item_id: string | null; state: string }>(
+          `SELECT s.source_item_id, l.state FROM value_links l JOIN value_link_sources s ON s.link_id = l.id
+           WHERE l.item_id = $1 AND l.property_key = 'companies'`,
+          [otherFile.id],
+        ),
+      );
+      expect(sources.rows).toEqual([{ source_item_id: secondProject.id, state: "on" }]);
+      // R1 P6: a later propagation from the remaining source recomputes the link from that source alone.
+      await handleLinkPropagation(data, {
+        ruleKey: "fixtureUnion.projectCompanies",
+        sourceItemId: secondProject.id,
+        hop: 1,
+      });
+      const recomputed = (await cp.listItemRelations(otherFile.id))
+        ?.filter((edge) => edge.relationPropertyId === targetProperty)
         .map((edge) => edge.targetItemId);
-      expect(remaining).toEqual([secondCompany.id]);
+      expect(recomputed).toEqual([secondCompany.id]);
     });
   });
 

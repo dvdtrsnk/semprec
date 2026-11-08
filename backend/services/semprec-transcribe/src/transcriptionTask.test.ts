@@ -13,6 +13,7 @@ import {
   createChokePoint,
   createItemWithClient,
   createRerunTranscriptionRouteHandler,
+  createTranscriptDeleteRouteHandler,
   createUser as dataCreateUser,
   findIdempotentReplay,
   createTranscriptionRequeueSweepAction,
@@ -20,6 +21,7 @@ import {
   ForbiddenError,
   getDatabaseByModuleId,
   getItemById,
+  getSystemTimezone,
   ingestUploadedFile,
   ingestUploadedFileWithTransaction,
   itemDeleteWithClient,
@@ -40,6 +42,8 @@ import {
   type BlobStorageWriter,
   type ItemRow,
 } from "@semprec/data";
+import type { MeetingNotes } from "./transcriptSummary.js";
+import { recordingDay } from "./transcriptSummary.js";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -153,24 +157,36 @@ class FakeAudioGatewayClient implements AudioGatewayClient {
 }
 
 /**
- * A fake `AiGatewayClientPort` for steps 5 and 7: answers every summary request with a text naming
- * its instruction, every speaker-suggestion request with `speakerMappings`, and counts calls.
+ * A fake `AiGatewayClientPort` for steps 5 and 7, a deterministic transport, not a model: answers
+ * every meeting-notes request with fixed notes carrying `actionItems`, every speaker-suggestion
+ * request with `speakerMappings`, and counts calls.
  */
 class FakeSummaryClient implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
   speakerMappings: Array<{ speaker: string; personId: string | null; reason: string }> = [];
+  actionItems: MeetingNotes["actionItems"] = [];
 
   async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
     this.calls.push(input);
     if (this.failure) throw this.failure;
     if (input.operation === "transcript_speaker_suggestion")
       return { content: { mappings: this.speakerMappings }, usage: { inputTokens: 10, outputTokens: 5 } };
-    const content = input.messages[0]?.content;
-    const instruction = (typeof content === "string" ? content.split("\n")[1] : undefined) ?? "";
-    return { content: { summary: `summary for: ${instruction}` }, usage: { inputTokens: 10, outputTokens: 5 } };
+    return { content: { ...FAKE_NOTES, actionItems: this.actionItems }, usage: { inputTokens: 10, outputTokens: 5 } };
+  }
+
+  /** The meeting-notes calls, the paid step 5 requests. */
+  notesCalls(): AiGatewayCompletionInput[] {
+    return this.calls.filter((call) => call.operation === "transcript_summary");
   }
 }
+
+const FAKE_NOTES = {
+  title: "Greeting",
+  summary: "{SPEAKER_00} greets {SPEAKER_01}.",
+  shortSummary: "A greeting.",
+  decisions: ["Keep greeting"],
+};
 
 let summaryClient: FakeSummaryClient;
 
@@ -1614,16 +1630,21 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       summaryClient,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
     expect((await readTranscript(file.id)).computed).toEqual(transcript.computed);
-    expect(transcript.computed.summaryByInstruction).toEqual({
-      meetingSummary: expect.stringMatching(/^summary for: Summarize this meeting/),
-    });
+    // Issue #1695: the finished transcript has every notes field; no action items is [].
+    expect(transcript.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+    expect(transcript.computed).not.toHaveProperty("summaryByInstruction");
     expect(transcript.properties.status).toBe("done");
     expect(await readAutomationStatus(transcript.id)).toBe("done");
 
     expect(summaryClient.calls).toHaveLength(1);
     expect(summaryClient.calls[0]).toMatchObject({ operation: "transcript_summary", projectItemId: null });
     expect(summaryClient.calls[0]?.system).toContain("(en)");
-    expect(summaryClient.calls[0]?.messages[0]?.content).toContain("SPEAKER_00: Hello.\nSPEAKER_01: Hi there.");
+    const content = summaryClient.calls[0]?.messages[0]?.content;
+    expect(content).toContain("[0] SPEAKER_00: Hello.\n[0.6] SPEAKER_01: Hi there.");
+    const recordedAt = z.string().parse(transcript.properties.date);
+    const day = recordingDay(recordedAt, await withTransaction(pool, (client) => getSystemTimezone(client)));
+    expect(day).not.toBeNull();
+    expect(content).toContain(`Recording date: ${day?.date} (${day?.weekday})`);
   });
 
   it("merges overlapping ASR chunks without duplicating the overlap band", async () => {
@@ -1677,9 +1698,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(transcript.computed.language).toBe("cs");
   });
 
-  it("caches a distinct summary per instruction and never repeats a cached one", async () => {
+  it("stores normalized action items: a known owner, a calendar due and a non-negative start, else null", async () => {
     const { file } = await createSourceFile();
-    const actionItems = { key: "actionItems", prompt: "List only the action items." };
+    summaryClient.actionItems = [
+      { text: "{SPEAKER_01} sends the pricing", ownerSpeaker: "SPEAKER_01", due: "2026-02-30", startsAt: 0.6 },
+      { text: "Book the room", ownerSpeaker: "SPEAKER_09", due: "2026-10-17", startsAt: -3 },
+    ];
 
     await createTranscriptionTask(
       pool,
@@ -1687,33 +1711,53 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       gatewayClient,
       summaryClient,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect((await readTranscript(file.id)).computed.meetingNotes).toEqual({
+      ...FAKE_NOTES,
+      actionItems: [
+        { text: "{SPEAKER_01} sends the pricing", ownerSpeaker: "SPEAKER_01", due: null, startsAt: 0.6 },
+        { text: "Book the room", ownerSpeaker: null, due: "2026-10-17", startsAt: null },
+      ],
+    });
+  });
+
+  it("stores the notes once, and an earlier summaryByInstruction stays as it was", async () => {
+    const { file } = await createSourceFile();
+    summaryClient.failure = new Error("simulated gateway failure");
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    const halfway = await readTranscript(file.id);
+    expect(halfway.computed).not.toHaveProperty("meetingNotes");
+    // A summary only the pipeline before issue #1695 wrote; no current writer produces this key.
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!transcripts) throw new Error("Transcripts database was not seeded");
+    const legacy = { meetingSummary: "Summary written before structured notes." };
+    await withTransaction(pool, (client) =>
+      writeComputed(client, transcripts.id, halfway.id, "summaryByInstruction", legacy),
+    );
+    summaryClient.failure = null;
+
     await createTranscriptionTask(
       pool,
       blobStorage,
       gatewayClient,
       summaryClient,
-      actionItems,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const done = await readTranscript(file.id);
     await createTranscriptionTask(
       pool,
       blobStorage,
       gatewayClient,
       summaryClient,
-    )({ fileItemId: file.id }, FIRST_ATTEMPT);
-    await createTranscriptionTask(
-      pool,
-      blobStorage,
-      gatewayClient,
-      summaryClient,
-      actionItems,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
-    const transcript = await readTranscript(file.id);
-    const summaries = z.record(z.string(), z.string()).parse(transcript.computed.summaryByInstruction);
-    expect(Object.keys(summaries).sort()).toEqual(["actionItems", "meetingSummary"]);
-    expect(summaries.actionItems).toBe("summary for: List only the action items.");
-    expect(summaries.meetingSummary).not.toBe(summaries.actionItems);
-    expect(summaryClient.calls).toHaveLength(2);
+    expect(done.properties.status).toBe("done");
+    expect(done.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+    expect(done.computed.summaryByInstruction).toEqual(legacy);
+    expect((await readTranscript(file.id)).computed).toEqual(done.computed);
+    // One failed and one successful notes call; the rerun of the done row pays nothing.
+    expect(summaryClient.notesCalls()).toHaveLength(2);
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     expect(gatewayClient.transcribeCalls).toHaveLength(1);
   });
@@ -1729,7 +1773,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     const failed = await readTranscript(file.id);
     expect(failed.computed.segments).toHaveLength(2);
-    expect(failed.computed).not.toHaveProperty("summaryByInstruction");
+    expect(failed.computed).not.toHaveProperty("meetingNotes");
     expect(failed.properties.status).toBe("processing");
     expect(await readAutomationStatus(failed.id)).toBe("pending");
 
@@ -1748,6 +1792,136 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     expect(gatewayClient.transcribeCalls).toHaveLength(1);
     expect(summaryClient.calls).toHaveLength(2);
+  });
+
+  /**
+   * Fault/transform injection (R1 P1, parent D5): strips `meetingNotes` from every write to exactly one
+   * transcript row, so the real pipeline reaches finalize without stored notes, which no production
+   * input can arrange. The id reaches the trigger's WHEN clause as a literal quoted by Postgres
+   * (`format('%L')` in a DO block, read from a session setting). Cleanup runs after `run` settled, on
+   * the same dedicated client; a failed cleanup discards that client and is reported with any primary
+   * failure.
+   */
+  async function withMeetingNotesStripped(transcriptId: string, run: () => Promise<void>): Promise<void> {
+    const client = await pool.connect();
+    let primary: { error: unknown } | undefined;
+    try {
+      await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [transcriptId]);
+      await client.query(`CREATE FUNCTION strip_meeting_notes_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN NEW.computed := NEW.computed - 'meetingNotes'; RETURN NEW; END $$`);
+      await client.query(`DO $$ BEGIN EXECUTE format(
+        'CREATE TRIGGER strip_meeting_notes_test BEFORE UPDATE ON items FOR EACH ROW '
+        'WHEN (NEW.id = %L::uuid) EXECUTE FUNCTION strip_meeting_notes_test()',
+        current_setting('semprec_test.fault_item')); END $$`);
+      await run();
+    } catch (error) {
+      primary = { error };
+    }
+    let cleanup: { error: unknown } | undefined;
+    try {
+      await client.query("DROP TRIGGER IF EXISTS strip_meeting_notes_test ON items");
+      await client.query("DROP FUNCTION IF EXISTS strip_meeting_notes_test()");
+    } catch (error) {
+      cleanup = { error };
+    }
+    client.release(cleanup ? new Error("Fault trigger cleanup failed; the connection is discarded") : undefined);
+    if (primary && cleanup)
+      throw new AggregateError([primary.error, cleanup.error], "Fault test and its cleanup failed");
+    if (primary) throw primary.error;
+    if (cleanup) throw cleanup.error;
+  }
+
+  it("does not finish a transcript whose meeting notes are missing at finalize, and finishes once they are stored (R1 P1)", async () => {
+    const { file } = await createSourceFile();
+    // A first attempt fails in the summary step, so the transcript row exists for the fault below.
+    summaryClient.failure = new Error("simulated gateway failure");
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    summaryClient.failure = null;
+    const transcript = await readTranscript(file.id);
+
+    await withMeetingNotesStripped(transcript.id, async () => {
+      await expect(
+        createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    });
+    const unfinished = await readTranscript(file.id);
+    expect(unfinished.computed).not.toHaveProperty("meetingNotes");
+    expect(unfinished.properties.status).toBe("processing");
+    expect(await readAutomationStatus(unfinished.id)).toBe("pending");
+    // The finalize guard, not an earlier step, refused the attempt.
+    const failure = await pool.query<{ error: string | null }>("SELECT error FROM item_automation WHERE item_id = $1", [
+      unfinished.id,
+    ]);
+    expect(failure.rows[0]?.error).toContain("has no 'meetingNotes' yet");
+    expect(summaryClient.notesCalls()).toHaveLength(2);
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const finished = await readTranscript(file.id);
+    expect(finished.properties.status).toBe("done");
+    expect(finished.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+    expect(summaryClient.notesCalls()).toHaveLength(3);
+  });
+
+  it("keeps the notes a concurrent run stored between the paid call and the locked write (R1 P1)", async () => {
+    const { file } = await createSourceFile();
+    const competitor = {
+      title: "Competitor",
+      summary: "Stored first.",
+      shortSummary: "Stored first.",
+      decisions: [],
+      actionItems: [],
+    };
+    // The concurrent run's own deterministic transport: its notes, and no speaker mapping.
+    const concurrentClient: AiGatewayClientPort = {
+      async complete(input) {
+        return {
+          content: input.operation === "transcript_speaker_suggestion" ? { mappings: [] } : competitor,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    let concurrentRuns = 0;
+    /** Runs a whole second pipeline run of the same file while this run's meeting-notes call is out. */
+    class InterleavingSummaryClient extends FakeSummaryClient {
+      override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+        if (input.operation === "transcript_summary" && concurrentRuns === 0) {
+          concurrentRuns++;
+          await createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            concurrentClient,
+          )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        }
+        return super.complete(input);
+      }
+    }
+    const interleaving = new InterleavingSummaryClient();
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      interleaving,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const done = await readTranscript(file.id);
+    expect(concurrentRuns).toBe(1);
+    expect(interleaving.notesCalls()).toHaveLength(1);
+    expect(done.computed.meetingNotes).toEqual(competitor);
+    expect(done.properties.status).toBe("done");
+    expect(await readAutomationStatus(done.id)).toBe("done");
   });
 
   it("never rewrites merged segments or their speaker keys on a replay", async () => {
@@ -1775,7 +1949,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect((await readTranscript(file.id)).computed.segments).toEqual(before.computed.segments);
   });
 
-  it("summarizes a transcript with no speech as empty without a gateway call", async () => {
+  it("stores empty notes for a transcript with no speech without a gateway call", async () => {
     const { file } = await createSourceFile();
     gatewayClient.transcribeResult = () => ({ text: "", language: null, segments: [] });
 
@@ -1789,7 +1963,13 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const transcript = await readTranscript(file.id);
     expect(transcript.computed.segments).toEqual([]);
     expect(transcript.computed.language).toBeNull();
-    expect(transcript.computed.summaryByInstruction).toEqual({ meetingSummary: "" });
+    expect(transcript.computed.meetingNotes).toEqual({
+      title: "",
+      summary: "",
+      shortSummary: "",
+      decisions: [],
+      actionItems: [],
+    });
     expect(transcript.properties.status).toBe("done");
     expect(summaryClient.calls).toHaveLength(0);
   });
@@ -2125,6 +2305,39 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     expect((await readTranscript(file.id)).properties.status).toBe("done");
     expect(await readSpeakerCards()).toHaveLength(2);
+  });
+
+  it("makes no second paid notes call when a retry follows a failure after the notes were stored", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+    const aliceId = await createParticipant(eventId, "Alice");
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_00", personId: aliceId, reason: "Named." }];
+    // Step 7 fails after step 5 committed the notes, so finalize is never reached on the first run.
+    const failing: AiGatewayClientPort = {
+      complete: (input) =>
+        input.operation === "transcript_speaker_suggestion"
+          ? Promise.reject(new Error("gateway refused"))
+          : summaryClient.complete(input),
+    };
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    const stored = await readTranscript(file.id);
+    expect(stored.properties.status).toBe("processing");
+    expect(stored.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+    expect(summaryClient.notesCalls()).toHaveLength(1);
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const finished = await readTranscript(file.id);
+    expect(finished.properties.status).toBe("done");
+    expect(finished.computed.meetingNotes).toEqual(stored.computed.meetingNotes);
+    expect(summaryClient.notesCalls()).toHaveLength(1);
   });
 
   it("publishes each output write and the done transition on the generic realtime channel", async () => {
@@ -2733,6 +2946,51 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           expect(await readNotifications(transcript.id)).toEqual([]);
         });
       }
+
+      it("stops without ASR when DELETE /api/transcripts/:id trashes the recording during diarization (issue #1642)", async () => {
+        const { file } = await createSourceFile();
+        const userId = await createUser();
+        let response: unknown;
+        /** Calls the production DELETE route the moment the diarize call is made, like a user deleting the recording mid-run. */
+        class RouteDeletingGateway extends FakeAudioGatewayClient {
+          override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            const { rows } = await pool.query<{ id: string }>(
+              "SELECT (computed ->> 'create') AS id FROM items WHERE id = $1",
+              [file.id],
+            );
+            const transcriptId = rows[0]?.id;
+            if (!transcriptId) throw new Error("Step 0 created no transcript");
+            response = await runInTenant(getTenantZeroId(), () =>
+              createTranscriptDeleteRouteHandler(pool)({
+                params: { id: transcriptId },
+                identity: { user: { id: userId } },
+              }),
+            );
+            return super.diarize(request);
+          }
+        }
+        const gateway = new RouteDeletingGateway();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+        const transcript = await readTranscript(file.id);
+        expect(response).toEqual({ status: 200, body: { id: transcript.id, fileItemId: file.id } });
+        expect(gateway.diarizeCalls).toHaveLength(1);
+        expect(gateway.transcribeCalls).toEqual([]);
+        expect(summaryClient.calls).toEqual([]);
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcript.id)).toEqual([]);
+        const { rows } = await pool.query<{ epochs: number; trashed: number }>(
+          "SELECT count(DISTINCT deleted_at)::int AS epochs, count(*)::int AS trashed FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL",
+          [[file.id, transcript.id]],
+        );
+        expect(rows).toEqual([{ epochs: 1, trashed: 2 }]);
+      });
 
       for (const [label, sql] of [
         ["transcript", deleteTranscriptSql],

@@ -294,6 +294,8 @@ describe.each([
     item: { ...CONTEXT.item, deletedAt: "2026-11-07T10:00:00.000Z" },
     rootItemId: "root",
     deletedAt: "2026-11-07T10:00:00.000Z",
+    deletedAtExact: "2026-11-07T10:00:00.000123Z",
+    queueAffinity: new Map(),
     writerKind: "agent",
     agentRunId: "run",
     actingUserId: "user",

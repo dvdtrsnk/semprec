@@ -44,12 +44,15 @@ try {
     await runDocHistoryCutoverMigration(pool);
     await runAgentRunsActorUserIdCutoverMigration(pool);
     await runApprovalRequestExecutionStatusCutoverMigration(pool);
-    await runTenantCutoverMigrations(tenantPool);
     // Issue #243: graphile-worker's own schema doesn't exist until ensureQueueSchema creates it, so
     // semprec_side's grants on it can't live in the SQL migrations above — this CLI is the real-deploy
     // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
+    // They run before the tenant cutovers, whose writes queue search jobs: ensureQueueSchema registers
+    // the search task identifiers a search enqueue requires
+    // (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md).
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
+    await runTenantCutoverMigrations(tenantPool);
     await runItemSearchBackfillCutover(tenantPool, false);
     await enqueueMailMessagePreviewBackfill(pool);
     await enqueueMailGmailPseudoFolderCleanup(pool);
