@@ -114,6 +114,51 @@ export async function createTaskRecurrence(
 }
 
 /**
+ * Starts a new series in the item's own inactive row (issue #1665): `task_recurrence.item_id` is the row's primary key,
+ * so a task whose recurrence was turned off gets its next series in the same row, with a new `series_id`, the given
+ * rule, anchor and template, and `active` again. Occurrences of the old series keep their `seriesId` as history. Call
+ * it holding the row lock; an item without an inactive row has nothing to restart and fails.
+ */
+export async function restartTaskRecurrence(
+  client: PoolClient,
+  input: CreateTaskRecurrenceInput,
+): Promise<TaskRecurrence> {
+  const rule = parseTaskRecurrenceRule(input.mode, input.rule);
+  const template = parseTaskRecurrenceTemplate(input.template);
+  const { rows } = await client.query<TaskRecurrenceDbRow>(
+    `UPDATE task_recurrence
+     SET mode = $2, rule = $3::jsonb, active = true, series_id = gen_random_uuid(), anchor_date = $4::date, template = $5::jsonb
+     WHERE item_id = $1 AND NOT active RETURNING ${COLUMNS}`,
+    [input.itemId, input.mode, JSON.stringify(rule), input.anchorDate, JSON.stringify(template)],
+  );
+  return mapRow(requireSingleRow(rows, "inactive task_recurrence row"));
+}
+
+/**
+ * Replaces the rule of series `seriesId` (issue #1665) and marks it active; `anchorDate`, when given, moves the series
+ * start. Call it holding the series row lock (`getTaskRecurrenceBySeriesId(..., true)`).
+ */
+export async function replaceTaskRecurrenceRule(
+  client: PoolClient,
+  seriesId: string,
+  input: { mode: TaskRecurrenceMode; rule: TaskRecurrenceRule; anchorDate?: string },
+): Promise<TaskRecurrence> {
+  const rule = parseTaskRecurrenceRule(input.mode, input.rule);
+  const { rows } = await client.query<TaskRecurrenceDbRow>(
+    `UPDATE task_recurrence SET mode = $2, rule = $3::jsonb, active = true, anchor_date = COALESCE($4::date, anchor_date)
+     WHERE series_id = $1::uuid RETURNING ${COLUMNS}`,
+    [seriesId, input.mode, JSON.stringify(rule), input.anchorDate ?? null],
+  );
+  return mapRow(requireSingleRow(rows, "task_recurrence series row"));
+}
+
+/** Turns series `seriesId` off (issue #1665): the row stays, inactive, so the advance creates no next occurrence. */
+export async function deactivateTaskRecurrenceSeries(client: PoolClient, seriesId: string): Promise<void> {
+  const result = await client.query("UPDATE task_recurrence SET active = false WHERE series_id = $1::uuid", [seriesId]);
+  requireAffectedRows(result, "task_recurrence series row");
+}
+
+/**
  * `forUpdate` row-locks the recurrence so two concurrent writers acting on it within their own
  * transactions serialize on the row: the second blocks until the first commits or rolls back,
  * then re-reads it. A plain read (no intent to mutate) should omit it.

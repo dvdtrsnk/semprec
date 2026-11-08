@@ -24,6 +24,10 @@ export {
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
 export {
+  createTaskRecurrenceClearRouteHandler,
+  createTaskRecurrenceSetRouteHandler,
+} from "../tasks/taskRecurrenceRoutes.js";
+export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
@@ -370,6 +374,22 @@ export const manifest: ModuleManifest = {
       // Serves the AGENT page's drift cards: the project's active findings together with the
       // guidance version they are resolved against, which no generic item read returns.
       justification: "single-consumer-read",
+    },
+    {
+      name: "setTaskRecurrence",
+      method: "PUT",
+      path: "/api/tasks/:id/recurrence",
+      handlerExport: "createTaskRecurrenceSetRouteHandler",
+      // The task's series row and its series properties change together under the task and series locks (issue #1665).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "clearTaskRecurrence",
+      method: "DELETE",
+      path: "/api/tasks/:id/recurrence",
+      handlerExport: "createTaskRecurrenceClearRouteHandler",
+      // Deactivating the series and clearing the task's series properties commit together (issue #1665).
+      justification: "transactional-semantics",
     },
     {
       name: "ensureJournalPeriodDoc",

@@ -463,6 +463,10 @@ export {
   createProjectAgentGuidanceSaveRouteHandler,
 } from "./projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
 export { createProjectGuidanceDriftReadRouteHandler } from "./guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
+export {
+  createTaskRecurrenceClearRouteHandler,
+  createTaskRecurrenceSetRouteHandler,
+} from "./tasks/taskRecurrenceRoutes.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
