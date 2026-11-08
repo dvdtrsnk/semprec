@@ -1,0 +1,49 @@
+[
+  {
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343625373",
+    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1069#issuecomment-6343625373",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1069",
+    "id": 6343625373,
+    "node_id": "IC_kwDOUFuQ4c8AAAABehwKnQ",
+    "user": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-22T14:46:43Z",
+    "updated_at": "2026-10-22T14:46:43Z",
+    "body": "Implementation prepared ahead of its gate on branch [`mt/1069-retire-master-credential-scheme`](https://github.com/dvdtrsnk/semprec/tree/mt/1069-retire-master-credential-scheme) (head `39b01a29c`). It is stacked on mt/1062 + mt/1085 (branched from develop `35d087f45`), so a pull request opened from it shows only this issue's commits once the branches below it have landed.\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through independent reviews against this issue's Task, Acceptance criteria and Out of scope, and those findings are fixed on the branch. Production steps were neither performed nor simulated.\n\nDo not merge before #1068 is signed off. When it is: merge `develop` into the branch, renumber the migration if a newer ordinal has landed meanwhile, and open the pull request against `develop`. `agent:ready` is removed so Relay does not implement this again; the branch is the implementation.",
+    "author_association": "OWNER",
+    "pin": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343625373/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": null,
+    "minimized": null
+  }
+]

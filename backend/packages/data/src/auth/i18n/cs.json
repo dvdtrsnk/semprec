@@ -1,0 +1,8 @@
+{
+  "mail.passwordReset.subject": "Obnovte si heslo",
+  "mail.passwordReset.text": "Heslo si obnovíte pomocí tohoto odkazu:\n\n{url}\n\nOdkaz platí 30 minut a lze jej použít jen jednou. Pokud jste o obnovení nežádali, tento e-mail můžete klidně ignorovat.",
+  "mail.passwordReset.html": "<p>Heslo si obnovíte pomocí odkazu níže. Odkaz platí 30 minut a lze jej použít jen jednou.</p><p><a href=\"{url}\">{url}</a></p><p>Pokud jste o obnovení nežádali, tento e-mail můžete klidně ignorovat.</p>",
+  "mail.invite.subject": "Byli jste pozváni do Semprecu",
+  "mail.invite.text": "Byli jste pozváni do Semprecu. Účet si vytvoříte pomocí tohoto odkazu:\n\n{url}\n\nOdkaz platí 7 dní a lze jej použít jen jednou.",
+  "mail.invite.html": "<p>Byli jste pozváni do Semprecu. Účet si vytvoříte pomocí odkazu níže. Odkaz platí 7 dní a lze jej použít jen jednou.</p><p><a href=\"{url}\">{url}</a></p>"
+}

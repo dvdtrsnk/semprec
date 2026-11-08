@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_title">Nastavení</string>
+    <string name="settings_row_about">O aplikaci</string>
+    <string name="about_title">O aplikaci Semprec</string>
+    <string name="about_description">Tato aplikace je zástupcem obrazovek, které teprve přibudou.</string>
+    <string name="about_version">Verze %1$s (%2$s)</string>
+    <string name="about_done">Hotovo</string>
+</resources>

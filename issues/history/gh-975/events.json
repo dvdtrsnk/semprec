@@ -1,0 +1,3290 @@
+[
+  {
+    "id": 32384725641,
+    "node_id": "PIAE_lADOUFuQ4c8AAAABUvu44M8AAAAHikeyiQ",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32384725641",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "parent_issue_added",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-03T06:22:41Z",
+    "parent_issue": {
+      "number": 950,
+      "title": "[mt-foundation] Multi-tenancy foundation: tenant entity, governance and schema expand — epic",
+      "state": "closed",
+      "state_reason": null,
+      "repository": {
+        "id": 1348178145,
+        "node_id": "R_kgDOUFuQ4Q",
+        "name": "semprec",
+        "full_name": "dvdtrsnk/semprec",
+        "private": false,
+        "owner": {
+          "login": "dvdtrsnk",
+          "id": 122625462,
+          "node_id": "U_kgDOB08dtg",
+          "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/dvdtrsnk",
+          "html_url": "https://github.com/dvdtrsnk",
+          "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+          "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+          "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+          "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+          "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+          "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "html_url": "https://github.com/dvdtrsnk/semprec",
+        "description": "Semprec backend implementation",
+        "fork": false,
+        "url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "forks_url": "https://api.github.com/repos/dvdtrsnk/semprec/forks",
+        "keys_url": "https://api.github.com/repos/dvdtrsnk/semprec/keys{/key_id}",
+        "collaborators_url": "https://api.github.com/repos/dvdtrsnk/semprec/collaborators{/collaborator}",
+        "teams_url": "https://api.github.com/repos/dvdtrsnk/semprec/teams",
+        "hooks_url": "https://api.github.com/repos/dvdtrsnk/semprec/hooks",
+        "issue_events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events{/number}",
+        "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/events",
+        "assignees_url": "https://api.github.com/repos/dvdtrsnk/semprec/assignees{/user}",
+        "branches_url": "https://api.github.com/repos/dvdtrsnk/semprec/branches{/branch}",
+        "tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/tags",
+        "blobs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/blobs{/sha}",
+        "git_tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/tags{/sha}",
+        "git_refs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/refs{/sha}",
+        "trees_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/trees{/sha}",
+        "statuses_url": "https://api.github.com/repos/dvdtrsnk/semprec/statuses/{sha}",
+        "languages_url": "https://api.github.com/repos/dvdtrsnk/semprec/languages",
+        "stargazers_url": "https://api.github.com/repos/dvdtrsnk/semprec/stargazers",
+        "contributors_url": "https://api.github.com/repos/dvdtrsnk/semprec/contributors",
+        "subscribers_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscribers",
+        "subscription_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscription",
+        "commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits{/sha}",
+        "git_commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/commits{/sha}",
+        "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/comments{/number}",
+        "issue_comment_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments{/number}",
+        "contents_url": "https://api.github.com/repos/dvdtrsnk/semprec/contents/{+path}",
+        "compare_url": "https://api.github.com/repos/dvdtrsnk/semprec/compare/{base}...{head}",
+        "merges_url": "https://api.github.com/repos/dvdtrsnk/semprec/merges",
+        "archive_url": "https://api.github.com/repos/dvdtrsnk/semprec/{archive_format}{/ref}",
+        "downloads_url": "https://api.github.com/repos/dvdtrsnk/semprec/downloads",
+        "issues_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues{/number}",
+        "pulls_url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls{/number}",
+        "milestones_url": "https://api.github.com/repos/dvdtrsnk/semprec/milestones{/number}",
+        "notifications_url": "https://api.github.com/repos/dvdtrsnk/semprec/notifications{?since,all,participating}",
+        "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/labels{/name}",
+        "releases_url": "https://api.github.com/repos/dvdtrsnk/semprec/releases{/id}",
+        "deployments_url": "https://api.github.com/repos/dvdtrsnk/semprec/deployments"
+      },
+      "issue_type": null
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:22:55Z",
+    "updated_at": "2026-10-03T06:22:55Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687197387,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvu-yw",
+        "number": 978,
+        "title": "[mt-context 01/21] Add the tenant scope primitive and apply it to every transaction and pool checkout",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/978",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "248c97dd22ee8b781ec728530936f9523820fe87a2fb8969e7ac87029aba80f6"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:27Z",
+    "updated_at": "2026-10-03T06:23:27Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687200465,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvK0Q",
+        "number": 983,
+        "title": "[mt-context 06/21] Add the per-tenant fan-out helper for system work",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/983",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "25b600f9b41c30629e672c716ac53ceb0b2c48567ed146c6c8d9341740deeebb"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:33Z",
+    "updated_at": "2026-10-03T06:23:33Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687201192,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvNqA",
+        "number": 984,
+        "title": "[mt-context 07/21] Run the heartbeat sweep per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/984",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "90a4f6bdeaa7d1d150dad40f1e9dfb2d25a15c2807dc71c402db51f7bddb1767"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:40Z",
+    "updated_at": "2026-10-03T06:23:40Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687201963,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvQqw",
+        "number": 985,
+        "title": "[mt-context 08/21] Run doc compaction and history cleanup per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/985",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "a9b8da6c218f43418a6455af7293585ff2cb323bf74a16aec3427e253b2a854f"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:46Z",
+    "updated_at": "2026-10-03T06:23:46Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687202580,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvTFA",
+        "number": 986,
+        "title": "[mt-context 09/21] Run the trash purge per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/986",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "24633a75659fe7d4b46855f6609d8ec17af3872326ef846a152093393c9416db"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:52Z",
+    "updated_at": "2026-10-03T06:23:52Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687203210,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvVig",
+        "number": 987,
+        "title": "[mt-context 10/21] Run run-event retention and MCP credential expiry per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/987",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "5af0326de239b47ffe0b857f7665ae432e7c68abad90bb37651fc17ac1b90751"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:23:58Z",
+    "updated_at": "2026-10-03T06:23:58Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687203887,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvYLw",
+        "number": 988,
+        "title": "[mt-context 11/21] Repair interrupted agent runs per tenant at startup",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/988",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "e8df57f56b9ff3d83dfa28f5b6bb82e3655ae6dc71ba8bfa989beee440e28094"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:24:05Z",
+    "updated_at": "2026-10-03T06:24:05Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687204576,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvva4A",
+        "number": 989,
+        "title": "[mt-context 12/21] Run the mail sweeps per tenant and resolve mail module ids per job",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/989",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "704c3920f6fc05c5e413ddcfbd3988bb8d6b793c674f514eb45adf46818d313f"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:24:11Z",
+    "updated_at": "2026-10-03T06:24:11Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687205097,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvc6Q",
+        "number": 990,
+        "title": "[mt-context 13/21] Discover and host mail live-sync lifecycles per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/990",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "59501d317674174be36be947e1da2d1505ee2d54c5367c47aca98397544c4740"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:24:29Z",
+    "updated_at": "2026-10-03T06:24:29Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687206820,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvjpA",
+        "number": 993,
+        "title": "[mt-context 16/21] Propagate the caller's tenant to the AI gateway and attribute every call",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/993",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "b5b78a5fb5c9803dea6854f3751df2c7d6994fa35e23d81a4fe921e88c1cf364"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:24:36Z",
+    "updated_at": "2026-10-03T06:24:36Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687207362,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvlwg",
+        "number": 994,
+        "title": "[mt-context 17/21] Resolve MCP run credentials to their tenant and mint them only for a project in the caller's tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/994",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "96ddddcc9ea54d349f6d5a9a22fdf932b00fe999e235c4e075b8922e8f67893e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:24:55Z",
+    "updated_at": "2026-10-03T06:24:55Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687208980,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvsFA",
+        "number": 997,
+        "title": "[mt-context 18/21] Route Graph webhooks to the owning tenant through a router-owned function",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/997",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "7572ea2fd27b2af1402508826fb7573513e5a98ded4f82ea22641118530dd61e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:25:01Z",
+    "updated_at": "2026-10-03T06:25:01Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687209511,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvuJw",
+        "number": 998,
+        "title": "[mt-context 19/21] Dispatch Gmail Pub/Sub messages to every matching mailbox through one puller",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/998",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "169b99dd9929a90600db27302f279531e5d228b6d918c7979ba7ac461dfc0541"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:25:08Z",
+    "updated_at": "2026-10-03T06:25:08Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687210194,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvw0g",
+        "number": 999,
+        "title": "[mt-context 20/21] Move per-mailbox stall checks into a tenant table and keep global checks content-free",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/999",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "77758b8413ef9b42e2d4a1d793dd5128b6dca754fbf8d6b45efc84e1ba09bb8a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:25:15Z",
+    "updated_at": "2026-10-03T06:25:15Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687210812,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvvzPA",
+        "number": 1000,
+        "title": "[mt-context 21/21] Move per-mailbox live-sync staleness checks into the tenant plane",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1000",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "92e602be0742713a36795280e2ac2796c59f1c714badb9d8104f8f7b9c35bd87"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:25:47Z",
+    "updated_at": "2026-10-03T06:25:47Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687213679,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvv-bw",
+        "number": 1005,
+        "title": "[mt-scope 04/23] Provision each tenant's system databases in its own scope",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1005",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "ea1f655b93fd036162fbd11e6a60506a18b4e6100007d56e2aced3f9e8800663"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:25:54Z",
+    "updated_at": "2026-10-03T06:25:54Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687214265,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwAuQ",
+        "number": 1006,
+        "title": "[mt-scope 05/23] Record module data migrations per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1006",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "0284a38299228de15e6674407775f71eef95e5a105d6b2a6240dfc21adab4f93"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:26:00Z",
+    "updated_at": "2026-10-03T06:26:00Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687215161,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwEOQ",
+        "number": 1007,
+        "title": "[mt-scope 06/23] Run the post-migration cutover steps per tenant or retire them",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1007",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "343d9b519708f4d088e4214168502d573c39c4931fac20d4388350b71364cedc"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:26:12Z",
+    "updated_at": "2026-10-03T06:26:12Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687216547,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwJow",
+        "number": 1009,
+        "title": "[mt-scope 08/23] Authorize blob downloads in scope before the conditional branch",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1009",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "71a69c973ed0826bb2485fb7ec1f96dbb906fd0500dec087f725c89d3e61604d"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:26:50Z",
+    "updated_at": "2026-10-03T06:26:50Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687221294,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwcLg",
+        "number": 1015,
+        "title": "[mt-scope 14/23] Keep one Semp conversation per tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1015",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "7b0dec64df672539080b41c8cb3fd6832b42fd0bf23ca005f5742533cef706e6"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:27:05Z",
+    "updated_at": "2026-10-03T06:27:05Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687223103,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwjPw",
+        "number": 1017,
+        "title": "[mt-scope 16/23] Validate stored item and database references inside the tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1017",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "68507cbac73d39fd9400999458340d07676420f41fae0b0e337a41cb05a9bcfb"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:27:11Z",
+    "updated_at": "2026-10-03T06:27:11Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687223809,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwmAQ",
+        "number": 1018,
+        "title": "[mt-scope 17/23] Address tenant events and agent runs to the tenant's user",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1018",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "46a2d918b67ea4f272184057eb8ebd780117c276f3abc3aca3fe30589049de42"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:27:17Z",
+    "updated_at": "2026-10-03T06:27:17Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687224587,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwpCw",
+        "number": 1019,
+        "title": "[mt-scope 18/23] Send operator alerts to every admin without tenant content",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1019",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "7432ef3414339583149d4e1fcd05eb73e0b2f91942445c4e59cbeb6c2c90abf6"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:27:24Z",
+    "updated_at": "2026-10-03T06:27:24Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687225341,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwr_Q",
+        "number": 1020,
+        "title": "[mt-scope 19/23] Remove the earliest-user lookups",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1020",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "f3327cc59f7542ad075be3f87000ddcfe024275782d7539dcd288416eb6f8a4b"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:27:30Z",
+    "updated_at": "2026-10-03T06:27:30Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687226053,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvwuxQ",
+        "number": 1021,
+        "title": "[mt-scope 20/23] Refuse a database outside the current tenant in the partition DDL functions",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1021",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "f69ec90427f3dda3fc193f019e03823e97d060d6faab53de8e5bbb56c774472a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:01Z",
+    "updated_at": "2026-10-03T06:28:01Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687229557,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvw8dQ",
+        "number": 1026,
+        "title": "[mt-realtime 02/04] Authorize doc sync inside the socket's tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1026",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "031fc08a5c0a7554ba07e0fcfb8473b9059cdf7fed8afdf37f6dfe26aa57552b"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:08Z",
+    "updated_at": "2026-10-03T06:28:08Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687230197,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvw-9Q",
+        "number": 1027,
+        "title": "[mt-realtime 03/04] Authorize agent-run watching by tenant visibility",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1027",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "1656a997e092259370106f0920a57826a58b0ca77a049b1227e297ca32f09106"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:14Z",
+    "updated_at": "2026-10-03T06:28:14Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687230679,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxA1w",
+        "number": 1028,
+        "title": "[mt-agents 01/08] Let only the run's owner decide its approval requests",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1028",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "682392ae07cc313eb596853f1afddc964ffef7eab771f4770fef5128189456d7"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:32Z",
+    "updated_at": "2026-10-03T06:28:32Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687232429,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxHrQ",
+        "number": 1031,
+        "title": "[mt-secrets 01/06] Give each tenant a wrapped data key and AEAD sealing primitives",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1031",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "b22c0ed01007acdf176f26166d927e84c277136c483c0f7f53ec245c58555106"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:38Z",
+    "updated_at": "2026-10-03T06:28:38Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687232979,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxJ0w",
+        "number": 1032,
+        "title": "[mt-secrets 02/06] Read credentials sealed under either scheme",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1032",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "63e171f086b212ed85268c21b8a17615fc756c2fb61f0be33fa068ca08975d63"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:28:58Z",
+    "updated_at": "2026-10-03T06:28:58Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687235115,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxSKw",
+        "number": 1035,
+        "title": "[mt-ai-budgets 02/04] Enforce per-tenant caps and a global safety cap under the existing reservation lock",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1035",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "359fa5aa3789c2f0333a58b407ac0b0c148394ab511ac1fe26e8604ec8fc1436"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:10Z",
+    "updated_at": "2026-10-03T06:29:10Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687236546,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxXwg",
+        "number": 1037,
+        "title": "[mt-accounts 01/12] Gate admin routes behind the admin role and audit every admin action",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1037",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "772641fe6d4760149e48d281ba3c50d9fe74895f3b4d72945f5514d85194bcb4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:17Z",
+    "updated_at": "2026-10-03T06:29:17Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687237273,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxamQ",
+        "number": 1038,
+        "title": "[mt-accounts 02/12] Add admin operations health from content-free aggregates",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1038",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "4a2f4696d856ad17373f9d72c8b1c24a18c6345ecd1d2a860461afa517bbedd9"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:23Z",
+    "updated_at": "2026-10-03T06:29:23Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687237907,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxdEw",
+        "number": 1039,
+        "title": "[mt-accounts 03/12] Let admins set per-tenant AI caps and see per-tenant spend",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1039",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "767005d8ed654975f675026f23c29b99009789733822d1c55fd95796a8a48f91"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:29Z",
+    "updated_at": "2026-10-03T06:29:29Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687238629,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxf5Q",
+        "number": 1040,
+        "title": "[mt-accounts 04/12] Let admins create, list and revoke invitations",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1040",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "76ec27f608e53fb56c1596a6034f63759f1ab4fc0df19301e061dd2b1cf477ab"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:35Z",
+    "updated_at": "2026-10-03T06:29:35Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687239299,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxigw",
+        "number": 1041,
+        "title": "[mt-accounts 05/12] Let admins suspend, reactivate and change roles with a last-admin guard",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1041",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "ff384f3ffc9d969adb7fc92979e21238dfb73c0ebbaa07b1506e597750802902"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:42Z",
+    "updated_at": "2026-10-03T06:29:42Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687240023,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxlVw",
+        "number": 1042,
+        "title": "[mt-accounts 06/12] Signal tenant deactivation and drop the tenant's sockets, mail live sync and Semp entry",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1042",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "c4c67ae786b870afbc6892abc5868f66f191cea9ccb38954cb0dc609f1e60628"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:29:48Z",
+    "updated_at": "2026-10-03T06:29:48Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687240642,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxnwg",
+        "number": 1043,
+        "title": "[mt-accounts 07/12] Export a tenant's data through an authenticated, expiring download",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1043",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "dc21e7597bf800631914ea07e291062f154301702aab6fd6cac0567b9921342e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:01Z",
+    "updated_at": "2026-10-03T06:30:01Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687241818,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxsWg",
+        "number": 1045,
+        "title": "[mt-agents 06/08] Restrict delegation targets to projects in the run's tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1045",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "95e72ac742ee6546861ddb34acad015a8147e2b8680111558f0c9bdafd3f3a48"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:19Z",
+    "updated_at": "2026-10-03T06:30:19Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687243523,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvxzAw",
+        "number": 1048,
+        "title": "[mt-ai-budgets 03/04] Report a user's own AI usage against their own caps",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1048",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "99e1263c035815103b7fe99d00d0f1215c9f7df3d754b4b0232437c7c543f841"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:26Z",
+    "updated_at": "2026-10-03T06:30:26Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687244131,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvx1Yw",
+        "number": 1049,
+        "title": "[mt-accounts 08/12] Let a user or an admin delete an account",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1049",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "084cf654bc3a2d27b8c49134dcd36f14e257745e70e9619e01c1a2c290c30b57"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:32Z",
+    "updated_at": "2026-10-03T06:30:32Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687244666,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvx3eg",
+        "number": 1050,
+        "title": "[mt-accounts 09/12] Cancel a deactivated tenant's running agent runs in the agents process",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1050",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "1598c83b4af8e5e521f7db152b074718d31202bfd0c34786ef01d0dec09f028b"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:38Z",
+    "updated_at": "2026-10-03T06:30:38Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687245246,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvx5vg",
+        "number": 1051,
+        "title": "[mt-enforcement 01/12] Refuse to start a service under a superuser, BYPASSRLS or table-owner database role",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1051",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "500187088f2c472ef5f9a6208a8f8b3137619de78e5f3eeaa5e5f276a4a4b445"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:44Z",
+    "updated_at": "2026-10-03T06:30:44Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687245751,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvx7tw",
+        "number": 1052,
+        "title": "[mt-accounts 10/12] Narrow /api/system-health to the caller's tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1052",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "4613e9d9f3d6da9ebecd58896982d60f55ae00ba3f79281f9294195f7dfb221f"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:51Z",
+    "updated_at": "2026-10-03T06:30:51Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687246360,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvx-GA",
+        "number": 1053,
+        "title": "[mt-enforcement 02/12] Prove REST and MCP isolation with an exhaustive two-tenant route suite",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1053",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "d924b3d7c153d0ddf69fbf63fae824967e795d288d994fac9b8841558bb4dd6e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:30:58Z",
+    "updated_at": "2026-10-03T06:30:58Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687246956,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyAbA",
+        "number": 1054,
+        "title": "[mt-enforcement 03/12] Prove realtime isolation with an exhaustive two-tenant frame suite",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1054",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "372fce013e15cf9a44802e248a649271695c6b7bf695dddd89c5ddd0ceeed805"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:04Z",
+    "updated_at": "2026-10-03T06:31:04Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687247564,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyCzA",
+        "number": 1055,
+        "title": "[mt-accounts 11/12] Purge a deleting tenant in chunks and record a tombstone",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1055",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "253f30f8e45802600f42296c024812b509ea36cf0b181382fdbaf54eec3cece4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:10Z",
+    "updated_at": "2026-10-03T06:31:10Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687248083,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyE0w",
+        "number": 1056,
+        "title": "[mt-enforcement 04/12] Prove background isolation with an exhaustive two-tenant task suite",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1056",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "5b4b232034a5fd73078d2d6c5f8cd735e0edf5b24aff74f15530773d6c60fa8e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:16Z",
+    "updated_at": "2026-10-03T06:31:16Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687248642,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyHAg",
+        "number": 1057,
+        "title": "[mt-enforcement 05/12] Prove AI gateway isolation with an exhaustive two-tenant endpoint suite",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1057",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "834378ae7770bcb36c6f9b5641489bef4837a10c29181df267189e54b74cbafc"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:28Z",
+    "updated_at": "2026-10-03T06:31:28Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687249731,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyLQw",
+        "number": 1059,
+        "title": "[mt-ai-budgets 04/04] Remove the budget properties from the settings item (contract)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1059",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "b7c952370e98ce3fde4af99e9a3bbc03067add3605abfd0b89d8219e6a4f9d02"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:34Z",
+    "updated_at": "2026-10-03T06:31:34Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687250228,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyNNA",
+        "number": 1060,
+        "title": "[mt-secrets 03/06] Seal new credentials under the tenant key",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1060",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "a581542f310ba7d12b9958bf25f030d577507b2f7ff1db326bba893155fcb3df"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:41Z",
+    "updated_at": "2026-10-03T06:31:41Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687250764,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyPTA",
+        "number": 1061,
+        "title": "[mt-enforcement 07/12] Stamp the sole tenant onto legacy queued jobs and reject tenant tasks without a tenant",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1061",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "37e1c64f1ada9444c198d0d58ef942d557d4ab7bfafc9dff2deb38e004a73bf4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:31:47Z",
+    "updated_at": "2026-10-03T06:31:47Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687251341,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyRjQ",
+        "number": 1062,
+        "title": "[mt-secrets 04/06] Re-encrypt existing credentials under their tenant key",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1062",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "895343731ae30e6121138354b1cfe597d1ce148d473b2caa9522550351052ae4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:32:05Z",
+    "updated_at": "2026-10-03T06:32:05Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687252970,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyX6g",
+        "number": 1065,
+        "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1065",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "4796d6f1c4ff8538313dee6279f3bb377d5be1b607f1d3d6de500d1c6d22605e"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:32:11Z",
+    "updated_at": "2026-10-03T06:32:11Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687253522,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvyaEg",
+        "number": 1066,
+        "title": "[mt-enforcement 09/12] Add tenant-consistent composite foreign keys between tenant tables",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1066",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "46a949de54813ebdf85812c348cb0104d38b976ab24cb9433813489d0c062988"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:32:17Z",
+    "updated_at": "2026-10-03T06:32:17Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687254041,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvycGQ",
+        "number": 1067,
+        "title": "[mt-enforcement 10/12] Switch to strict tenant enforcement in the database and in every process",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1067",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "bbe94c431d216b42b223d05a87975c25f711f5a8889e27f5e8bd6cbbd1fe0521"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:33:27Z",
+    "updated_at": "2026-10-03T06:33:27Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687260220,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvy0PA",
+        "number": 1078,
+        "title": "[mt-accounts 12/12] Re-apply recorded deletions after a backup restore",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1078",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "84ac629fc1249a0bad35777fb9de1de019f8f802ad32034a6b5dae0d9f59c26d"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:34:22Z",
+    "updated_at": "2026-10-03T06:34:22Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687265324,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvzILA",
+        "number": 1087,
+        "title": "[mt-go-live 02/03] Accept invitations — drop the single-tenant guard, then create and provision the invited account",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1087",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "open",
+        "bodySha256": "8f183d1468ccc13176cbb661e0a0e31b462a929f18f3f6dbade9a8df8ad973a5"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:35:19Z",
+    "updated_at": "2026-10-03T06:35:19Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687191494,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvunxg",
+        "number": 968,
+        "title": "[mt-foundation 07/16] Create the tenant entity, tenant zero, the user binding and role, the tenancy SQL functions and the single-tenant guard",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/968",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "2355ac628075e36d593ce3ff16e6f461980225c3c5481d554cb13926e95e5621"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T06:35:32Z",
+    "updated_at": "2026-10-03T06:35:32Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687194625,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvu0AQ",
+        "number": 973,
+        "title": "[mt-foundation 12/16] Enable row-level security with the transitional restrictive tenant policy on every tenant table",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/973",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "0d982232e1f505c12c87f88385e5342f66d3e5b08d7623a12d74abf86bb8c970"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-03T07:01:37Z",
+    "updated_at": "2026-10-03T07:01:37Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5687228848,
+        "node_id": "I_kwDOUFuQ4c8AAAABUvw5sA",
+        "number": 1025,
+        "title": "[mt-realtime 01/04] Stamp the tenant on every NOTIFY and deliver only to that tenant's sockets",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1025",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "257e652d10416d03d47b39ec8293e647a7f54c41e519677aab73b30dc2b01c64"
+      }
+    }
+  },
+  {
+    "id": 32386126951,
+    "node_id": "LE_lADOUFuQ4c8AAAABUvu44M8AAAAHil0UZw",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32386126951",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "labeled",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-03T07:14:42Z",
+    "label": {
+      "name": "spec:approved",
+      "color": "0e8a16"
+    },
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "id": 32386126981,
+    "node_id": "LE_lADOUFuQ4c8AAAABUvu44M8AAAAHil0UhQ",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32386126981",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "labeled",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-03T07:14:42Z",
+    "label": {
+      "name": "agent:ready",
+      "color": "0e8a16"
+    },
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5998133067",
+    "html_url": "https://github.com/dvdtrsnk/semprec/issues/975#issuecomment-5998133067",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/975",
+    "id": 5998133067,
+    "node_id": "IC_kwDOUFuQ4c8AAAABZYQ_Sw",
+    "user": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-05T15:58:28Z",
+    "updated_at": "2026-10-05T23:16:31Z",
+    "body": "<!-- relay-run-log -->\n**Relay run log** — issue #975\n\n- 2026-10-05 15:58Z — Relay picked up this issue for a BB worker run.\n- 2026-10-05 23:16Z — Resolved by #1112, merged into develop.",
+    "author_association": "CONTRIBUTOR",
+    "pin": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5998133067/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": {
+      "id": 4809506,
+      "client_id": "Iv23liObJ83UpodMh0TH",
+      "slug": "bb-agent-relay",
+      "node_id": "A_kwDOB08dts4ASWMi",
+      "owner": {
+        "login": "dvdtrsnk",
+        "id": 122625462,
+        "node_id": "U_kgDOB08dtg",
+        "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dvdtrsnk",
+        "html_url": "https://github.com/dvdtrsnk",
+        "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+        "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+        "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+        "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+        "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "name": "bb-agent-relay",
+      "description": "",
+      "external_url": "https://github.com/dvdtrsnk/relay-bb-plugin-test",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "created_at": "2026-09-02T20:09:14Z",
+      "updated_at": "2026-09-22T08:31:24Z",
+      "permissions": {
+        "actions": "write",
+        "checks": "write",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "events": []
+    },
+    "minimized": null,
+    "event": "commented",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-05T17:10:13Z",
+    "updated_at": "2026-10-05T17:10:13Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5716104131,
+        "node_id": "PR_kwDOUFuQ4c8AAAABGwbVTg",
+        "number": 1112,
+        "title": "[mt-foundation 14/16] Build the two-tenant runtime-role integration harness (#975)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1112",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1112",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1112",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1112.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1112.patch",
+          "merged_at": "2026-10-05T23:16:29Z"
+        },
+        "bodySha256": "e9d9ca3eab73bf1a27c35496dce90412223611715da62141a839e92052f7a12d"
+      }
+    }
+  },
+  {
+    "id": 32552755564,
+    "node_id": "UNLE_lADOUFuQ4c8AAAABUvu44M8AAAAHlEuhbA",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32552755564",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "unlabeled",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-05T23:16:30Z",
+    "label": {
+      "name": "agent:ready",
+      "color": "0e8a16"
+    },
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "id": 32552755880,
+    "node_id": "CE_lADOUFuQ4c8AAAABUvu44M8AAAAHlEuiqA",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32552755880",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "closed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-05T23:16:30Z",
+    "state_reason": null,
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-06T00:23:01Z",
+    "updated_at": "2026-10-06T00:23:01Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5720806666,
+        "node_id": "PR_kwDOUFuQ4c8AAAABG0Nyvw",
+        "number": 1113,
+        "title": "[mt-scope 20/23] Refuse a database outside the current tenant in the partition DDL functions (#1021)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1113",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1113",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1113",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1113.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1113.patch",
+          "merged_at": "2026-10-06T00:29:12Z"
+        },
+        "bodySha256": "4bb44a46b257a8da76fa5962b348f59b44c4ad747bb836de7e8646ac09addcc9"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-06T18:03:45Z",
+    "updated_at": "2026-10-06T18:03:45Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5729013221,
+        "node_id": "PR_kwDOUFuQ4c8AAAABG6w2hw",
+        "number": 1125,
+        "title": "[mt-context 11/21] Repair interrupted agent runs per tenant at startup (#988)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1125",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1125",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1125",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1125.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1125.patch",
+          "merged_at": "2026-10-07T08:38:34Z"
+        },
+        "bodySha256": "384976007e6c6c59cc00365cd40f223c4fb3c9324edcea78982cf8126ebd23e8"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-08T22:13:36Z",
+    "updated_at": "2026-10-08T22:13:36Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5768965657,
+        "node_id": "PR_kwDOUFuQ4c8AAAABHaz2oA",
+        "number": 1157,
+        "title": "[mt-scope 06/23] Run the post-migration cutover steps per tenant or retire them (#1007)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1157",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1157",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1157",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1157.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1157.patch",
+          "merged_at": "2026-10-09T08:28:40Z"
+        },
+        "bodySha256": "b095f230890905c630dcfc5d8358cd1c64850660f14bc3a561390531fbaf7f3c"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-09T08:25:32Z",
+    "updated_at": "2026-10-09T08:25:32Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5756628123,
+        "node_id": "PR_kwDOUFuQ4c8AAAABHQ3jcA",
+        "number": 1149,
+        "title": "[mt-scope 16/23] Validate stored item and database references inside the tenant (#1017)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1149",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1149",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1149",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1149.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1149.patch",
+          "merged_at": "2026-10-09T08:45:08Z"
+        },
+        "bodySha256": "e7178f4c62de350f16090d19023b69fda45a1ac3d60df2e22f8db829203369cd"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-09T10:05:38Z",
+    "updated_at": "2026-10-09T10:05:38Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5776366320,
+        "node_id": "PR_kwDOUFuQ4c8AAAABHgpW0Q",
+        "number": 1159,
+        "title": "[mt-scope 05/23] Record module data migrations per tenant (#1006)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1159",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1159",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1159",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1159.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1159.patch",
+          "merged_at": "2026-10-09T10:28:12Z"
+        },
+        "bodySha256": "38f32b85cd7a38b40ded6c814f065476d3d6e6bf3724ca981fb873672e4e5fa3"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-09T13:54:25Z",
+    "updated_at": "2026-10-09T13:54:25Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5778674292,
+        "node_id": "PR_kwDOUFuQ4c8AAAABHifDng",
+        "number": 1161,
+        "title": "[mt-scope 08/23] Authorize blob downloads in scope before the conditional branch (#1009)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1161",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1161",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1161",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1161.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1161.patch",
+          "merged_at": "2026-10-09T14:00:06Z"
+        },
+        "bodySha256": "5b39336f49f38a16c7d7a6d9cd2fca9d2d5b5e813f8d10636d0a69ab4717a88a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-11T14:07:13Z",
+    "updated_at": "2026-10-11T14:07:13Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5779576242,
+        "node_id": "PR_kwDOUFuQ4c8AAAABHjNO-A",
+        "number": 1162,
+        "title": "[mt-scope 17/23] Address tenant events and agent runs to the tenant's user (#1018)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1162",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1162",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1162",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1162.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1162.patch",
+          "merged_at": "2026-10-15T21:04:47Z"
+        },
+        "bodySha256": "d3da0b4e991656fba0d357c83dc781f991ca01d661424739eb9eb990e56a3af3"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-15T23:47:00Z",
+    "updated_at": "2026-10-15T23:47:00Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5875709578,
+        "node_id": "PR_kwDOUFuQ4c8AAAABIvMqHQ",
+        "number": 1171,
+        "title": "[mt-agents 01/08] Let only the run's owner decide its approval requests (#1028)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1171",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1171",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1171",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1171.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1171.patch",
+          "merged_at": "2026-10-16T07:34:16Z"
+        },
+        "bodySha256": "d70381c5a8d2a81ba9aa8d23a938df60c59fb6e2956e8d343a728446ea5ce92f"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-16T16:54:49Z",
+    "updated_at": "2026-10-16T16:54:49Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5886942208,
+        "node_id": "PR_kwDOUFuQ4c8AAAABI4I0Sw",
+        "number": 1177,
+        "title": "[mt-realtime 02/04] Authorize doc sync inside the socket's tenant (#1026)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1177",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1177",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1177",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1177.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1177.patch",
+          "merged_at": "2026-10-16T17:04:49Z"
+        },
+        "bodySha256": "65f87e2acea97f205a2cbfac54b4637ee53a05746a20be69c0183b0fedf12777"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-16T19:45:40Z",
+    "updated_at": "2026-10-16T19:45:40Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5889360121,
+        "node_id": "PR_kwDOUFuQ4c8AAAABI6FDww",
+        "number": 1179,
+        "title": "[mt-realtime 03/04] Authorize agent-run watching by tenant visibility (#1027)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1179",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1179",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1179",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1179.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1179.patch",
+          "merged_at": "2026-10-16T19:51:57Z"
+        },
+        "bodySha256": "f47ad7d6ba8b4d9fa2759954f8185feb2397c3511cde10cb445a875f20b6bee4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-22T22:17:02Z",
+    "updated_at": "2026-10-22T22:17:02Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5987238199,
+        "node_id": "PR_kwDOUFuQ4c8AAAABKHhINQ",
+        "number": 1280,
+        "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract) (#1065)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1280",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1280",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1280",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1280.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1280.patch",
+          "merged_at": "2026-10-23T05:54:56Z"
+        },
+        "bodySha256": "01848d28cd6ec0b194ebc60fba69a2266e83239b66e8f476a7591e939304be69"
+      }
+    }
+  }
+]

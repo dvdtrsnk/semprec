@@ -1,0 +1,88 @@
+/**
+ * Issue #215: the neutral gateway-completion contract. `packages/application` (and, in #85,
+ * `core.agentGuidanceDrift`) depends only on this port — never on `packages/ai-gateway-client`'s
+ * HTTP implementation, `packages/ai-gateway`, or any model-provider SDK — so a structured
+ * completion can be requested without importing anything that knows how the request actually
+ * reaches a provider.
+ */
+
+/** A text block of a multi-block message. */
+export interface AiGatewayTextBlock {
+  type: "text";
+  text: string;
+}
+
+/** An image block: `data` is the base64 of a JPEG or PNG the caller already reduced; the gateway never reads a blob store. */
+export interface AiGatewayImageBlock {
+  type: "image";
+  mimeType: "image/jpeg" | "image/png";
+  data: string;
+}
+
+export type AiGatewayContentBlock = AiGatewayTextBlock | AiGatewayImageBlock;
+
+/** A single turn in the conversation sent to the gateway's structured-completion route. */
+export interface AiGatewayMessage {
+  role: "user" | "assistant";
+  content: string | AiGatewayContentBlock[];
+}
+
+export interface AiGatewayCompletionInput {
+  /**
+   * The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`.
+   * `null` only for an operation the gateway attributes to no project
+   * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`, `'semp_thread_title'`).
+   * Required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
+   */
+  projectItemId: string | null;
+  /**
+   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'`,
+   * `'inbox_attachment_extraction'`, `'transcript_summary'`, `'transcript_speaker_suggestion'`
+   * `'transcript_event_pick'` or `'semp_thread_title'`.
+   */
+  operation: string;
+  temperature: number;
+  system: string;
+  messages: AiGatewayMessage[];
+  /** Draft 2020-12 JSON Schema the provider's response content must satisfy. */
+  responseSchema: unknown;
+}
+
+export interface AiGatewayCompletionUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface AiGatewayCompletionResult {
+  content: unknown;
+  usage: AiGatewayCompletionUsage;
+}
+
+/**
+ * The one failure mode `AiGatewayClientPort.complete` is allowed to signal: a network timeout,
+ * a non-2xx response, the gateway's own budget rejection (`budget_exceeded`, which a caller can
+ * treat as not worth retrying), an unparseable body, or a response that fails schema validation. `reason`
+ * is the only detail exposed — never the provider's own error body or any secret — so a caller
+ * that surfaces this to a user or a log can't leak gateway internals.
+ */
+export type AiGatewayFailureReason = "timeout" | "http" | "budget_exceeded" | "invalid_response";
+
+export class AiGatewayFailedError extends Error {
+  readonly code = "ai_gateway_failed" as const;
+  readonly reason: AiGatewayFailureReason;
+
+  constructor(reason: AiGatewayFailureReason) {
+    super(`AI gateway call failed: ${reason}`);
+    this.name = "AiGatewayFailedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Implemented over HTTP by `packages/ai-gateway-client` (`POST /internal/complete` against
+ * `semprec-ai-gateway`). `packages/application` imports only this interface, never the HTTP
+ * implementation, so it stays free of any transport or provider dependency.
+ */
+export interface AiGatewayClientPort {
+  complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult>;
+}

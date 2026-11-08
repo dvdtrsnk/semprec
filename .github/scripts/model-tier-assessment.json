@@ -1,0 +1,791 @@
+{
+  "version": 1,
+  "repo": "dvdtrsnk/semprec",
+  "assessedAt": "2026-10-08T15:15:48.023466+00:00",
+  "rubric": ".github/ISSUE_FORMAT.md",
+  "assessments": [
+    {
+      "number": 951,
+      "title": "[mt-context] Multi-tenancy: carry the tenant on every code path \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:35Z",
+      "sourceBodySha256": "a29ce0a038314c48d6d943ac0d7b5b9e8900410c1d84fb8edc289c58442d6169"
+    },
+    {
+      "number": 952,
+      "title": "[mt-scope] Multi-tenancy: per-tenant identities, provisioning and singletons \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:37Z",
+      "sourceBodySha256": "7b2c992d18164eb21f2d470fd26c82037b2bc6e3c8db2becf99948bf5b4decc1"
+    },
+    {
+      "number": 953,
+      "title": "[mt-realtime] Multi-tenancy: tenant-routed realtime \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T07:01:52Z",
+      "sourceBodySha256": "ee62495d24ee686a106841a208c71878ba7b1546e2c4c9f16e82813bfd0b779a"
+    },
+    {
+      "number": 954,
+      "title": "[mt-agents] Multi-tenancy: agents, MCP and approvals inside the tenant \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:43Z",
+      "sourceBodySha256": "b66ec177e4f8e1e57fd3ec60b9084d96ee8dbfb72f84a375b0967eaf1a73c588"
+    },
+    {
+      "number": 955,
+      "title": "[mt-ai-budgets] Multi-tenancy: per-tenant AI budgets \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:45Z",
+      "sourceBodySha256": "567337c9950feea5bea5b5144a974987dd86fa58480174acfecdd254f1897efc"
+    },
+    {
+      "number": 956,
+      "title": "[mt-secrets] Multi-tenancy: per-tenant secrets \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:47Z",
+      "sourceBodySha256": "ddf49ff46a421340aeb6ef80ee617445735216f18aa9f25e98692bcbf50cd6a6"
+    },
+    {
+      "number": 957,
+      "title": "[mt-ops] Multi-tenancy: host and edge hardening \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:50Z",
+      "sourceBodySha256": "13f778bc2afbba480564cf76494549d940369bf46abb1054e5c3cdb02abf8f08"
+    },
+    {
+      "number": 958,
+      "title": "[mt-accounts] Multi-tenancy: admin plane and account lifecycle \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:53Z",
+      "sourceBodySha256": "136d155c8181ccb89e7d79eb458241a8d956164105772ccea90255bc4515ef6f"
+    },
+    {
+      "number": 959,
+      "title": "[mt-web] Multi-tenancy: web client for multiple users \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:55Z",
+      "sourceBodySha256": "a0bb654d7585ed9b39b15a0f663043c764557f145045b704f269d8584be20ed5"
+    },
+    {
+      "number": 960,
+      "title": "[mt-enforcement] Multi-tenancy: prove isolation, switch to strict, contract \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:34:58Z",
+      "sourceBodySha256": "c8a0083fd8fc2d3ff810e5cf386f236f3f1f4bba9e152bbc859eb11eec249053"
+    },
+    {
+      "number": 961,
+      "title": "[mt-go-live] Multi-tenancy: security gate and invitations \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T06:35:00Z",
+      "sourceBodySha256": "4d3c867a8cd6d6e61282a7f6f9dbafe755e82a367f29a3d5057db63b865ddbf1"
+    },
+    {
+      "number": 993,
+      "title": "[mt-context 16/21] Propagate the caller's tenant to the AI gateway and attribute every call",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Tenant identity crosses several clients and the AI gateway, with authentication ordering and atomic reservation rejection.",
+      "sourceUpdatedAt": "2026-10-07T16:46:24Z",
+      "sourceBodySha256": "44fe9a91f18943f80b20eaa107f40780eff03bf19e5b9247d470ba09e91cb104"
+    },
+    {
+      "number": 1006,
+      "title": "[mt-scope 05/23] Record module data migrations per tenant",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Advisory locking and migration conflicts change scope; concurrency and repeated execution need explicit proof.",
+      "sourceUpdatedAt": "2026-10-08T09:17:23Z",
+      "sourceBodySha256": "91a6c705af4e1d3ac46c7adc708d7d53b0a966c1a869bec46a3c55b7acb68e56"
+    },
+    {
+      "number": 1007,
+      "title": "[mt-scope 06/23] Run the post-migration cutover steps per tenant or retire them",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Existing tenant iteration and cutover mechanisms are composed with bounded pool cleanup and isolated failures.",
+      "sourceUpdatedAt": "2026-10-08T09:26:04Z",
+      "sourceBodySha256": "853424c9e5c7b8f201fb005cbc8b9069e828c1de078a8cbe4afbd094a11d88ed"
+    },
+    {
+      "number": 1008,
+      "title": "[mt-scope 07/23] Deduplicate and store blobs per tenant",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Tenant deduplication combines database constraints, filesystem keys and concurrent writes across several services.",
+      "sourceUpdatedAt": "2026-10-06T09:46:53Z",
+      "sourceBodySha256": "1949467f8d55da4f239a04d2bb50b89eb82d67556266ca467e86c49200d45677"
+    },
+    {
+      "number": 1009,
+      "title": "[mt-scope 08/23] Authorize blob downloads in scope before the conditional branch",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A bounded authorization transaction moves before conditional HTTP branches while existing streaming remains intact.",
+      "sourceUpdatedAt": "2026-10-03T07:46:51Z",
+      "sourceBodySha256": "4fa9cccf4bb53a36fc3e55762c813277ce65c45840ca40f3403631849d844249"
+    },
+    {
+      "number": 1017,
+      "title": "[mt-scope 16/23] Validate stored item and database references inside the tenant",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Existing lookups and write transactions enforce defined reference checks, ordering and indistinguishable errors.",
+      "sourceUpdatedAt": "2026-10-08T04:38:31Z",
+      "sourceBodySha256": "a9179a219b2b0195c584d6d77cfc6e6f1e274dbac6f9e4c9905dd84ce81f2398"
+    },
+    {
+      "number": 1018,
+      "title": "[mt-scope 17/23] Address tenant events and agent runs to the tenant's user",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Recipient ownership changes across production paths and 56 declared Touches entries, creating substantial omission risk.",
+      "sourceUpdatedAt": "2026-10-03T07:47:15Z",
+      "sourceBodySha256": "a373ed7c5b17993c94ccd3beaaf72b2c5b1dda2a76c73e64bd384a77ea6071e0"
+    },
+    {
+      "number": 1019,
+      "title": "[mt-scope 18/23] Send operator alerts to every admin without tenant content",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Cross-tenant admin delivery combines deduplication and rollback of the complete change on recipient failure.",
+      "sourceUpdatedAt": "2026-10-03T07:47:17Z",
+      "sourceBodySha256": "7fbbd5ab7422fc9dd0e7874f2ca4ee92cc9bdea97d8ebb92d0506da1f37511bb"
+    },
+    {
+      "number": 1020,
+      "title": "[mt-scope 19/23] Remove the earliest-user lookups",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Defined helper removal and tenant backfill follow existing patterns and need database integration proof.",
+      "sourceUpdatedAt": "2026-10-03T07:47:20Z",
+      "sourceBodySha256": "6767b29b872cd8702743b0d9d4d7b05c4aa0ff8157b28434d63dfb81558302fc"
+    },
+    {
+      "number": 1023,
+      "title": "[mt-scope 22/23] Prune the remaining id-only item lookups to the tenant's partitions",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Several existing queries are narrowed to tenant partitions, with query-plan and RLS result assertions.",
+      "sourceUpdatedAt": "2026-10-03T07:47:28Z",
+      "sourceBodySha256": "dfc5c86c633e00daf01008f9d40c1be39bf77dfbc55899af46ab33c4f6719259"
+    },
+    {
+      "number": 1024,
+      "title": "[mt-scope 23/23] Revoke a user's push registrations on password reset",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One targeted revocation shares the password-reset transaction and uses established store patterns.",
+      "sourceUpdatedAt": "2026-10-03T07:47:31Z",
+      "sourceBodySha256": "43f02788c1e8a413e7dbdb0828bec915a14648d68124aac486da9b2de2743173"
+    },
+    {
+      "number": 1025,
+      "title": "[mt-realtime 01/04] Stamp the tenant on every NOTIFY and deliver only to that tenant's sockets",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "A new tenant envelope crosses NOTIFY, sockets, listeners and transaction scopes.",
+      "sourceUpdatedAt": "2026-10-03T07:08:14Z",
+      "sourceBodySha256": "c2dc7567f45f863ff36ac76afcc3f50c148a2d78052c10ca2536c37f0a479fd3"
+    },
+    {
+      "number": 1026,
+      "title": "[mt-realtime 02/04] Authorize doc sync inside the socket's tenant",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "CRDT subscription isolation and asynchronous document authorization require careful handoff and fan-out.",
+      "sourceUpdatedAt": "2026-10-03T07:08:16Z",
+      "sourceBodySha256": "f2608459fb5cc27e4f8aab204c1d4c8700b29c87f538949d8ac314376a901fbd"
+    },
+    {
+      "number": 1027,
+      "title": "[mt-realtime 03/04] Authorize agent-run watching by tenant visibility",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Defined tenant guards extend an existing watcher and need replay handoff integration coverage.",
+      "sourceUpdatedAt": "2026-10-03T07:08:19Z",
+      "sourceBodySha256": "955c6d26b035a781d8c0d17c4bcc7c22a1843f209610239353eaba180735fc20"
+    },
+    {
+      "number": 1028,
+      "title": "[mt-agents 01/08] Let only the run's owner decide its approval requests",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A bounded ownership predicate extends existing reads and UPDATE paths with atomic decision tests.",
+      "sourceUpdatedAt": "2026-10-03T07:36:44Z",
+      "sourceBodySha256": "5f97a419f750ebf0372d7c9b4a4e5b75e57fd7c1bd92feccd9af0ef6c4f245b3"
+    },
+    {
+      "number": 1029,
+      "title": "[mt-agents 02/08] Validate MCP server connection configs on every write path",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Existing schemas and hooks gain precisely specified MCP validation guards.",
+      "sourceUpdatedAt": "2026-10-08T10:21:25Z",
+      "sourceBodySha256": "7ea8e1e345eb232ad645647fa1c41b2229ca0eee847fa4d7f255c80d22b66db4"
+    },
+    {
+      "number": 1030,
+      "title": "[mt-agents 03/08] Confine the stdio transport to a human writer in an admin's tenant",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "A new human-writer provenance contract authorizes host stdio commands across several layers.",
+      "sourceUpdatedAt": "2026-10-03T07:36:49Z",
+      "sourceBodySha256": "eda96363eeeb956103c229f5293a67b0013b0a75a6299e84d7d41831ce01010e"
+    },
+    {
+      "number": 1033,
+      "title": "[mt-agents 04/08] Re-check the transport at spawn and give stdio children an allowlisted environment",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Exact environment allow-lists and spawn-time guards apply the previously defined stdio contract.",
+      "sourceUpdatedAt": "2026-10-03T07:36:51Z",
+      "sourceBodySha256": "576815df0c96dc24a5a393bc6b82e6670213513e85317237fe689e0e21be1213"
+    },
+    {
+      "number": 1034,
+      "title": "[mt-agents 05/08] Check resolved outbound addresses at connect time for MCP and web push",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "DNS rebinding protection, address classification and connect-time enforcement introduce a network mechanism across two transports.",
+      "sourceUpdatedAt": "2026-10-03T07:36:54Z",
+      "sourceBodySha256": "feee230996826281861635835a054864ce15e1d3438e550dd5af2855922514d6"
+    },
+    {
+      "number": 1035,
+      "title": "[mt-ai-budgets 02/04] Enforce per-tenant caps and a global safety cap under the existing reservation lock",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Global and tenant budgets share reservation locking, SQL routing, startup settings and multiple endpoints.",
+      "sourceUpdatedAt": "2026-10-03T07:29:59Z",
+      "sourceBodySha256": "2cf3557ae16837121f7f83837bf113a8c49f9f6a96aec3473e6bf0fc9506dc08"
+    },
+    {
+      "number": 1036,
+      "title": "[mt-ops 03/10] Create item partitions without an exclusive lock on items",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Postgres partition DDL changes lock behavior and must preserve catalog equivalence, RLS and grants.",
+      "sourceUpdatedAt": "2026-10-08T10:26:24Z",
+      "sourceBodySha256": "1392641174edca2bde5b25415538f967914f9e13daf81b273e4aa7d0d78495f3"
+    },
+    {
+      "number": 1037,
+      "title": "[mt-accounts 01/12] Gate admin routes behind the admin role and audit every admin action",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Admin route gates, system scopes and atomic audit writes establish a cross-cutting authorization contract.",
+      "sourceUpdatedAt": "2026-10-03T08:38:03Z",
+      "sourceBodySha256": "670c5c7824409b863a2860e82640bd7f85b8c131c317d2e01f7bebb6e244a1fd"
+    },
+    {
+      "number": 1038,
+      "title": "[mt-accounts 02/12] Add admin operations health from content-free aggregates",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One defined aggregate definer function and health report use the preceding admin route mechanism.",
+      "sourceUpdatedAt": "2026-10-03T08:38:05Z",
+      "sourceBodySha256": "c5b9438f82822e19800bb3b82303668d84900aa3e46d142742b9ff2585881d1a"
+    },
+    {
+      "number": 1039,
+      "title": "[mt-accounts 03/12] Let admins set per-tenant AI caps and see per-tenant spend",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Defined budget endpoints and SQL aggregates use existing admin gates and audit transactions.",
+      "sourceUpdatedAt": "2026-10-03T08:38:08Z",
+      "sourceBodySha256": "405e3d6b73b67655f398029584e54175ccce46c921e11713f7595f6073d1864d"
+    },
+    {
+      "number": 1040,
+      "title": "[mt-accounts 04/12] Let admins create, list and revoke invitations",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "An invitation lifecycle combines tokens, transactions, expiry and post-commit SMTP delivery.",
+      "sourceUpdatedAt": "2026-10-03T08:38:10Z",
+      "sourceBodySha256": "6605300fceb99d59580e06551316140e7672658ec1a6b249959f1934fd711997"
+    },
+    {
+      "number": 1041,
+      "title": "[mt-accounts 05/12] Let admins suspend, reactivate and change roles with a last-admin guard",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "The last-admin invariant spans concurrent role and account-state changes under a shared lock.",
+      "sourceUpdatedAt": "2026-10-03T08:38:12Z",
+      "sourceBodySha256": "40b2abfb89d65395393ed5feb7b9d5d4c0f94f3fe067c89f443fd14bbc726e07"
+    },
+    {
+      "number": 1042,
+      "title": "[mt-accounts 06/12] Signal tenant deactivation and drop the tenant's sockets, mail live sync and Semp entry",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Transactional deactivation signals require three idempotent consumers and bounded shutdown.",
+      "sourceUpdatedAt": "2026-10-03T08:38:15Z",
+      "sourceBodySha256": "4ecbb3ef08e453177e589bfb3ceacb909cdb7d771ccc48d997b416f5eb9a3494"
+    },
+    {
+      "number": 1043,
+      "title": "[mt-accounts 07/12] Export a tenant's data through an authenticated, expiring download",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Tenant exports cross data, blobs, archive jobs, expiring authenticated downloads and cleanup.",
+      "sourceUpdatedAt": "2026-10-03T08:38:17Z",
+      "sourceBodySha256": "fdb15dedca119ecc414bd76b3d504b312903c39674101db00f4552e0fbf0adb5"
+    },
+    {
+      "number": 1044,
+      "title": "[mt-realtime 04/04] Require a same-origin Origin on the WebSocket upgrade and on unsafe HTTP methods",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One explicit Origin rule applies to two inbound paths with a precise rejection matrix.",
+      "sourceUpdatedAt": "2026-10-03T07:08:21Z",
+      "sourceBodySha256": "c66bbbe0604a6bb5538c9889e0801927edad3ee6524b606c7cb99a8773ed0ed9"
+    },
+    {
+      "number": 1045,
+      "title": "[mt-agents 06/08] Restrict delegation targets to projects in the run's tenant",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One authorization lookup extends the existing delegation contract and preserves pending-key cleanup.",
+      "sourceUpdatedAt": "2026-10-03T07:36:57Z",
+      "sourceBodySha256": "c181471a059e7de3ef54bd5add1d715f2de6bb78025fef97cb3141ce913824c0"
+    },
+    {
+      "number": 1046,
+      "title": "[mt-agents 07/08] Bind project agent guidance ownership to the tenant's user",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Defined owner guards extend existing reference and transaction boundaries without a new protocol.",
+      "sourceUpdatedAt": "2026-10-03T07:36:59Z",
+      "sourceBodySha256": "c4fdca1843a67e696d1f8c9e9651c4f95727f1945889a907f62c29b9d5502072"
+    },
+    {
+      "number": 1047,
+      "title": "[mt-agents 08/08] Cap concurrently running agent runs per tenant",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "An existing queue-lane pattern covers specified enqueue sites while preserving job keys.",
+      "sourceUpdatedAt": "2026-10-03T07:37:01Z",
+      "sourceBodySha256": "d00f91f05122f31313b5af750d8ac7f5810ee42c082d79785bcdbac0f4837197"
+    },
+    {
+      "number": 1048,
+      "title": "[mt-ai-budgets 03/04] Report a user's own AI usage against their own caps",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One usage report moves onto the established tenant budget store in two defined areas.",
+      "sourceUpdatedAt": "2026-10-03T07:30:02Z",
+      "sourceBodySha256": "e40f073ebafa294af43ac0497f1942da0bc01a50b0d53015b541e389b58f9812"
+    },
+    {
+      "number": 1049,
+      "title": "[mt-accounts 08/12] Let a user or an admin delete an account",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Irreversible account deletion combines self/admin authorization, concurrency and last-admin protection.",
+      "sourceUpdatedAt": "2026-10-03T08:38:20Z",
+      "sourceBodySha256": "2a8beac534e0ad59e5623657e88ccddfe8a08e511f12e8003d3ebed48f0c26af"
+    },
+    {
+      "number": 1050,
+      "title": "[mt-accounts 09/12] Cancel a deactivated tenant's running agent runs in the agents process",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "A cancellation lifecycle spans in-flight registries, active model turns and agents-process shutdown.",
+      "sourceUpdatedAt": "2026-10-03T08:38:22Z",
+      "sourceBodySha256": "a1d38589e8269f19eeb9676286f0d875bb11a9fe1e91f84e9ad0d576dd8f6465"
+    },
+    {
+      "number": 1051,
+      "title": "[mt-enforcement 01/12] Refuse to start a service under a superuser, BYPASSRLS or table-owner database role",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A precise assertion enforces the accepted runtime database-role contract at four service startups.",
+      "sourceUpdatedAt": "2026-10-03T15:55:22Z",
+      "sourceBodySha256": "187ba934c0092392f5d806fe8cf7ec30c1c2cdffd32a2105f2882397c321fa9a"
+    },
+    {
+      "number": 1052,
+      "title": "[mt-accounts 10/12] Narrow /api/system-health to the caller's tenant",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A bounded health-report rewrite uses tenant snapshots, existing SQL and two-tenant fixtures.",
+      "sourceUpdatedAt": "2026-10-03T08:38:25Z",
+      "sourceBodySha256": "76cb8d7fedc6e08c563c31ff98d519e063fa9a2602fe3853ae5050a26dc94828"
+    },
+    {
+      "number": 1053,
+      "title": "[mt-enforcement 02/12] Prove REST and MCP isolation with an exhaustive two-tenant route suite",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "An exhaustive REST/MCP security matrix needs representative fixtures and proof that no tenant data leaks.",
+      "sourceUpdatedAt": "2026-10-03T15:55:24Z",
+      "sourceBodySha256": "c9755758f066f4a9841a9923625ee902b202eb1475f54b8be183e2a1da69fd04"
+    },
+    {
+      "number": 1054,
+      "title": "[mt-enforcement 03/12] Prove realtime isolation with an exhaustive two-tenant frame suite",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "An exhaustive realtime security matrix needs deterministic absence-of-message assertions without sleeps.",
+      "sourceUpdatedAt": "2026-10-03T15:55:26Z",
+      "sourceBodySha256": "761b9646e23a5a8749b8af85fb716742696ebee69ec481cac470a7e2d3f9a032"
+    },
+    {
+      "number": 1055,
+      "title": "[mt-accounts 11/12] Purge a deleting tenant in chunks and record a tombstone",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Chunked deletion combines foreign-key ordering, filesystem cleanup and tombstones with high error impact.",
+      "sourceUpdatedAt": "2026-10-03T08:38:27Z",
+      "sourceBodySha256": "76590c98c001bf6bf04e4081c899c5dcdba7b0593f5125644dcd6ff30f45861b"
+    },
+    {
+      "number": 1056,
+      "title": "[mt-enforcement 04/12] Prove background isolation with an exhaustive two-tenant task suite",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "An exhaustive background-task matrix covers registries, queue affinity and tenant fingerprints across three services.",
+      "sourceUpdatedAt": "2026-10-03T15:55:28Z",
+      "sourceBodySha256": "42a51de572449d583d564b5af46e16e196a18404ebf5a9a202e1a96a7acb9b9d"
+    },
+    {
+      "number": 1057,
+      "title": "[mt-enforcement 05/12] Prove AI gateway isolation with an exhaustive two-tenant endpoint suite",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Four defined AI gateway endpoints use the established tenant harness in a bounded test matrix.",
+      "sourceUpdatedAt": "2026-10-03T15:55:31Z",
+      "sourceBodySha256": "aeaa65ea4800c8449efee58b4cb4fd2390b7d88e0ddd130cc855d199420a2adb"
+    },
+    {
+      "number": 1058,
+      "title": "[mt-enforcement 06/12] Release checkpoint \u2014 run a context-complete release cleanly in production for seven days",
+      "kind": "manual",
+      "modelTier": null,
+      "rationale": "This issue requires manual operator or provisioning work and is not an agent implementation task.",
+      "sourceUpdatedAt": "2026-10-03T15:55:12Z",
+      "sourceBodySha256": "1404fd14f67dc652503993063ee30f77737d157e2c061b2db26d8b989ed590d4"
+    },
+    {
+      "number": 1059,
+      "title": "[mt-ai-budgets 04/04] Remove the budget properties from the settings item (contract)",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Specified obsolete budget properties and readers are removed after validating the contract prerequisites.",
+      "sourceUpdatedAt": "2026-10-03T07:30:05Z",
+      "sourceBodySha256": "40fa9d7c06ed7fc2b3cbf6050273e226c72df6357e1f99f48d93ed09c784be0b"
+    },
+    {
+      "number": 1060,
+      "title": "[mt-secrets 03/06] Seal new credentials under the tenant key",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Credential encryption changes the stored cryptographic scheme and has high impact even with few touched files.",
+      "sourceUpdatedAt": "2026-10-03T07:54:16Z",
+      "sourceBodySha256": "0741e3bc1724c3aad7b51be68330b550848a57137b034dd2ba4b22e5399a2733"
+    },
+    {
+      "number": 1061,
+      "title": "[mt-enforcement 07/12] Stamp the sole tenant onto legacy queued jobs and reject tenant tasks without a tenant",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A precisely scoped legacy job-envelope backfill and existing registerTask guard enforce tenant stamps.",
+      "sourceUpdatedAt": "2026-10-03T15:55:33Z",
+      "sourceBodySha256": "ad3b8552839eb3f82c9ee5fa94fd55aba137faaa90eeee38e56cb55e533163a9"
+    },
+    {
+      "number": 1062,
+      "title": "[mt-secrets 04/06] Re-encrypt existing credentials under their tenant key",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Concurrency-safe credential re-encryption combines tenant keys, plaintext cleanup and resumable backfill.",
+      "sourceUpdatedAt": "2026-10-03T07:54:18Z",
+      "sourceBodySha256": "faefd7ad2452b02ee7e556415ce962f18f58e7b7befd201123bc3d6123fc5b4c"
+    },
+    {
+      "number": 1065,
+      "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract)",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "A destructive contract migration removes multiple global unique keys and requires exhaustive arbiter verification.",
+      "sourceUpdatedAt": "2026-10-03T15:55:35Z",
+      "sourceBodySha256": "fd7b26b22e55b335a152f644c466b9159158bb3127e33135af153c4295241bf4"
+    },
+    {
+      "number": 1066,
+      "title": "[mt-enforcement 09/12] Add tenant-consistent composite foreign keys between tenant tables",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Tenant-consistent composite foreign keys span tables and partitions, two migrations and catalog verification.",
+      "sourceUpdatedAt": "2026-10-03T15:55:38Z",
+      "sourceBodySha256": "d537137d14bfca050cf9a01418855144b53509a533b3f190330547a32a1b279b"
+    },
+    {
+      "number": 1067,
+      "title": "[mt-enforcement 10/12] Switch to strict tenant enforcement in the database and in every process",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Strict tenant enforcement changes database policies, runtime defaults and test fixtures across the application.",
+      "sourceUpdatedAt": "2026-10-03T15:55:40Z",
+      "sourceBodySha256": "4eced37ee7add140557e24094a3a233b19351f638a199b83ebe2880f9f5cb22d"
+    },
+    {
+      "number": 1068,
+      "title": "[mt-enforcement 11/12] Release checkpoint \u2014 run the strict release cleanly in production before the contract steps that need it",
+      "kind": "manual",
+      "modelTier": null,
+      "rationale": "This issue requires manual operator or provisioning work and is not an agent implementation task.",
+      "sourceUpdatedAt": "2026-10-03T06:39:25Z",
+      "sourceBodySha256": "89523d3b25f17ea94d67388a1c137657d665a5726182077c86c94acd5219ba35"
+    },
+    {
+      "number": 1069,
+      "title": "[mt-secrets 06/06] Retire the master-key-only credential scheme (contract)",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Retiring the legacy credential scheme changes public crypto interfaces after a verified backfill.",
+      "sourceUpdatedAt": "2026-10-03T07:54:23Z",
+      "sourceBodySha256": "cc9573fea86fa91a478f422b4d6fd6d264a39cabe0bf72e9c82cda789b1f25a5"
+    },
+    {
+      "number": 1070,
+      "title": "[mt-ops 05/10] Spawn stdio MCP servers through a sandbox launcher under a dedicated uid",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "A host sandbox launcher combines dedicated UID, socket transport, systemd and nftables in one lifecycle.",
+      "sourceUpdatedAt": "2026-10-03T08:08:49Z",
+      "sourceBodySha256": "ed6d2ac679e6aca971a15eb5d4258a20acc429229c60234d4517f42014a9d602"
+    },
+    {
+      "number": 1071,
+      "title": "[mt-ops 06/10] Harden the service units with systemd sandboxing directives",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Precisely specified systemd directives and writable paths extend existing units with a concrete validation matrix.",
+      "sourceUpdatedAt": "2026-10-03T08:08:51Z",
+      "sourceBodySha256": "2b8952e2fff262543715829a9585c9f4c8a25494092debce75bc0a98d740f923"
+    },
+    {
+      "number": 1072,
+      "title": "[mt-ops 07/10] Mark every API response uncacheable",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One response-header invariant covers all HTTP branches with integration assertions.",
+      "sourceUpdatedAt": "2026-10-03T08:08:54Z",
+      "sourceBodySha256": "330ff403a38dd73c1697e8c2e7bc5692950ad84b6cb685b47f75383ecc1a621c"
+    },
+    {
+      "number": 1073,
+      "title": "[mt-ops 08/10] Throttle login, password reset and invitation acceptance per client IP",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Auth throttling introduces bounded state, proxy identity and timing rules for several authentication paths.",
+      "sourceUpdatedAt": "2026-10-03T08:08:56Z",
+      "sourceBodySha256": "fa49dd4ebd4ff3fb91c7e515ee1bfe8ed4e308d924b00a294bf9d6ee5ae1f1e9"
+    },
+    {
+      "number": 1074,
+      "title": "[mt-ops 09/10] Remove user content from log lines",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A bounded logging-payload rewrite uses existing fixtures to prove sensitive content is absent.",
+      "sourceUpdatedAt": "2026-10-03T08:08:58Z",
+      "sourceBodySha256": "5eebebf09500664fe41924cda1c2ab0318edd8b13222f3c2143430fd5d8f7077"
+    },
+    {
+      "number": 1076,
+      "title": "[mt-web 02/08] Add the password-reset page with the token in the URL fragment",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A defined password-reset route and form connect several existing frontend/backend boundaries.",
+      "sourceUpdatedAt": "2026-10-03T15:41:59Z",
+      "sourceBodySha256": "1f3d61d1ec96add664aa0ac4d8d984909fe504eba6f442b98002d5aa8129731d"
+    },
+    {
+      "number": 1077,
+      "title": "[mt-ops 10/10] Route realtime logging through the shared logger and forbid console in backend production code",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A broad mechanical rewrite adopts the existing shared logger, lint restriction and adjusted spy tests.",
+      "sourceUpdatedAt": "2026-10-03T08:09:01Z",
+      "sourceBodySha256": "9bf304b0b066ca29a1b934378aa62fd34f22e0c65a5c8eb8c272344984fcb6f5"
+    },
+    {
+      "number": 1078,
+      "title": "[mt-accounts 12/12] Re-apply recorded deletions after a backup restore",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Deletion replay after restoring old backups introduces a durable ledger, replay CLI and operational lifecycle.",
+      "sourceUpdatedAt": "2026-10-03T08:38:29Z",
+      "sourceBodySha256": "da63681dc3cb6e64e473bf7966196e19561ac959fd53e8368d57b03790eea13e"
+    },
+    {
+      "number": 1079,
+      "title": "[mt-web 03/08] Expose the session role and add the admin accounts page",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Admin UI and adapters follow established web conventions with several defined states.",
+      "sourceUpdatedAt": "2026-10-03T15:42:02Z",
+      "sourceBodySha256": "f004a0508c0bc28c1c20712f4469347d1c2f5796583f0818a18972a0547be7ba"
+    },
+    {
+      "number": 1080,
+      "title": "[mt-web 04/08] Add the admin invitations panel",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "An invitations panel follows the existing admin adapter and UI pattern.",
+      "sourceUpdatedAt": "2026-10-03T15:42:03Z",
+      "sourceBodySha256": "ac4aa39881a24d48b983231ca83dab2eeeaabc22c37c4fc5b2b2cbb108ca34c6"
+    },
+    {
+      "number": 1081,
+      "title": "[mt-web 05/08] Add the admin AI budgets panel",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "An AI budget panel follows existing adapters and UI patterns with defined validation and loading states.",
+      "sourceUpdatedAt": "2026-10-03T15:42:06Z",
+      "sourceBodySha256": "67d5c6f8f2aaadf36b98e893aa2b6dc46743c9a61fe9cb3af66e24a156600c77"
+    },
+    {
+      "number": 1082,
+      "title": "[mt-web 06/08] Add the admin health panel and make the System page per-user",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "A bounded component extraction and admin panel use the existing health-report contract.",
+      "sourceUpdatedAt": "2026-10-03T15:42:08Z",
+      "sourceBodySha256": "0aab0a9c17c295c0cfa17d2123531f5ddc76945e36960a1da955dd377bba2d54"
+    },
+    {
+      "number": 1083,
+      "title": "[mt-web 07/08] Add the account page with export and deletion",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Export/deletion UI uses established APIs with precisely defined confirmations and session behavior.",
+      "sourceUpdatedAt": "2026-10-03T15:42:10Z",
+      "sourceBodySha256": "7b1cbc2a3ab671fc351ff5c0a00c5bf6703a3537008ed1ff288a544363d05121"
+    },
+    {
+      "number": 1084,
+      "title": "[mt-web 08/08] Let admins delete an account from the accounts panel",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "One destructive UI action uses the existing backend guard and a mandatory confirmation.",
+      "sourceUpdatedAt": "2026-10-03T15:42:12Z",
+      "sourceBodySha256": "9df0a278acaeeefe3f00390f2bdb625dec147bcdcc731dfca35090ca5fb40ef3"
+    },
+    {
+      "number": 1085,
+      "title": "[mt-enforcement 12/12] Verify the tenancy invariants at every deploy before activating a release",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Cross-cutting catalog introspection must reject a deployment before activating a release when tenant invariants fail.",
+      "sourceUpdatedAt": "2026-10-03T15:55:42Z",
+      "sourceBodySha256": "bbe5855b979d7643eae59632b3784dbec90d77d1f34d154694e89a04bd44bf1c"
+    },
+    {
+      "number": 1086,
+      "title": "[mt-go-live 01/03] Security gate sign-off \u2014 verify strict isolation in production and record an external review before go-live",
+      "kind": "manual",
+      "modelTier": null,
+      "rationale": "This issue requires manual operator or provisioning work and is not an agent implementation task.",
+      "sourceUpdatedAt": "2026-10-03T15:39:02Z",
+      "sourceBodySha256": "cad57ed10db721906125de47f007a5f3d640cded4c407303eaa7e5029c5227bd"
+    },
+    {
+      "number": 1087,
+      "title": "[mt-go-live 02/03] Accept invitations \u2014 drop the single-tenant guard, then create and provision the invited account",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "Invitation acceptance removes singleton guards and atomically provisions an account with rollback.",
+      "sourceUpdatedAt": "2026-10-03T15:42:45Z",
+      "sourceBodySha256": "5d2d8f3b99eb4de9626c23b4ef8cf52d19abc1c3d71c473620abd32cb3de9a26"
+    },
+    {
+      "number": 1088,
+      "title": "[mt-go-live 03/03] Add the invitation acceptance page",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "The invitation page follows the established secret-fragment route pattern and public invitation API.",
+      "sourceUpdatedAt": "2026-10-03T15:42:47Z",
+      "sourceBodySha256": "8701402b518d4cd642921b4afaa363300a1217ba4fd6ba49a70ac7a46a2d070f"
+    },
+    {
+      "number": 1101,
+      "title": "[followups-1099] Review follow-ups from PRs #944 and #1095 \u2014 epic",
+      "kind": "epic",
+      "modelTier": null,
+      "rationale": "An epic coordinates child issues and is not an implementation dispatch.",
+      "sourceUpdatedAt": "2026-10-03T15:41:23Z",
+      "sourceBodySha256": "df9d587a88497d70fd4968285ba286bb3fcb3a02ccfe30475f0c9bd34813c7c9"
+    },
+    {
+      "number": 1102,
+      "title": "[followups-1099 01/02] Route the property type migration's item writes through the choke-point",
+      "kind": "implementation",
+      "modelTier": "medium",
+      "rationale": "Two defined SQL write variants move through the existing choke-point boundary while preserving their transaction.",
+      "sourceUpdatedAt": "2026-10-03T15:41:23Z",
+      "sourceBodySha256": "2b907d239db22bd38f472785343e5bfe323f8983e921b2b87a1c4f3ce2644413"
+    },
+    {
+      "number": 1103,
+      "title": "[followups-1099 02/02] Remove the redundant mkdir from the tenant entity test",
+      "kind": "implementation",
+      "modelTier": "low",
+      "rationale": "One redundant mkdir and import are removed from a single test, with no runtime behavior change.",
+      "sourceUpdatedAt": "2026-10-03T15:41:24Z",
+      "sourceBodySha256": "406212baa58ac50657bc140a18a0e3a7e227b973def2f9f258a04984ac6abe24"
+    },
+    {
+      "number": 1152,
+      "title": "[model-routing S1] Enforce issue model tier metadata throughout authoring",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "This change establishes a cross-process routing and execution contract with failure and concurrency paths.",
+      "sourceUpdatedAt": "2026-10-08T15:12:46Z",
+      "sourceBodySha256": "0eea18f3e512723c5e5b48e8af7d11967d8fce61e7176068b84dc2ca6678c6d6"
+    },
+    {
+      "number": 1153,
+      "title": "[model-routing S2] Apply explicit model policies to Relay workflows",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "This change establishes a cross-process routing and execution contract with failure and concurrency paths.",
+      "sourceUpdatedAt": "2026-10-08T15:12:50Z",
+      "sourceBodySha256": "611a8ee92227cfd85e9fc7af61375903649433eda23c269ea1827a4376b810c0"
+    },
+    {
+      "number": 1154,
+      "title": "[model-routing S3] Backfill model tiers with a reversible audited manifest",
+      "kind": "implementation",
+      "modelTier": "high",
+      "rationale": "This change establishes a cross-process routing and execution contract with failure and concurrency paths.",
+      "sourceUpdatedAt": "2026-10-08T15:12:53Z",
+      "sourceBodySha256": "4297d5a3fdf55f7ace30541ab7581660288ebd974261ea40e0899c6b814cfd1b"
+    }
+  ]
+}

@@ -1,0 +1,523 @@
+#!/usr/bin/env bash
+# Verifies the mobile platform: the architecture check, the shared Kotlin tests, the Android app and the Apple app.
+#
+#   mobile/scripts/verify [all|architecture|shared|android|apple]... [--ios-simulator <UDID>] [--android-serial <serial>]
+#
+# The selected steps (all four without a step argument) run in the order architecture, shared, android, apple; the
+# first failing command stops the run. Each command writes its output to a log in mobile/build/verify/<run>/, and
+# the summary lists every command with PASS, FAIL or NOT RUN and its wall-clock time. A missing prerequisite fails
+# its step. The device commands run only on the simulator or emulator passed in, which must already be booted;
+# this script never picks, boots or shuts down a device. Every step and prerequisite: mobile/docs/verify.md.
+set -euo pipefail
+
+mobile_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+apple_root=$mobile_root/apple
+workspace=Semprec.xcworkspace
+scheme=Semprec
+# The XCUITest bundle of the app has its own scheme and runs on iOS only, so the Semprec scheme's tests on macOS never
+# need the automation permission XCUITest asks for there.
+ui_test_scheme=SemprecUITests
+derived_data=$apple_root/build/DerivedData
+# The JDKs that can run the Gradle build: 17 or newer for the Android Gradle plugin, and at most the newest Java the
+# Gradle version in gradle/wrapper/gradle-wrapper.properties runs on (Gradle 8.13 runs on Java 23 at most, Java 24
+# needs 8.14: https://docs.gradle.org/current/userguide/compatibility.html). These three lines are the range's one
+# place in this script; scripts/kmp-framework holds the same three values. require_java fails when the wrapper pins
+# another Gradle than java_gradle, and scripts/toolchain.test.mjs fails when the two scripts differ.
+java_gradle=8.13
+minimum_java=17
+maximum_java=23
+minimum_node=22
+
+usage() {
+    cat <<'EOF'
+usage: mobile/scripts/verify [all|architecture|shared|android|apple]... [--ios-simulator <UDID>] [--android-serial <serial>]
+
+  all             architecture shared android apple (the default)
+  architecture    node scripts/architecture.mjs; node --test scripts/*.test.mjs
+  shared          ./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false
+  android         ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+  apple           tuist and swiftlint version checks, swiftlint lint, tuist install/generate, Debug and Release
+                  builds for the iOS Simulator, an iOS device and macOS, a build of the UI tests for the iOS
+                  Simulator, tests on macOS
+
+  --ios-simulator <UDID>      also run the shared tests, the Apple tests and the Apple UI tests on this booted
+                              iOS simulator
+  --android-serial <serial>   also run connectedDebugAndroidTest on this running Android device
+EOF
+}
+
+usage_error() {
+    echo "verify: $1" >&2
+    usage | head -n 1 >&2
+    echo "Run mobile/scripts/verify --help for the steps and flags." >&2
+    exit 2
+}
+
+selected=" "
+ios_simulator=""
+android_serial=""
+while (($#)); do
+    case $1 in
+        all) selected="$selected architecture shared android apple " ;;
+        architecture | shared | android | apple) selected="$selected $1 " ;;
+        --ios-simulator | --android-serial)
+            if (($# < 2)) || [[ -z $2 || $2 == -* ]]; then usage_error "$1 needs a value"; fi
+            if [[ $1 == --ios-simulator ]]; then ios_simulator=$2; else android_serial=$2; fi
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *) usage_error "unknown argument '$1'" ;;
+    esac
+    shift
+done
+[[ $selected == " " ]] && selected=" architecture shared android apple "
+is_selected() { [[ $selected == *" $1 "* ]]; }
+if [[ -n $ios_simulator ]] && ! is_selected shared && ! is_selected apple; then
+    usage_error "--ios-simulator applies to the shared and apple steps, and neither is selected"
+fi
+if [[ -n $android_serial ]] && ! is_selected android; then
+    usage_error "--android-serial applies to the android step, which is not selected"
+fi
+
+run_dir=$mobile_root/build/verify/$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p "$run_dir"
+shown() { printf '%s' "${1#"$PWD"/}"; }
+
+# Xcode is often installed without being the selected developer directory (xcode-select points at the Command Line
+# Tools). The run then uses /Applications/Xcode.app through DEVELOPER_DIR; the system setting stays untouched.
+developer_dir_note=""
+if is_selected shared || is_selected apple; then
+    if [[ $(uname -s) == Darwin ]] && ! xcodebuild -version >/dev/null 2>&1 &&
+        [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+        export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+        developer_dir_note=" through DEVELOPER_DIR=$DEVELOPER_DIR"
+        echo "verify: xcodebuild -version fails with the selected developer directory; this run uses DEVELOPER_DIR=$DEVELOPER_DIR"
+    fi
+fi
+
+# ---------------------------------------------------------------------------------------------------------------
+# Recording and running
+
+row_step=()
+row_status=()
+row_label=()
+row_seconds=()
+row_detail=()
+current_step=""
+failed=0
+log_count=0
+run_log=""
+run_detail=""
+
+record() { # record <status> <label> <seconds or empty> <detail>
+    row_step+=("$current_step")
+    row_status+=("$1")
+    row_label+=("$2")
+    row_seconds+=("$3")
+    row_detail+=("$4")
+}
+
+duration() {
+    if (($1 < 60)); then printf '%ss' "$1"; else printf '%sm %ss' $(($1 / 60)) $(($1 % 60)); fi
+}
+
+# run <label> <directory> <command>...: runs the command in <directory>, its output in a log file, unless an earlier
+# command failed. A command may write a line for the summary into the file $run_detail.
+run() {
+    local label=$1 directory=$2
+    shift 2
+    if ((failed)); then
+        record "NOT RUN" "$label" "" "an earlier command failed"
+        return 0
+    fi
+    log_count=$((log_count + 1))
+    run_log=$run_dir/$(printf '%02d' "$log_count")-$current_step-$(printf '%s' "$label" | tr -cs 'A-Za-z0-9' '-' | sed 's/-$//').log
+    run_detail=${run_log%.log}.detail
+    local command
+    command=$(printf '%q ' "$@")
+    echo "-> $current_step: $label"
+    echo "   \$ ${command% }   (in $(shown "$directory"), log: $(shown "$run_log"))"
+    echo "\$ ${command% }   (in $directory)" >"$run_log"
+    local start=$SECONDS status=0
+    (cd "$directory" && "$@") >>"$run_log" 2>&1 || status=$?
+    local seconds=$((SECONDS - start)) detail=""
+    [[ -f $run_detail ]] && detail=$(cat "$run_detail")
+    if ((status == 0)); then
+        echo "   PASS in $(duration "$seconds")${detail:+ ($detail)}"
+        record PASS "$label" "$seconds" "$detail"
+    else
+        echo "   FAIL in $(duration "$seconds") (exit $status). Last lines of the log:"
+        tail -n 40 "$run_log" | sed 's/^/   | /'
+        record FAIL "$label" "$seconds" "log: $(shown "$run_log")"
+        failed=1
+    fi
+}
+
+# A device command without its flag is listed as NOT RUN, never silently left out.
+not_run_without_device() { # not_run_without_device <label> <flag> [<note>]
+    if ((failed)); then
+        record "NOT RUN" "$1" "" "an earlier command failed"
+    else
+        record "NOT RUN" "$1" "" "pass $2 to run it${3:+; $3}"
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Prerequisites. Each check adds what it found, or what is missing, to the step's prerequisite row.
+
+prerequisites_found=""
+prerequisites_missing=""
+android_sdk=""
+
+found() { prerequisites_found="${prerequisites_found:+$prerequisites_found, }$1"; }
+missing() { prerequisites_missing="$prerequisites_missing   - $1"$'\n'; }
+
+prerequisites() { # prerequisites <check>...
+    if ((failed)); then
+        record "NOT RUN" prerequisites "" "an earlier command failed"
+        return 0
+    fi
+    prerequisites_found=""
+    prerequisites_missing=""
+    local check
+    for check in "$@"; do "$check"; done
+    echo "-> $current_step: prerequisites"
+    if [[ -z $prerequisites_missing ]]; then
+        echo "   PASS ($prerequisites_found)"
+        record PASS prerequisites 0 "$prerequisites_found"
+    else
+        echo "   FAIL. Missing:"
+        printf '%s' "$prerequisites_missing"
+        record FAIL prerequisites 0 "$(printf '%s' "$prerequisites_missing" | sed 's/^   - //' | awk 'NR > 1 { printf "; " } { printf "%s", $0 }')"
+        failed=1
+    fi
+}
+
+require_node() {
+    if ! command -v node >/dev/null 2>&1; then
+        missing "node is not on PATH; the architecture check needs Node.js $minimum_node or newer"
+        return 0
+    fi
+    local version
+    version=$(node --version 2>/dev/null || true)
+    local major=${version#v}
+    major=${major%%.*}
+    if ! [[ $major =~ ^[0-9]+$ ]] || ((major < minimum_node)); then
+        missing "node ${version:-(no version)} is older than Node.js $minimum_node"
+        return 0
+    fi
+    found "Node.js $version"
+}
+
+require_java() {
+    local wrapper=$mobile_root/gradle/wrapper/gradle-wrapper.properties wrapper_gradle=""
+    [[ -f $wrapper ]] && wrapper_gradle=$(sed -n 's|^distributionUrl=.*/gradle-\([0-9][0-9.]*\)-[a-z]*\.zip[[:space:]]*$|\1|p' "$wrapper" | tail -n 1)
+    if [[ $wrapper_gradle != "$java_gradle" ]]; then
+        missing "mobile/gradle/wrapper/gradle-wrapper.properties pins Gradle ${wrapper_gradle:-(none found)}, but the JDK range $minimum_java to $maximum_java is the one for Gradle $java_gradle; update java_gradle, minimum_java and maximum_java in scripts/verify and scripts/kmp-framework for the new Gradle"
+        return 0
+    fi
+    local supported="JDK $minimum_java to $maximum_java (the Android Gradle plugin needs $minimum_java, Gradle $java_gradle runs on $maximum_java at most)"
+    local java
+    if [[ -n ${JAVA_HOME:-} ]]; then
+        java=$JAVA_HOME/bin/java
+        if [[ ! -x $java ]]; then
+            missing "JAVA_HOME is $JAVA_HOME, which has no bin/java; point it at a $supported"
+            return 0
+        fi
+    elif ! java=$(command -v java); then
+        missing "no JDK: JAVA_HOME is not set and java is not on PATH; set JAVA_HOME to a $supported"
+        return 0
+    fi
+    local output version="" pattern='version "([^"]+)"'
+    output=$("$java" -version 2>&1 || true)
+    [[ $output =~ $pattern ]] && version=${BASH_REMATCH[1]}
+    local major=${version%%.*}
+    [[ $major == 1 ]] && major=$(printf '%s' "$version" | cut -d. -f2)
+    if ! [[ $major =~ ^[0-9]+$ ]]; then
+        missing "$java does not run a JDK (java -version: ${output%%$'\n'*}); set JAVA_HOME to a $supported"
+        return 0
+    fi
+    if ((major < minimum_java || major > maximum_java)); then
+        missing "$java is Java $version; the build runs on JDK $minimum_java to $maximum_java only (the Android Gradle plugin needs $minimum_java, Gradle $java_gradle from mobile/gradle/wrapper/gradle-wrapper.properties runs on $maximum_java at most), so set JAVA_HOME to one of those"
+        return 0
+    fi
+    found "JDK $version${JAVA_HOME:+ (JAVA_HOME)}"
+}
+
+require_apple_silicon() {
+    if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
+        missing "this host is $(uname -s) $(uname -m); the Kotlin framework and the Apple builds are arm64 only and need a Mac with Apple silicon"
+        return 0
+    fi
+    found "macOS $(sw_vers -productVersion) arm64"
+}
+
+require_xcode() {
+    local output
+    if ! output=$(xcodebuild -version 2>&1); then
+        missing "xcodebuild -version fails (${output%%$'\n'*}); install Xcode at /Applications/Xcode.app or set DEVELOPER_DIR to an Xcode's Contents/Developer"
+        return 0
+    fi
+    found "${output%%$'\n'*}$developer_dir_note"
+}
+
+require_android_sdk() {
+    local sdk="" origin=""
+    if [[ -f $mobile_root/local.properties ]] && grep -q '^sdk\.dir[[:space:]]*=' "$mobile_root/local.properties"; then
+        sdk=$(sed -n 's/^sdk\.dir[[:space:]]*=[[:space:]]*//p' "$mobile_root/local.properties" | tail -n 1)
+        origin="sdk.dir in mobile/local.properties"
+    elif [[ -n ${ANDROID_HOME:-} ]]; then
+        sdk=$ANDROID_HOME
+        origin=ANDROID_HOME
+    elif [[ -n ${ANDROID_SDK_ROOT:-} ]]; then
+        sdk=$ANDROID_SDK_ROOT
+        origin=ANDROID_SDK_ROOT
+    fi
+    if [[ -z $sdk ]]; then
+        missing "no Android SDK: set ANDROID_HOME (or ANDROID_SDK_ROOT), or write sdk.dir=<path> into mobile/local.properties"
+        return 0
+    fi
+    if [[ ! -d $sdk ]]; then
+        missing "$origin points at $sdk, which is not a directory"
+        return 0
+    fi
+    android_sdk=$sdk
+    found "Android SDK $sdk ($origin)"
+}
+
+require_android_device() {
+    local adb
+    if [[ -n $android_sdk && -x $android_sdk/platform-tools/adb ]]; then
+        adb=$android_sdk/platform-tools/adb
+    elif ! adb=$(command -v adb); then
+        missing "adb is neither in the Android SDK's platform-tools nor on PATH"
+        return 0
+    fi
+    local state
+    state=$("$adb" -s "$android_serial" get-state 2>/dev/null || true)
+    if [[ $state != device ]]; then
+        missing "device $android_serial is not running (adb get-state: ${state:-no such device}); start and reserve it first, verify never starts a device"
+        return 0
+    fi
+    found "Android device $android_serial"
+}
+
+require_booted_simulator() {
+    local devices
+    devices=$(xcrun simctl list devices 2>/dev/null || true)
+    if [[ $devices == *"($ios_simulator) (Booted)"* ]]; then
+        found "iOS simulator $ios_simulator (booted)"
+    elif [[ $devices == *"($ios_simulator)"* ]]; then
+        missing "iOS simulator $ios_simulator is not booted; boot it through its reservation first, verify never boots a simulator"
+    else
+        missing "no iOS simulator has the UDID $ios_simulator (xcrun simctl list devices)"
+    fi
+}
+
+require_tuist() {
+    local pin_file=$apple_root/.tuist-version pinned=""
+    [[ -f $pin_file ]] && pinned=$(tr -d '[:space:]' <"$pin_file")
+    if [[ -z $pinned ]]; then
+        missing "mobile/apple/.tuist-version is missing or empty"
+        return 0
+    fi
+    if ! command -v tuist >/dev/null 2>&1; then
+        missing "tuist is not on PATH; install Tuist $pinned, the version mobile/apple/.tuist-version pins"
+        return 0
+    fi
+    local output version
+    if ! output=$(cd "$apple_root" && tuist version 2>&1); then
+        missing "tuist version fails: ${output##*$'\n'}"
+        return 0
+    fi
+    version=$(printf '%s\n' "$output" | tail -n 1 | tr -d '[:space:]')
+    if [[ $version != "$pinned" ]]; then
+        missing "tuist is $version, but mobile/apple/.tuist-version pins $pinned"
+        return 0
+    fi
+    found "Tuist $version"
+}
+
+# The SwiftLint version is pinned once, as swiftlint_version in mobile/apple/.swiftlint.yml, which every SwiftLint run
+# with that configuration enforces too; this check reports a mismatch up front, like require_tuist.
+require_swiftlint() {
+    local config=$apple_root/.swiftlint.yml pinned="" exact='^[0-9]+(\.[0-9]+)*$'
+    if [[ -f $config ]]; then
+        pinned=$(sed -n 's/^swiftlint_version:[[:space:]]*//p' "$config" | tail -n 1 |
+            sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//")
+    fi
+    if [[ -z $pinned ]]; then
+        missing "mobile/apple/.swiftlint.yml has no swiftlint_version, the SwiftLint version this repository pins"
+        return 0
+    fi
+    if ! [[ $pinned =~ $exact ]]; then
+        missing "swiftlint_version in mobile/apple/.swiftlint.yml is '$pinned', which is not one exact version"
+        return 0
+    fi
+    if ! command -v swiftlint >/dev/null 2>&1; then
+        missing "swiftlint is not on PATH; install SwiftLint $pinned, the version mobile/apple/.swiftlint.yml pins"
+        return 0
+    fi
+    local version
+    version=$(swiftlint version 2>/dev/null | tail -n 1 | tr -d '[:space:]' || true)
+    if [[ $version != "$pinned" ]]; then
+        missing "swiftlint is ${version:-(no version)}, but mobile/apple/.swiftlint.yml pins $pinned (swiftlint_version)"
+        return 0
+    fi
+    found "SwiftLint $version"
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Commands that need more than one process
+
+# node --test given a pattern that matches nothing passes without running a test; this fails instead.
+node_tests() {
+    local tests=()
+    local file
+    for file in scripts/*.test.mjs; do [[ -f $file ]] && tests+=("$file"); done
+    if ((${#tests[@]} == 0)); then
+        echo "no scripts/*.test.mjs file found in $PWD"
+        return 1
+    fi
+    echo "\$ node --test ${tests[*]}"
+    node --test "${tests[@]}"
+}
+
+# xcodebuild_test <scheme> <destination>: runs the scheme's tests into a result bundle next to the log, then fails
+# unless the bundle reports at least one passed test and no failed one.
+xcodebuild_test() {
+    local bundle=${run_log%.log}.xcresult
+    echo "\$ xcodebuild test -workspace $workspace -scheme $1 -destination $2 -derivedDataPath $derived_data -resultBundlePath $bundle"
+    xcodebuild test -workspace "$workspace" -scheme "$1" -destination "$2" \
+        -derivedDataPath "$derived_data" -resultBundlePath "$bundle" || return
+    local summary=$bundle.summary.json passed failed_tests
+    xcrun xcresulttool get test-results summary --path "$bundle" --compact >"$summary" || return
+    passed=$(plutil -extract passedTests raw -o - "$summary") || return
+    failed_tests=$(plutil -extract failedTests raw -o - "$summary") || return
+    echo "result bundle $bundle: $passed passed, $failed_tests failed"
+    printf '%s tests passed' "$passed" >"$run_detail"
+    if ((passed < 1 || failed_tests > 0)); then
+        echo "a test run must pass at least one test and fail none"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Steps
+
+step_architecture() {
+    current_step=architecture
+    prerequisites require_node
+    run "architecture.mjs" "$mobile_root" node scripts/architecture.mjs
+    run "node --test scripts/*.test.mjs" "$mobile_root" node_tests
+}
+
+step_shared() {
+    current_step=shared
+    if [[ -n $ios_simulator ]]; then
+        prerequisites require_java require_apple_silicon require_xcode require_booted_simulator
+        run "gradle shared tests + detekt, iOS simulator included" "$mobile_root" \
+            ./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false "-Pmobile.iosSimulatorId=$ios_simulator"
+    else
+        prerequisites require_java require_apple_silicon require_xcode
+        run "gradle shared tests + detekt" "$mobile_root" \
+            ./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false
+        not_run_without_device "shared tests on an iOS simulator" "--ios-simulator <UDID>"
+    fi
+}
+
+step_android() {
+    current_step=android
+    if [[ -n $android_serial ]]; then
+        prerequisites require_java require_android_sdk require_android_device
+    else
+        prerequisites require_java require_android_sdk
+    fi
+    run "gradle assemble + unit tests + lint" "$mobile_root" \
+        ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+    if [[ -n $android_serial ]]; then
+        run "connectedDebugAndroidTest on $android_serial" "$mobile_root" \
+            env "ANDROID_SERIAL=$android_serial" ./gradlew connectedDebugAndroidTest
+    else
+        not_run_without_device "connectedDebugAndroidTest" "--android-serial <serial>"
+    fi
+}
+
+step_apple() {
+    current_step=apple
+    if [[ -n $ios_simulator ]]; then
+        prerequisites require_apple_silicon require_xcode require_java require_tuist require_swiftlint require_booted_simulator
+    else
+        prerequisites require_apple_silicon require_xcode require_java require_tuist require_swiftlint
+    fi
+    run "swiftlint lint --strict" "$apple_root" swiftlint lint --strict
+    run "tuist install" "$apple_root" tuist install
+    run "tuist generate --no-open" "$apple_root" tuist generate --no-open
+    # generic/platform=iOS is the build for an iPhone or iPad: the iphoneos SDK, which links the iosArm64 Kotlin
+    # framework through the iphoneos branch of scripts/kmp-framework. It needs no device, and with
+    # CODE_SIGNING_ALLOWED=NO no signing team.
+    local configuration platform platform_label
+    for configuration in Debug Release; do
+        for platform in "iOS Simulator" iOS macOS; do
+            platform_label=$platform
+            [[ $platform == iOS ]] && platform_label="iOS device"
+            run "build $configuration, $platform_label" "$apple_root" \
+                xcodebuild build -workspace "$workspace" -scheme "$scheme" -configuration "$configuration" \
+                -destination "generic/platform=$platform" -derivedDataPath "$derived_data" CODE_SIGNING_ALLOWED=NO
+        done
+    done
+    # The Semprec scheme never builds the iOS-only UI test target, so it is built here for the simulator without a
+    # device: a UI test that no longer compiles fails every run, not only one with --ios-simulator.
+    run "build the UI tests, iOS Simulator" "$apple_root" \
+        xcodebuild build-for-testing -workspace "$workspace" -scheme "$ui_test_scheme" \
+        -destination "generic/platform=iOS Simulator" -derivedDataPath "$derived_data" CODE_SIGNING_ALLOWED=NO
+    run "test on macOS" "$apple_root" xcodebuild_test "$scheme" "platform=macOS,arch=arm64"
+    if [[ -n $ios_simulator ]]; then
+        run "test on iOS simulator $ios_simulator" "$apple_root" xcodebuild_test "$scheme" "id=$ios_simulator"
+        run "UI tests on iOS simulator $ios_simulator" "$apple_root" xcodebuild_test "$ui_test_scheme" "id=$ios_simulator"
+    else
+        not_run_without_device "test on an iOS simulator" "--ios-simulator <UDID>"
+        not_run_without_device "UI tests on an iOS simulator" "--ios-simulator <UDID>" "$ui_test_scheme runs on iOS only"
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+
+started=$SECONDS
+for step in architecture shared android apple; do
+    if is_selected "$step"; then "step_$step"; fi
+done
+
+echo
+echo "== verify summary (logs in $(shown "$run_dir"))"
+i=0
+while ((i < ${#row_step[@]})); do
+    if ((i == 0)) || [[ ${row_step[i]} != "${row_step[i - 1]}" ]]; then
+        step=${row_step[i]}
+        step_seconds=0
+        step_status=PASS
+        j=$i
+        while ((j < ${#row_step[@]})) && [[ ${row_step[j]} == "$step" ]]; do
+            step_seconds=$((step_seconds + ${row_seconds[j]:-0}))
+            if [[ ${row_status[j]} == FAIL ]]; then
+                step_status=FAIL
+            elif [[ $step_status == PASS && ${row_detail[j]} == "an earlier command failed" ]]; then
+                step_status="NOT RUN"
+            fi
+            j=$((j + 1))
+        done
+        printf '%-8s %-14s %s\n' "$step_status" "$step" "$(duration "$step_seconds")"
+    fi
+    elapsed=""
+    [[ -n ${row_seconds[i]} ]] && elapsed=$(duration "${row_seconds[i]}")
+    printf '  %-8s %-52s %8s  %s\n' "${row_status[i]}" "${row_label[i]}" "$elapsed" "${row_detail[i]}"
+    i=$((i + 1))
+done
+if ((failed)); then
+    echo "verify: FAIL after $(duration $((SECONDS - started)))"
+    exit 1
+fi
+echo "verify: PASS in $(duration $((SECONDS - started)))"

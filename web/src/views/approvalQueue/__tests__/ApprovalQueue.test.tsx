@@ -1,0 +1,278 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { I18nProvider } from "../../../i18n/index.js";
+import type {
+  ApprovalQueueEntry,
+  ApprovalQueueOperations,
+  ApprovalRequestRow,
+  DecidedApprovalRequest,
+} from "../../../api/approvalQueueOperations.js";
+import { ApprovalQueue } from "../ApprovalQueue.js";
+
+const DECIDED_BY = "user-1";
+
+function makeRow(overrides: Partial<ApprovalRequestRow> = {}): ApprovalRequestRow {
+  return {
+    id: "req-1",
+    toolName: "send_email",
+    riskClass: "high",
+    requestedAt: "2026-09-01T12:00:00.000Z",
+    safeSummary: {
+      kind: "mcpInvoke",
+      mcpToolRegistrationId: "reg-1",
+      mcpServerItemId: "server-1",
+      argKeys: ["to", "subject"],
+    },
+    agentRunId: "run-1",
+    projectItemId: "project-1",
+    projectName: "Acme project",
+    ...overrides,
+  };
+}
+
+function okEntry(overrides: Partial<ApprovalRequestRow> = {}): ApprovalQueueEntry {
+  return { kind: "ok", row: makeRow(overrides) };
+}
+
+function stubOperations(overrides: Partial<ApprovalQueueOperations> = {}): ApprovalQueueOperations {
+  return {
+    listApprovalRequests: vi.fn(async () => []),
+    decideApprovalRequest: vi.fn(async (input) => ({
+      id: input.approvalRequestId,
+      status: input.decision,
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: DECIDED_BY,
+    })),
+    ...overrides,
+  };
+}
+
+function renderQueue(operations: ApprovalQueueOperations, locale: "en" | "cs" = "en") {
+  return render(
+    <I18nProvider locale={locale}>
+      <ApprovalQueue operations={operations} />
+    </I18nProvider>,
+  );
+}
+
+describe("ApprovalQueue (issue #132)", () => {
+  afterEach(() => cleanup());
+
+  it("shows a loading state before the initial load resolves", async () => {
+    let resolve!: (rows: ApprovalQueueEntry[]) => void;
+    const operations = stubOperations({
+      listApprovalRequests: vi.fn(() => new Promise<ApprovalQueueEntry[]>((r) => (resolve = r))),
+    });
+
+    renderQueue(operations);
+
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    resolve([]);
+    await screen.findByText("No pending approval requests");
+  });
+
+  it("shows an empty state when nothing is pending", async () => {
+    renderQueue(stubOperations({ listApprovalRequests: vi.fn(async () => []) }));
+
+    expect(await screen.findByText("No pending approval requests")).toBeInTheDocument();
+  });
+
+  it("shows an error state and retries on demand", async () => {
+    let calls = 0;
+    const listApprovalRequests = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new Error("transport down");
+      return [];
+    });
+
+    renderQueue(stubOperations({ listApprovalRequests }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("No pending approval requests")).toBeInTheDocument();
+  });
+
+  it("renders a pending row's tool, risk class, args, project, and agent run", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [okEntry()]),
+      }),
+    );
+
+    expect(await screen.findByText("send_email")).toBeInTheDocument();
+    expect(screen.getByText("Risk class: high")).toBeInTheDocument();
+    expect(screen.getByText("Arguments: to, subject")).toBeInTheDocument();
+    expect(screen.getByText("Acme project", { exact: false })).toBeInTheDocument();
+    const agentRunLink = screen.getByRole("link", { name: "Agent run run-1" });
+    expect(agentRunLink).toHaveAttribute("href", "?page=agent-run&id=run-1");
+  });
+
+  it("formats the requested-at timestamp in Czech when the locale is cs", async () => {
+    const requestedAt = "2026-09-01T12:00:00.000Z";
+    renderQueue(stubOperations({ listApprovalRequests: vi.fn(async () => [okEntry({ requestedAt })]) }), "cs");
+
+    const when = new Intl.DateTimeFormat("cs", { dateStyle: "medium", timeStyle: "short" }).format(
+      new Date(requestedAt),
+    );
+    expect(await screen.findByText(`Vyžádáno ${when}`)).toBeInTheDocument();
+  });
+
+  it("renders a generic-operation-originated row (issue #220) the same as an mcp-invoke one", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [
+          okEntry({
+            toolName: "item.delete",
+            riskClass: "destructive",
+            safeSummary: { kind: "genericOperation", operationName: "item.delete", argKeys: ["itemId"] },
+          }),
+        ]),
+      }),
+    );
+
+    expect(await screen.findByText("item.delete")).toBeInTheDocument();
+    expect(screen.getByText("Risk class: destructive")).toBeInTheDocument();
+    expect(screen.getByText("Arguments: itemId")).toBeInTheDocument();
+  });
+
+  it("requests from different projects appear together", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [
+          okEntry({ id: "req-1", toolName: "send_email", projectName: "Acme" }),
+          okEntry({ id: "req-2", toolName: "delete_file", projectName: "Other" }),
+        ]),
+      }),
+    );
+
+    expect(await screen.findByText("send_email")).toBeInTheDocument();
+    expect(screen.getByText("delete_file")).toBeInTheDocument();
+  });
+
+  it("approves a request and shows the decided state", async () => {
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "approved",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: DECIDED_BY,
+    }));
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [okEntry()]),
+        decideApprovalRequest,
+      }),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+
+    expect(decideApprovalRequest).toHaveBeenCalledWith({
+      approvalRequestId: "req-1",
+      decision: "approved",
+    });
+    expect(await screen.findByText("Approved by user-1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("rejects a request and shows the decided state", async () => {
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "rejected",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: DECIDED_BY,
+    }));
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [okEntry()]),
+        decideApprovalRequest,
+      }),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reject" }));
+
+    expect(await screen.findByText("Rejected by user-1")).toBeInTheDocument();
+  });
+
+  it("shows a race note when the authoritative decision differs from what was requested", async () => {
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "rejected",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: "someone-else",
+    }));
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [okEntry()]),
+        decideApprovalRequest,
+      }),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Rejected by someone-else")).toBeInTheDocument();
+    expect(screen.getByText("This request was already decided before your action went through")).toBeInTheDocument();
+  });
+
+  it("shows a per-row action error without discarding the row", async () => {
+    const decideApprovalRequest = vi.fn(async () => {
+      throw new Error("write failed");
+    });
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [okEntry()]),
+        decideApprovalRequest,
+      }),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save: write failed");
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
+
+  it("renders a malformed row as a placeholder without affecting the rest of the list", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async (): Promise<ApprovalQueueEntry[]> => [
+          { kind: "malformed", row: { id: "bad-1", raw: { id: "bad-1", toolName: 42 } } },
+          okEntry({ id: "req-2", toolName: "delete_file" }),
+        ]),
+      }),
+    );
+
+    expect(
+      await screen.findByText("This request could not be displayed (malformed data)", { exact: false }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("delete_file")).toBeInTheDocument();
+  });
+
+  it("keeps two malformed rows without ids as distinct, stable list items across a re-render", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async (): Promise<ApprovalQueueEntry[]> => [
+          { kind: "malformed", row: { id: null, raw: { toolName: 1 } } },
+          { kind: "malformed", row: { id: null, raw: { toolName: 2 } } },
+          okEntry({ id: "req-2", toolName: "delete_file" }),
+        ]),
+      }),
+    );
+
+    const malformedBefore = await screen.findAllByText("This request could not be displayed (malformed data)", {
+      exact: false,
+    });
+    expect(malformedBefore).toHaveLength(2);
+    const [firstElement, secondElement] = malformedBefore;
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await screen.findByText("Approved by user-1");
+
+    const malformedAfter = screen.getAllByText("This request could not be displayed (malformed data)", {
+      exact: false,
+    });
+    expect(malformedAfter).toHaveLength(2);
+    expect(malformedAfter[0]).toBe(firstElement);
+    expect(malformedAfter[1]).toBe(secondElement);
+  });
+});

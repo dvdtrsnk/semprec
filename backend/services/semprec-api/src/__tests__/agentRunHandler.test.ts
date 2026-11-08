@@ -1,0 +1,282 @@
+import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import { createTestProjectItem, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createChokePoint,
+  createViewTypeRegistry,
+  seedSystem,
+  createAgentRun,
+  createUser,
+  hashPassword,
+  login,
+  getAgentRun,
+  withTransaction,
+} from "@semprec/data";
+import { createAgentRunRequestListener } from "../agentRunHandler.js";
+
+const PASSWORD = "s3cret-password";
+
+let pool: Pool;
+
+/** Tenant zero's user, which `beforeEach` creates. */
+let tenantUser: { id: string; email: string };
+
+/**
+ * Signs in tenant zero's user: a minted run's actor is the session user, and a run's actor must be
+ * its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ */
+async function authHeader(): Promise<{ Authorization: string }> {
+  const { token } = await login(pool, {
+    email: tenantUser.email,
+    password: PASSWORD,
+    platform: "ios",
+    ip: "127.0.0.1",
+  });
+  return { Authorization: `Bearer ${token}` };
+}
+
+describe("createAgentRunRequestListener", () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    const viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    tenantUser = await createUser(pool, {
+      email: `${randomUUID()}@example.com`,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: getTenantZeroId(),
+    });
+    await seedSystem(pool, viewTypeRegistry);
+
+    server = createServer(createAgentRunRequestListener(pool));
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("rejects a request with no credentials", async () => {
+    const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`);
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a request with a garbage bearer token", async () => {
+    const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`, {
+      headers: { Authorization: "Bearer garbage" },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 for an unknown path", async () => {
+    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: await authHeader() });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 for an unknown agent run id", async () => {
+    const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`, {
+      headers: await authHeader(),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 validation_failed naming 'id' for a non-UUID agent run id", async () => {
+    const res = await fetch(`${baseUrl}/api/agent-runs/foo`, {
+      headers: await authHeader(),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; details?: unknown };
+    expect(body.code).toBe("validation_failed");
+    expect(body.details).toEqual({ field: "id" });
+  });
+
+  it("returns 404 for a non-GET method", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}`, {
+      method: "POST",
+      headers: await authHeader(),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns an agent run's detail", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "search the docs" });
+
+    const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}`, {
+      headers: await authHeader(),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: run.id,
+      task: "search the docs",
+      status: "running",
+      triggeredBy: "user",
+    });
+  });
+
+  describe("POST /api/agent-runs/mcp-credentials (issue #220, AC34/44/47)", () => {
+    it("rejects an unauthenticated mint request", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: ["core.item.write"] }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects a non-POST method", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        headers: await authHeader(),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects a JSON body that is not an object", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify(null),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a missing projectItemId", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ capabilities: ["core.item.write"] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an empty capabilities array", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: [] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an unknown capability id", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: ["not.a.real.capability"] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("mints a restricted run credential for the given project item and capabilities", async () => {
+      const projectItemId = await createTestProjectItem(pool);
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId, capabilities: ["core.item.read", "core.item.write"], task: "test task" }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as {
+        runId: string;
+        agentProjectItemId: string;
+        token: string;
+        capabilities: string[];
+        expiresAt: string;
+      };
+      expect(body.agentProjectItemId).toBe(projectItemId);
+      expect(body.capabilities.sort()).toEqual(["core.item.read", "core.item.write"]);
+      expect(typeof body.token).toBe("string");
+      expect(body.token.length).toBeGreaterThan(0);
+
+      const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
+      expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
+    });
+
+    // Issue #1066: a run's actor must be its own tenant's user, and a tenant has exactly one user, so
+    // the session user and the `getTenantUserId` fallback can no longer differ. The test pins that
+    // the session's identity is what the run records.
+    it("attributes the minted run's actor_user_id to the authenticated session user (issue #220, AC11)", async () => {
+      const projectItemId = await createTestProjectItem(pool);
+
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId, capabilities: ["core.item.read"] }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { runId: string };
+      const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
+      expect(run?.actorUserId).toBe(tenantUser.id);
+    });
+
+    describe("project guard", () => {
+      async function mint(projectItemId: string): Promise<Response> {
+        return fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+          method: "POST",
+          headers: { ...(await authHeader()), "Content-Type": "application/json" },
+          body: JSON.stringify({ projectItemId, capabilities: ["core.item.read"] }),
+        });
+      }
+
+      async function mintedRowCounts(): Promise<{ runs: number; credentials: number }> {
+        const { rows } = await pool.query<{ runs: string; credentials: string }>(
+          `SELECT (SELECT count(*) FROM agent_runs)::text AS runs,
+                  (SELECT count(*) FROM agent_run_mcp_credentials)::text AS credentials`,
+        );
+        return { runs: Number(rows[0]!.runs), credentials: Number(rows[0]!.credentials) };
+      }
+
+      async function expectNotFound(res: Response): Promise<void> {
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: "Project not found", code: "not_found" });
+        expect(await mintedRowCounts()).toEqual({ runs: 0, credentials: 0 });
+      }
+
+      it("rejects a non-UUID projectItemId as validation_failed", async () => {
+        const res = await mint("not-a-uuid");
+
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
+        expect(await mintedRowCounts()).toEqual({ runs: 0, credentials: 0 });
+      });
+
+      it("answers 404 for a random UUID and creates no run or credential", async () => {
+        await expectNotFound(await mint(randomUUID()));
+      });
+
+      it("answers 404 for an item of a database other than Projects", async () => {
+        const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'tasks'`);
+        const item = await createChokePoint(pool).createItem({ databaseId: rows[0]!.id, properties: {} });
+
+        await expectNotFound(await mint(item.id));
+      });
+
+      it("answers 404 for a soft-deleted Projects item", async () => {
+        const projectItemId = await createTestProjectItem(pool);
+        await pool.query(`UPDATE items SET deleted_at = now() WHERE id = $1`, [projectItemId]);
+
+        await expectNotFound(await mint(projectItemId));
+      });
+
+      it("answers 201 for a live Projects item", async () => {
+        const res = await mint(await createTestProjectItem(pool));
+
+        expect(res.status).toBe(201);
+        expect(await mintedRowCounts()).toEqual({ runs: 1, credentials: 1 });
+      });
+    });
+  });
+});

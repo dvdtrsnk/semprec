@@ -1,0 +1,1176 @@
+[
+  {
+    "id": 30089515514,
+    "node_id": "RTE_lADOUFuQ4c8AAAABOdPJtM8AAAAHAXmR-g",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30089515514",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "renamed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-08-27T07:44:32Z",
+    "rename": {
+      "from": "[14/21] Auth/authz — kdo se dostane dovnitř",
+      "to": "[15/21] Čeština a angličtina — i18n pro systémové popisky"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-27T10:59:59Z",
+    "updated_at": "2026-08-27T10:59:59Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5265148081,
+        "node_id": "I_kwDOUFuQ4c8AAAABOdPIsQ",
+        "number": 34,
+        "title": "[14/22] Auth/authz — who gets in",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/34",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "25ada03b680a53666ec4fcd295011a32795d1e72ab3ae5548a0941d92832d8ff"
+      }
+    }
+  },
+  {
+    "id": 30098812998,
+    "node_id": "RTE_lADOUFuQ4c8AAAABOdPJtM8AAAAHAgdwRg",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30098812998",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "renamed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-08-27T11:00:00Z",
+    "rename": {
+      "from": "[15/21] Čeština a angličtina — i18n pro systémové popisky",
+      "to": "[15/21] Czech and English — i18n for system labels"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-27T15:42:46Z",
+    "updated_at": "2026-08-27T15:42:46Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5265146941,
+        "node_id": "I_kwDOUFuQ4c8AAAABOdPEPQ",
+        "number": 28,
+        "title": "[08/22] Inbox as a real database",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/28",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "383555dd5fa0809a32d07d15eb460545393caa90ad99c67686843a5fbc74c7c8"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-27T15:43:02Z",
+    "updated_at": "2026-08-27T15:43:02Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5265146414,
+        "node_id": "I_kwDOUFuQ4c8AAAABOdPCLg",
+        "number": 24,
+        "title": "[04/22] Ten hardcoded databases",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/24",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "6cf1c17c5d3133b5b5a95ae937d25c1f2f335f65e1c79b25d374d442a98dc487"
+      }
+    }
+  },
+  {
+    "id": 30114640343,
+    "node_id": "RTE_lADOUFuQ4c8AAAABOdPJtM8AAAAHAvjx1w",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30114640343",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "renamed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-08-27T15:43:16Z",
+    "rename": {
+      "from": "[15/21] Czech and English — i18n for system labels",
+      "to": "[15/22] Czech and English — i18n for system labels"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-27T20:51:38Z",
+    "updated_at": "2026-08-27T20:51:38Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5265148502,
+        "node_id": "I_kwDOUFuQ4c8AAAABOdPKVg",
+        "number": 36,
+        "title": "[16/22] Notifications",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/36",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "a415953ef20fb6e8e62395329ce63a1228d26129ee61065722f12c0d6203aab6"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk-agent[bot]",
+      "id": 321888475,
+      "node_id": "BOT_kgDOEy-g2w",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/dvdtrsnk-agent",
+      "followers_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-28T12:26:53Z",
+    "updated_at": "2026-08-28T12:26:53Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5277891603,
+        "node_id": "PR_kwDOUFuQ4c8AAAABBVUJZA",
+        "number": 69,
+        "title": "[06/22] IMAP Sync Core",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/69",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/69",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/69",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/69.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/69.patch",
+          "merged_at": null
+        },
+        "bodySha256": "3907cd46bc1f23dda07fe8c43baa6db3d7f25e384a2325d07388adc98e8505fe"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-29T20:48:11Z",
+    "updated_at": "2026-08-29T20:48:11Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5288749097,
+        "node_id": "I_kwDOUFuQ4c8AAAABOzvoKQ",
+        "number": 88,
+        "title": "[implementation-audit-fixes 15/23] Implement the library-grid view component and container",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/88",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "1bfd85e032e6a347576136cdc4f41118c26fe8e9c38fd8b33a10db7e83695748"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-29T21:05:06Z",
+    "updated_at": "2026-08-29T21:05:06Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5288748910,
+        "node_id": "I_kwDOUFuQ4c8AAAABOzvnbg",
+        "number": 85,
+        "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/85",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "38cd52b034fd57a380936e2f2943b30fb07dbf0e4d43bee3cd68e32810c0f86a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:37:19Z",
+    "updated_at": "2026-08-30T00:37:19Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5289606515,
+        "node_id": "I_kwDOUFuQ4c8AAAABO0j9cw",
+        "number": 155,
+        "title": "[generic-rest 05/09] Expose view CRUD and curated membership operations",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/155",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "71a58a3c52d310d72315f59a19ca09beb8186ebc294dcff1e3bc591fbafacb0b"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:44:44Z",
+    "updated_at": "2026-08-30T00:44:44Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5289603640,
+        "node_id": "I_kwDOUFuQ4c8AAAABO0jyOA",
+        "number": 100,
+        "title": "[inbox-pipeline] Make Inbox a real processing pipeline — epic",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/100",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "19c4ea2e1f01275c8ee2ace815e253b5d8ee62fa7ab72ca53df14662edb6fd9a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:44:56Z",
+    "updated_at": "2026-08-30T00:44:56Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5289605617,
+        "node_id": "I_kwDOUFuQ4c8AAAABO0j58Q",
+        "number": 138,
+        "title": "[auth-v1] Authenticate every Semprec client and API path — epic",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/138",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "bc9ac4e32b0a7e957f5d840e0de3b456a9744124c95bacf8845123ca61fc1a02"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:44:58Z",
+    "updated_at": "2026-08-30T00:44:58Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5289605914,
+        "node_id": "I_kwDOUFuQ4c8AAAABO0j7Gg",
+        "number": 144,
+        "title": "[system-i18n] Resolve system labels in Czech and English — epic",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/144",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "75068225469d81f18abdc046b9b5332dad42b076c652ff6e80e52d766a5a1606"
+      }
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465853597",
+    "html_url": "https://github.com/dvdtrsnk/semprec/issues/35#issuecomment-5465853597",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/35",
+    "id": 5465853597,
+    "node_id": "IC_kwDOUFuQ4c8AAAABRcpOnQ",
+    "user": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:54:13Z",
+    "updated_at": "2026-08-30T00:54:13Z",
+    "body": "Superseded by the independently audited, lossless decomposition in epic #144: #145, #146, #147. The complete original specification is inlined in that epic. Both clean-context audits passed coverage, self-containment, format, and the global blocking graph.",
+    "author_association": "OWNER",
+    "pin": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465853597/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": null,
+    "minimized": null,
+    "event": "commented",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    }
+  },
+  {
+    "id": 30224396772,
+    "node_id": "CE_lADOUFuQ4c8AAAABOdPJtM8AAAAHCYOx5A",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30224396772",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "closed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-08-30T00:54:14Z",
+    "state_reason": null,
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-02T19:43:00Z",
+    "updated_at": "2026-09-02T19:43:00Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5328427078,
+        "node_id": "I_kwDOUFuQ4c8AAAABPZlYRg",
+        "number": 217,
+        "title": "[implementation-audit-fixes 13/23] Bootstrap the web workspace with view registry and API client",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/217",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "0929652f241dce2628bb5525ff9d4223598107bb3d0150fd91c3885f9f4c6d30"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-02T19:43:02Z",
+    "updated_at": "2026-09-02T19:43:02Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5328427290,
+        "node_id": "I_kwDOUFuQ4c8AAAABPZlZGg",
+        "number": 218,
+        "title": "[implementation-audit-fixes 14/23] Serve localized property catalogs from the properties route",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/218",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "cf949b7add8cc7d61cae726b85f2b74a4feea10480ebddaf2173a86cac796deb"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-02T19:45:33Z",
+    "updated_at": "2026-09-02T19:45:33Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5328431963,
+        "node_id": "I_kwDOUFuQ4c8AAAABPZlrWw",
+        "number": 240,
+        "title": "[generic-rest 04/09] Expose database and property metadata operations",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/240",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "01a48a2e799f10924f06b4afd6ce6d73a4388037d3cfc0037e8f40953161d440"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-10T04:05:23Z",
+    "updated_at": "2026-09-10T04:05:23Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5407316603,
+        "node_id": "PR_kwDOUFuQ4c8AAAABC7eFzw",
+        "number": 364,
+        "title": "[implementation-audit-fixes 07/23] Persist project agent guidance and project it into the system prompt (#214)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/364",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/364",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/364",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/364.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/364.patch",
+          "merged_at": null
+        },
+        "bodySha256": "22d41812c36220c83b1b03fabf235108286082d37b717623360ad534669fd36a"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-10T11:27:42Z",
+    "updated_at": "2026-09-10T11:27:42Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5411305643,
+        "node_id": "PR_kwDOUFuQ4c8AAAABC-s0Ig",
+        "number": 368,
+        "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications (#85)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/368",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/368",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/368",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/368.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/368.patch",
+          "merged_at": "2026-09-10T13:04:27Z"
+        },
+        "bodySha256": "8833cc609a08b70ae25324a5b92fa55f41b6eb3e1d4cbe0d92aabc38387fbfc4"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-10T13:03:28Z",
+    "updated_at": "2026-09-10T13:03:28Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5412411371,
+        "node_id": "PR_kwDOUFuQ4c8AAAABC_l1SQ",
+        "number": 369,
+        "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications (#85)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/369",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/369",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/369",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/369.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/369.patch",
+          "merged_at": "2026-09-10T13:04:25Z"
+        },
+        "bodySha256": "da674e46814e789d938fc3dacad72ffee90891be530c4c5189bca8f9e052f701"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-11T12:12:46Z",
+    "updated_at": "2026-09-11T12:12:46Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5424149069,
+        "node_id": "PR_kwDOUFuQ4c8AAAABDI90AA",
+        "number": 379,
+        "title": "[generic-rest 04/09] Expose database and property metadata operations (#240)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/379",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/379",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/379",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/379.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/379.patch",
+          "merged_at": "2026-09-11T13:50:17Z"
+        },
+        "bodySha256": "e99585daedd28a46b84f627faa6ff50c118a1c6c1b3a12e9c62e140d18042684"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-11T14:24:19Z",
+    "updated_at": "2026-09-11T14:24:19Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5425304451,
+        "node_id": "PR_kwDOUFuQ4c8AAAABDJ5EEg",
+        "number": 380,
+        "title": "[generic-rest 05/09] Expose view CRUD and curated membership operations (#155)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/380",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/380",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/380",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/380.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/380.patch",
+          "merged_at": "2026-09-11T16:25:21Z"
+        },
+        "bodySha256": "13cedc9e8600b65ee74e2fb63fd41e55c52b2793a34e5e3b59046f8c66ee2aa7"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-14T10:48:54Z",
+    "updated_at": "2026-09-14T10:48:54Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5448054756,
+        "node_id": "PR_kwDOUFuQ4c8AAAABDbpMAg",
+        "number": 399,
+        "title": "[implementation-audit-fixes 15/23] Implement the library-grid view component and container (#88)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/399",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/399",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/399",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/399.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/399.patch",
+          "merged_at": "2026-09-14T19:33:41Z"
+        },
+        "bodySha256": "a6a10f9fdbe9d1de307ebe0cdc1795cab122d54ba6b0dd972b8e5df62459bdeb"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-18T17:11:37Z",
+    "updated_at": "2026-09-18T17:11:37Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5498643974,
+        "node_id": "PR_kwDOUFuQ4c8AAAABEEVqUA",
+        "number": 436,
+        "title": "[implementation-audit-fixes 18/23] Expose generic operations through AgentTools and MCP (#220)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/436",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/436",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/436",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/436.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/436.patch",
+          "merged_at": "2026-09-18T18:32:37Z"
+        },
+        "bodySha256": "d701f06af220aec2c9a35b681bb2ea60570f34150a2e6d3df887012344e3a720"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-05T15:03:13Z",
+    "updated_at": "2026-10-05T15:03:13Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5691620525,
+        "node_id": "PR_kwDOUFuQ4c8AAAABGdHexg",
+        "number": 1104,
+        "title": "[mt-foundation 09/16] Teach the convention skills and AGENTS.md the tenancy rules (#970)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1104",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1104.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1104.patch",
+          "merged_at": "2026-10-05T18:23:06Z"
+        },
+        "bodySha256": "b6e6c3715ec74f84c2702d12ae4311a09ca02945a02f994ff4563dec6de0ea33"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "bb-agent-relay[bot]",
+      "id": 324208905,
+      "node_id": "BOT_kgDOE1MJCQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D",
+      "html_url": "https://github.com/apps/bb-agent-relay",
+      "followers_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/bb-agent-relay%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-06T07:36:40Z",
+    "updated_at": "2026-10-06T07:36:40Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5723748788,
+        "node_id": "PR_kwDOUFuQ4c8AAAABG2idcQ",
+        "number": 1120,
+        "title": "[mt-context 05/21] Stamp the tenant into the queue job envelope and restore it in the task runner (#982)",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1120",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1120",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1120",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1120.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1120.patch",
+          "merged_at": "2026-10-06T15:11:43Z"
+        },
+        "bodySha256": "9e73c392af579aa2dc7b95bfbea7fcef77f5f860e27374df3ca1eb4d2bb332ab"
+      }
+    }
+  }
+]

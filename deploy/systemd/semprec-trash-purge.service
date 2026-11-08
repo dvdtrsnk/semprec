@@ -1,0 +1,36 @@
+[Unit]
+Description=Semprec trash purge
+
+[Service]
+Type=oneshot
+User=semprec
+Group=semprec
+# Process containment (issue #1071), see deploy/README.md "Service sandboxing".
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+# Not set: MemoryDenyWriteExecute=, V8 JIT needs writable-executable pages.
+# Not set: ProcSubset=pid, it hides /proc/cpuinfo and /proc/meminfo that Node os reads.
+# Not set: PrivateUsers=, it remaps the uid/gid namespace that ownership checks depend on.
+SyslogIdentifier=semprec-trash-purge
+ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-trash-purge.sh

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Builds or embeds the Kotlin framework (SharedSDK) from an Xcode build phase of the Apple app.
+#   --build-only  CoreKit, before it compiles: links the framework for the current SDK and configuration into
+#                 mobile/shared/umbrella/build/xcode-frameworks/$CONFIGURATION/$SDK_NAME/.
+#   --embed       the app, before it compiles: copies that framework into $TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH
+#                 and signs it when Xcode signs the app.
+set -euo pipefail
+
+fail() {
+    echo "error: kmp-framework: $1" >&2
+    exit 2
+}
+
+mobile_root=$(cd "$(dirname "$0")/.." && pwd)
+if [[ $# != 1 || ($1 != --build-only && $1 != --embed) ]]; then
+    fail "usage: kmp-framework --build-only|--embed (from an Xcode build phase)"
+fi
+integration_mode=$1
+if [[ $(uname -s) != Darwin ]]; then
+    fail "the Kotlin framework integration requires macOS and Xcode"
+fi
+for variable in CONFIGURATION SDK_NAME ARCHS TARGET_BUILD_DIR BUILT_PRODUCTS_DIR FRAMEWORKS_FOLDER_PATH; do
+    if [[ -z ${!variable:-} ]]; then
+        fail "missing Xcode build setting $variable; run this script from the Tuist build phase"
+    fi
+done
+case "$CONFIGURATION" in
+    Debug | Release) ;;
+    *) fail "unsupported configuration '$CONFIGURATION'; only Debug and Release exist" ;;
+esac
+if [[ "$ARCHS" != arm64 ]]; then
+    fail "unsupported architectures '$ARCHS'; the Kotlin framework is built for arm64 only"
+fi
+case "$SDK_NAME" in
+    iphoneos*)
+        kotlin_target=IosArm64
+        frameworks_folder_suffix=.app/Frameworks
+        ;;
+    iphonesimulator*)
+        kotlin_target=IosSimulatorArm64
+        frameworks_folder_suffix=.app/Frameworks
+        ;;
+    macosx*)
+        kotlin_target=MacosArm64
+        frameworks_folder_suffix=.app/Contents/Frameworks
+        ;;
+    *) fail "unsupported SDK '$SDK_NAME'; supported are iphoneos, iphonesimulator and macosx" ;;
+esac
+
+# The JDKs that can run the Gradle build: 17 or newer for the Android Gradle plugin, at most 23 for Gradle 8.13, the
+# version gradle/wrapper/gradle-wrapper.properties pins (Java 24 needs Gradle 8.14). These three lines are the range's
+# one place in this script; scripts/verify holds the same three values and fails when the wrapper pins another
+# Gradle, and scripts/toolchain.test.mjs fails when the two scripts differ.
+java_gradle=8.13
+minimum_java=17
+maximum_java=23
+supported_java="JDK $minimum_java to $maximum_java (the Android Gradle plugin needs $minimum_java, Gradle $java_gradle runs on $maximum_java at most)"
+
+# java_major <java>: prints the major Java version the executable runs, or nothing when it runs none.
+java_major() {
+    local output version pattern='version "([^"]+)"'
+    output=$("$1" -version 2>&1) || true
+    [[ $output =~ $pattern ]] || return 0
+    version=${BASH_REMATCH[1]}
+    local major=${version%%.*}
+    [[ $major == 1 ]] && major=$(printf '%s' "$version" | cut -d. -f2)
+    if [[ $major =~ ^[0-9]+$ ]]; then printf '%s' "$major"; fi
+}
+
+# java_name <major>: how a message names what java_major found.
+java_name() {
+    if [[ -n $1 ]]; then printf 'Java %s' "$1"; else printf 'no Java this script can identify'; fi
+}
+
+# in_range <major>: whether Gradle can run on that Java version.
+in_range() {
+    [[ $1 =~ ^[0-9]+$ ]] && (($1 >= minimum_java && $1 <= maximum_java))
+}
+
+# Xcode started from the Dock or Finder does not inherit a shell's JAVA_HOME. Without one, the newest JDK of the range
+# that /usr/libexec/java_home knows is used, asked for by version: java_home without -v returns the newest JDK of any
+# version. java on PATH comes last; on macOS /usr/bin/java runs java_home's newest JDK.
+if [[ -n ${JAVA_HOME:-} ]]; then
+    if [[ ! -x "$JAVA_HOME/bin/java" ]]; then
+        fail "JAVA_HOME is '$JAVA_HOME', which has no bin/java"
+    fi
+    major=$(java_major "$JAVA_HOME/bin/java")
+    if ! in_range "$major"; then
+        fail "JAVA_HOME is '$JAVA_HOME', which runs $(java_name "$major"); the build runs only on $supported_java"
+    fi
+else
+    selected=""
+    for ((version = maximum_java; version >= minimum_java; version--)); do
+        # java_home -v may answer with another version than the one asked for; the runtime's own version decides.
+        if candidate=$(/usr/libexec/java_home -v "$version" 2>/dev/null) && [[ -x "$candidate/bin/java" ]] &&
+            in_range "$(java_major "$candidate/bin/java")"; then
+            selected=$candidate
+            break
+        fi
+    done
+    if [[ -n $selected ]]; then
+        export JAVA_HOME=$selected
+    else
+        # macOS has /usr/bin/java even without a JDK; it then runs no Java at all.
+        major=""
+        if java=$(command -v java); then major=$(java_major "$java"); fi
+        if [[ -z $major ]]; then
+            fail "no Java runtime found; set JAVA_HOME to a $supported_java, register one with /usr/libexec/java_home, or put one on PATH"
+        fi
+        if ! in_range "$major"; then
+            fail "JAVA_HOME is not set, /usr/libexec/java_home knows no $supported_java, and java on PATH ($java) runs Java $major; set JAVA_HOME to a JDK of that range or register one with /usr/libexec/java_home"
+        fi
+    fi
+fi
+
+cd "$mobile_root"
+# Gradle always assesses the framework's inputs itself; a skip based on file times could keep a framework whose
+# exported API is out of date.
+if [[ "$integration_mode" == --build-only ]]; then
+    exec ./gradlew ":shared:umbrella:assemble${CONFIGURATION}AppleFrameworkForXcode${kotlin_target}" --no-daemon
+fi
+if [[ ${WRAPPER_EXTENSION:-} != app || "$FRAMEWORKS_FOLDER_PATH" != *"$frameworks_folder_suffix" ]]; then
+    fail "only the application target embeds the Kotlin framework (got FRAMEWORKS_FOLDER_PATH '$FRAMEWORKS_FOLDER_PATH')"
+fi
+exec ./gradlew :shared:umbrella:embedAndSignAppleFrameworkForXcode --no-daemon

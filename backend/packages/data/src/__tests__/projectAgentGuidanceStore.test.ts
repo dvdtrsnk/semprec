@@ -1,0 +1,348 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool, PoolClient } from "pg";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
+import { createTenantZeroUser, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { GuidanceReferenceNotFoundError, runInTenant } from "@semprec/shared";
+import { createPool, runAfterCommit, withTransaction } from "../db/pool.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { insertItem } from "../chokePoint/itemsStore.js";
+import { createUser } from "../auth/usersStore.js";
+import { NotFoundError } from "../errors.js";
+import {
+  createPoolClientTransactionRunner,
+  guidanceReferenceStore,
+  projectAgentGuidanceStore,
+} from "../projectAgentGuidanceStore.js";
+
+let pool: Pool;
+// A production `createPool` pool, so `runInTenant` reaches `app.tenant_id` the way it does at runtime.
+let scopedPool: Pool;
+
+/** Runs `fn` in a transaction on `scopedPool` inside `runInTenant(tenantId, …)`. */
+function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return runInTenant(tenantId, () => withTransaction(scopedPool, fn));
+}
+
+async function createProjectItem(): Promise<string> {
+  const item = await withTransaction(pool, async (client) => {
+    const database = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+    if (!database) throw new Error("Projects database was not seeded");
+    return insertItem(client, { databaseId: database.id, properties: { name: `Project ${randomUUID()}` } });
+  });
+  return item.id;
+}
+
+async function createTestUser(): Promise<string> {
+  const user = await createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "hash",
+  });
+  return user.id;
+}
+
+describe("projectAgentGuidanceStore (issue #214)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    scopedPool ??= createPool(process.env.TEST_DATABASE_URL ?? "");
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await scopedPool?.end();
+  });
+
+  it("returns null for a project with no guidance yet", async () => {
+    const projectItemId = await createProjectItem();
+    const loaded = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
+    expect(loaded).toBeNull();
+  });
+
+  it("upserts, then updates in place on a second call", async () => {
+    const projectItemId = await createProjectItem();
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
+
+    const created = await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId,
+        markdown: "# Guidance v1",
+      }),
+    );
+    expect(created.markdown).toBe("# Guidance v1");
+
+    const updated = await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId,
+        markdown: "# Guidance v2",
+      }),
+    );
+    expect(updated.markdown).toBe("# Guidance v2");
+
+    const { rows } = await pool.query(`SELECT count(*)::int AS count FROM project_agent_guidance`);
+    expect(rows[0].count).toBe(1);
+  });
+
+  it("does not change the owner on a second upsert with a different ownerUserId", async () => {
+    const projectItemId = await createProjectItem();
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
+    const otherUserId = await createTestUser();
+
+    await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId,
+        markdown: "# Guidance v1",
+      }),
+    );
+
+    const updated = await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId: otherUserId,
+        markdown: "# Guidance v2",
+      }),
+    );
+
+    expect(updated.ownerUserId).toBe(ownerUserId);
+    expect(updated.markdown).toBe("# Guidance v2");
+  });
+
+  // Issue #1066: project_agent_guidance_owner_user_id_tenant_fkey confines the owner to the guidance's
+  // own tenant, and a tenant has exactly one user (users_tenant_id_key), so the only valid transfer
+  // target is that user. The accepted transfer is therefore proven by the write it makes: updated_at
+  // advances and the returned row is the stored one.
+  it("transfers ownership within the tenant and refuses an owner from outside it", async () => {
+    const projectItemId = await createProjectItem();
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
+    const unboundUserId = await createTestUser();
+    await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId,
+        markdown: "# Guidance",
+      }),
+    );
+    const otherTenantUser = await createUser(pool, {
+      email: `${randomUUID()}@example.com`,
+      passwordHash: "hash",
+      tenantId: await createTestTenant(pool),
+    });
+
+    for (const newOwnerUserId of [unboundUserId, otherTenantUser.id]) {
+      await expect(
+        withTransaction(pool, (client) => projectAgentGuidanceStore.transfer(client, projectItemId, newOwnerUserId)),
+      ).rejects.toMatchObject({ code: "23503", constraint: "project_agent_guidance_owner_user_id_tenant_fkey" });
+    }
+    const unchanged = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
+    expect(unchanged?.ownerUserId).toBe(ownerUserId);
+
+    const { rows: before } = await pool.query<{ updated_at: string }>(
+      "SELECT updated_at::text AS updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+      [projectItemId],
+    );
+    const transferred = await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.transfer(client, projectItemId, ownerUserId),
+    );
+    expect(transferred.ownerUserId).toBe(ownerUserId);
+    const { rows: after } = await pool.query<{ advanced: boolean }>(
+      "SELECT updated_at > $2::timestamptz AS advanced FROM project_agent_guidance WHERE project_item_id = $1",
+      [projectItemId, before[0]?.updated_at],
+    );
+    expect(after[0]?.advanced).toBe(true);
+    const stored = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
+    expect(stored).toEqual(transferred);
+  });
+
+  it("rejects transferring guidance that doesn't exist", async () => {
+    await expect(
+      withTransaction(pool, (client) => projectAgentGuidanceStore.transfer(client, randomUUID(), randomUUID())),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  describe("guidanceReferenceStore", () => {
+    it("requireProjectsItem passes for an item in the Projects database", async () => {
+      const projectItemId = await createProjectItem();
+      await expect(
+        withTransaction(pool, (client) => guidanceReferenceStore.requireProjectsItem(client, projectItemId)),
+      ).resolves.toBeUndefined();
+    });
+
+    it("requireProjectsItem rejects an item id that doesn't exist", async () => {
+      await expect(
+        withTransaction(pool, (client) => guidanceReferenceStore.requireProjectsItem(client, randomUUID())),
+      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+    });
+
+    it("requireProjectsItem throws a plain infrastructure error, not GuidanceReferenceNotFoundError, when the Projects module database itself is missing", async () => {
+      const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = $1`, [
+        PROJECTS_MODULE_ID,
+      ]);
+      const databaseId = rows[0]?.id;
+      if (!databaseId) throw new Error("Projects database was not seeded");
+      await pool.query(`DELETE FROM items WHERE database_id = $1`, [databaseId]);
+      await pool.query(`DELETE FROM databases WHERE id = $1`, [databaseId]);
+
+      const err = await withTransaction(pool, (client) =>
+        guidanceReferenceStore.requireProjectsItem(client, randomUUID()),
+      ).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(GuidanceReferenceNotFoundError);
+    });
+
+    it("requireUser and requireUserLocale resolve for the tenant's user", async () => {
+      const tenantUser = await createTenantZeroUser(pool);
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, tenantUser.id)),
+      ).resolves.toBeUndefined();
+      const locale = await inTenant(getTenantZeroId(), (client) =>
+        guidanceReferenceStore.requireUserLocale(client, tenantUser.id),
+      );
+      expect(locale).toBe("cs");
+    });
+
+    it("requireUser and requireUserLocale reject a user id that doesn't exist", async () => {
+      await createTenantZeroUser(pool);
+      const unknownUserId = randomUUID();
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, unknownUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unknownUserId} not found`));
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, unknownUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unknownUserId} not found`));
+    });
+
+    it("requireUser and requireUserLocale reject an existing user bound to no tenant", async () => {
+      await createTenantZeroUser(pool);
+      const unboundUserId = await createTestUser();
+
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, unboundUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unboundUserId} not found`));
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, unboundUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unboundUserId} not found`));
+    });
+
+    it("requireUser and requireUserLocale reject another tenant's user, which its own tenant still resolves", async () => {
+      await createTenantZeroUser(pool);
+      const otherTenantId = await createTestTenant(pool);
+      const otherTenantUser = await createUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "hash",
+        tenantId: otherTenantId,
+      });
+
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, otherTenantUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${otherTenantUser.id} not found`));
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, otherTenantUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${otherTenantUser.id} not found`));
+      await expect(
+        inTenant(otherTenantId, (client) => guidanceReferenceStore.requireUser(client, otherTenantUser.id)),
+      ).resolves.toBeUndefined();
+    });
+
+    it("requireUser and requireUserLocale reject every user in a tenant that has no bound user", async () => {
+      const tenantZeroUser = await createTenantZeroUser(pool);
+      const emptyTenantId = await createTestTenant(pool);
+
+      await expect(
+        inTenant(emptyTenantId, (client) => guidanceReferenceStore.requireUser(client, tenantZeroUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${tenantZeroUser.id} not found`));
+      await expect(
+        inTenant(emptyTenantId, (client) => guidanceReferenceStore.requireUserLocale(client, tenantZeroUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${tenantZeroUser.id} not found`));
+    });
+
+    it("requireUser surfaces a dropped connection as itself, not as not-found", async () => {
+      const connectionError = new Error("connection terminated unexpectedly");
+      const brokenClient = {
+        query: async () => {
+          throw connectionError;
+        },
+      } as unknown as PoolClient;
+
+      const err = await guidanceReferenceStore.requireUser(brokenClient, randomUUID()).catch((e: unknown) => e);
+
+      expect(err).toBe(connectionError);
+      expect(err).not.toBeInstanceOf(GuidanceReferenceNotFoundError);
+    });
+  });
+
+  describe("createPoolClientTransactionRunner", () => {
+    it("opens a transaction at the requested isolation level", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+
+      const repeatableRead = await runner.withTransaction({ isolation: "repeatable_read" }, async (client) => {
+        const { rows } = await client.query<{ transaction_isolation: string }>("SHOW transaction_isolation");
+        return rows[0]?.transaction_isolation;
+      });
+      expect(repeatableRead).toBe("repeatable read");
+
+      const serializable = await runner.withTransaction({ isolation: "serializable" }, async (client) => {
+        const { rows } = await client.query<{ transaction_isolation: string }>("SHOW transaction_isolation");
+        return rows[0]?.transaction_isolation;
+      });
+      expect(serializable).toBe("serializable");
+    });
+
+    it("rolls back on a thrown error", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+      const projectItemId = await createProjectItem();
+      const ownerUserId = (await createTenantZeroUser(pool)).id;
+
+      await expect(
+        runner.withTransaction({ isolation: "serializable" }, async (client) => {
+          await projectAgentGuidanceStore.upsert(client, {
+            projectItemId,
+            ownerUserId,
+            markdown: "# Should roll back",
+          });
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+
+      const loaded = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
+      expect(loaded).toBeNull();
+    });
+
+    it("fires an after-commit callback registered inside it exactly once, after the commit", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+      const spy = vi.fn();
+
+      await runner.withTransaction({ isolation: "repeatable_read" }, async (client) => {
+        runAfterCommit(client, spy);
+        expect(spy).not.toHaveBeenCalled();
+      });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it("never fires an after-commit callback registered before a throw, not even from a later unrelated transaction", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+      const spy = vi.fn();
+
+      await expect(
+        runner.withTransaction({ isolation: "repeatable_read" }, async (client) => {
+          runAfterCommit(client, spy);
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+
+      expect(spy).not.toHaveBeenCalled();
+
+      await withTransaction(pool, async () => undefined);
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+});

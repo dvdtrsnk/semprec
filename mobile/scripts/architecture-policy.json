@@ -1,0 +1,90 @@
+{
+  "$comment": "What mobile/scripts/architecture.mjs allows. The rules that read each section are described in mobile/docs/verify.md.",
+  "gradle": {
+    "modules": {
+      ":shared:core": [],
+      ":shared:domain": [":shared:core"],
+      ":shared:data": [":shared:core", ":shared:domain"],
+      ":shared:presentation": [":shared:core", ":shared:domain"],
+      ":shared:umbrella": [":shared:core", ":shared:domain", ":shared:data", ":shared:presentation"],
+      ":android:core:ui": [],
+      ":android:feature:home": [":android:core:ui", ":shared:presentation"],
+      ":android:feature:settings": [":android:core:ui", ":shared:presentation"],
+      ":android:app": [
+        ":android:core:ui",
+        ":android:feature:home",
+        ":android:feature:settings",
+        ":shared:presentation",
+        ":shared:umbrella"
+      ]
+    }
+  },
+  "kotlinCommon": {
+    "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
+  },
+  "apple": {
+    "systemModules": ["Combine", "Foundation", "SwiftUI", "Synchronization", "XCTest"],
+    "externalModules": ["FactoryKit", "NavigatorUI"],
+    "kotlinFrameworkTarget": "CoreKit",
+    "targets": {
+      "CoreKit": { "project": "Modules/Core/CoreKit", "sources": "Sources", "allowed": [] },
+      "CoreKitTests": { "project": "Modules/Core/CoreKit", "sources": "Tests", "allowed": ["CoreKit", "SharedSDK"] },
+      "Dependencies": { "project": "Modules/Core/Dependencies", "sources": "Sources", "allowed": ["CoreKit", "FactoryKit"] },
+      "DesignSystem": { "project": "Modules/Core/DesignSystem", "sources": "Sources", "allowed": [] },
+      "HomeFeature": { "project": "Modules/Features/Home", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
+      "SettingsFeature": { "project": "Modules/Features/Settings", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "SettingsFeatureTests": { "project": "Modules/Features/Settings", "sources": "Tests", "allowed": ["SettingsFeature", "CoreKit"] },
+      "Semprec": {
+        "project": "Projects/App",
+        "sources": "Sources",
+        "allowed": ["CoreKit", "Dependencies", "HomeFeature", "SettingsFeature", "NavigatorUI"]
+      },
+      "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "NavigatorUI"] },
+      "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
+    }
+  },
+  "viewModels": {
+    "module": ":shared:presentation",
+    "baseClass": "ScreenViewModel",
+    "leaseType": "SharedViewModelLease"
+  },
+  "navigation": {
+    "gradleModules": [":android:app"],
+    "appleTargets": ["Semprec", "SemprecTests"]
+  },
+  "copy": [
+    {
+      "android": ":android:app",
+      "apple": "Semprec",
+      "keys": ["tab.home", "tab.settings"],
+      "androidUntranslatable": ["app_name"]
+    },
+    {
+      "android": ":android:core:ui",
+      "apple": "DesignSystem",
+      "keys": ["state.loading", "state.retry"]
+    },
+    {
+      "android": ":android:feature:home",
+      "apple": "HomeFeature",
+      "keys": [
+        "home.title",
+        "home.item.title",
+        "home.empty",
+        "detail.title",
+        "detail.description",
+        "detail.notFound",
+        "failure.unavailable",
+        "failure.invalidData",
+        "failure.unexpected"
+      ],
+      "androidOnly": ["detail.back"]
+    },
+    {
+      "android": ":android:feature:settings",
+      "apple": "SettingsFeature",
+      "keys": ["settings.title", "settings.row.about", "about.title", "about.description", "about.version", "about.done"]
+    }
+  ]
+}

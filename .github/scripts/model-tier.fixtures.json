@@ -1,0 +1,162 @@
+[
+  {
+    "name": "low",
+    "body": "**Blocked by:** none\n**Model tier:** low\n\n## Context\nA task.",
+    "result": {
+      "ok": true,
+      "tier": "low"
+    }
+  },
+  {
+    "name": "medium",
+    "body": "**Blocked by:** none\n**Model tier:** medium\n\n## Context\nA task.",
+    "result": {
+      "ok": true,
+      "tier": "medium"
+    }
+  },
+  {
+    "name": "high",
+    "body": "**Blocked by:** none\n**Model tier:** high\n\n## Context\nA task.",
+    "result": {
+      "ok": true,
+      "tier": "high"
+    }
+  },
+  {
+    "name": "crlf-trailing-space",
+    "body": "**Blocked by:** #7, #8 \r\n**Model tier:** high\t \r\n\r\n## Context",
+    "result": {
+      "ok": true,
+      "tier": "high"
+    }
+  },
+  {
+    "name": "missing",
+    "body": "**Blocked by:** none\n\n## Context",
+    "result": {
+      "ok": false,
+      "error": "missing"
+    }
+  },
+  {
+    "name": "misplaced",
+    "body": "**Blocked by:** none\n\n**Model tier:** high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid-position"
+    }
+  },
+  {
+    "name": "wrong-first-line",
+    "body": "Blocked by: none\n**Model tier:** high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid-position"
+    }
+  },
+  {
+    "name": "leading-space",
+    "body": "**Blocked by:** none\n **Model tier:** high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "uppercase",
+    "body": "**Blocked by:** none\n**Model tier:** HIGH\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "extra-text",
+    "body": "**Blocked by:** none\n**Model tier:** low or high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "wrong-prefix",
+    "body": "**Blocked by:** none\nModel tier: high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "duplicate",
+    "body": "**Blocked by:** none\n**Model tier:** low\n**Model tier:** high\n## Context",
+    "result": {
+      "ok": false,
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "task-example-only",
+    "body": "**Blocked by:** none\n\n## Context\nDescription\n## Task\n```\n**Model tier:** high\n```",
+    "result": {
+      "ok": false,
+      "error": "missing"
+    }
+  },
+  {
+    "name": "comment-only",
+    "body": "**Blocked by:** none\n<!-- **Model tier:** high -->\n## Context",
+    "result": {
+      "ok": false,
+      "error": "missing"
+    }
+  },
+  {
+    "name": "fenced-header-example",
+    "body": "**Blocked by:** none\n```\n**Model tier:** high\n```\n## Context",
+    "result": {
+      "ok": false,
+      "error": "missing"
+    }
+  },
+  {
+    "name": "body-example-ignored",
+    "body": "**Blocked by:** none\n**Model tier:** low\n## Context\nDescription\n## Task\n**Model tier:** high",
+    "result": {
+      "ok": true,
+      "tier": "low"
+    }
+  },
+  {
+    "name": "header-comment-ignored",
+    "body": "**Blocked by:** none\n**Model tier:** low\n<!-- **Model tier:** high -->\n## Context",
+    "result": {
+      "ok": true,
+      "tier": "low"
+    }
+  },
+  {
+    "name": "non-string input fails boundary validation",
+    "body": null,
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "inline comment does not change exact grammar",
+    "body": "**Blocked by:** none\n**Model tier:** high <!-- hint -->",
+    "result": {
+      "ok": false,
+      "error": "invalid"
+    }
+  },
+  {
+    "name": "indented comments do not add another metadata marker",
+    "body": "**Blocked by:** none\n**Model tier:** medium\n  <!-- Model tier: high -->\n## Task\nWork",
+    "result": {
+      "ok": true,
+      "tier": "medium"
+    }
+  }
+]

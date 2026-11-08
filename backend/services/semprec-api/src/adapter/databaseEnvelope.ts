@@ -1,0 +1,49 @@
+import type { CollectionMetadata, DatabaseRow } from "@semprec/data";
+
+/**
+ * The wire shape every database read/write returns (issue #240) — the raw row, with `name`
+ * replaced by its localized-metadata resolution (issue #35's `resolveDatabaseName`) so a system
+ * database's `name IS NULL` override slot never leaks a literal `null` to a REST caller.
+ */
+export interface DatabaseEnvelope {
+  id: string;
+  name: string;
+  searchPlaceholder: string | null;
+  key: string | null;
+  parentItemId: string | null;
+  ownerProjectItemId: string | null;
+  ownerModuleId: string | null;
+  schemaLocked: boolean;
+  system: boolean;
+  archivedAt: string | null;
+  icon: string | null;
+  color: string | null;
+  overviewOrder: number | null;
+  switcherOrder: number | null;
+  clientVisible: boolean;
+}
+
+export function toDatabaseEnvelope(
+  database: DatabaseRow,
+  resolvedName: string,
+  searchPlaceholder: string | null,
+  metadata: CollectionMetadata,
+): DatabaseEnvelope {
+  return {
+    id: database.id,
+    name: resolvedName,
+    searchPlaceholder,
+    key: database.key,
+    parentItemId: database.parentItemId,
+    ownerProjectItemId: database.ownerProjectItemId,
+    ownerModuleId: database.ownerModuleId,
+    schemaLocked: database.schemaLocked,
+    system: database.system,
+    archivedAt: database.archivedAt,
+    icon: metadata.icon,
+    color: metadata.color,
+    overviewOrder: metadata.overviewOrder,
+    switcherOrder: metadata.switcherOrder,
+    clientVisible: metadata.clientVisible,
+  };
+}

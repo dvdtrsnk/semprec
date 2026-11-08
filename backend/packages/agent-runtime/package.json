@@ -4,5 +4,25 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "types": "src/index.ts"
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-pi-import-paths": "node scripts/check-pi-import-paths.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@semprec/application": "workspace:*",
+    "@semprec/data": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
+    "@semprec/realtime": "workspace:*",
+    "@semprec/shared": "workspace:*",
+    "ajv": "^8.20.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "vitest": "^4.1.11"
+  }
 }

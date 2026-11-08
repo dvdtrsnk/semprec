@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The accent color of the Semprec web app (web/src/styles/tokens.css). -->
+    <color name="ic_launcher_background">#2F6FEB</color>
+</resources>

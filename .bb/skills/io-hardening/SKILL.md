@@ -1,0 +1,139 @@
+---
+name: io-hardening
+description: "What every edge of the Semprec backend must do before it is safe - inbound requests (auth, validation against the storage domain, body and header caps, rate limits) and every resource opened on the way (timeout, size cap, release on the failure path, shutdown that cannot hang). Load this BEFORE writing the first line of an edge, and do not skip it because the endpoint is internal or the connection is local. Triggers on: RouteDefinition, req.method, req.headers, res.json, any *Handler.ts file, webhook, handleUpgrade, WebSocket, wss, broadcast, pool.connect, withClient, client.release, close(), terminate(), LISTEN, JSON.parse of anything that arrived from outside, fetch, IMAP, APNs, MCP, AbortSignal, a recursive walk over client-supplied JSON or schema, an SSRF or IP allow-list check, a logger call inside a catch, and any provider or network call. Skip only when nothing in the change crosses a process boundary."
+---
+
+# Both edges: what comes in, and what goes out
+
+The two directions fail differently, so both lists are here — most changes that
+add one soon add the other.
+
+## Inbound: a new route, handler or webhook receiver
+
+- **Authentication and authorization, on every route.** Not just "is there a
+  session" — check that the caller owns the resource being mutated. An
+  identifier taken from the request body (a user id, a decided-by, an owner) is
+  a claim by the caller, not a fact: verify it against the authenticated
+  identity rather than trusting it.
+- **Parse the body before using it.** A JSON body may be malformed, may be the
+  literal `null`, may be an array where an object is expected. `JSON.parse`
+  without a `try` turns a client mistake into a 500; an unchecked cast to
+  `Record<string, unknown>` turns `null` into a crash at the first property
+  read. Validate at the edge, then trust the type inside.
+- **Cap the body.** Buffering a request body with no size limit is a way to be
+  taken offline by one request.
+- **Rate-limit what is reachable without a session.** Password reset, setup,
+  and anything that sends mail or costs money are the obvious cases.
+- **Compare secrets in constant time.** `===` on a token leaks its prefix to a
+  patient attacker; use a timing-safe comparison.
+- **A tenant id claimed by the caller is untrusted.** A tenant id in a body,
+  query string, path segment or caller-settable header is a claim by the
+  caller. Resolve the tenant from the authenticated session, or from a
+  server-side lookup keyed by an external identifier the request carries (a
+  webhook subscription id, a mailbox address) — never from a tenant id the
+  request supplies. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+- **A foreign resource id answers exactly like a random id.** Same status, body
+  and headers. Resolve the resource inside the tenant before any conditional
+  branch (ETag/304, cache headers, early returns), so no branch distinguishes
+  "exists in another tenant" from "does not exist".
+- **A log line or error message, anywhere in the handler, carries ids and counts, never user content.**
+  Item properties, mail subjects or addresses, file names, prompts and model
+  output stay out: logs are not tenant-scoped
+  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`).
+- **Log a caught error by its name and code, never the raw object.** An
+  error's message and properties can carry the user content that failed,
+  such as a mail subject, a query parameter or a model output. Log
+  `err.name`, a known `code` and the ids. This applies at every `catch` that
+  reaches a shared logger, not only in handlers.
+- **Validate explicitly where you read.** Do not assume a library rejects bad
+  input: `Buffer.from(s, "base64")` silently drops invalid characters instead
+  of throwing. Validate the value yourself at the read site, and put a maximum
+  length on every array the edge accepts.
+- **Bound recursion over untrusted structure.** A byte-size cap does not bound
+  nesting depth. A walk over a client-supplied schema or JSON document needs an
+  explicit depth limit too.
+- **Compare addresses as addresses.** An SSRF or allow-list check parses the IP
+  and tests ranges numerically. A string prefix misses IPv6 forms (bracketed,
+  link-local `fe80::/10`, IPv4-mapped), so test those forms explicitly.
+- **Never put a secret in a URL.** Query parameters end up in logs, proxies and
+  referrers — a token belongs in an `Authorization` header. On the web side, a
+  secret in a `VITE_*` variable is baked into the bundle and is public.
+
+## Outbound: any call to something you do not control
+
+- **Always a timeout.** A remote endpoint that accepts the connection and then
+  says nothing will otherwise hold the owning process forever. This includes
+  the handshake, not just the request: an MCP server that connects and never
+  finishes `initialize` hangs exactly the same way.
+- **Forward the caller's cancellation.** A wrapper around an outbound call
+  takes the caller's `AbortSignal` and combines it with its own deadline
+  (`AbortSignal.any([signal, AbortSignal.timeout(ms)])`). Without that, an
+  abort upstream leaves the call running, and a library's default timeout, or
+  waiting for the client to disconnect, is not a server-side deadline.
+- **Always a cap on the response.** `res.json()` and accumulating `data` chunks
+  both read an unbounded body into memory. Cap it, and make sure any fallback
+  path (the one taken when the stream is missing) is capped too — an escape
+  hatch that skips the limit is the same bug with extra steps. The same goes
+  for results accumulated over many calls (an IMAP fetch, a paginated
+  listing): cap the count and total size, and give each step its own timeout.
+- **Clean up what you opened, on every path out.** When a timeout wins the
+  race, the underlying request keeps running unless you abort it; when a
+  socket errors, the session stays open unless you close it. Both leak a
+  handle per failure, which is a slow outage rather than a visible one. The
+  same rule applies to any acquire-then-use pair, not just HTTP: `pool.connect()`
+  hands you a client before you've done anything with it, and if the query
+  that follows throws, that connection is never released. Use `withClient(pool,
+  fn)` (next to `withTransaction` in `db/pool.ts`) for a client needed across
+  several non-transactional statements — it releases in a `finally` so a throw
+  between acquire and the first query can't leak the connection. Fall back to a
+  manual acquire/`try`/`finally` only when the client has to outlive a single
+  `withClient`-style call, such as a session-scoped `LISTEN`. Nothing that can
+  throw runs between acquiring a resource and entering the `try` that releases
+  it, and for each resource (a temp file, a stored
+  blob, an event listener) list every later step that can fail and release it
+  at each one. A listener registered per connection is removed when that
+  connection is replaced.
+- **Every outbound frame goes through one send gate, never `ws.send` directly.**
+  A stream that sends straight to the socket has to choose between dropping a
+  frame — silent, and invisible to the client — and letting the outgoing buffer
+  grow, which turns one paused reader into unbounded server memory. In the sync
+  server that gate is `sendWithBackpressure` (`backend/packages/realtime/src/backpressure.ts`),
+  which closes the socket with 1013 once `bufferedAmount` exceeds its cap rather
+  than doing either. A new outbound stream that bypasses it reintroduces exactly
+  the unbounded queue it exists to prevent — see
+  `docs/adr/2026-09-16-realtime-outage-and-backpressure-close-rather-than-buffer.md`,
+  which also records why coalescing repeated *thin* invalidations is not the
+  same thing as dropping a frame, and why a stream carrying content may not be
+  coalesced that way.
+- **A shutdown that waits on a handshake can wait forever.** `ws.close()` starts
+  a close handshake that needs the client to acknowledge it; one unresponsive
+  client (dropped network, crashed tab) means the promise waiting on it never
+  resolves. When you are the one tearing the server down, use `terminate()` —
+  which drops the socket with no round-trip — and reserve `close()` for a
+  single connection's own graceful exit. The one deliberate exception is a
+  shutdown whose entire purpose is to *tell* each client to reconnect: a close
+  code only arrives if a real close frame is delivered, so the sync server sends
+  1012 rather than terminating. That is safe only because its `WebSocketServer`
+  is created with `noServer: true` and never attached to an `http.Server`, so
+  `wss.close()` does not wait on those handshakes — an unresponsive client is
+  hard-dropped by `ws`'s own close timeout. Terminating is still the default
+  everywhere that condition does not hold.
+- **Work already in flight when shutdown starts can still land after it.** An
+  async step that began before the shutdown loop ran — an in-flight
+  authentication that attaches its connection once it resolves, a callback
+  that finishes late — is not covered by that loop just because it started
+  earlier. Set a `closed` flag before the shutdown loop runs, and check it when
+  the in-flight work resolves, so a late completion is rejected instead of
+  attaching after the server already considers itself closed.
+- **Handle the refusal you asked for.** The AI gateway refuses calls over
+  budget; a provider returns 429. Surface it — do not retry-loop against a
+  closed door.
+- **Validate what comes back.** A response body is external input exactly like
+  a request body is. See `state-writes` for the persistence side of the same
+  rule.
+
+## Escape hatch
+
+An issue whose Task explicitly specifies different behaviour wins over this
+list — say so in the code comment and in the pull request description, so the
+reviewer sees the decision rather than the omission.

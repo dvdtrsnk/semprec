@@ -1,0 +1,20 @@
+.agent-run-detail {
+  padding: var(--space-3);
+}
+
+.agent-run-detail__fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.agent-run-detail__fields dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-run-detail__fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

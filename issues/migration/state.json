@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "authority": "repository",
+  "targetAuthority": "repository",
+  "phase": "complete",
+  "repository": "dvdtrsnk/semprec",
+  "importedIssueCount": 1375,
+  "verification": "issues/migration/verification.json",
+  "relayAdapterCommit": "f5d95655ad571b551fa82aae0d87f9fdfb345ce1",
+  "reviewBotPublished": true,
+  "cutoverAt": "2026-10-27T15:39:11.460Z",
+  "reviewBotCommit": "eeb88558a9b6d65b0fc06e624c69c32d2794e6df",
+  "reviewBotPullRequest": 35
+}

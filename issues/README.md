@@ -1,0 +1,194 @@
+# Repository issues
+
+## Current backend delivery program
+
+Use [the sequential technical batches](batches/backend/README.md) to execute the
+open backend backlog in one working tree. Original implementation issues remain
+requirement records with their existing feature-epic parents; their individual
+dispatch intent is disabled. New aggregate issues are proposed, not approved or
+queued. The program preserves source Tasks/AC and declared dependencies.
+
+Run `node issues/batches/backend/verify.mjs` to check routing and snapshots, then
+`node .github/scripts/issues.mjs validate` for ordinary catalog validation.
+The scoped authoring/execution exception is recorded in
+`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`.
+
+Issues are Markdown records with stable identities and a small YAML metadata
+header. The rollout is tracked in [`migration/state.json`](migration/state.json).
+While its authority is `github`, the live Relay workflows still use GitHub;
+the local CLI is available for preparation and shadow evaluation. An empty
+`items/` directory is not an imported backlog.
+
+The decision and cutover requirements are recorded in
+[`repository-markdown-issues-with-a-guarded-cutover`](../docs/adr/2026-10-27-repository-markdown-issues-with-a-guarded-cutover.md).
+After cutover, issues and their dependency handovers must be read locally;
+GitHub is used for PRs, review and CI, not as an issue-read fallback.
+
+## Commands
+
+Run from the repository root with Node 22 or later; no install is needed:
+
+```sh
+node .github/scripts/issues.mjs list
+node .github/scripts/issues.mjs show gh-2035
+node .github/scripts/issues.mjs ready
+node .github/scripts/issues.mjs validate
+node .github/scripts/issues.mjs create 'Implement the operation' /path/to/body.md
+node .github/scripts/issues.mjs create 'Batch — epic' issues/templates/epic.md --kind epic
+node .github/scripts/issues.mjs import /path/to/export --dry-run
+node .github/scripts/issues.mjs import /path/to/export
+```
+
+`show` includes the exact file SHA-256. Mutations require that hash, so a
+stale caller cannot overwrite a newer CLI update:
+
+```sh
+node .github/scripts/issues.mjs approve <id> <expected-file-sha256> <actor>
+node .github/scripts/issues.mjs queue <id> <expected-file-sha256>
+node .github/scripts/issues.mjs block <id> <expected-file-sha256>
+node .github/scripts/issues.mjs reopen <id> <expected-file-sha256>
+```
+
+Creation produces an unapproved proposal. Approval requires the owner's
+authorization, or a decision agent acting under the delegation in the
+Autonomy section below. Actor metadata is an audit annotation in a
+Git-reviewed file, not independent authentication.
+Approving does not queue work. Queueing refuses protected paths declared in
+`Touches`. Reopening clears queue intent; it does not silently redispatch.
+
+`ready` is a local eligibility calculation, not an execution scheduler. It
+performs no network calls, claims no work and does not dispatch Relay. Missing
+dependencies, invalid specs, stale approvals, park labels, cancelled dependencies
+and completed dependencies without handovers exclude an issue. `validate`
+reports specification diagnostics and fails on new or edited invalid records.
+Import diagnostics remain visible as historical debt only while the original
+record checksum matches the migration manifest; import never silently rewrites specs.
+
+## Record format
+
+See [`schema.json`](schema.json) for metadata. Each frontmatter field has one
+physical line, with its value encoded as JSON (a subset of YAML). Use quoted
+strings, `null`, JSON arrays and JSON objects; do not use YAML aliases,
+multiline values, comments or implicit types. The record envelope uses LF;
+the body is preserved byte-for-byte, including any CRLFs it already contains.
+
+`schemaVersion`, `id`, `title`, `kind`, `state`, `stateReason`, `labels`, `parent`,
+`assignees`, `milestone`, `createdAt`, `updatedAt`, `closedAt`, `source`,
+`approval` and `resolution` are required. The CLI serializes the complete header.
+
+Imported identifiers are `gh-<GitHub number>`. New identifiers are `sp-<UUIDv4>`.
+Do not rename a record or move it when closing it. A parent reference records
+hierarchy; it is not a blocking dependency. Children are derived from parent
+references, not maintained as a second list on an epic.
+
+Implementation bodies follow [the canonical issue format](../.github/ISSUE_FORMAT.md).
+`Blocked by` and `Model tier` occupy the first and second lines **of the body,
+after the closing frontmatter delimiter**. Their values are not duplicated
+in the frontmatter. Keep the original sections, scope, rationale and acceptance
+criteria. Use comma-separated `#123`, `gh-123` or `sp-<UUIDv4>` dependencies;
+`none` means no dependency. Epics cannot be implementation blockers.
+
+Approval hashes the title, kind, parent and body. Changing those requires a new
+approval before queueing. Labels and execution reservations are separate: files
+record durable intent, while Relay owns live run coordination across worktrees.
+
+## Import and history
+
+An authorized exporter must supply the format in
+[`migration/EXPORT_FORMAT.md`](migration/EXPORT_FORMAT.md). It must page every
+collection, include open and closed issues, exclude PRs from the issue list,
+and preserve authoritative closing-PR references. The importer does not obtain
+credentials, make API calls or bypass Access Hub.
+
+`history/<id>/source.json` is the immutable imported source, not the editable
+spec. `history/<id>/comments/<comment-id>.md` preserves comment metadata and body;
+`comments.json` additionally retains the complete imported comment payloads;
+`events.json` preserves available events. A handover contains the descriptions
+of the verified merged closing PRs. Attachments keep original links in issue
+bodies and local copies under `attachments/<id>/`; the migration report lists
+missing assets. `history/<id>/attachments.json` maps original asset URLs to local
+paths and checksums, so offline readers can resolve them without rewriting the
+original issue body. Downloading assets does not imply executing or trusting them.
+
+Imports refuse changed destination files. Identical retries are safe, including
+after interruption. The final `migration/manifest.json` records imported file
+checksums, state counts and diagnostics. It does not itself activate local
+authority. Final delta reconciliation must use a reviewed new snapshot before
+cutover; rerunning the initial import over edited records is deliberately refused.
+
+CLI writers reserve `items/.<id>.lock`. If a process crashes, inspect the owning
+operation before removing its lock; never clear another agent's active lock.
+Direct edits and independent worktrees are outside this reservation protocol.
+
+## Completion and automation
+
+A worker completes an approved issue on its feature branch:
+
+```sh
+node .github/scripts/issues.mjs complete <id> <expected-file-sha256> <handover.md> <implementation-commit> [pr-number]
+```
+
+Commit the issue and handover with the implementation. The completion guard compares
+its specification against the frozen dispatch revision. The CLI checks proposal
+commit ancestry when first completing the issue; a later rebase preserves that
+original proposal identity. `resolution.commit` identifies the original implementation
+proposal; a future
+squash merge commit cannot be known before review. The record becomes canonical when
+the branch merges. PR descriptions begin with `Repository-Issue: <id>`.
+
+Relay obtains immutable base checkouts on the host and reads the credential-free
+`issues/relay.mjs` protocol. A run seals the canonical id, Git revision, file checksum
+and body checksum in its execution snapshot. Its numeric issue address is only a
+compatibility key; collisions fail closed. Operational logs and temporary park labels
+live in Relay's durable journal, keyed by canonical issue and intent checksum. Editing
+a canonical record creates new intent; progress logs never edit the specification.
+PR conversations continue through the GitHub provider.
+
+The review bot reads the approved specification from the PR base Git blob, without
+executing repository code. Missing records, invalid linkage and stale approval are
+errors after cutover. PR-only maintenance remains unlinked.
+
+Scheduled epic maintenance and review harvesting propose Git changes through an
+issue-maintenance PR. A pending maintenance PR applies backpressure. The epic sweep
+uses a versioned observation and preserves the grace period and `epic:wip` opt-out.
+Follow-up triage creates proposed local records and publishes its ledger through a PR;
+it never approves or queues its own specifications. Local harvest markers replace
+remote issue labels as its durable ledger.
+
+## Autonomy
+
+No issue waits for a person by default. When an open question blocks dispatch,
+a decision agent decides it and the dispatch continues. The owner delegated
+the following decisions on 2026-10-29:
+
+1. Approval of an implementation proposal whose specification is sound against
+   the integration tip.
+2. A minimal correction of a specification defect (Task, Touches, Blocked-by,
+   Acceptance criteria). The exact old and new lines are recorded.
+3. A new ADR that supersedes or narrows an accepted decision. Accepted ADR
+   bodies are never edited.
+4. Resolution of an implementation refused as BLOCKED, followed by one retry of
+   the implementation on the corrected specification.
+
+Decisions run on the strongest model of the provider (`fable`, falling back to
+`opus`). Implementation and review run on the default model, and a decision
+agent never implements the Task.
+
+Protected paths (`.relay/**`, `.github/workflows/**`,
+`.github/scripts/check-protected-paths.mjs`,
+`.github/scripts/review-bot-disabled.mjs`, `.github/scripts/issues.mjs`,
+`.github/scripts/issues/**`) may be changed by agents for the autonomy purpose
+only, on the owner's instruction of 2026-10-29. Each such change is listed in
+its decision record, and no check is weakened beyond that purpose.
+
+Not delegated: any assertion of a fact outside the repository, such as
+production state, an external reviewer's identity or review, a third-party
+account, or a human attestation. An issue that needs such a fact gets the
+decision `PRECONDITION`. The fact is written into its decision record as a
+deployment precondition, and the issue stops blocking the dispatch of its
+dependants. No agent closes or attests such an issue.
+
+Every decision writes `issues/decisions/<id>.md` (question, options considered,
+decision, exact spec change, actor, model, date) and commits it together with
+the change it made. Approvals made under this section use the actor
+`claude-delegated-by-david`.

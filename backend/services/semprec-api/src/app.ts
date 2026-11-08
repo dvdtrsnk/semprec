@@ -1,0 +1,247 @@
+import { createRecordingsRequestListener } from "./recordingsHandler.js";
+import { createCollectionMetadataResolver, resolveModuleRuleKinds } from "@semprec/data";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Pool } from "pg";
+import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
+import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
+import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
+import { createMcpRequestListener } from "./mcp/mcpHandler.js";
+import {
+  createCustomRouteDependencies,
+  mountCustomRoutes,
+  type CustomRouteDependencies,
+} from "./adapter/customRouteMount.js";
+import { mountRoutes } from "./adapter/routeTable.js";
+import { createSempThreadRoutes } from "./sempThreadsHandler.js";
+import { createSempSpeechRequestListener, isMessageSpeechPath } from "./sempSpeechHandler.js";
+import type { HttpAiGatewayClientConfig } from "@semprec/ai-gateway-client";
+import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
+import { createAdminRoutes } from "./adminHandler.js";
+import { createDatabaseRoutes } from "./databasesHandler.js";
+import { createItemRoutes } from "./itemsHandler.js";
+import { createPropertyRoutes } from "./propertiesHandler.js";
+import { createViewRoutes } from "./viewsHandler.js";
+import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
+import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
+import { createAgentRunRequestListener } from "./agentRunHandler.js";
+import { createAuthRequestListener } from "./authHandler.js";
+import { createNotificationsRequestListener } from "./notificationsHandler.js";
+import { createSetupRequestListener } from "./setupHandler.js";
+import { createInvitationRequestListener } from "./invitationHandler.js";
+import { createHealthzRequestListener } from "./healthzHandler.js";
+import { createServerInfoRequestListener } from "./serverInfoHandler.js";
+import { createSchemaRequestListener } from "./schemaHandler.js";
+import { createFilesRequestListener } from "./filesHandler.js";
+import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
+import { createBlobsRequestListener } from "./blobsHandler.js";
+import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
+import { sendJson } from "./adapter/http.js";
+import { isAllowedOrigin } from "./originCheck.js";
+import { logger } from "./logger.js";
+
+/** Methods a browser sends without a same-origin check: they cannot change state (issue #1044). */
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
+
+export interface AppOptions {
+  passwordResetMailer: PasswordResetMailer;
+  /** Issue #1040: absent when SMTP is not configured — invitations are still issued, but no mail is sent. */
+  inviteMailer?: InviteMailer;
+  appBaseUrl: string;
+  setupToken: string;
+  /** Backs `GET /api/schema` (issue #147) — every active module's manifest loaded once at startup. */
+  moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
+  /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
+  blobStorage: BlobStorageWriter;
+  /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
+  mailAttachmentStorage?: BlobStorageWriter;
+  speechGateway?: HttpAiGatewayClientConfig;
+  /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
+  maxFileSizeBytes: number;
+  /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
+  trustProxy?: boolean;
+  /**
+   * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
+   * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
+   */
+  customRouteDependencies?: CustomRouteDependencies;
+}
+
+/**
+ * The full request dispatcher: `serve.ts` calls this to get the listener it hands to
+ * `http.createServer`, and `__tests__/routeMatrix.test.ts` (issue #143) calls it the same way to
+ * drive `routeMatrix.ts`'s inventory against a real in-memory server, with no process/port of
+ * its own to manage.
+ *
+ * Routes by path prefix; a module's custom route (issue #239 — `POST /api/proposals/:id/confirm`,
+ * `GET /api/inbox-types`, `POST /api/push-subscriptions`, `POST /api/push-subscriptions/:id/revoke`,
+ * `GET /api/ai-usage`) is tried first through `mountCustomRoutes`, then the generic database/property/
+ * view/item resource routes (issue #240 — `/api/databases`, `/api/properties/:id`; issue #155 —
+ * `/api/views/:id`, `/api/views/:id/items/:itemId`; issue #241 — `/api/databases/:id/items`,
+ * `/api/items/:id`; issue #156 — `DELETE /api/items/:id`, `POST /api/items/:id/restore`) through
+ * `mountRoutes`, since
+ * none of those paths are exact prefixes this function otherwise routes; `mcpAgentPageListener` still
+ * answers 404 itself for anything left unmatched.
+ */
+export async function createDispatcher(
+  pool: Pool,
+  options: AppOptions,
+): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
+  const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
+  // Resolved per call, so a module activated or deactivated since the last request is reflected.
+  const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
+  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
+    ...(options.customRouteDependencies ?? createCustomRouteDependencies()),
+    heartbeatRuleKinds,
+  });
+  // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
+  // injected `Pool`, threaded into every generic resource route family below so there is no
+  // second write path — a route never constructs its own `createChokePoint(pool)`.
+  const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
+  const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
+  const dispatchResourceRoute = mountRoutes(pool, [
+    ...createAccountRoutes(pool, options),
+    ...createSempThreadRoutes(pool, heartbeatRuleKinds),
+    ...createAdminRoutes(pool, options),
+    ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
+    ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
+    ...createViewRoutes(genericApplicationService, pool),
+    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
+  ]);
+  // Issue #220's own composition root over the same generic catalog: a second
+  // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
+  // the REST `genericApplicationService` above beyond the `Pool` itself (#219's ADR — REST and
+  // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
+  // registered capabilities (an authenticated MCP session has no project to compute a per-run
+  // manifest against, unlike an AgentTool run).
+  const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
+  const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
+  const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
+  const mcpListener = await createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities, options.moduleRegistry);
+  const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
+  const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
+  const agentRunListener = createAgentRunRequestListener(pool);
+  const authListener = createAuthRequestListener(pool, {
+    passwordResetMailer: options.passwordResetMailer,
+    appBaseUrl: options.appBaseUrl,
+    trustProxy: options.trustProxy,
+  });
+  const notificationsListener = createNotificationsRequestListener(pool);
+  const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const invitationListener = createInvitationRequestListener(pool, { trustProxy: options.trustProxy ?? false });
+  const healthzListener = createHealthzRequestListener(pool);
+  const serverInfoListener = createServerInfoRequestListener();
+  const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
+  const filesListener = createFilesRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const recordingsListener = createRecordingsRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobUploadListener = createBlobUploadRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobsListener = createBlobsRequestListener(pool, {
+    files: options.blobStorage,
+    mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
+  });
+  const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
+  const graphWebhookListener = createGraphWebhookRequestListener(pool);
+  const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
+
+  // Issue #167's HTTP entry point: every request mints its own trace id, carried through
+  // whichever async work the matched route kicks off (nothing below awaits `dispatch` itself, but
+  // `AsyncLocalStorage` context follows the promise chains those routes start from inside this
+  // synchronous call).
+  function dispatch(req: IncomingMessage, res: ServerResponse): void {
+    // Issue #1044: a browser page on another origin can send an unsafe request with the session
+    // cookie attached, so every such request is checked before routing. Safe methods are not.
+    if (!SAFE_METHODS.has(req.method ?? "") && !isAllowedOrigin(req)) {
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      logger.warn({ method: req.method, path: pathname }, "origin_not_allowed");
+      sendJson(res, 403, { error: { code: "origin_not_allowed" } });
+      return;
+    }
+    withTraceContext({}, () => dispatchTraced(req, res));
+  }
+
+  function dispatchTraced(req: IncomingMessage, res: ServerResponse): void {
+    if (dispatchCustomRoute(req, res)) return;
+    if (dispatchResourceRoute(req, res)) return;
+
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "POST" && isMessageSpeechPath(pathname)) {
+      speechListener(req, res);
+      return;
+    }
+    if (pathname === "/healthz") {
+      void healthzListener(req, res);
+      return;
+    }
+    if (pathname === "/api/server-info") {
+      serverInfoListener(req, res);
+      return;
+    }
+    if (pathname === "/api/schema") {
+      void schemaListener(req, res);
+      return;
+    }
+    if (pathname === "/mcp") {
+      void mcpListener(req, res);
+      return;
+    }
+    if (pathname === "/api/approval-requests" || pathname.startsWith("/api/approval-requests/")) {
+      void approvalRequestsListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/agent-runs/")) {
+      void agentRunListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/auth/")) {
+      void authListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/notifications")) {
+      void notificationsListener(req, res);
+      return;
+    }
+    if (pathname === "/api/setup") {
+      void setupListener(req, res);
+      return;
+    }
+    if (pathname === "/api/invitations/accept") {
+      void invitationListener(req, res);
+      return;
+    }
+    if (pathname === "/api/recordings" && req.method === "POST") {
+      recordingsListener(req, res);
+      return;
+    }
+    if (pathname === "/api/files" && req.method === "POST") {
+      void filesListener(req, res);
+      return;
+    }
+    if (pathname === "/api/blobs" && req.method === "POST") {
+      void blobUploadListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
+      void blobsListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/account/exports/") && pathname.endsWith("/download") && req.method === "GET") {
+      void accountExportDownloadListener(req, res);
+      return;
+    }
+    if (pathname === "/api/mail/graph/webhook") {
+      void graphWebhookListener(req, res);
+      return;
+    }
+    void mcpAgentPageListener(req, res);
+  }
+
+  return dispatch;
+}

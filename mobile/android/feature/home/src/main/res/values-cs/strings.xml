@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_title">Domů</string>
+    <string name="home_item_title">Zástupná položka %1$d</string>
+    <string name="home_empty">Zatím tu nejsou žádné položky.</string>
+    <string name="detail_title">Položka</string>
+    <string name="detail_description">Tato obrazovka zobrazuje jednu zástupnou položku.</string>
+    <string name="detail_notFound">Tato položka neexistuje.</string>
+    <string name="detail_back">Zpět</string>
+    <string name="failure_unavailable">Obsah teď není dostupný.</string>
+    <string name="failure_invalidData">Obsah se nepodařilo přečíst.</string>
+    <string name="failure_unexpected">Něco se pokazilo.</string>
+</resources>

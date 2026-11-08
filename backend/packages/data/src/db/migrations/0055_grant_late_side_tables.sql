@@ -1,0 +1,11 @@
+-- Issue #962: `agent_run_mcp_credentials` (0043) and `mail_message_flag_sync_state` (0045) were
+-- created without the grant that 0040_least_privilege_roles.sql's convention requires of every
+-- later table, so neither runtime role could touch them.
+--
+-- Both are module side tables, so they get the side-table grant; `semprec_data` inherits the
+-- access through its `semprec_side` membership. Neither has a serial column and 0047 already
+-- covers future sequences, so no sequence grant is needed.
+--
+-- Additive only (GRANT statements, no existing grant, table or row changes), so the previous
+-- release keeps working against this schema after a rollback.
+GRANT SELECT, INSERT, UPDATE, DELETE ON agent_run_mcp_credentials, mail_message_flag_sync_state TO semprec_side;

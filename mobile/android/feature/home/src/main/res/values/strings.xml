@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_title">Home</string>
+    <string name="home_item_title">Placeholder item %1$d</string>
+    <string name="home_empty">There are no items yet.</string>
+    <string name="detail_title">Item</string>
+    <string name="detail_description">This screen shows one placeholder item.</string>
+    <string name="detail_notFound">This item does not exist.</string>
+    <string name="detail_back">Back</string>
+    <string name="failure_unavailable">The content is not available right now.</string>
+    <string name="failure_invalidData">The content could not be read.</string>
+    <string name="failure_unexpected">Something went wrong.</string>
+</resources>

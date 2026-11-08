@@ -1,0 +1,126 @@
+---
+name: db-migrations
+description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CREATE UNIQUE INDEX, CONSTRAINT, COMMENT ON TABLE, tenant_id, ROW LEVEL SECURITY, CREATE POLICY, a column type change, a rename, ON CONFLICT next to a new unique index, an index drop or column reorder, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
+---
+
+# Migrations: expand/contract, forward-only
+
+Recorded as ADR: `docs/adr/2026-09-10-expand-contract-forward-only-migrations.md`.
+
+Deploys flip a symlink and restart services; rollback flips the symlink back
+**without unwinding schema**. That single operational fact dictates every rule
+here: the previous release's code must keep working against the new schema,
+because after a rollback it will.
+
+## The discipline
+
+Write every migration as **additive and backward-compatible** (the *expand* step).
+Destructive cleanup (the *contract* step) ships in a later release, after no
+running code references the old shape.
+
+Allowed in one migration:
+- `ADD COLUMN` (nullable, or with a `DEFAULT`)
+- new table, new index (`CREATE INDEX CONCURRENTLY` on large tables), new enum value
+- widening a type, relaxing a constraint
+
+Never in the same release as the code that stops using the old shape:
+- `DROP COLUMN` / `DROP TABLE`
+- column/table rename (see below)
+- type narrowing, adding `NOT NULL` to an existing column without a default
+
+## Recipes
+
+**Rename a column** — a rename is a drop in disguise:
+1. Release N: add the new column; write to both, read from the old.
+2. Backfill (idempotent, batched — as a queue job for large tables).
+3. Release N+1: read from the new column, keep dual-write.
+4. Release N+2 (or later): drop the old column.
+
+**Make a column required**: add nullable → backfill → add a `CHECK (col IS NOT
+NULL) NOT VALID` → `VALIDATE CONSTRAINT` → only then `SET NOT NULL`.
+
+**Backfills**: separate from DDL, idempotent (re-runnable with the same `jobKey`),
+batched so they don't hold long locks or bloat one transaction.
+
+## Indexes change what existing statements do
+
+- **A new unique index or constraint:** grep every `INSERT … ON CONFLICT` on
+  that table before you add it. An `ON CONFLICT (cols)` or `ON CONFLICT ON
+  CONSTRAINT` arbiter absorbs conflicts only on the index it names. A
+  conflict on any other unique index still raises `23505`, which reaches the
+  caller as a 500 under concurrent writes. During an expand window both the
+  new index and the legacy one it will replace exist, so check each
+  statement against both. Also check what a conflict on the surviving legacy
+  index reveals: a global unique index on a tenant table is an existence
+  oracle across tenants. Fix every affected statement in the same issue, or
+  name it in the pull request description as a required follow-up.
+- **Dropping or changing an index:** find the queries that depend on it (its
+  leading columns in a `WHERE`, `ORDER BY` or join) before you remove it or
+  reorder its columns.
+- **A static check over migrations** (a script that scans the SQL): run it over
+  every existing migration before relying on it, and look at what it flags.
+
+Why: these break code that the migration's own diff never touches. The failure
+then shows up as flaky CI in unrelated pull requests, long after the migration
+merged.
+
+## Structural vs data migrations
+
+The module contract distinguishes structural migrations (DDL, run at deploy) from
+data migrations (backfills with a cursor, run by the queue). Keep them in separate
+files; a deploy must never block on a long backfill.
+
+## Ordinal collisions between parallel issues
+
+Two issues implemented at the same time can pick the same next migration
+ordinal (e.g. both adding `0048_*.sql`) — it never conflicts in git (different
+filenames) and never fails at the database layer (the runner keys applied
+migrations by full filename), so the required `ci` job's
+`check-migration-numbering` step is the only thing that catches it, on
+whichever of the two PRs rebases second (`docs/adr/2026-09-24-issue-batches-as-dependency-dags.md`,
+`.github/ISSUE_FORMAT.md`'s "Touches and conflict hotspots"). Take the next
+free ordinal right before pushing, not when the issue was drafted. On a
+collision — caught locally by `pnpm --filter @semprec/data run
+check-migration-numbering` or by CI after a rebase — renumber only your own
+branch's migration file to the next free ordinal; never renumber a migration
+that already merged into the base branch.
+
+## Every new table declares its tenancy
+
+Each user's data lives in that user's own tenant, so the migration that creates
+a table also classifies it. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+
+- State `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'` or
+  `'semprec:tenancy=global'` in the same migration that creates the table.
+  Global is only for identity-plane, admin-plane and operator tables that hold
+  no user content.
+- A tenant table also gets, in that same migration, the `tenant_id` column,
+  row-level security and both policies:
+
+```sql
+CREATE TABLE widgets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id),
+  -- ... application columns follow, so the comma above is required
+);
+COMMENT ON TABLE widgets IS 'semprec:tenancy=tenant';
+ALTER TABLE widgets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON widgets AS RESTRICTIVE
+  USING (tenant_id = (SELECT app_tenant_default()))
+  WITH CHECK (tenant_id = (SELECT app_tenant_default()));
+CREATE POLICY tenant_rows ON widgets AS PERMISSIVE
+  USING (true) WITH CHECK (true);
+```
+
+- Every unique index, unique constraint or primary key on a tenant table leads
+  with `tenant_id`. The exceptions are a server-generated surrogate key, and a
+  key scoped by the server-generated id of a parent row in the same tenant
+  (such as `properties (database_id, key)`). Unique and foreign-key checks
+  ignore RLS, so a key without `tenant_id` is an existence oracle across tenants.
+- Grants follow `docs/operations/database-roles.md`.
+
+## Escape hatch
+
+An intentionally breaking change is allowed only when the linked issue's Task
+explicitly calls for it — say so in the migration's comment and in the PR
+description, otherwise the review bot flags it as critical.

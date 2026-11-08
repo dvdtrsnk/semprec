@@ -1,0 +1,120 @@
+// @ts-check
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
+import eslintConfigPrettier from "eslint-config-prettier";
+import globals from "globals";
+
+export default tseslint.config(
+  {
+    ignores: ["**/dist/**", "**/node_modules/**", "**/*.tsbuildinfo", "**/coverage/**"],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // Type-aware linting is what makes `no-floating-promises` and `no-misused-promises`
+      // possible, and in a codebase built on a job queue, IMAP IDLE connections and pooled
+      // transactions those are the two rules worth the slower lint run. One family of the
+      // preset is switched off because this codebase violates it structurally rather than
+      // accidentally, and leaving it on would mean ~270 inline disables:
+      //
+      //   `require-await` (274): async functions with no await are deliberate here — a port
+      //   implementation matches its interface's Promise-returning signature whether or not
+      //   that particular implementation needs to await anything (see the mail transports and
+      //   the test fakes). Narrowing the signature per-implementation is the opposite of what
+      //   the interface exists for.
+      "@typescript-eslint/require-await": "off",
+      // Leading-underscore escape hatch for intentionally-unused params/destructures
+      // (e.g. interface implementations that ignore an argument) is an established
+      // pattern across the workspace; enforcing it narrowly instead of a blanket allow.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+      ],
+    },
+  },
+  {
+    // Size cap from docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md: without
+    // it a production module drifts back into a monolith. Test files are exempt because they
+    // are not part of the runtime surface, and splitting the largest ones is a separate decision.
+    files: ["**/*.ts"],
+    ignores: ["**/*.test.ts", "**/__tests__/**"],
+    rules: {
+      "max-lines": ["error", { max: 900, skipBlankLines: true, skipComments: true }],
+    },
+  },
+  {
+    // Test files still trip the no-unsafe-* family in ~245 places (fixtures, mocks, untyped
+    // JSON); switching them on there is a separate batch. Production code is clean.
+    files: ["**/*.test.ts", "**/__tests__/**", "**/testSupport/**"],
+    rules: {
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+    },
+  },
+  {
+    // Admin code runs in system scope and never enters a tenant. dependency-cruiser rules are
+    // file-level and @semprec/shared resolves to one entry file, so only ESLint can forbid the
+    // single named export (docs/adr/2026-10-17-admin-role-without-content-access.md).
+    files: ["services/semprec-api/src/adminHandler.ts", "packages/data/src/tenancy/accountsAdminStore.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@semprec/shared",
+              importNames: ["runInTenant"],
+              message:
+                "Admin code runs in system scope and never enters a tenant (docs/adr/2026-10-17-admin-role-without-content-access.md).",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Production backend code logs through `createLogger` (@semprec/shared), which redacts secret
+    // fields and error text and binds the trace context and tenantId. A `console.*` call gets none
+    // of that. Exempt: test code; `*Cli.ts` files, whose stdout and stderr are their interface;
+    // `packages/release`, a developer tool; and `packages/realtime-client`, a client library whose
+    // consumer owns logging.
+    files: ["packages/*/src/**/*.ts", "services/*/src/**/*.ts"],
+    ignores: [
+      "**/__tests__/**",
+      "**/*.test.ts",
+      "**/testSupport/**",
+      "**/*Cli.ts",
+      "packages/release/**",
+      "packages/realtime-client/**",
+    ],
+    rules: {
+      "no-console": "error",
+    },
+  },
+  {
+    // Config and tooling files live outside every package's tsconfig `include`, so the
+    // type-aware rules have no program to consult and error out on them.
+    files: ["**/*.cjs", "**/*.mjs", "*.config.ts", "**/scripts/**"],
+    ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    // Plain Node CommonJS config files (module.exports/require) — not part of the
+    // NodeNext/ESM `src/` codebase, so the ESM-oriented require-imports rule doesn't apply.
+    files: ["**/*.cjs"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  eslintConfigPrettier,
+);

@@ -1,0 +1,50 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Pool } from "pg";
+import { isProcessHeartbeatFresh, withClient } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
+import { sendJson } from "./adapter/http.js";
+import { logger } from "./logger.js";
+
+/**
+ * Handles unauthenticated `GET /healthz` (issue #168). Responds 200 `{"status":"ok"}` only when
+ * a plain `SELECT 1` and this `api` process's own heartbeat freshness both pass; any other
+ * outcome — a DB error, a missing or stale `api` row — is a 503 with the same minimal body.
+ * Gates on `api`, the process this handler runs inside (started by `serve.ts`), not on a
+ * separate process like `agents` that may not be deployed alongside it (issue #404). Neither
+ * branch ever includes the underlying error or which specific check failed: a probe reachable
+ * without a session must not become a way to learn why a deployment is unhealthy.
+ */
+export function createHealthzRequestListener(pool: Pool) {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (req.method !== "GET" || url.pathname !== "/healthz") {
+      sendJson(res, 404, { status: "error" });
+      return;
+    }
+
+    try {
+      const healthy = await runAsSystem("healthz", () =>
+        withClient(pool, async (client) => {
+          await client.query("SELECT 1");
+          return isProcessHeartbeatFresh(client, "api");
+        }),
+      );
+      sendJson(res, healthy ? 200 : 503, { status: healthy ? "ok" : "error" });
+    } catch (err) {
+      logger.error({ err }, "GET /healthz check failed");
+      sendJson(res, 503, { status: "error" });
+    }
+  }
+
+  /** Same rationale as `setupHandler.ts`'s `handleRequestSafely`: confines an escaped rejection to this one request instead of an unhandled rejection that takes the whole process down. */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      logger.error({ err }, "Unhandled error in the healthz request listener");
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 503, { status: "error" });
+    });
+  };
+}

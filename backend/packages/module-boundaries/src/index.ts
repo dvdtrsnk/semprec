@@ -1,0 +1,80 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { cruise, type ICruiseResult, type IForbiddenRuleType } from "dependency-cruiser";
+
+const packageDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRulesPath = path.join(packageDir, "..", "..", "..", "dependency-cruiser.rules.json");
+
+export interface BoundaryViolation {
+  importer: string;
+  imported: string;
+  rules: string[];
+}
+
+export interface BoundaryCheckResult {
+  violations: BoundaryViolation[];
+  /** Every source file dependency-cruiser actually resolved and scanned, for callers that need to prove a specific file was covered, not just that no violation was found for it. */
+  scannedFiles: string[];
+}
+
+function isCruiseResult(value: unknown): value is ICruiseResult {
+  if (typeof value !== "object" || value === null || !("modules" in value)) {
+    return false;
+  }
+  return Array.isArray(value.modules);
+}
+
+function loadForbiddenRules(): IForbiddenRuleType[] {
+  const { forbidden } = JSON.parse(readFileSync(repoRulesPath, "utf8")) as {
+    forbidden: IForbiddenRuleType[];
+  };
+  return forbidden;
+}
+
+/**
+ * Runs the module/service import-boundary rules (see dependency-cruiser.rules.json)
+ * against pFileAndDirectoryArray, resolved relative to pBaseDir.
+ */
+export async function checkModuleBoundaries(
+  pBaseDir: string,
+  pFileAndDirectoryArray: string[],
+): Promise<BoundaryCheckResult> {
+  const forbidden = loadForbiddenRules();
+  const result = await cruise(
+    pFileAndDirectoryArray,
+    {
+      ruleSet: { forbidden, allowed: [] },
+      validate: true,
+      baseDir: pBaseDir,
+      // Matches ../../.dependency-cruiser.cjs's own options: a workspace package's node_modules
+      // holds pnpm-hoisted copies of other workspace packages (e.g.
+      // services/semprec-api/node_modules/@semprec/data), which would otherwise be re-discovered
+      // as if they were a separate, non-choke-point importer of the very same source files.
+      doNotFollow: {
+        path: "node_modules",
+      },
+    },
+    {},
+    undefined,
+  );
+  const parsed: unknown = typeof result.output === "string" ? JSON.parse(result.output) : result.output;
+  if (!isCruiseResult(parsed)) {
+    throw new Error("dependency-cruiser returned an unexpected result shape");
+  }
+  const output = parsed;
+  const violations: BoundaryViolation[] = [];
+  for (const module of output.modules) {
+    for (const dependency of module.dependencies) {
+      if (dependency.valid === false) {
+        violations.push({
+          importer: module.source,
+          imported: dependency.resolved,
+          rules: (dependency.rules ?? []).map((rule) => rule.name),
+        });
+      }
+    }
+  }
+  const scannedFiles = output.modules.map((module) => module.source);
+  return { violations, scannedFiles };
+}

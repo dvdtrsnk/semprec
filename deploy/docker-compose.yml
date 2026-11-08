@@ -1,0 +1,30 @@
+# Issue #174: PostgreSQL binds to loopback explicitly here, rather than relying on
+# deploy/nftables.conf alone — the `127.0.0.1:` prefix on the host port below is load-bearing,
+# not documentation. semprec-api and semprec-ai-gateway aren't containerized (they run as
+# systemd units against the `current` release symlink, see issue #176); their own loopback
+# binding lives in their `server.listen(port, "127.0.0.1", ...)` call. This container receives
+# exactly POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB, interpolated from
+# /opt/semprec/shared/env/postgres.env by `docker compose --env-file
+# /opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — never the file itself.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Sized for per-tenant `items` partitions (docs/operations/postgres-capacity.md). The setting
+    # is postmaster-level: it applies only once the container is recreated.
+    command: ["postgres", "-c", "max_locks_per_transaction=2048"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    logging:
+      driver: journald
+      options:
+        tag: semprec-postgres
+
+volumes:
+  postgres_data:

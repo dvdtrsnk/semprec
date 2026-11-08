@@ -1,0 +1,88 @@
+import type { Pool } from "pg";
+
+/**
+ * Gates a heartbeat action on the fired item's relation membership — e.g. "only run when the
+ * Emails item is related (via `folder`) to a Folder whose `specialPurpose` is `inbox`, and none
+ * of its related Folders are `junk`/`trash`." Generic (keyed only by relation property id and a
+ * property name), so `core.agentRun`'s `actionConfig` can express this without any mail-specific
+ * code in the scheduler (issue #99: "do not create a separate mail scheduler").
+ */
+export interface ItemRelationFilterConfig {
+  /** The property id of the relation to follow from the fired item (either side of the reldef). */
+  relationPropertyId: string;
+  /** The property key read off each related item. */
+  property: string;
+  /** At least one related item's `property` value must be in this set. */
+  include: string[];
+  /** No related item's `property` value may be in this set — checked even if `include` also matches. */
+  exclude: string[];
+}
+
+export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.relationPropertyId !== "string" || typeof record.property !== "string") return null;
+  const toStringArray = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return {
+    relationPropertyId: record.relationPropertyId,
+    property: record.property,
+    include: toStringArray(record.include),
+    exclude: toStringArray(record.exclude),
+  };
+}
+
+/**
+ * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the lookup of
+ * `related` must pin database_id — resolved here off the *other* side's property, via the
+ * small unpartitioned `properties` table — or Postgres has to scan every partition instead
+ * of pruning to the one the related item actually lives in. Pinning it in a plain join
+ * condition is not enough (#1198): with fresh statistics on small partitions the planner
+ * prefers hashing every partition and applying `database_id` as a join filter afterwards.
+ * The lookup therefore sits in a LATERAL subquery that references `op.database_id`; `OFFSET 0`
+ * stops Postgres from pulling it up into the outer join, so it can only run as the inner side
+ * of a parameterized nested loop, where `database_id` is an executor parameter and the
+ * Append prunes every other partition at run time whatever plan costs the statistics yield.
+ * The primary key (database_id, id) admits at most one row per relation, as the former join
+ * did. `deleted_at IS NULL` guards against a soft-deleted folder (e.g. a since-deleted Junk
+ * folder) still counting toward `include`/`exclude`. Exported (rather than inlined below) so
+ * tests can EXPLAIN the exact query plan `passesItemRelationFilter` runs.
+ */
+export const ITEM_RELATION_FILTER_QUERY = `
+  SELECT related.properties ->> $2 AS value
+  FROM relation_definitions rd
+  JOIN properties op ON op.id = CASE WHEN rd.property_id_a = $1 THEN rd.property_id_b ELSE rd.property_id_a END
+  JOIN item_relations r ON r.relation_definition_id = rd.id
+  CROSS JOIN LATERAL (
+    SELECT item.properties
+    FROM items item
+    WHERE item.database_id = op.database_id
+      AND item.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
+      AND item.deleted_at IS NULL
+    OFFSET 0
+  ) related
+  WHERE (rd.property_id_a = $1 OR rd.property_id_b = $1)
+    AND (r.item_a = $3 OR r.item_b = $3)
+`;
+
+/**
+ * Evaluated at heartbeat-fire time (after the enqueuing transaction has committed), not at
+ * enqueue time: a message's folder-membership relation is written after the Emails item itself
+ * within the same ingest transaction (mail/ingest.ts), so it would not yet exist if this were
+ * checked at `triggerOnItemEventHeartbeats` time.
+ */
+export async function passesItemRelationFilter(
+  pool: Pool,
+  itemId: string,
+  filter: ItemRelationFilterConfig,
+): Promise<boolean> {
+  const { rows } = await pool.query<{ value: string | null }>(ITEM_RELATION_FILTER_QUERY, [
+    filter.relationPropertyId,
+    filter.property,
+    itemId,
+  ]);
+  const values = rows.map((row) => row.value).filter((value): value is string => value !== null);
+  const included = filter.include.length === 0 || values.some((value) => filter.include.includes(value));
+  const excluded = values.some((value) => filter.exclude.includes(value));
+  return included && !excluded;
+}

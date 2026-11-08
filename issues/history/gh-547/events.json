@@ -1,0 +1,166 @@
+[
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-25T06:08:41Z",
+    "updated_at": "2026-09-25T06:08:41Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5578923915,
+        "node_id": "I_kwDOUFuQ4c8AAAABTIefiw",
+        "number": 548,
+        "title": "Bump the code-review.yml bot pin to match .relay/config.yml",
+        "html_url": "https://github.com/dvdtrsnk/semprec/issues/548",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "bodySha256": "659f1bf3844498052fc6cf402539acd5bfd7600a0483dab5cbfe0de6e967d981"
+      }
+    }
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-25T06:09:33Z",
+    "updated_at": "2026-09-25T06:09:33Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5578932237,
+        "node_id": "PR_kwDOUFuQ4c8AAAABFEBmmA",
+        "number": 549,
+        "title": "Bump the Relay code-review-bot pin to the line-number-free verdict-reuse fix",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/549",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/549",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/549",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/549.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/549.patch",
+          "merged_at": "2026-09-25T06:28:14Z"
+        },
+        "bodySha256": "edc21cee755c57667d2159fb430c9b50f0d186bcc7aeafa4a794f6c4b2e82a68"
+      }
+    }
+  },
+  {
+    "id": 31814942455,
+    "node_id": "CE_lADOUFuQ4c8AAAABTIeY6c8AAAAHaFF-9w",
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31814942455",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "closed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-09-25T06:28:16Z",
+    "state_reason": null,
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "event": "cross-referenced",
+    "actor": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-26T14:45:38Z",
+    "updated_at": "2026-09-26T14:45:38Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "id": 5594821701,
+        "node_id": "PR_kwDOUFuQ4c8AAAABFQYQAQ",
+        "number": 616,
+        "title": "Pin the code-review.yml bot checkout to the Relay review bot ref",
+        "html_url": "https://github.com/dvdtrsnk/semprec/pull/616",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "state": "closed",
+        "pull_request": {
+          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/616",
+          "html_url": "https://github.com/dvdtrsnk/semprec/pull/616",
+          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/616.diff",
+          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/616.patch",
+          "merged_at": "2026-09-26T15:46:13Z"
+        },
+        "bodySha256": "4e0ac008ef3ceed16382966e45abb72a9f9c4964e815667bc810734dea479629"
+      }
+    }
+  }
+]

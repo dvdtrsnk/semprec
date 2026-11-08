@@ -1,0 +1,49 @@
+---
+name: ai-gateway
+description: "Every model call in this backend goes through semprec-ai-gateway, which enforces the budget caps and records ai_gateway_calls. Load this BEFORE reaching for a provider SDK, not after the call works. Triggers on: chat completion, prompt, embedding, transcription, Whisper, DeepInfra, pyannote, diarization, openai, @anthropic-ai, a provider API key, a new model id, and any HTTP call to a model endpoint from anywhere. Skip only when the diff is inside semprec-ai-gateway itself."
+---
+
+# AI calls go through semprec-ai-gateway. All of them.
+
+Recorded as ADR: `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+
+`semprec-ai-gateway` is the single process allowed to talk to AI providers. Every
+other package, service, module, and script makes AI calls only through the
+gateway's internal contract.
+
+Why one door:
+- **Cost control.** The gateway checks the tenant's own caps (its
+  `tenant_ai_budgets` row) and the operator-wide `AI_GLOBAL_*_CAP_USD` caps
+  *before* the call and refuses, with one identical message, when either is
+  reached — and refuses every call of a tenant that has no `tenant_ai_budgets`
+  row (fail closed). A direct provider call is an uncapped spend. Recorded in
+  `docs/adr/2026-10-16-per-tenant-ai-budgets-with-a-global-safety-cap.md`.
+- **Observability.** Every call is logged to `ai_gateway_calls` (tokens, cost,
+  caller, purpose) — this feeds `GET /api/ai-usage` and the utilization graph.
+  A bypassed call is invisible money.
+- **Credential containment.** Provider API keys live only in the gateway's own
+  environment. If any other process held them, a compromise anywhere would leak
+  them; this way the blast radius is one process.
+- **Swappability.** Providers (Anthropic, DeepInfra, pyannoteAI, …) are gateway
+  adapters behind one contract — callers never know or care which vendor serves
+  them (dependency inversion is the point of the gateway's design).
+
+## Rules
+
+- Never import a provider SDK (`@anthropic-ai/*`, `openai`, …) outside the
+  gateway package. Never `fetch` a model API URL outside it.
+- Never read or define a provider API key (env var, config, DB) outside the
+  gateway's environment.
+- Pass a `purpose`/caller identifier with every gateway call so
+  `ai_gateway_calls` rows stay attributable.
+- Expect and handle the gateway's budget-refusal response — surface it (e.g. as
+  `agent_run_error` / a notification), don't retry-loop against a closed budget.
+- Adding a new capability (new model, new provider)? Extend the gateway with a
+  new adapter behind the existing contract — don't create a side channel, even
+  "temporarily".
+
+## Litmus test
+
+If the diff adds a dependency on a vendor, a key, or an HTTP call to a model URL
+and the file isn't inside the gateway — stop; move that code into a gateway
+adapter and call it through the contract instead.

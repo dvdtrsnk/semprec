@@ -3,8 +3,20 @@
 - **high** — a bug that breaks the feature the issue asked for, a missing input
   validation at a boundary the choke-point API exposes, or a violation of the issue's
   own "Out of scope" section (implementing something explicitly deferred, or skipping
-  something explicitly in scope).
+  something explicitly in scope); a `review-rules/` rule or task weakened or dropped
+  without the Task asking for it, a scope pattern that drops or cannot match the files
+  it intends, or a platform left with no task.
 - **medium** — a bug confined to an edge case, a missing test for new choke-point
   behavior, or an inconsistency with an established pattern elsewhere in the codebase
-  (e.g. a new endpoint that doesn't go through the existing choke-point).
+  (e.g. a new endpoint that doesn't go through the existing choke-point);
+  contradicting or factually wrong `review-rules/` content.
 - **low** — style, naming, a comment that would help, a small missed simplification.
+- **Moved code.** When the linked issue's Task requires a verbatim move, a line the
+  diff adds that is byte-identical to a line the same diff removes (shown as moved by
+  `git diff --color-moved`) carries a pre-existing defect, not one this pull request
+  introduced: report a non-critical defect in such a line at most as **low**, say it
+  is pre-existing, and never block on it. The cap never applies to a **critical**
+  defect (data loss, a security vulnerability, a leaked secret): that keeps its
+  critical severity even in a moved line. Anything the move itself changes — a new or
+  changed import, an added `export`, a signature, a check order or a behavior
+  difference — is reviewed at its normal severity.

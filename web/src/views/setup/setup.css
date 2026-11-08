@@ -1,0 +1,21 @@
+.setup {
+  max-width: 24rem;
+  margin: 0 auto;
+  padding: var(--space-3);
+}
+
+.setup__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.setup__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.setup__error {
+  color: var(--color-danger);
+}

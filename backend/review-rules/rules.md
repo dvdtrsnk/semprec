@@ -2,28 +2,38 @@
   (`POST`/`PATCH /api/items`, the relation endpoint, `confirm`/`revise`) — a new
   endpoint or process that mutates rows directly, bypassing it, is a high-severity
   finding — unless the issue itself is the one introducing that choke-point.
+  (`docs/adr/2026-09-10-choke-point-api-for-state-writes.md`)
 - Every migration is additive/backward-compatible; a column drop, type narrowing, or
   `NOT NULL` without a default on an existing table is critical unless the issue
   explicitly calls for it as a deliberate breaking change.
+  (`docs/adr/2026-09-10-expand-contract-forward-only-migrations.md`)
 - No new abstraction, helper, or config flag beyond what the current issue's Task
   section asks for — flag speculative generality the same way the project's own
   contribution guidance treats it: a smell, not a virtue.
+  (`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`)
 - Every LLM/AI-provider call goes through `semprec-ai-gateway` (which logs to
   `ai_gateway_calls` and enforces the daily/monthly budget caps). A direct provider
   SDK import or HTTP call to a model API from any other package or service is a
   critical finding — it bypasses both cost control and observability — unless the
   diff is inside the gateway itself.
+  (`docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`)
+- Only `semprec-transcribe` runs `ffmpeg`/`ffprobe`, and its production code spawns them
+  only from `src/mediaNormalization.ts`. Spawning either binary anywhere else, or adding
+  an npm package that bundles them, is a high-severity finding — it spreads a native host
+  dependency and a parser of untrusted uploads to a process with neither the timeout nor
+  the cleanup handling. (`docs/adr/2026-09-22-ffmpeg-confined-to-semprec-transcribe.md`)
 - AI/agent code never writes persisted state directly: agent-originated changes are
   proposals that go through the approval queue / `confirm` flow, where a human (or an
   explicit grant) authorizes the write. Agent code calling a write endpoint or the
   data layer directly is a high-severity finding.
+  (`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`)
 - Canonical stored keys (`databases.key`, property keys, select-option values,
   settings keys) are English camelCase; view-type keys are English kebab-case
   (e.g. `mailbox-client`, `journal-inbox`). A Czech key introduced in code or a
   migration is a high-severity finding. User-facing label strings are never
   hardcoded — they resolve through the i18n layer (`cs.json`/`en.json` keyed by the
   English canonical key, selected by `users.locale`); a hardcoded user-facing label
-  is medium.
+  is medium. (`docs/adr/2026-09-10-english-canonical-keys-with-i18n-labels.md`)
 - TypeScript: no `any` at a module boundary (external input, DB row, API payload) —
   parse/validate at the edge, trust internal types after that.
 - Secrets, tokens, and credentials never appear in a log call, an error message
@@ -31,3 +41,95 @@
 - A process that owns a piece of state (per the module contract / ownership model)
   is the only writer to it — a second writer appearing anywhere is a high-severity
   ownership violation, independent of whether the write itself looks correct.
+  (`docs/adr/2026-09-10-single-writer-ownership-model.md`)
+- A PR that introduces a genuinely new architectural pattern not covered by an
+  existing rule here or by an ADR must add one under `docs/adr/` (see
+  `docs/adr/README.md` for the format) — a new cross-cutting pattern with no ADR
+  and no rule covering it is a medium-severity finding.
+- A targeted `DELETE`/`UPDATE` (by id, or any `WHERE` narrow enough to match at
+  most one row) must check how many rows it actually affected — `rowCount` on
+  the `pg` result, or an equivalent `RETURNING`-based check — and the caller must
+  act on that count. A query that runs, matches zero rows, and is still reported
+  to the caller as a successful write is a high-severity finding: the caller
+  can't tell "the delete/update happened" from "there was nothing there," and a
+  client that trusted a false success will not retry.
+- A pre-check used to decide whether a write is allowed, or to build the "prior
+  state" a response body reports, is only a guard if it runs inside the same
+  transaction as the write it protects. A check performed before `BEGIN` (or in
+  a separate statement/connection from the one doing the write) is a
+  high-severity finding regardless of how correct the check itself is — the row
+  it inspected can be deleted, updated, or reassigned by a concurrent request in
+  the gap between the check and the write, and the response ends up describing
+  a state that was never true.
+- A numeric field taken from a request body must be validated against the
+  domain of the column that stores it — the column's integer width, sign, and
+  any range the schema or business logic implies — not merely checked to be a
+  JavaScript `number`. Accepting a value that `typeof` calls a number but Postgres
+  will reject (out of `int4` range, negative where the column can't be, a
+  non-integer for an integer column) and letting it reach the query is a
+  high-severity finding: the caller sees an unhandled 500 from the database
+  instead of a 400 that names the field.
+- A migration that creates a table states `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'`
+  or `'semprec:tenancy=global'` in the same file. A tenant table also gets, in that file,
+  `tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id)`,
+  `ENABLE ROW LEVEL SECURITY`, the RESTRICTIVE `tenant_isolation` policy
+  (`USING`/`WITH CHECK (tenant_id = (SELECT app_tenant_default()))`) and the PERMISSIVE
+  `tenant_rows` policy (`USING (true) WITH CHECK (true)`). Global is only for
+  identity-plane, admin-plane and operator tables that hold no user content. Missing any
+  of these is high: an unclassified or unprotected table is invisible to the mechanical
+  isolation guarantee. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A unique index, unique constraint or primary key on a tenant table that does not lead
+  with `tenant_id` is high, unless it is a server-generated surrogate key or is scoped by
+  the server-generated id of a parent row in the same tenant (such as
+  `properties (database_id, key)`). Unique and foreign-key checks ignore RLS, so a global
+  key is an existence oracle and a cross-tenant collision. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- Tenant identity taken from a request body, query string, path segment, a header an
+  untrusted caller can set, a job payload field, or model output is critical: the caller
+  chooses whose data it reaches. Its only sources are the authenticated session, the
+  queue job envelope stamped from the producer's scope, a NOTIFY payload stamped by its
+  publisher, an internal-token-authenticated caller cross-checked against a row visible
+  in that tenant, an MCP run credential, and a router function resolving an external
+  identifier (a Graph subscription id, a Gmail address) to its tenant. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- New code that reads or writes a tenant table must run in a scope established from one
+  of those sources, or as explicit system work under the next rule. New code that relies
+  on the transitional sole-tenant fallback as its tenant, or that picks "the" user or
+  tenant by earliest, first or `LIMIT 1`, is high, because it silently breaks the day a
+  second tenant exists; it is critical when it lets one tenant reach another's rows.
+  Pre-existing scope-less code the pull request neither adds nor changes is not reported.
+  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- Cross-tenant system work enumerates tenants and does each tenant's work inside that
+  tenant, and one tenant's failure must not skip the others. The alternative is a
+  `SECURITY DEFINER` function owned by a dedicated `NOLOGIN BYPASSRLS` router role:
+  column-level `SELECT` only, pinned `search_path`, `EXECUTE` revoked from `PUBLIC` and
+  granted to one runtime role, returning only ids or numbers. Any of the following is
+  critical, because it removes the second enforcement layer: granting a runtime role
+  `BYPASSRLS`, superuser or table ownership; `SET row_security = off`; a permissive
+  policy that widens visibility; one query reading several tenants' rows. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A `SECURITY DEFINER` function that reads or writes a tenant table without confining
+  itself to `app_current_tenant()` (filtering by it, or verifying the referenced row's
+  tenant) is critical: it runs with the owner's privileges and so bypasses RLS for any
+  caller. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- An endpoint, socket frame, MCP tool or job must answer another tenant's id exactly as
+  it answers a random id: same status, body and headers, and no branch such as an
+  ETag/304 check taken before the tenant check. A difference is critical, because it
+  tells the caller that the foreign row exists. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- The SQL-injection finding of `tasks/security.md` item 2 (critical) covers test code, DDL
+  and trigger or function bodies as well as application queries. Where a statement cannot
+  take parameters, the safe forms are quoting inside Postgres (`format('%I')`,
+  `format('%L')`) or passing the value through a table or setting. A value that is provably
+  closed (a literal union, a generated UUID) with that invariant stated in a comment beside
+  the interpolation cannot inject, so it is not that finding. Test helpers are copied into
+  production code, and a reviewer cannot tell a safe interpolation from an injection
+  without the invariant written down.
+- A new unique index or unique constraint on a table that has `INSERT … ON CONFLICT`
+  statements whose arbiter names a different index, left unchanged and not named as a
+  follow-up in the pull request description, is high: a conflict on the new index raises
+  `23505` past the arbiter and surfaces as a 500 under concurrent writes. When the
+  statement's outcome also lets one tenant infer another's row (a surviving global unique
+  index on a tenant table), it is critical under `tasks/security.md` item 9.
+- A test that asserts tenant isolation through the superuser pool (`getTestPool()`), or
+  with two users of one tenant instead of two tenants, is high: superusers and table owners
+  bypass row-level security, so the test passes whether or not isolation holds.
+- A log line or error message carrying user content (item properties, mail subjects,
+  bodies or addresses, file names, prompts, model output) is high: logs are not
+  tenant-scoped. Log ids and counts. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)

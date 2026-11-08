@@ -4,5 +4,49 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "types": "src/index.ts"
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testSupport": "./src/testSupport/testDb.ts",
+    "./testSupport/mcpContractServers": "./src/testSupport/mcpContractServers.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && mkdir -p dist/db/migrations && cp src/db/migrations/*.sql dist/db/migrations/ && mkdir -p dist/auth/i18n && cp src/auth/i18n/*.json dist/auth/i18n/ && mkdir -p dist/seed/i18n && cp src/seed/i18n/*.json dist/seed/i18n/ && cp -r src/chokePoint/i18n dist/chokePoint/i18n && cp -r src/views/i18n dist/views/i18n && mkdir -p dist/docs/i18n && cp src/docs/i18n/*.json dist/docs/i18n/ && mkdir -p dist/inbox/i18n && cp src/inbox/i18n/*.json dist/inbox/i18n/ && mkdir -p dist/library/i18n && cp src/library/i18n/*.json dist/library/i18n/ && mkdir -p dist/mail/i18n && cp src/mail/i18n/*.json dist/mail/i18n/ && mkdir -p dist/notifications/i18n && cp src/notifications/i18n/*.json dist/notifications/i18n/ && mkdir -p dist/transcription/i18n && cp src/transcription/i18n/*.json dist/transcription/i18n/ && mkdir -p dist/aiGateway/i18n && cp src/aiGateway/i18n/*.json dist/aiGateway/i18n/ && mkdir -p dist/semp/i18n && cp src/semp/i18n/*.json dist/semp/i18n/ && mkdir -p dist/calendar/i18n && cp src/calendar/i18n/*.json dist/calendar/i18n/",
+    "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@node-rs/argon2": "^2.2.0",
+    "@semprec/block-model": "workspace:*",
+    "@semprec/credentials": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
+    "@semprec/queue": "workspace:*",
+    "@semprec/shared": "workspace:*",
+    "imapflow": "^1.7.6",
+    "luxon": "^3.7.2",
+    "mailparser": "^3.9.17",
+    "mammoth": "^1.12.2",
+    "nodemailer": "^9.0.6",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.0",
+    "safe-regex": "^2.1.1",
+    "sanitize-html": "^2.17.7",
+    "undici": "^8.9.0",
+    "web-push": "^3.6.7",
+    "yazl": "^3.3.1",
+    "yjs": "^13.6.32",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.5",
+    "@types/mailparser": "^3.4.6",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.23.1",
+    "@types/safe-regex": "^1.1.6",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/web-push": "^3.6.4",
+    "@types/yazl": "^3.3.1",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "vitest": "^4.1.11"
+  }
 }
