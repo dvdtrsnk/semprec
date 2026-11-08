@@ -39,6 +39,8 @@ import {
   recomputePersonLastContact,
 } from "../lastContact.js";
 import { runPeopleLastContactCutoverMigration } from "../peopleLastContactCutoverMigration.js";
+import { findOrphanedOwnerProcessIds } from "../../manifest/moduleRegistryDriftCheck.js";
+import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 
 /**
  * Issue #1660: People `lastContact`, derived from linked Events, Emails and Transcripts. Every production
@@ -216,6 +218,20 @@ describe("People lastContact (issue #1660)", () => {
     );
     expect(property).toMatchObject({ type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID });
     expect(await runInTenant(tenantA, () => withTransaction(pool, getSystemTimezone))).toBe(ZONE);
+  });
+
+  it("is owned by a process the module registry drift check knows", async () => {
+    const orphaned = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => ({
+        known: await findOrphanedOwnerProcessIds(client, KNOWN_OWNER_PROCESS_IDS),
+        withoutPeople: await findOrphanedOwnerProcessIds(
+          client,
+          new Set([...KNOWN_OWNER_PROCESS_IDS].filter((id) => id !== PEOPLE_MODULE_ID)),
+        ),
+      })),
+    );
+    expect(orphaned.known).not.toContain(PEOPLE_MODULE_ID);
+    expect(orphaned.withoutPeople).toContain(PEOPLE_MODULE_ID);
   });
 
   it("an event dated 15 October in the past linked to a person sets lastContact to 15 October", async () => {
