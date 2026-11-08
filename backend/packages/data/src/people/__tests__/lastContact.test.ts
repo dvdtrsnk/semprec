@@ -266,17 +266,19 @@ function settle(primary: { error: unknown } | undefined, cleanupFailures: unknow
 interface ObservedEffects {
   /** Every realtime invalidation this process emitted: the in-process hook `@semprec/realtime` publishes as NOTIFYs. */
   invalidations: InvalidationEvent[];
-  /** The payload of every graphile-worker `jobs:insert` NOTIFY, the one any job enqueue sends, before the sentinel. */
+  /** The payload of every graphile-worker `jobs:insert` NOTIFY (sent when it inserts a job) before the sentinel. */
   jobInserts: string[];
 }
 
 /**
- * The side effects `operation` announced. Realtime invalidations are recorded through `setInvalidationHook`,
- * because this file wires no realtime publisher, so no realtime NOTIFY could reach a listener here.
- * Job enqueues are observed on a dedicated LISTEN connection subscribed before `operation` runs; afterwards a
- * sentinel is sent on the same channel, and Postgres delivers notifications in commit order, so once the
- * sentinel has arrived every `jobs:insert` committed by `operation` has too. The hook and the subscription are
- * removed on every path, and a connection whose UNLISTEN failed is destroyed rather than returned to the pool.
+ * The side effects `operation` announced. The owners' realtime invalidation callbacks are recorded through
+ * `setInvalidationHook`, because this file wires no realtime publisher; that shows what the owners announced,
+ * not WebSocket delivery or a realtime NOTIFY. Graphile-worker's job-insert NOTIFYs are observed on a dedicated
+ * LISTEN connection subscribed before `operation` runs; afterwards a sentinel is sent on the same channel, and
+ * Postgres delivers notifications in commit order, so once the sentinel has arrived every `jobs:insert`
+ * committed by `operation` has too. That channel says nothing about other NOTIFYs. The hook and the
+ * subscription are removed on every path, and a connection whose UNLISTEN failed is destroyed rather than
+ * returned to the pool.
  */
 async function observeEffects(operation: () => Promise<unknown>): Promise<ObservedEffects> {
   const effects: ObservedEffects = { invalidations: [], jobInserts: [] };
