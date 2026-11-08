@@ -141,13 +141,14 @@ export async function restartTaskRecurrence(
 ): Promise<TaskRecurrence> {
   const rule = parseTaskRecurrenceRule(input.mode, input.rule);
   const template = parseTaskRecurrenceTemplate(input.template);
-  const { rows } = await client.query<TaskRecurrenceDbRow>(
+  const result = await client.query<TaskRecurrenceDbRow>(
     `UPDATE task_recurrence
      SET mode = $2, rule = $3::jsonb, active = true, series_id = gen_random_uuid(), anchor_date = $4::date, template = $5::jsonb
      WHERE item_id = $1 AND NOT active RETURNING ${COLUMNS}`,
     [input.itemId, input.mode, JSON.stringify(rule), input.anchorDate, JSON.stringify(template)],
   );
-  return mapRow(requireSingleRow(rows, "inactive task_recurrence row"));
+  requireAffectedRows(result, "inactive task_recurrence row");
+  return mapRow(requireSingleRow(result.rows, "inactive task_recurrence row"));
 }
 
 /**
@@ -160,12 +161,13 @@ export async function replaceTaskRecurrenceRule(
   input: { mode: TaskRecurrenceMode; rule: TaskRecurrenceRule; anchorDate?: string },
 ): Promise<TaskRecurrence> {
   const rule = parseTaskRecurrenceRule(input.mode, input.rule);
-  const { rows } = await client.query<TaskRecurrenceDbRow>(
+  const result = await client.query<TaskRecurrenceDbRow>(
     `UPDATE task_recurrence SET mode = $2, rule = $3::jsonb, active = true, anchor_date = COALESCE($4::date, anchor_date)
      WHERE series_id = $1::uuid RETURNING ${COLUMNS}`,
     [seriesId, input.mode, JSON.stringify(rule), input.anchorDate ?? null],
   );
-  return mapRow(requireSingleRow(rows, "task_recurrence series row"));
+  requireAffectedRows(result, "task_recurrence series row");
+  return mapRow(requireSingleRow(result.rows, "task_recurrence series row"));
 }
 
 /**
