@@ -109,6 +109,32 @@ interface RelationBody {
   metadata: Record<string, unknown>;
 }
 
+/** The `links` of an item read with `include=links`. */
+const linkedItemBody = z.object({ links: z.record(z.string(), z.unknown()) });
+/** One link entry whose sources are all items, as the `fileCompaniesFromProjects` rule leaves it. */
+const itemLinkEntry = z
+  .object({
+    valueKind: z.string(),
+    sources: z.array(
+      z
+        .object({
+          kind: z.literal("item"),
+          itemId: z.string(),
+          databaseKey: z.string(),
+          title: z.string(),
+          propertyKey: z.string(),
+        })
+        .strict(),
+    ),
+    brokenBy: z.string().nullable(),
+    brokenAt: z.string().nullable(),
+  })
+  .strict();
+/** The targets of an item's relations, from the relation list route. */
+const relationTargets = z.object({
+  relations: z.array(z.object({ propertyKey: z.string(), targetItemId: z.string() })),
+});
+
 describe("item routes (issue #241)", () => {
   let server: Server;
   let baseUrl: string;
@@ -2946,6 +2972,131 @@ describe("item routes (issue #241)", () => {
       const byId = new Map(page.items.map((item) => [item.id, item]));
       expect(Object.keys(byId.get(file.id)?.links ?? {})).toEqual(["projects"]);
       expect(byId.get(plain.id)?.links).toEqual({});
+    });
+
+    it("returns the production fileCompaniesFromProjects link with both project sources through runtime HTTP, and nothing to another tenant (issue #1653)", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const headers = await authHeader();
+      const foreignHeaders = await authHeader();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let runtimeServer: Server | undefined;
+      const failures: unknown[] = [];
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const dispatch = await createDispatcher(runtime, {
+          passwordResetMailer: noopMailer,
+          appBaseUrl: "http://localhost",
+          setupToken: "unused-setup-token",
+          moduleRegistry,
+          blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+          maxFileSizeBytes: 10 * 1024 * 1024,
+        });
+        runtimeServer = createServer(dispatch);
+        const ownedServer = runtimeServer;
+        await new Promise<void>((resolve, reject) => {
+          ownedServer.once("error", reject);
+          ownedServer.listen(0, "127.0.0.1", resolve);
+        });
+        const address = runtimeServer.address();
+        if (!address || typeof address === "string") throw new Error("Expected runtime server");
+        const base = `http://127.0.0.1:${address.port}`;
+        // Real writes in the reader's tenant through the choke point; the link comes from the manifest's rule.
+        const fixture = await runInTenant(getTenantZeroId(), async () => {
+          const cp = createChokePoint(runtime);
+          const databases = await cp.listDatabases();
+          const db = (key: string) => {
+            const match = databases.find((entry) => entry.ownerModuleId === key);
+            if (!match) throw new Error(`Missing ${key}`);
+            return match.id;
+          };
+          const relation = async (databaseKey: string, key: string) => {
+            const match = (await cp.listProperties(db(databaseKey))).find((property) => property.key === key);
+            if (!match) throw new Error(`Missing ${databaseKey}.${key}`);
+            return match.id;
+          };
+          const create = async (databaseKey: string, name: string) =>
+            (await cp.createItem({ databaseId: db(databaseKey), properties: { name } })).id;
+          const user = { writerKind: "user" } as const;
+          const novak = await create("companies", "Novak Web s.r.o.");
+          const siko = await create("companies", "Siko Koupelny a.s.");
+          const web = await create("projects", "Web for client");
+          const bathroom = await create("projects", "Bathroom renovation");
+          const file = await create("files", "Contract");
+          const projectCompany = await relation("projects", "company");
+          const fileProjects = await relation("files", "projects");
+          await cp.createRelation({ relationPropertyId: projectCompany, callerItemId: web, targetItemId: novak }, user);
+          await cp.createRelation(
+            { relationPropertyId: projectCompany, callerItemId: bathroom, targetItemId: siko },
+            user,
+          );
+          await cp.createRelation({ relationPropertyId: fileProjects, callerItemId: file, targetItemId: web }, user);
+          await cp.createRelation(
+            { relationPropertyId: fileProjects, callerItemId: file, targetItemId: bathroom },
+            user,
+          );
+          return { novak, siko, web, bathroom, file };
+        });
+        const byItem = (a: { itemId: string }, b: { itemId: string }) => a.itemId.localeCompare(b.itemId);
+
+        const read = await fetch(`${base}/api/items/${fixture.file}?include=links`, { headers });
+        expect(read.status).toBe(200);
+        const companies = itemLinkEntry.parse(linkedItemBody.parse(await read.json()).links.companies);
+        expect({ ...companies, sources: [...companies.sources].sort(byItem) }).toEqual({
+          valueKind: "inherited",
+          sources: [
+            {
+              kind: "item",
+              itemId: fixture.web,
+              databaseKey: "projects",
+              title: "Web for client",
+              propertyKey: "company",
+            },
+            {
+              kind: "item",
+              itemId: fixture.bathroom,
+              databaseKey: "projects",
+              title: "Bathroom renovation",
+              propertyKey: "company",
+            },
+          ].sort(byItem),
+          brokenBy: null,
+          brokenAt: null,
+        });
+        const listed = await fetch(`${base}/api/items/${fixture.file}/relations?propertyKey=companies`, { headers });
+        expect(listed.status).toBe(200);
+        const targets = relationTargets.parse(await listed.json()).relations.map((entry) => entry.targetItemId);
+        expect(targets.sort()).toEqual([fixture.novak, fixture.siko].sort());
+
+        const foreign = await fetch(`${base}/api/items/${fixture.file}?include=links`, { headers: foreignHeaders });
+        const randomId = randomUUID();
+        const random = await fetch(`${base}/api/items/${randomId}?include=links`, { headers: foreignHeaders });
+        expect(foreign.status).toBe(404);
+        expect(random.status).toBe(404);
+        expect((await foreign.text()).replaceAll(fixture.file, "<id>")).toEqual(
+          (await random.text()).replaceAll(randomId, "<id>"),
+        );
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        try {
+          if (runtimeServer)
+            await new Promise<void>((resolve, reject) =>
+              runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+            );
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
     });
 
     it("rejects an include value the catalog does not know", async () => {

@@ -266,6 +266,92 @@ describe("createSchemaRequestListener (issue #147)", () => {
     if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
   });
 
+  it("lists Tasks persistent through the dispatcher's GET /api/schema only until the cutover removes it, in that tenant alone (issue #2009)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let serverRuntime: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      serverRuntime = createServer(
+        await createDispatcher(runtime, {
+          moduleRegistry,
+          passwordResetMailer: { async sendPasswordResetEmail() {} },
+          appBaseUrl: "http://localhost",
+          setupToken: "unused-setup-token",
+          blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-schema-${randomUUID()}`)),
+          maxFileSizeBytes: 1048576,
+        }),
+      );
+      await new Promise<void>((resolve) => serverRuntime?.listen(0, "127.0.0.1", resolve));
+      const address = serverRuntime.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const tenants: { id: string; headers: { Authorization: string } }[] = [];
+      for (const name of ["old", "untouched"]) {
+        const id = await createTestTenant(pool);
+        const email = `${name}-${randomUUID()}@example.com`;
+        await createUser(pool, { tenantId: id, email, passwordHash: await hashPassword(PASSWORD) });
+        const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+        tenants.push({ id, headers: { Authorization: `Bearer ${token}` } });
+      }
+      const [old, untouched] = tenants;
+      if (!old || !untouched) throw new Error("Missing tenants");
+      const schemaBody = z.object({
+        databases: z.array(
+          z.object({ key: z.string().nullable(), properties: z.array(z.object({ key: z.string() })) }),
+        ),
+      });
+      const taskKeys = async (headers: { Authorization: string }): Promise<string[]> => {
+        const response = await fetch(`${base}/api/schema`, { headers });
+        expect(response.status).toBe(200);
+        const tasks = schemaBody.parse(await response.json()).databases.find((db) => db.key === "tasks");
+        if (!tasks) throw new Error("Tasks missing from the schema");
+        return tasks.properties.map((property) => property.key);
+      };
+      expect(await taskKeys(old.headers)).not.toContain("persistent");
+      await runInTenant(old.id, async () => {
+        // Synthetic historical catalog: the seed no longer creates `persistent`, and the Tasks schema is locked.
+        const inserted = await runtime.query(
+          `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
+           SELECT id, 'persistent', NULL, 'checkbox', '{}'::jsonb, false, 'user', NULL FROM databases
+           WHERE system AND owner_module_id = 'tasks'`,
+        );
+        expect(inserted.rowCount).toBe(1);
+      });
+      const untouchedBefore = await taskKeys(untouched.headers);
+      expect(await taskKeys(old.headers)).toContain("persistent");
+      expect(untouchedBefore).not.toContain("persistent");
+
+      await runAsSystem("test:persistent-cutover", () => runTenantCutoverMigrations(runtime));
+
+      const after = await taskKeys(old.headers);
+      expect(after).not.toContain("persistent");
+      expect(after).toContain("notifications");
+      expect(await taskKeys(untouched.headers)).toEqual(untouchedBefore);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (serverRuntime)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          serverRuntime?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
+  });
+
   it("serves localized rating presets and the Journal events label, dropping malformed stored presets (gh-1622, gh-1609)", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let serverRuntime: Server | undefined;

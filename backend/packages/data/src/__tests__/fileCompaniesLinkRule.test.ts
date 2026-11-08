@@ -58,11 +58,18 @@ async function companiesLink(fileId: string) {
   return (await inTenant(() => cp.getValueLinksForItems([fileId]))).get(fileId)?.companies;
 }
 
-async function valueLinkRows(fileId: string): Promise<unknown[]> {
+interface ValueLinkRow {
+  property_key: string;
+  rule_key: string;
+  state: string;
+}
+
+async function valueLinkRows(fileId: string): Promise<ValueLinkRow[]> {
   return inTenant(async () => {
-    const { rows } = await pool.query("SELECT property_key, rule_key, state FROM value_links WHERE item_id = $1", [
-      fileId,
-    ]);
+    const { rows } = await pool.query<ValueLinkRow>(
+      "SELECT property_key, rule_key, state FROM value_links WHERE item_id = $1",
+      [fileId],
+    );
     return rows;
   });
 }

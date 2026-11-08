@@ -51,6 +51,16 @@ async function reservation(): Promise<string | null> {
   });
 }
 
+/** Every reservation row of the tenant, in key order. */
+async function reservationRows(): Promise<Array<{ key: string; item_id: string }>> {
+  return runInTenant(tenant, async () => {
+    const { rows } = await pool.query<{ key: string; item_id: string }>(
+      "SELECT key, item_id FROM idempotency_keys ORDER BY key",
+    );
+    return rows;
+  });
+}
+
 /** The ids of the period's entries, live and trashed, in id order. */
 async function periodEntries(): Promise<Array<{ id: string; live: boolean }>> {
   return runInTenant(tenant, async () => {
@@ -278,10 +288,7 @@ describe("restoring a Journal entry (issue #1666)", () => {
 
   it("leaves the restore of a non-Journal item and every reservation unchanged", async () => {
     await entry();
-    const reservationsBefore = await runInTenant(
-      tenant,
-      async () => (await pool.query("SELECT key, item_id FROM idempotency_keys ORDER BY key")).rows,
-    );
+    const reservationsBefore = await reservationRows();
     const tasks = await runInTenant(tenant, async () => {
       const { rows } = await pool.query<{ id: string }>(
         "SELECT id FROM databases WHERE system AND owner_module_id = 'tasks'",
@@ -293,12 +300,7 @@ describe("restoring a Journal entry (issue #1666)", () => {
     await runInTenant(tenant, () => cp.softDeleteItem(tasks, task.id));
     const restored = await runInTenant(tenant, () => cp.restoreItem(tasks, task.id));
     expect(restored?.deletedAt).toBeNull();
-    expect(
-      await runInTenant(
-        tenant,
-        async () => (await pool.query("SELECT key, item_id FROM idempotency_keys ORDER BY key")).rows,
-      ),
-    ).toEqual(reservationsBefore);
+    expect(await reservationRows()).toEqual(reservationsBefore);
   });
 
   describe("concurrent writers of one period", () => {

@@ -107,7 +107,7 @@ async function eventsOfPerson(tenant: string, personId: string): Promise<string[
 
 async function edgeRows(tenant: string): Promise<unknown[]> {
   return runInTenant(tenant, async () => {
-    const { rows } = await pool.query(
+    const { rows } = await pool.query<{ edge: unknown }>(
       `SELECT to_jsonb(e) - 'created_at' AS edge FROM item_relations e
        WHERE relation_definition_id IN (
          SELECT r.id FROM relation_definitions r JOIN properties a ON a.id = r.property_id_a
@@ -123,7 +123,7 @@ async function schemaSnapshot(tenant: string): Promise<unknown[]> {
     const out: unknown[] = [];
     for (const table of ["properties", "relation_definitions", "item_relations"]) {
       // `table` is one of the three literals above, never input.
-      const { rows } = await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY t::text`);
+      const { rows } = await pool.query<{ row: unknown }>(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY t::text`);
       out.push(rows);
     }
     return out;

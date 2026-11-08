@@ -48,14 +48,157 @@ const mcpError = z.object({
   error: z.object({ code: z.number(), message: z.string(), data: z.record(z.string(), z.unknown()) }).strict(),
 });
 
-/**
- * One refusal as each transport carries it. The three envelopes differ by design (an HTTP body, a thrown
- * `ValidationError`, a JSON-RPC error); what must be identical is the category and the `details`.
- */
-interface Refusal {
-  category: string;
+/** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`; the body has no message. */
+interface RestRefusal {
+  status: number;
+  code: string;
   details: Record<string, unknown>;
 }
+
+/** A refusal as the agent gateway exposes it: the `ValidationError` it throws. */
+interface GatewayRefusal {
+  code: string;
+  status: number;
+  message: string;
+  details: Record<string, unknown>;
+}
+
+/** A refusal as MCP exposes it: a JSON-RPC error's code, message and `data`. It carries no category string. */
+interface McpRefusal {
+  rpcCode: number;
+  message: string;
+  data: Record<string, unknown>;
+}
+
+const TRANSPORTS = ["rest", "gateway", "mcp"] as const;
+type Transport = (typeof TRANSPORTS)[number];
+
+/** The rejections of issue #1663 on create: a label, the field named, and the Event's properties besides its name. */
+const CREATE_REFUSALS: Array<[string, string, Record<string, unknown>]> = [
+  ["timeTo not after timeFrom", "timeTo", { date: "2026-10-16", timeFrom: "10:00", timeTo: "09:30" }],
+  ["timeFrom and timeTo both 23:55", "timeTo", { date: "2026-10-16", timeFrom: "23:55", timeTo: "23:55" }],
+  ["endDate before date", "endDate", { date: "2026-10-16", endDate: "2026-10-15" }],
+  ["timeTo without timeFrom", "timeTo", { date: "2026-10-16", timeTo: "11:00" }],
+  ["timeTo 24:30", "timeTo", { date: "2026-10-16", timeFrom: "23:00", timeTo: "24:30" }],
+  ["timeFrom 24:00", "timeFrom", { date: "2026-10-16", timeFrom: "24:00", timeTo: "24:00" }],
+  ["a timeFrom that is no time", "timeFrom", { date: "2026-10-16", timeFrom: "noon" }],
+  ["an endDate that is no calendar date", "endDate", { date: "2026-10-16", endDate: "2026-13-01" }],
+  [
+    "a multi-day timed Event without timeTo",
+    "timeTo",
+    { date: "2026-10-16", endDate: "2026-10-17", timeFrom: "22:00" },
+  ],
+  ["no date", "date", {}],
+  ["a null date", "date", { date: null }],
+  ["an impossible calendar date", "date", { date: "2026-02-30" }],
+  ["a date with a time the time transform could not convert", "date", { date: "2026-10-16T25:00" }],
+];
+
+/**
+ * The rejections of issue #1663 on update: a label, the field named, the Event a write path creates first, the patch,
+ * and the legacy values stored into it afterwards (`null` for none).
+ */
+const PATCH_REFUSALS: Array<[string, string, Record<string, unknown>, Record<string, unknown>, Legacy]> = [
+  [
+    "only timeFrom 11:45 on an Event from 10:00 to 11:30",
+    "timeTo",
+    { date: "2026-10-16", timeFrom: "10:00", timeTo: "11:30" },
+    { timeFrom: "11:45" },
+    null,
+  ],
+  [
+    "only timeFrom 23:55 on an Event from 23:00 to 23:55",
+    "timeTo",
+    { date: "2026-10-16", timeFrom: "23:00", timeTo: "23:55" },
+    { timeFrom: "23:55" },
+    null,
+  ],
+  [
+    "only date 2026-10-26 on an Event spanning 24 and 25 October",
+    "endDate",
+    { date: "2026-10-24", endDate: "2026-10-25" },
+    { date: "2026-10-26" },
+    null,
+  ],
+  ["an endDate before the date", "endDate", { date: "2026-10-16" }, { endDate: "2026-10-15" }, null],
+  ["an endDate that is no calendar date", "endDate", { date: "2026-10-16" }, { endDate: "2026-13-01" }, null],
+  ["a date cleared to null", "date", { date: "2026-10-16" }, { date: null }, null],
+  ["an impossible calendar date", "date", { date: "2026-10-16" }, { date: "2026-02-30" }, null],
+  [
+    "a date with a time the time transform could not convert",
+    "date",
+    { date: "2026-10-16" },
+    { date: "2026-10-16T25:00" },
+    null,
+  ],
+  [
+    "a timeFrom that is no time",
+    "timeFrom",
+    { date: "2026-10-16", timeFrom: "10:00", timeTo: "11:30" },
+    { timeFrom: "noon" },
+    null,
+  ],
+  ["timeFrom 24:00", "timeFrom", { date: "2026-10-16" }, { timeFrom: "24:00", timeTo: "24:00" }, null],
+  ["timeTo 24:30", "timeTo", { date: "2026-10-16", timeFrom: "10:00", timeTo: "11:00" }, { timeTo: "24:30" }, null],
+  ["a timeTo without a timeFrom", "timeTo", { date: "2026-10-16" }, { timeTo: "11:00" }, null],
+  [
+    "a timeFrom on a two-day Event without a timeTo",
+    "timeTo",
+    { date: "2026-10-16", endDate: "2026-10-17" },
+    { timeFrom: "22:00" },
+    null,
+  ],
+  [
+    "times out of order on a legacy date-time",
+    "timeTo",
+    { date: "2026-10-16" },
+    { timeFrom: "10:00", timeTo: "09:00" },
+    { date: "2026-10-16T08:00:00Z" },
+  ],
+];
+
+/** The accepted creates of issue #1663: a label, the Event's properties besides its name, and what is stored. */
+const CREATE_PASSES: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+  ["timeTo 24:00", { date: "2026-10-16", timeFrom: "23:00", timeTo: "24:00" }, { timeFrom: "23:00", timeTo: "24:00" }],
+  ["23:30 with no end, stored with 24:00", { date: "2026-10-16", timeFrom: "23:30" }, { timeTo: "24:00" }],
+  [
+    "an all-day Event spanning 24 and 25 October",
+    { date: "2026-10-24", endDate: "2026-10-25" },
+    { date: "2026-10-24", endDate: "2026-10-25" },
+  ],
+  [
+    "an overnight Event from 22:00 on 16 October to 02:00 on 17 October",
+    { date: "2026-10-16", endDate: "2026-10-17", timeFrom: "22:00", timeTo: "02:00" },
+    { date: "2026-10-16", endDate: "2026-10-17", timeFrom: "22:00", timeTo: "02:00" },
+  ],
+  [
+    "a date with a time the time transform converted",
+    { date: "2026-10-16T08:00" },
+    { date: "2026-10-16", timeFrom: "08:00", timeTo: "09:00" },
+  ],
+];
+
+/**
+ * The accepted updates of issue #1663 on an Event with legacy values: a label, the legacy values, the patch, and what
+ * is stored afterwards.
+ */
+const PATCH_PASSES: Array<[string, Record<string, unknown>, Record<string, unknown>, Record<string, unknown>]> = [
+  [
+    "only name on an Event whose stored date is 2026-10-16T08:00:00Z",
+    { date: "2026-10-16T08:00:00Z" },
+    { name: "Renamed" },
+    { name: "Renamed", date: "2026-10-16T08:00:00Z" },
+  ],
+  [
+    "times on an Event whose stored date and endDate are unreadable",
+    { date: "2026-10-16T08:00:00Z", endDate: "someday" },
+    { timeFrom: "09:00", timeTo: "10:00" },
+    { date: "2026-10-16T08:00:00Z", endDate: "someday", timeFrom: "09:00", timeTo: "10:00" },
+  ],
+];
+
+/** Values stored into an Event with raw SQL after its create, or `null` for none. */
+type Legacy = Record<string, unknown> | null;
 
 let pool: Pool;
 let eventsId: string;
@@ -74,6 +217,18 @@ async function eventsNamed(name: string): Promise<number> {
     [eventsId, name],
   );
   return rows[0]?.count ?? -1;
+}
+
+/**
+ * Synthetic legacy state: the Events time transform converts a date-time on every write, so only a row stored before
+ * issue #1598 holds one; no write path can produce it, so it is written with raw SQL.
+ */
+async function storeLegacy(itemId: string, legacy: Record<string, unknown>): Promise<void> {
+  const result = await pool.query(
+    "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2",
+    [eventsId, itemId, JSON.stringify(legacy)],
+  );
+  expect(result.rowCount).toBe(1);
 }
 
 describe("Events validation errors are the same through REST, the agent gateway and MCP (issue #1663)", () => {
@@ -159,14 +314,13 @@ describe("Events validation errors are the same through REST, the agent gateway 
     return res.json();
   }
 
-  async function restRefusal(method: string, path: string, body: unknown): Promise<Refusal> {
+  async function restRefusal(method: string, path: string, body: unknown): Promise<RestRefusal> {
     const response = await rest(method, path, body);
-    expect(response.status).toBe(400);
     const parsed = restError.parse(response.body);
-    return { category: parsed.error.code, details: parsed.error.details };
+    return { status: response.status, code: parsed.error.code, details: parsed.error.details };
   }
 
-  async function gatewayRefusal(operation: "item.create" | "item.patch", input: unknown): Promise<Refusal> {
+  async function gatewayRefusal(operation: "item.create" | "item.patch", input: unknown): Promise<GatewayRefusal> {
     const error: unknown = await gateway()
       .invoke(operation, agentActor, new Set(CAPABILITY_IDS), input)
       .then(
@@ -174,17 +328,37 @@ describe("Events validation errors are the same through REST, the agent gateway 
         (thrown: unknown) => thrown,
       );
     if (!(error instanceof ValidationError)) throw new Error(`Expected a ValidationError, got ${String(error)}`);
-    return { category: error.code, details: z.record(z.string(), z.unknown()).parse(error.details) };
+    return {
+      code: error.code,
+      status: error.status,
+      message: error.message,
+      details: z.record(z.string(), z.unknown()).parse(error.details),
+    };
   }
 
-  /** MCP carries a `ValidationError` as JSON-RPC `-32602` (invalid params) with its details as `data`. */
-  async function mcpRefusal(name: string, args: unknown): Promise<Refusal> {
+  /** MCP carries a `ValidationError` as JSON-RPC `-32602` (invalid params): its message, and its details as `data`. */
+  async function mcpRefusal(name: string, args: unknown): Promise<McpRefusal> {
     const parsed = mcpError.parse(await mcpCall(name, args));
-    expect(parsed.error.code).toBe(-32602);
-    return { category: "validation_failed", details: parsed.error.data };
+    return { rpcCode: parsed.error.code, message: parsed.error.message, data: parsed.error.data };
   }
 
-  async function createVia(path: "rest" | "gateway" | "mcp", properties: Record<string, unknown>) {
+  /**
+   * Every exposed part of the three refusals: REST and the gateway carry the same category and status, MCP the
+   * gateway's message, and all three the same details naming `field`. MCP's category is not exposed, so it is not
+   * compared.
+   */
+  function expectSameRefusal(refusals: { rest: RestRefusal; gateway: GatewayRefusal; mcp: McpRefusal }, field: string) {
+    expect(refusals.rest).toEqual({ status: 400, code: "validation_failed", details: { field } });
+    expect(refusals.gateway).toEqual({
+      code: "validation_failed",
+      status: 400,
+      message: expect.any(String),
+      details: { field },
+    });
+    expect(refusals.mcp).toEqual({ rpcCode: -32602, message: refusals.gateway.message, data: { field } });
+  }
+
+  async function createVia(path: Transport, properties: Record<string, unknown>) {
     if (path === "rest") {
       const created = await rest("POST", `/api/databases/${eventsId}/items`, { properties });
       expect(created.status).toBe(201);
@@ -205,64 +379,95 @@ describe("Events validation errors are the same through REST, the agent gateway 
     return itemBody.parse(JSON.parse(text));
   }
 
-  it("refuses a create with timeTo 24:30 with the same category and details on every path, writing nothing", async () => {
-    const name = "Too late";
-    const properties = { name, date: "2026-10-16", timeFrom: "23:00", timeTo: "24:30" };
-    const refusals = [
-      await restRefusal("POST", `/api/databases/${eventsId}/items`, { properties }),
-      await gatewayRefusal("item.create", { databaseId: eventsId, properties }),
-      await mcpRefusal("semprec.item.create", { databaseId: eventsId, properties }),
-    ];
-    for (const refusal of refusals) {
-      expect(refusal).toEqual({ category: "validation_failed", details: { field: "timeTo" } });
+  async function patchVia(
+    path: Transport,
+    item: { id: string; updatedAt: string },
+    properties: Record<string, unknown>,
+  ) {
+    const input = { itemId: item.id, properties, ifVersion: item.updatedAt };
+    if (path === "rest") {
+      const patched = await rest("PATCH", `/api/items/${item.id}`, { properties, ifVersion: item.updatedAt });
+      expect(patched.status).toBe(200);
+      return;
     }
-    expect(await eventsNamed(name)).toBe(0);
-  });
+    if (path === "gateway") {
+      itemBody.parse(await gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), input));
+      return;
+    }
+    mcpResult.parse(await mcpCall("semprec.item.patch", input));
+  }
 
-  it("refuses an agent item.patch and an MCP patch of timeFrom 11:45 on 10:00–11:30 exactly as REST does", async () => {
-    const event = { date: "2026-10-16", timeFrom: "10:00", timeTo: "11:30" };
-    const refusals: Refusal[] = [];
-    for (const path of ["rest", "gateway", "mcp"] as const) {
-      const item = await createVia(path, { name: `Meeting ${path}`, ...event });
-      const before = await stored(item.id);
-      const patch = { itemId: item.id, properties: { timeFrom: "11:45" }, ifVersion: item.updatedAt };
-      refusals.push(
-        path === "rest"
-          ? await restRefusal("PATCH", `/api/items/${item.id}`, {
-              properties: patch.properties,
-              ifVersion: patch.ifVersion,
-            })
-          : path === "gateway"
-            ? await gatewayRefusal("item.patch", patch)
-            : await mcpRefusal("semprec.item.patch", patch),
-      );
-      expect(await stored(item.id)).toEqual(before);
-    }
-    for (const refusal of refusals) {
-      expect(refusal).toEqual({ category: "validation_failed", details: { field: "timeTo" } });
-    }
-  });
+  /** An Event a write path created, with any legacy values stored into it, and its stored row before the patch. */
+  async function patchTarget(path: Transport, name: string, base: Record<string, unknown>, legacy: Legacy) {
+    const item = await createVia(path, { name: `${name} ${path}`, ...base });
+    if (legacy !== null) await storeLegacy(item.id, legacy);
+    return { item, before: await stored(item.id) };
+  }
 
-  it("names endDate on every path when a patch moves the start of a two-day Event past its end", async () => {
-    const refusals: Refusal[] = [];
-    for (const path of ["rest", "gateway", "mcp"] as const) {
-      const item = await createVia(path, { name: `Weekend ${path}`, date: "2026-10-24", endDate: "2026-10-25" });
-      const before = await stored(item.id);
-      const patch = { itemId: item.id, properties: { date: "2026-10-26" }, ifVersion: item.updatedAt };
-      refusals.push(
-        path === "rest"
-          ? await restRefusal("PATCH", `/api/items/${item.id}`, {
-              properties: patch.properties,
-              ifVersion: patch.ifVersion,
-            })
-          : path === "gateway"
-            ? await gatewayRefusal("item.patch", patch)
-            : await mcpRefusal("semprec.item.patch", patch),
-      );
-      expect(await stored(item.id)).toEqual(before);
-    }
-    for (const refusal of refusals) {
-      expect(refusal).toEqual({ category: "validation_failed", details: { field: "endDate" } });
-    }
-  });
+  it.each(CREATE_REFUSALS)(
+    "refuses a create with %s on %s alike through REST, the agent gateway and MCP, writing nothing",
+    async (label, field, values) => {
+      const name = `Refused: ${label}`;
+      const properties = { name, ...values };
+      const refusals = {
+        rest: await restRefusal("POST", `/api/databases/${eventsId}/items`, { properties }),
+        gateway: await gatewayRefusal("item.create", { databaseId: eventsId, properties }),
+        mcp: await mcpRefusal("semprec.item.create", { databaseId: eventsId, properties }),
+      };
+      expectSameRefusal(refusals, field);
+      expect(await eventsNamed(name)).toBe(0);
+    },
+  );
+
+  it.each(PATCH_REFUSALS)(
+    "refuses a patch with %s on %s alike through REST, the agent item.patch and MCP, keeping every row",
+    async (label, field, base, patch, legacy) => {
+      const targets = {
+        rest: await patchTarget("rest", label, base, legacy),
+        gateway: await patchTarget("gateway", label, base, legacy),
+        mcp: await patchTarget("mcp", label, base, legacy),
+      };
+      const refusals = {
+        rest: await restRefusal("PATCH", `/api/items/${targets.rest.item.id}`, {
+          properties: patch,
+          ifVersion: targets.rest.item.updatedAt,
+        }),
+        gateway: await gatewayRefusal("item.patch", {
+          itemId: targets.gateway.item.id,
+          properties: patch,
+          ifVersion: targets.gateway.item.updatedAt,
+        }),
+        mcp: await mcpRefusal("semprec.item.patch", {
+          itemId: targets.mcp.item.id,
+          properties: patch,
+          ifVersion: targets.mcp.item.updatedAt,
+        }),
+      };
+      expectSameRefusal(refusals, field);
+      for (const path of TRANSPORTS) {
+        expect(await stored(targets[path].item.id)).toEqual(targets[path].before);
+      }
+    },
+  );
+
+  it.each(CREATE_PASSES)(
+    "accepts a create with %s through REST, the agent gateway and MCP",
+    async (label, values, expected) => {
+      for (const path of TRANSPORTS) {
+        const item = await createVia(path, { name: `${label} ${path}`, ...values });
+        expect((await stored(item.id)).properties).toMatchObject(expected);
+      }
+    },
+  );
+
+  it.each(PATCH_PASSES)(
+    "accepts a patch of %s through REST, the agent item.patch and MCP",
+    async (label, legacy, patch, expected) => {
+      for (const path of TRANSPORTS) {
+        const { item } = await patchTarget(path, label, { date: "2026-10-16" }, legacy);
+        await patchVia(path, item, patch);
+        expect((await stored(item.id)).properties).toMatchObject(expected);
+      }
+    },
+  );
 });

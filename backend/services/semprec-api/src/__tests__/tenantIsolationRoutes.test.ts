@@ -897,15 +897,41 @@ async function datedTask(tenant: TenantFixture): Promise<string> {
   });
 }
 
+interface TaskItemSnapshot {
+  properties: unknown;
+  updated_at: string;
+}
+
+interface TaskRecurrenceSnapshot {
+  series_id: string;
+  mode: string;
+  rule: unknown;
+  active: boolean;
+  anchor_date: string | null;
+}
+
 /** A task's stored properties and its `task_recurrence` row, read in its own tenant. */
 async function recurrenceState(tenant: TenantFixture, taskId: string): Promise<unknown> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
-    const item = await client.query("SELECT properties, updated_at::text FROM items WHERE id = $1", [taskId]);
-    const series = await client.query(
+    const item = await client.query<TaskItemSnapshot>("SELECT properties, updated_at::text FROM items WHERE id = $1", [
+      taskId,
+    ]);
+    const series = await client.query<TaskRecurrenceSnapshot>(
       "SELECT series_id::text, mode, rule, active, anchor_date::text FROM task_recurrence WHERE item_id = $1",
       [taskId],
     );
     return { item: item.rows, series: series.rows };
+  });
+}
+
+/** A series' stored `template`, read in its own tenant. */
+async function seriesTemplate(tenant: TenantFixture, seriesId: string): Promise<Array<{ template: unknown }>> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const { rows } = await client.query<{ template: unknown }>(
+      "SELECT template FROM task_recurrence WHERE series_id = $1::uuid",
+      [seriesId],
+    );
+    return rows;
   });
 }
 
@@ -1480,20 +1506,10 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const request = (id: string) => ({ method: "PATCH", path: `/api/tasks/series/${id}`, body: { timeFrom: "08:00" } });
     const answer = await sendOk(b.member, request(own));
     expect(readString(answer, "seriesId")).toBe(own);
-    const before = await inTenantTransaction(
-      a.tenantId,
-      async (client) =>
-        (await client.query("SELECT template FROM task_recurrence WHERE series_id = $1::uuid", [foreign])).rows,
-    );
+    const before = await seriesTemplate(a, foreign);
     const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
     expect(result.status).toBe(404);
-    expect(
-      await inTenantTransaction(
-        a.tenantId,
-        async (client) =>
-          (await client.query("SELECT template FROM task_recurrence WHERE series_id = $1::uuid", [foreign])).rows,
-      ),
-    ).toEqual(before);
+    expect(await seriesTemplate(a, foreign)).toEqual(before);
   },
   "task recurrence clear": async () => {
     const [own, foreign] = [await datedTask(b), await datedTask(a)];
