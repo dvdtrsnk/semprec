@@ -26,6 +26,7 @@ import {
   seedSystem,
   today,
   withTransaction,
+  FALLBACK_DEFAULT_SORT,
 } from "@semprec/data";
 import { createSchemaRequestListener } from "../schemaHandler.js";
 import { createDispatcher } from "../app.js";
@@ -85,7 +86,7 @@ const viewHintsBody = z.object({
           isDefault: z.boolean(),
         }),
       ),
-      defaultSort: sortSpec.optional(),
+      defaultSort: sortSpec,
       dateLabels: z.strictObject({ past: z.string(), noDate: z.string() }).optional(),
       collectionFilter: z.record(z.string(), z.unknown()).optional(),
       pickerFilter: z.record(z.string(), z.unknown()).optional(),
@@ -903,6 +904,62 @@ describe("createSchemaRequestListener (issue #147)", () => {
       }
     },
   );
+
+  it("defaults every database without a declared sort to newest first and keeps the declared date sorts (issue #1995)", async () => {
+    const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(res.status).toBe(200);
+    const body = viewHintsBody.parse(await res.json());
+    const newestFirst = { system: "createdAt", direction: "desc" };
+    expect(FALLBACK_DEFAULT_SORT).toEqual(newestFirst);
+    for (const db of body.databases) {
+      const declared = db.key === "events" || db.key === "tasks";
+      expect(db.defaultSort, db.key ?? db.databaseId).toEqual(
+        declared ? { property: "date", direction: "asc" } : newestFirst,
+      );
+    }
+    const keys = new Set(body.databases.map((db) => db.key));
+    for (const key of ["events", "tasks", "projects", "people", "files", "books"])
+      expect(keys.has(key), key).toBe(true);
+    expect(body.databases.find((db) => db.databaseId === custom.id)?.defaultSort).toEqual(newestFirst);
+  });
+
+  it("lists the most recently created item first when database.query sorts by the schema's fallback (issue #1995)", async () => {
+    const headers = await authHeader("en");
+    const schemaResponse = await fetch(`${baseUrl}/api/schema`, { headers });
+    const projects = viewHintsBody.parse(await schemaResponse.json()).databases.find((db) => db.key === "projects");
+    if (!projects) throw new Error("Projects missing from the schema");
+    const chokePoint = createChokePoint(pool);
+    const created: string[] = [];
+    for (const name of ["First", "Second", "Third"]) {
+      created.push((await chokePoint.createItem({ databaseId: projects.databaseId, properties: { name } })).id);
+    }
+    const server = createServer(
+      await createDispatcher(pool, {
+        moduleRegistry,
+        passwordResetMailer: { async sendPasswordResetEmail() {} },
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-schema-${randomUUID()}`)),
+        maxFileSizeBytes: 1048576,
+      }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/databases/${projects.databaseId}/query`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ sort: [projects.defaultSort], limit: 3 }),
+      });
+      expect(response.status).toBe(200);
+      const page = z.object({ items: z.array(z.object({ id: z.string() })) }).parse(await response.json());
+      expect(page.items.map((item) => item.id)).toEqual([...created].reverse());
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
   it("ignores a query-parameter locale override — locale comes only from users.locale", async () => {
     const res = await fetch(`${baseUrl}/api/schema?locale=cs`, { headers: await authHeader("en") });

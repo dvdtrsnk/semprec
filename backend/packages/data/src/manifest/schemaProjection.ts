@@ -10,6 +10,7 @@ import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
 import { getCalendarClock } from "../calendarTime.js";
 import { createCollectionMetadataResolver } from "./collectionMetadata.js";
+import type { SortSpec } from "../views/sortSpec.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
@@ -34,8 +35,11 @@ export interface SchemaDatabaseProjection {
   properties: ResolvedProperty[];
   /** The collection's quick-filter chips in display order, labels resolved for the locale; empty without declarations (issue #1647). */
   quickFilters: SchemaQuickFilterProjection[];
-  /** The declared default order (issue #1647); absent when the manifest declares none. */
-  defaultSort?: SchemaSortProjection;
+  /**
+   * The order the collection opens with, always present (issue #1995): the manifest's declared sort (issue
+   * #1647), otherwise `FALLBACK_DEFAULT_SORT`, newest first.
+   */
+  defaultSort: SortSpec;
   /** The resolved past and no-date labels of a date-grouped collection (issue #1647). */
   dateLabels?: { past: string; noDate: string };
   /** The filter tree of the items that belong in the collection (issue #1647). */
@@ -43,6 +47,12 @@ export interface SchemaDatabaseProjection {
   /** The filter tree a picker for this database applies by default (issue #1647). */
   pickerFilter?: Record<string, unknown>;
 }
+
+/**
+ * The default sort of every database whose manifest declares none, system or user-created (issue #1995):
+ * creation time, newest first. Computed here and never written into a manifest or a view config.
+ */
+export const FALLBACK_DEFAULT_SORT: SortSpec = Object.freeze({ system: "createdAt", direction: "desc" });
 
 export interface SchemaSortProjection {
   property: string;
@@ -106,14 +116,14 @@ type DatabaseViewHints = Pick<
 /**
  * A database's view hints from its manifest descriptor (issue #1647), with every `labelKey` resolved
  * against the owning module's catalog for `locale`. A database without a descriptor, every user-created
- * database among them, gets empty quick filters and nothing else.
+ * database among them, gets empty quick filters, the fallback default sort (issue #1995) and nothing else.
  */
 function resolveDatabaseViewHints(
   descriptor: ModuleDatabaseProjection | undefined,
   catalogs: ModuleCatalogs | undefined,
   locale: ManifestLocale,
 ): DatabaseViewHints {
-  if (descriptor === undefined) return { quickFilters: [] };
+  if (descriptor === undefined) return { quickFilters: [], defaultSort: { ...FALLBACK_DEFAULT_SORT } };
   const label = (key: string) => (catalogs ? resolveCatalogLabel(null, catalogs[locale], catalogs.en, key) : key);
   return {
     quickFilters: (descriptor.quickFilters ?? []).map((quickFilter) => ({
@@ -123,7 +133,7 @@ function resolveDatabaseViewHints(
       ...(quickFilter.sort !== undefined ? { sort: quickFilter.sort.map((spec) => ({ ...spec })) } : {}),
       isDefault: quickFilter.isDefault === true,
     })),
-    ...(descriptor.defaultSort !== undefined ? { defaultSort: { ...descriptor.defaultSort } } : {}),
+    defaultSort: { ...(descriptor.defaultSort ?? FALLBACK_DEFAULT_SORT) },
     ...(descriptor.dateLabels !== undefined
       ? {
           dateLabels: {

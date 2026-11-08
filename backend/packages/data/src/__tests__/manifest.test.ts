@@ -893,7 +893,7 @@ describe("quick filters, default sorts and collection and picker filters (issue 
     }
   });
 
-  it("gives a database without declarations, and a user-created one, empty quick filters and nothing else", async () => {
+  it("gives a database without declarations, and a user-created one, empty quick filters and the fallback sort only", async () => {
     const userDatabase = await runInTenant(tenant, () =>
       createChokePoint(runtimePool).createDatabase({ name: "Recipes" }),
     );
@@ -902,6 +902,7 @@ describe("quick filters, default sorts and collection and picker filters (issue 
       (candidate) => candidate.key === "companies" || candidate.databaseId === userDatabase.id,
     )) {
       expect(db.quickFilters, db.name).toEqual([]);
+      expect(db.defaultSort, db.name).toEqual({ system: "createdAt", direction: "desc" });
       for (const field of ["dateLabels", "collectionFilter", "pickerFilter"]) {
         expect(Object.hasOwn(db, field), `${db.name}.${field}`).toBe(false);
       }
