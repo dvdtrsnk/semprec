@@ -1,5 +1,5 @@
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
-import type { AreaFilterTemplate, ModuleManifest } from "@semprec/module-registry";
+import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -55,6 +55,78 @@ function projectOrOwnAreaFilter(projectKey: string): AreaFilterTemplate {
     ],
   };
 }
+
+type QuickFilters = NonNullable<ModuleDatabaseDescriptor["quickFilters"]>;
+
+/** `in <property> [values]` — a select or multi-select key among `values` (issue #1647). */
+function inValues(property: string, values: string[]): Record<string, unknown> {
+  return { type: "in", property, value: values };
+}
+
+/** A chip per value list, labelled `quickFilter.<database>.<key>`, after an "All" chip without a filter. */
+function chipsWithAll(database: string, chips: [key: string, filter: Record<string, unknown>][]): QuickFilters {
+  return [
+    { key: "all", labelKey: `quickFilter.${database}.all` },
+    ...chips.map(([key, filter]) => ({ key, labelKey: `quickFilter.${database}.${key}`, filter })),
+  ];
+}
+
+/** A relative-date chip on Events `date`, evaluated in the tenant zone at query time (issue #1522). */
+function eventsDateChip(key: string, preset: string): QuickFilters[number] {
+  return {
+    key,
+    labelKey: `quickFilter.events.${key}`,
+    filter: { type: "date_relative", property: "date", preset },
+  };
+}
+
+/**
+ * The user's own projects: system-module projects carry `systemActive` (true, or false once deactivated)
+ * and user projects have no such key (issue #1647).
+ */
+const USER_PROJECTS_FILTER = { type: "is_empty", property: "systemActive" };
+
+const PROJECTS_QUICK_FILTERS: QuickFilters = [
+  {
+    key: "active",
+    labelKey: "quickFilter.projects.active",
+    filter: inValues("status", ["inProgress", "longTerm"]),
+    isDefault: true,
+  },
+  { key: "done", labelKey: "quickFilter.projects.done", filter: inValues("status", ["done"]) },
+  { key: "archived", labelKey: "quickFilter.projects.archived", filter: inValues("status", ["archived"]) },
+  { key: "all", labelKey: "quickFilter.projects.all" },
+];
+
+/**
+ * The one project picker's default (issue #1647): user projects that are neither done nor archived. `in`
+ * compiles to `= ANY(...)`, which is NULL for a project without a status, so such a project is kept by its
+ * own `is_empty` branch. A read hint only: a done project stays a valid relation target.
+ */
+const PROJECTS_PICKER_FILTER = {
+  type: "and",
+  nodes: [
+    USER_PROJECTS_FILTER,
+    {
+      type: "or",
+      nodes: [
+        { type: "is_empty", property: "status" },
+        { type: "not", node: inValues("status", ["done", "archived"]) },
+      ],
+    },
+  ],
+};
+
+const EVENTS_QUICK_FILTERS: QuickFilters = [
+  { ...eventsDateChip("upcoming", "upcoming"), sort: [{ property: "date", direction: "asc" }], isDefault: true },
+  eventsDateChip("today", "today"),
+  eventsDateChip("thisWeek", "thisWeek"),
+  eventsDateChip("nextWeek", "nextWeek"),
+  { ...eventsDateChip("past", "past"), sort: [{ property: "date", direction: "desc" }] },
+  { key: "all", labelKey: "quickFilter.events.all" },
+];
+
+const DATE_ASCENDING = { property: "date", direction: "asc" } as const;
 
 /**
  * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
@@ -124,6 +196,10 @@ export const manifest: ModuleManifest = {
       overviewOrder: 1,
       switcherOrder: 1,
       areaFilter: OWN_AREA_FILTER,
+      quickFilters: PROJECTS_QUICK_FILTERS,
+      dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
+      collectionFilter: USER_PROJECTS_FILTER,
+      pickerFilter: PROJECTS_PICKER_FILTER,
     },
     {
       key: TASKS_MODULE_ID,
@@ -135,6 +211,7 @@ export const manifest: ModuleManifest = {
       switcherOrder: 2,
       // A task has no area of its own: only its project's area counts, so a task without a project never matches.
       areaFilter: { type: "relation_path_contains", path: ["project", "area"], value: AREA_VALUE },
+      defaultSort: DATE_ASCENDING,
     },
     {
       key: PEOPLE_MODULE_ID,
@@ -157,6 +234,11 @@ export const manifest: ModuleManifest = {
       color: "#5856D6",
       overviewOrder: 3,
       switcherOrder: 5,
+      quickFilters: chipsWithAll("people", [
+        ["clients", inValues("relationship", ["client"])],
+        ["close", inValues("relationship", ["closeFriend", "parent", "girlfriend"])],
+        ["others", inValues("relationship", ["therapist", "neighbor"])],
+      ]),
     },
     {
       key: FILES_MODULE_ID,
@@ -167,6 +249,14 @@ export const manifest: ModuleManifest = {
       overviewOrder: 5,
       switcherOrder: 7,
       areaFilter: projectOrOwnAreaFilter("projects"),
+      quickFilters: chipsWithAll("files", [
+        // "Recent" is the last 30 days as everywhere: `last30`, D-30 through today inclusive (issue #1522).
+        ["recent", { type: "date_relative", property: "date", preset: "last30" }],
+        ["pdf", inValues("type", ["pdf"])],
+        ["images", inValues("type", ["jpg"])],
+        ["spreadsheets", inValues("type", ["xlsx"])],
+        ["documents", inValues("type", ["docx"])],
+      ]),
     },
     {
       key: EVENTS_MODULE_ID,
@@ -177,6 +267,8 @@ export const manifest: ModuleManifest = {
       overviewOrder: 2,
       switcherOrder: 3,
       areaFilter: projectOrOwnAreaFilter("project"),
+      quickFilters: EVENTS_QUICK_FILTERS,
+      defaultSort: DATE_ASCENDING,
     },
     {
       key: HEALTH_RECORDS_MODULE_ID,
@@ -187,6 +279,10 @@ export const manifest: ModuleManifest = {
       overviewOrder: 6,
       switcherOrder: 8,
       areaFilter: projectOrOwnAreaFilter("projects"),
+      quickFilters: chipsWithAll("healthRecords", [
+        ["monitoring", inValues("status", ["monitoring"])],
+        ["resolved", inValues("status", ["resolved"])],
+      ]),
     },
     {
       key: COMPANIES_MODULE_ID,

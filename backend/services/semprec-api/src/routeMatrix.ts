@@ -220,6 +220,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "account",
   },
+  // prettier-ignore
+  { name: "revoke other sessions", method: "POST", path: "/api/auth/sessions/revoke-others", surface: "api", public: false, tenancy: "account" },
   {
     name: "set self person",
     method: "PUT",
@@ -749,6 +751,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // Also takes the optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645), which link the
+  // upload to an item in the same request; tenantIsolationRoutes.test.ts answers a foreign target like a random one.
   {
     name: "upload file",
     method: "POST",

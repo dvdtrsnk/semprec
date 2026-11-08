@@ -38,5 +38,13 @@
   "property.movies.notes.name": "Poznámky",
   "property.movies.watchedWith.name": "Viděl jsem s",
 
-  "viewType.library-grid.name": "Mřížka"
+  "viewType.library-grid.name": "Mřížka",
+  "quickFilter.books.all": "Vše",
+  "quickFilter.books.toRead": "Chci číst",
+  "quickFilter.books.reading": "Čtu",
+  "quickFilter.books.read": "Přečteno",
+  "quickFilter.movies.all": "Vše",
+  "quickFilter.movies.planned": "Plánováno",
+  "quickFilter.movies.watching": "Sleduji",
+  "quickFilter.movies.watched": "Viděno"
 }

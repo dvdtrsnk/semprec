@@ -11,10 +11,21 @@ import {
   type InvalidationEvent,
 } from "@semprec/data";
 import { createServer, request as httpRequest, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
-import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
+import {
+  createUser,
+  hashPassword,
+  LOCKOUT_THRESHOLD,
+  upsertWebPushSubscription,
+  type PasswordResetMailer,
+  type UserRow,
+} from "@semprec/data";
+import { WebSocket } from "ws";
+import { z } from "zod";
+import { wireRealtimeHooks, type SyncServer } from "@semprec/realtime";
+import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 
@@ -1584,5 +1595,228 @@ describe("self person HTTP contract", () => {
     expect((await put({ personId: ownId }, false)).status).toBe(401);
     for (const body of [{}, null, [], { personId: 1 }, { personId: "bad" }]) expect((await put(body)).status).toBe(400);
     expect(await personId()).toBeNull();
+  });
+});
+
+describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
+  let server: Server | undefined;
+  let syncServer: SyncServer | undefined;
+  let baseUrl: string;
+  let wsBaseUrl: string;
+
+  // The describes above end the file's pool in their afterAll; this one opens and ends its own.
+  beforeAll(() => {
+    pool = getTestPool();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    wireRealtimeHooks(pool);
+    const sync = await createSyncUpgradeHandler(pool);
+    syncServer = sync;
+    const http = createServer(
+      createAuthRequestListener(pool, { passwordResetMailer: createFakeMailer(), appBaseUrl: APP_BASE_URL }),
+    );
+    server = http;
+    http.on("upgrade", (req, socket, head) => sync.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    wsBaseUrl = `ws://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await syncServer?.close();
+    const http = server;
+    if (http) await new Promise<void>((resolve) => http.close(() => resolve()));
+    syncServer = undefined;
+    server = undefined;
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  const loginBody = z.object({ token: z.string() });
+  const sessionBody = z.object({ session: z.object({ id: z.string() }) });
+
+  async function signIn(email: string): Promise<{ token: string; sessionId: string }> {
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD, platform: "ios" }),
+    });
+    const { token } = loginBody.parse(await res.json());
+    const current = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+    return { token, sessionId: sessionBody.parse(await current.json()).session.id };
+  }
+
+  async function sessionStatus(token: string): Promise<number> {
+    return (await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }
+
+  async function revokeOthers(token: string): Promise<Response> {
+    return fetch(`${baseUrl}/api/auth/sessions/revoke-others`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  async function registration(userId: string, sessionId: string): Promise<string> {
+    const row = await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId,
+      endpoint: `https://push.example.test/${randomUUID()}`,
+      p256dh: "key",
+      authSecret: "secret",
+    });
+    return row.id;
+  }
+
+  async function revokedAt(id: string): Promise<Date | null> {
+    const { rows } = await pool.query<{ revoked_at: Date | null }>(
+      "SELECT revoked_at FROM push_subscriptions WHERE id = $1",
+      [id],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("registration not found");
+    return row.revoked_at;
+  }
+
+  interface OpenedSocket {
+    socket: WebSocket;
+    /** The close code, and the closed session's `revoked_at` read the moment the close arrived. */
+    closed: Promise<{ code: number; sessionRevokedAt: Date | null }>;
+  }
+
+  async function sessionRevokedAt(sessionId: string): Promise<Date | null> {
+    const { rows } = await pool.query<{ revoked_at: Date | null }>("SELECT revoked_at FROM sessions WHERE id = $1", [
+      sessionId,
+    ]);
+    const row = rows[0];
+    if (!row) throw new Error("session not found");
+    return row.revoked_at;
+  }
+
+  /**
+   * Opens a sync socket for one session and records it in `opened` before waiting for it to open, so a case's
+   * cleanup ends every socket it started, including one whose opening failed.
+   */
+  async function openSocket(
+    session: { token: string; sessionId: string },
+    opened: OpenedSocket[],
+  ): Promise<OpenedSocket> {
+    const socket = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${session.token}` } });
+    const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code))).then(
+      async (code) => ({ code, sessionRevokedAt: await sessionRevokedAt(session.sessionId) }),
+    );
+    // Read by the case, or by the cleanup; observed here too, so a failed read is never an unhandled rejection.
+    closed.catch(() => undefined);
+    const entry = { socket, closed };
+    opened.push(entry);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+    return entry;
+  }
+
+  /** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+  async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+    });
+    try {
+      return await Promise.race([work, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  it("keeps only the calling session: 200 with the count, 401 for the others, their pushes revoked and both other sockets closed with 4401 after the commit", async () => {
+    const user = await makeUser("caller@example.com");
+    const caller = await signIn(user.email);
+    const others = [await signIn(user.email), await signIn(user.email)];
+    const callerRegistration = await registration(user.id, caller.sessionId);
+    const otherRegistrations = await Promise.all(others.map((other) => registration(user.id, other.sessionId)));
+    const opened: OpenedSocket[] = [];
+    let primary: { error: unknown } | undefined;
+    try {
+      const callerSocket = await openSocket(caller, opened);
+      const otherSockets: OpenedSocket[] = [];
+      for (const other of others) otherSockets.push(await openSocket(other, opened));
+
+      const res = await revokeOthers(caller.token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ revokedCount: 2 });
+
+      for (const other of otherSockets) {
+        const closed = await within(other.closed, 10_000, "A revoked session's socket close");
+        expect(closed.code).toBe(4401);
+        // Read as the close arrives, the session already reads as revoked: the close follows the commit.
+        expect(closed.sessionRevokedAt).toBeInstanceOf(Date);
+      }
+      expect(await sessionStatus(caller.token)).toBe(200);
+      for (const other of others) expect(await sessionStatus(other.token)).toBe(401);
+      for (const id of otherRegistrations) expect(await revokedAt(id)).toBeInstanceOf(Date);
+      expect(await revokedAt(callerRegistration)).toBeNull();
+      expect(await sessionRevokedAt(caller.sessionId)).toBeNull();
+      expect(callerSocket.socket.readyState).toBe(WebSocket.OPEN);
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    for (const { socket, closed } of opened) {
+      try {
+        socket.terminate();
+        await within(closed, 5_000, "A terminated socket's close");
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (primary && failures.length > 0) {
+      throw new AggregateError([primary.error, ...failures], "The case and its cleanup failed", {
+        cause: primary.error,
+      });
+    }
+    if (primary) throw primary.error;
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "The case's socket cleanup failed");
+  });
+
+  it("never revokes another user's sessions, and answers 0 when the caller has no other session", async () => {
+    const owner = await makeUser("owner@example.com");
+    const caller = await makeUser("single@example.com");
+    const ownerSessions = [await signIn(owner.email), await signIn(owner.email)];
+    const only = await signIn(caller.email);
+
+    const res = await revokeOthers(only.token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ revokedCount: 0 });
+    expect(await sessionStatus(only.token)).toBe(200);
+    for (const session of ownerSessions) expect(await sessionStatus(session.token)).toBe(200);
+  });
+
+  it("refuses an unauthenticated call with 401 and revokes nothing", async () => {
+    const user = await makeUser("victim@example.com");
+    const session = await signIn(user.email);
+    const res = await fetch(`${baseUrl}/api/auth/sessions/revoke-others`, { method: "POST" });
+    expect(res.status).toBe(401);
+    expect(await sessionStatus(session.token)).toBe(200);
+  });
+
+  it("is matched apart from the single-session revoke route", async () => {
+    const user = await makeUser("router@example.com");
+    const caller = await signIn(user.email);
+    const other = await signIn(user.email);
+    // `revoke-others` used as a session id goes to the single revoke route, which refuses it as no UUID.
+    const single = await fetch(`${baseUrl}/api/auth/sessions/revoke-others/revoke`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${caller.token}` },
+    });
+    expect(single.status).toBe(400);
+    expect(await sessionStatus(other.token)).toBe(200);
   });
 });

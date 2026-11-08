@@ -20,7 +20,7 @@ import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js"
 import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
-import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { PEOPLE_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 
 /**
@@ -60,4 +60,6 @@ export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   TASKS_MODULE_ID,
   PROJECTS_OWNER_PROCESS,
   JOURNAL_EVENT_LINKS_OWNER_PROCESS,
+  // Issue #1660: People's derived `lastContact`, written only by people/lastContact.ts's recompute.
+  PEOPLE_MODULE_ID,
 ]);

@@ -692,3 +692,248 @@ describe("related collection order", () => {
     expect(await registry.getRelatedOrder("projects")).toBeUndefined();
   });
 });
+
+describe("database quick filters, default sorts and collection and picker filters (issue #1647)", () => {
+  const filter = { type: "in", property: "status", value: ["done"] };
+  const declared = {
+    key: "projects",
+    name: "Projects",
+    quickFilters: [
+      { key: "active", labelKey: "quickFilter.projects.active", filter, isDefault: true },
+      { key: "past", labelKey: "quickFilter.projects.past", sort: [{ property: "date", direction: "desc" }] },
+      { key: "all", labelKey: "quickFilter.projects.all" },
+    ],
+    defaultSort: { property: "date", direction: "asc" },
+    dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
+    collectionFilter: { type: "is_empty", property: "systemActive" },
+    pickerFilter: { type: "and", nodes: [{ type: "is_empty", property: "systemActive" }] },
+  };
+  const base = {
+    id: "quickFilters",
+    version: "1.0.0",
+    name: "Quick filters",
+    removable: true,
+    systemProject: false,
+    capabilities: [],
+    agentTools: [],
+  };
+  function manifestWith(database: Record<string, unknown>): unknown {
+    return { ...base, databases: [database] };
+  }
+
+  let directory: string;
+  let ordinal = 0;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "semprec-quick-filters-"));
+  });
+  afterAll(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function load(registry: ModuleRegistry, manifest: unknown): Promise<void> {
+    const path = join(directory, `manifest-${ordinal++}.mjs`);
+    await writeFile(path, `export const manifest = ${JSON.stringify(manifest)};`);
+    await registry.loadModule(pathToFileURL(path).href);
+  }
+
+  it("loads the declarations and projects a copy of them; a database without any projects none", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    await load(registry, { ...base, databases: [declared, { key: "plain", name: "Plain" }] });
+    const databases = await registry.getDatabases();
+    expect(databases).toEqual([
+      { moduleId: "quickFilters", ...declared },
+      { moduleId: "quickFilters", key: "plain", name: "Plain" },
+    ]);
+    // Editing a projection cannot change what the next projection returns.
+    databases[0]?.quickFilters?.splice(0);
+    const collectionFilter = databases[0]?.collectionFilter;
+    if (collectionFilter) collectionFilter.property = "changed";
+    expect((await registry.getDatabases())[0]).toEqual({ moduleId: "quickFilters", ...declared });
+  });
+
+  it("rejects a manifest declaring two default quick filters when the module is loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    const twoDefaults = {
+      ...declared,
+      quickFilters: [
+        { key: "active", labelKey: "a", isDefault: true },
+        { key: "done", labelKey: "b", isDefault: true },
+      ],
+    };
+    await expect(load(registry, manifestWith(twoDefaults))).rejects.toThrow(/invalid manifest/);
+    expect(registry.listModuleIds()).toEqual([]);
+    expect(moduleManifestSchema.safeParse(manifestWith(twoDefaults)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters"],
+        message: "At most one quick filter may be the default",
+      }),
+    ]);
+  });
+
+  it("rejects duplicate quick-filter keys within one database", () => {
+    const duplicate = {
+      ...declared,
+      quickFilters: [
+        { key: "all", labelKey: "a" },
+        { key: "all", labelKey: "b" },
+      ],
+    };
+    expect(moduleManifestSchema.safeParse(manifestWith(duplicate)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters", 1, "key"],
+        message: "Duplicate quick filter key 'all'",
+      }),
+    ]);
+  });
+
+  it("accepts a single default, no default, and the same chip key in two databases", () => {
+    expect(moduleManifestSchema.safeParse(manifestWith(declared)).success).toBe(true);
+    const noDefault = { ...declared, quickFilters: [{ key: "all", labelKey: "a", isDefault: false }] };
+    expect(moduleManifestSchema.safeParse(manifestWith(noDefault)).success).toBe(true);
+    const twoDatabases = { ...base, databases: [declared, { ...declared, key: "other" }] };
+    expect(moduleManifestSchema.safeParse(twoDatabases).success).toBe(true);
+  });
+
+  it.each([
+    ["a quick filter whose filter is an array", { quickFilters: [{ key: "a", labelKey: "a", filter: [filter] }] }],
+    ["a quick filter whose filter is a string", { quickFilters: [{ key: "a", labelKey: "a", filter: "status=done" }] }],
+    ["a null collection filter", { collectionFilter: null }],
+    ["a picker filter that is a number", { pickerFilter: 1 }],
+    ["a quick filter without a label key", { quickFilters: [{ key: "a" }] }],
+    ["a quick filter with an unknown field", { quickFilters: [{ key: "a", labelKey: "a", label: "A" }] }],
+    ["a default sort with an unknown direction", { defaultSort: { property: "date", direction: "up" } }],
+    [
+      "a quick-filter sort with an empty property",
+      { quickFilters: [{ key: "a", labelKey: "a", sort: [{ property: "", direction: "asc" }] }] },
+    ],
+    ["date labels missing the no-date key", { dateLabels: { pastLabelKey: "p" } }],
+  ])("rejects %s", (_name, change) => {
+    expect(moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).success).toBe(
+      false,
+    );
+  });
+
+  describe("opaque filters are bounded JSON objects", () => {
+    /** `levels` objects nested in one another, the outermost first: `{ child: { child: { type: "leaf" } } }`. */
+    function nestedObjects(levels: number): Record<string, unknown> {
+      let value: Record<string, unknown> = { type: "leaf" };
+      for (let level = 1; level < levels; level += 1) value = { child: value };
+      return value;
+    }
+    /** A root object holding `arrays` arrays nested in one another, around one string. */
+    function nestedArrays(arrays: number): Record<string, unknown> {
+      let value: unknown = "leaf";
+      for (let level = 0; level < arrays; level += 1) value = [value];
+      return { nodes: value };
+    }
+    /** A root object with `values - 1` numeric properties: `values` values in all, the root included. */
+    function flatObject(values: number): Record<string, unknown> {
+      return Object.fromEntries(Array.from({ length: values - 1 }, (_, index) => [`k${index}`, index]));
+    }
+    /** A root holding one array that holds `shared` twice: 2 + 2 × (values of `shared`) values. */
+    function twoAliases(sharedValues: number): Record<string, unknown> {
+      const shared = flatObject(sharedValues);
+      return { nodes: [shared, shared] };
+    }
+    function parsesAsCollectionFilter(collectionFilter: unknown): boolean {
+      return moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", collectionFilter }))
+        .success;
+    }
+    class FilterNode {
+      type = "is_empty";
+    }
+    class FilterNodes extends Array<unknown> {}
+
+    const selfCycle: Record<string, unknown> = { type: "and", nodes: [] };
+    selfCycle.self = selfCycle;
+    const arrayCycle: Record<string, unknown> = { type: "and" };
+    arrayCycle.nodes = [{ type: "or", nodes: [arrayCycle] }];
+    const sparse: unknown[] = ["a"];
+    sparse[2] = "c";
+    const arrayWithExtra = Object.assign(["a"], { extra: true });
+    const hidden: Record<string, unknown> = { type: "is_empty" };
+    Object.defineProperty(hidden, "property", { value: "systemActive", enumerable: false });
+
+    it.each([
+      ["a Date", new Date(0)],
+      ["a class instance", new FilterNode()],
+      ["a Map", new Map([["type", "is_empty"]])],
+      ["a nested Date", { type: "in", value: new Date(0) }],
+      ["a nested class instance", { type: "and", nodes: [new FilterNode()] }],
+      ["a nested boxed string", { type: "in", value: new String("done") }],
+      ["a nested function", { type: "in", value: () => "done" }],
+      ["a nested undefined", { type: "in", value: undefined }],
+      ["a nested symbol", { type: "in", value: Symbol("done") }],
+      ["a symbol key", { type: "in", [Symbol("key")]: "done" }],
+      ["a nested bigint", { type: "in", value: 1n }],
+      ["a nested NaN", { type: "in", value: Number.NaN }],
+      ["a nested Infinity", { type: "in", value: Number.POSITIVE_INFINITY }],
+      ["a nested -Infinity", { type: "in", value: Number.NEGATIVE_INFINITY }],
+      ["an object that contains itself", selfCycle],
+      ["an object that contains itself through an array", arrayCycle],
+      ["an array with a hole", { type: "in", value: sparse }],
+      ["an array with a property beyond its indices", { type: "in", value: arrayWithExtra }],
+      ["an Array subclass instance", { type: "and", nodes: FilterNodes.from([{ type: "is_empty" }]) }],
+      ["a non-enumerable property", hidden],
+      ["33 nested objects", nestedObjects(33)],
+      ["a root object around 32 nested arrays", nestedArrays(32)],
+      ["1025 values", flatObject(1025)],
+      ["one value shared on two paths, counted on each, past 1024 values", twoAliases(512)],
+    ])("refuses %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(false);
+    });
+
+    it.each([
+      ["a null-prototype root", Object.assign(Object.create(null) as Record<string, unknown>, { type: "is_empty" })],
+      ["32 nested objects", nestedObjects(32)],
+      ["a root object around 31 nested arrays", nestedArrays(31)],
+      ["1024 values", flatObject(1024)],
+      ["one acyclic value shared on two paths, 1024 values counted on each", twoAliases(511)],
+      ["strings, booleans, null and finite numbers, with -0", { a: "s", b: true, c: null, d: 1.5, e: -0, f: [] }],
+    ])("accepts %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(true);
+    });
+
+    it("reads no accessor while refusing it", () => {
+      let read = false;
+      const accessor = {
+        type: "is_empty",
+        get property(): string {
+          read = true;
+          return "systemActive";
+        },
+      };
+      expect(parsesAsCollectionFilter(accessor)).toBe(false);
+      expect(read).toBe(false);
+    });
+
+    it.each([
+      [
+        "a quick filter's filter",
+        { quickFilters: [{ key: "a", labelKey: "a", filter: { type: "in", value: () => 1 } }] },
+      ],
+      ["a collection filter", { collectionFilter: { type: "in", value: () => 1 } }],
+      ["a picker filter", { pickerFilter: { type: "in", value: () => 1 } }],
+    ])("refuses a function inside %s", (_name, change) => {
+      expect(
+        moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).error?.issues,
+      ).toEqual([
+        expect.objectContaining({ message: "must be a JSON object of at most 32 nested levels and 1024 values" }),
+      ]);
+    });
+
+    it("refuses a module whose manifest declares a function inside a filter when it is loaded", async () => {
+      const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+      const path = join(directory, `manifest-${ordinal++}.mjs`);
+      await writeFile(
+        path,
+        [
+          `export const manifest = ${JSON.stringify(manifestWith({ key: "projects", name: "Projects" }))};`,
+          `manifest.databases[0].pickerFilter = { type: "in", property: "status", value: () => "done" };`,
+        ].join("\n"),
+      );
+      await expect(registry.loadModule(pathToFileURL(path).href)).rejects.toThrow(/invalid manifest/);
+      expect(registry.listModuleIds()).toEqual([]);
+      expect(await registry.getDatabases()).toEqual([]);
+    });
+  });
+});

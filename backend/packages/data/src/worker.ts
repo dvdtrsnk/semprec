@@ -63,6 +63,7 @@ import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRet
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "./tenancy/tenantPurgeJob.js";
+import { handlePeopleLastContactRecomputeTask, handlePeopleLastContactSweep } from "./people/lastContact.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -110,6 +111,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
 50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
+0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
 `;
 
 /**
@@ -261,6 +263,13 @@ export function createCoreTaskList(
     // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
     [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {
       await handleBlobsUnreferencedSweepTask(pool, filesBlobStorage);
+    },
+    // Issue #1660: one person's derived People `lastContact`, and the daily sweep that catches sources whose date passed.
+    [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: async (payload) => {
+      await handlePeopleLastContactRecomputeTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: async () => {
+      await handlePeopleLastContactSweep(pool);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

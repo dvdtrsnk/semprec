@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
@@ -15,7 +16,15 @@ import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
-import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
+import {
+  login,
+  verifySessionToken,
+  logout,
+  revokeUserSession,
+  revokeOtherUserSessions,
+  bootstrapFirstAccount,
+} from "../auth/authActions.js";
+import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import { SESSION_IDLE_TTL_SECONDS_BY_PLATFORM, SESSION_MAX_LIFETIME_SECONDS } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
@@ -706,6 +715,124 @@ describe("auth actions (issue #140)", () => {
     it("returns false for an unknown session id", async () => {
       const user = await makeUser();
       expect(await revokeUserSession(pool, user.id, "00000000-0000-0000-0000-000000000000")).toBe(false);
+    });
+  });
+
+  describe("revokeOtherUserSessions (issue #1650)", () => {
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
+    const password = "s3cret-password";
+
+    async function threeSessions(email = "person@example.com") {
+      const user = await makeUser(email, password);
+      const sessions = [];
+      for (const platform of ["web", "ios", "macos"] as const) {
+        sessions.push(await login(pool, { email: user.email, password, platform, ip: "1.1.1.1" }));
+      }
+      const [current, ...others] = sessions;
+      if (!current) throw new Error("no session");
+      return { user, current, others };
+    }
+
+    async function registration(userId: string, sessionId: string | null) {
+      return upsertWebPushSubscription(pool, {
+        userId,
+        sessionId,
+        endpoint: `https://push.example.test/${randomUUID()}`,
+        p256dh: "key",
+        authSecret: "secret",
+      });
+    }
+
+    async function revokedAt(id: string): Promise<Date | null> {
+      const { rows } = await pool.query<{ revoked_at: Date | null }>(
+        "SELECT revoked_at FROM push_subscriptions WHERE id = $1",
+        [id],
+      );
+      const row = rows[0];
+      if (!row) throw new Error("registration not found");
+      return row.revoked_at;
+    }
+
+    it("revokes every other session and its push registrations, keeping the caller's own and sessionless ones", async () => {
+      const { user, current, others } = await threeSessions();
+      const ownRegistration = await registration(user.id, current.session.id);
+      const otherRegistrations = await Promise.all(others.map((other) => registration(user.id, other.session.id)));
+      const sessionless = await registration(user.id, null);
+
+      const count = await withTransaction(pool, (client) =>
+        revokeOtherUserSessions(client, user.id, current.session.id),
+      );
+
+      expect(count).toBe(2);
+      expect((await verifySessionToken(pool, current.token)).session.id).toBe(current.session.id);
+      for (const other of others)
+        await expect(verifySessionToken(pool, other.token)).rejects.toThrow(UnauthorizedError);
+      for (const other of otherRegistrations) expect(await revokedAt(other.id)).toBeInstanceOf(Date);
+      expect(await revokedAt(ownRegistration.id)).toBeNull();
+      expect(await revokedAt(sessionless.id)).toBeNull();
+    });
+
+    it("fires one session-revoked event per revoked session, only after the commit", async () => {
+      const { user, current, others } = await threeSessions();
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      let beforeCommit: SessionRevokedEvent[] | undefined;
+
+      await withTransaction(pool, async (client) => {
+        await revokeOtherUserSessions(client, user.id, current.session.id);
+        beforeCommit = [...events];
+      });
+
+      expect(beforeCommit).toEqual([]);
+      expect(events.map((event) => event.sessionId).sort()).toEqual(others.map((other) => other.session.id).sort());
+    });
+
+    it("never revokes another user's sessions", async () => {
+      const { user, current } = await threeSessions("caller@example.com");
+      const otherUser = await threeSessions("other@example.com");
+      const theirRegistration = await registration(otherUser.user.id, otherUser.others[0]!.session.id);
+
+      await withTransaction(pool, (client) => revokeOtherUserSessions(client, user.id, current.session.id));
+
+      for (const session of [otherUser.current, ...otherUser.others]) {
+        expect((await verifySessionToken(pool, session.token)).session.id).toBe(session.session.id);
+      }
+      expect(await revokedAt(theirRegistration.id)).toBeNull();
+    });
+
+    it("returns 0 and fires nothing when the caller has no other active session", async () => {
+      const user = await makeUser("single@example.com", password);
+      const only = await login(pool, { email: user.email, password, platform: "ios", ip: "1.1.1.1" });
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+
+      expect(await withTransaction(pool, (client) => revokeOtherUserSessions(client, user.id, only.session.id))).toBe(
+        0,
+      );
+      expect(events).toEqual([]);
+      expect(await isSessionActive(pool, only.session.id)).toBe(true);
+    });
+
+    it("revokes nothing and fires no event when its transaction rolls back", async () => {
+      const { user, current, others } = await threeSessions();
+      const otherRegistration = await registration(user.id, others[0]!.session.id);
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      const rollback = new Error("roll back");
+
+      await expect(
+        withTransaction(pool, async (client) => {
+          expect(await revokeOtherUserSessions(client, user.id, current.session.id)).toBe(2);
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+
+      expect(events).toEqual([]);
+      for (const other of others) expect(await isSessionActive(pool, other.session.id)).toBe(true);
+      expect(await revokedAt(otherRegistration.id)).toBeNull();
     });
   });
 

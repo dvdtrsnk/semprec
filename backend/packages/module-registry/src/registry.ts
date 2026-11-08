@@ -6,6 +6,7 @@ import {
   type AreaFilterTemplate,
   type CustomRouteMethod,
   type EditorSchemaDescriptor,
+  type ModuleDatabaseDescriptor,
   type ModuleLinkRuleDescriptor,
   type ModuleManifest,
   type ModuleRelatedOrderDescriptor,
@@ -36,6 +37,11 @@ export interface ModuleDatabaseProjection {
   switcherOrder?: number | null;
   clientVisible?: boolean;
   areaFilter?: AreaFilterTemplate;
+  quickFilters?: ModuleDatabaseDescriptor["quickFilters"];
+  defaultSort?: ModuleDatabaseDescriptor["defaultSort"];
+  dateLabels?: ModuleDatabaseDescriptor["dateLabels"];
+  collectionFilter?: ModuleDatabaseDescriptor["collectionFilter"];
+  pickerFilter?: ModuleDatabaseDescriptor["pickerFilter"];
 }
 
 export interface ModuleAgentToolProjection {
@@ -530,6 +536,11 @@ export class ModuleRegistry {
         ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
         ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
+        ...(db.quickFilters !== undefined ? { quickFilters: structuredClone(db.quickFilters) } : {}),
+        ...(db.defaultSort !== undefined ? { defaultSort: structuredClone(db.defaultSort) } : {}),
+        ...(db.dateLabels !== undefined ? { dateLabels: structuredClone(db.dateLabels) } : {}),
+        ...(db.collectionFilter !== undefined ? { collectionFilter: structuredClone(db.collectionFilter) } : {}),
+        ...(db.pickerFilter !== undefined ? { pickerFilter: structuredClone(db.pickerFilter) } : {}),
       })),
     );
   }

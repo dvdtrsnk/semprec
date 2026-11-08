@@ -43,6 +43,7 @@ const SYSTEM_TASKS = [
   "tenantExportExpirySweep",
   "tenantPurge",
   "blobsUnreferencedSweep",
+  "peopleLastContactSweep",
 ];
 
 interface FakeHelperOptions {

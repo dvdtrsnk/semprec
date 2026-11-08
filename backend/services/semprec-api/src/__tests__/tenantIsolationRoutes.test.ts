@@ -1074,6 +1074,17 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     await expectAAccountActive();
   },
+  "revoke other sessions": async () => {
+    // A member of a third tenant calls it: B's own sessions are fixtures the cases after this one use.
+    const caller = await signUp(await createTestTenant(adminPool), "member");
+    const second = await signIn(caller.email, caller.password, "ios");
+    const answer = await send(caller, { method: "POST", path: "/api/auth/sessions/revoke-others", body: {} });
+    expect(answer.status, answer.text).toBe(200);
+    expect(answer.text).toBe(JSON.stringify({ revokedCount: 1 }));
+    expect((await send(second, { method: "GET", path: "/api/auth/session" })).status).toBe(401);
+    expectNoneOf(answer.text, a.ids, "revoke other sessions");
+    await expectAAccountActive();
+  },
   "set self person": async () => {
     const person = async (fixture: TenantFixture) =>
       inTenantTransaction(fixture.tenantId, async (client) => {
@@ -2090,6 +2101,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
+      // Issue #1645: A's project as B's attach target answers exactly like a random id, before B's body is read.
+      const attach = ([target]: readonly string[]): Request => ({
+        method: "POST",
+        path: "/api/files",
+        body: `ID3 attached audio of ${randomUUID()}`,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "X-Filename": "b.mp3",
+          "X-Attach-To-Item": target!,
+          "X-Attach-Relation": "projects",
+        },
+      });
+      const attached = await expectForeignLikeRandom(b.member, [a.projectItemId], attach);
+      expect(attached.status, attached.text).toBe(404);
     }),
   "upload blob": () =>
     leavesAUnchanged(async () => {
