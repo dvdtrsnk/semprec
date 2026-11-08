@@ -213,20 +213,46 @@ async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T |
   }
 }
 
+const cancelRow = z.object({ cancelled: z.boolean() });
+
+/** Sends a cancel signal to an actor's own backend; resolves whether Postgres sent it. */
+async function cancelBackend(pid: number): Promise<boolean> {
+  const { rows } = await admin.query<{ cancelled: unknown }>("SELECT pg_cancel_backend($1::int) AS cancelled", [pid]);
+  return cancelRow.parse(rows[0]).cancelled;
+}
+
+interface SettleOptions {
+  /** Receives `settled:<name>` for each actor, once it has settled. */
+  order?: string[];
+  /** How long the first wait lasts before the cancel signal; only the cancellation-failure control shortens it. */
+  cancelAfterMs?: number;
+  /** The cancellation attempt; only the cancellation-failure control replaces it. */
+  cancel?: (pid: number) => Promise<boolean>;
+}
+
 /**
- * Awaits every started actor (callers open all their gates first). A timeout is not treated as settlement:
- * an actor still running after it gets its own backend cancelled and is awaited again; one that still does
- * not settle is reported as unsettled, and the caller must then not restore shared state. Returns the
- * actors' unexpected errors in order, without the primary failure itself.
+ * Awaits every started actor, in order (callers open all their gates first). A timeout is not treated as
+ * settlement: an actor still running after `cancelAfterMs` gets a cancel signal for its own backend and is
+ * awaited again for up to 10 s. A cancel signal sent is not settlement either, and a failed cancellation
+ * attempt is recorded as a cleanup error at its actor's place; the second wait and every later actor's
+ * settlement still happen. An actor that still does not settle is reported as unsettled, and the caller
+ * must then not restore shared state. Returns the cancellation failures and the actors' unexpected errors
+ * in actor order, without the primary failure itself.
  */
-async function settleActors(actors: Actor[], primary: { error: unknown } | undefined, order?: string[]) {
+async function settleActors(actors: Actor[], primary: { error: unknown } | undefined, options: SettleOptions = {}) {
+  const { order, cancelAfterMs = 10_000, cancel = cancelBackend } = options;
   const errors: unknown[] = [];
   let unsettled = false;
   for (const actor of actors) {
-    let outcome = await within(actor.settled, 10_000);
+    let outcome = await within(actor.settled, cancelAfterMs);
     if (outcome === UNSETTLED) {
       const pid = actor.pid();
-      if (pid !== undefined) await admin.query("SELECT pg_cancel_backend($1::int)", [pid]);
+      if (pid !== undefined) {
+        // Whether the signal was sent does not decide anything: only the second wait shows settlement. The
+        // attempt runs inside `then`, so a synchronous throw is recorded like a rejection.
+        const cancellation = await settle(Promise.resolve().then(() => cancel(pid)));
+        if (!cancellation.ok) errors.push(cancellation.error);
+      }
       outcome = await within(actor.settled, 10_000);
     }
     if (outcome === UNSETTLED) {
@@ -315,16 +341,17 @@ function startFlushLockHolder(tenantId: string, failBeforeLock?: { value: unknow
 }
 
 /**
- * The observer's positive control (R2-1): a system transaction on the admin pool, the pool the flush lock
- * holder uses, held open from `opened` until `end` commits it (`proceed`) or rolls it back (`abort`). It
- * returns at once with its settlement; the caller ends and settles it on every path.
+ * A named system transaction on the admin pool, the pool the flush lock holder uses, held open from
+ * `opened` until `end` commits it (`proceed`) or rolls it back (`abort`); the actor of the observer's
+ * positive control and of the cancellation-failure control (R2-1). It returns at once with its
+ * settlement; the caller ends and settles it on every path.
  */
-function startHeldTransaction() {
+function startHeldTransaction(name: string) {
   const opened = gate();
   const end = gate();
   let pid: number | undefined;
   const actor: Actor = {
-    name: "held transaction",
+    name,
     pid: () => pid,
     expected: (error) => error === ABORTED,
     settled: settle(
@@ -994,7 +1021,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     xContinue.open(primary ? "abort" : "proceed");
     yContinue.open(primary ? "abort" : "proceed");
     holder.release();
-    const settlement = await settleActors(actors, primary, options.trace?.order);
+    const settlement = await settleActors(actors, primary, { order: options.trace?.order });
     options.trace?.pids.push(...[holder.actor.pid(), xPid, yPid].filter((pid): pid is number => pid !== undefined));
     if (primary) throwFailure(failureOf(primary, settlement.errors, "Crossed writes and their settlement failed"));
     if (settlement.errors.length)
@@ -1053,7 +1080,7 @@ describe("search reindex fan-out (issue #1652)", () => {
   it("sees an exact-owned held transaction open, and closed once it committed and once it rolled back (R2-1 observer control)", async () => {
     await withObserver(async (observer) => {
       for (const ending of ["proceed", "abort"] as const) {
-        const held = startHeldTransaction();
+        const held = startHeldTransaction("held transaction");
         const order: string[] = [];
         let pid: number | undefined;
         let open: boolean | undefined;
@@ -1067,7 +1094,7 @@ describe("search reindex fan-out (issue #1652)", () => {
           primary = { error };
         }
         held.end(primary ? "abort" : ending);
-        const settlement = await settleActors([held.actor], primary, order);
+        const settlement = await settleActors([held.actor], primary, { order });
         if (primary) throwFailure(failureOf(primary, settlement.errors, "The held transaction control failed"));
         if (settlement.errors.length) throw new AggregateError(settlement.errors, "The held transaction failed");
         if (pid === undefined) throw new Error("Expected the held transaction's backend");
@@ -1078,6 +1105,72 @@ describe("search reindex fan-out (issue #1652)", () => {
         );
         expect(await inTransaction(observer, pid)).toBe(false);
       }
+    });
+  });
+
+  it("keeps settling a stuck actor and every later one when the stuck actor's cancellation attempt fails, reporting the primary failure then the cancellation failure (R2-1)", async () => {
+    await withObserver(async (observer) => {
+      type Settlement = Awaited<ReturnType<typeof settleActors>>;
+      const stuck = startHeldTransaction("stuck transaction");
+      const later = startHeldTransaction("later transaction");
+      const harnessFailure = new Error("harness failed while both transactions were held");
+      const cancelFault = new Error("cancellation attempt failed (test fault)");
+      const attempts: Array<{ pid: number; open: boolean }> = [];
+      // The labelled fault takes the place of exactly the cancellation query. It records whether the stuck actor
+      // is still in its transaction, opens its gate so it really rolls back during the second wait, and rejects.
+      const cancel = async (pid: number): Promise<boolean> => {
+        attempts.push({ pid, open: await inTransaction(observer, pid) });
+        stuck.end("abort");
+        throw cancelFault;
+      };
+      const order: string[] = [];
+      let settlement: Settlement | undefined;
+      // The harnesses' failure path: the primary failure, every reachable gate opened, every actor settled,
+      // then the primary failure with the cleanup errors after it.
+      async function harness(): Promise<void> {
+        let primary: { error: unknown } | undefined;
+        try {
+          await ready(stuck.opened, stuck.actor, "stuck transaction held");
+          await ready(later.opened, later.actor, "later transaction held");
+          throwFailure(harnessFailure);
+        } catch (error) {
+          primary = { error };
+        }
+        let result: Settlement;
+        try {
+          // The stuck actor's gate stays shut here; only the faulted cancellation opens it.
+          later.end("abort");
+          result = await settleActors([stuck.actor, later.actor], primary, { order, cancelAfterMs: 500, cancel });
+        } finally {
+          // Every gate is open on every path, whatever the helper did; a gate keeps its first decision.
+          stuck.end("abort");
+          later.end("abort");
+        }
+        settlement = result;
+        if (primary)
+          throwFailure(failureOf(primary, result.errors, "The cancellation control and its settlement failed"));
+      }
+      const outcome = await settle(harness());
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Expected the harness failure");
+      expect(outcome.error).toBeInstanceOf(AggregateError);
+      if (!(outcome.error instanceof AggregateError)) throw new Error("Expected the primary and cleanup failures");
+      const failures: unknown[] = outcome.error.errors;
+      expect(failures).toHaveLength(2);
+      expect(failures[0]).toBe(harnessFailure);
+      expect(failures[1]).toBe(cancelFault);
+      expect(outcome.error.cause).toBe(harnessFailure);
+      // Both actors settled inside the helper: the stuck one after its cancellation failed, the later one after it.
+      expect(order).toEqual(["settled:stuck transaction", "settled:later transaction"]);
+      expect(settlement).toEqual({ errors: [cancelFault], unsettled: false });
+      expect(settlement?.errors[0]).toBe(cancelFault);
+      const stuckPid = stuck.actor.pid();
+      const laterPid = later.actor.pid();
+      if (stuckPid === undefined || laterPid === undefined) throw new Error("Expected both transactions' backends");
+      expect(attempts).toEqual([{ pid: stuckPid, open: true }]);
+      expect(await stuck.actor.settled).toEqual({ ok: false, error: ABORTED });
+      expect(await later.actor.settled).toEqual({ ok: false, error: ABORTED });
+      for (const pid of [stuckPid, laterPid]) expect(await inTransaction(observer, pid)).toBe(false);
     });
   });
 
@@ -1244,7 +1337,7 @@ describe("search reindex fan-out (issue #1652)", () => {
       primary = { error };
     }
     release.open(primary ? "abort" : "proceed");
-    const settlement = await settleActors(actors, primary, order);
+    const settlement = await settleActors(actors, primary, { order });
     if (writerPid !== undefined) options.trace?.pids.push(writerPid);
     // The identifiers are restored only once every actor settled; an unsettled one keeps the state as it is.
     if (!settlement.unsettled) {
