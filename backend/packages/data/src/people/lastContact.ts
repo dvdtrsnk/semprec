@@ -44,7 +44,7 @@ export interface SourceRelation {
   personSide: "a" | "b";
 }
 
-export interface LastContactSources {
+interface LastContactSources {
   peopleDatabaseId: string;
   eventsDatabaseId: string | null;
   relations: SourceRelation[];
@@ -103,7 +103,7 @@ export async function findLastContactSourceRelation(
 }
 
 /** The current tenant's People and Events databases and its source relations; `null` without a People database. */
-export async function resolveLastContactSources(client: PoolClient): Promise<LastContactSources | null> {
+async function resolveLastContactSources(client: PoolClient): Promise<LastContactSources | null> {
   const people = await getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
   if (!people) return null;
   const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
@@ -129,11 +129,7 @@ export async function enqueuePersonLastContactRecompute(client: Queryable, perso
 }
 
 /** The people (trashed ones included) linked to `itemId` through a source relation, in id order. */
-export async function listLinkedPersonIds(
-  client: Queryable,
-  sources: LastContactSources,
-  itemId: string,
-): Promise<string[]> {
+async function listLinkedPersonIds(client: Queryable, sources: LastContactSources, itemId: string): Promise<string[]> {
   const { personB, personA } = definitionsBySide(sources);
   if (personB.length === 0 && personA.length === 0) return [];
   const { rows } = await client.query<{ person_id: string }>(
