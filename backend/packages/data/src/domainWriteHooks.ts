@@ -57,6 +57,7 @@ import {
   libraryWatchedWithEdgeWriteHook,
 } from "./library/libraryRatingHooks.js";
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
+import { journalItemRestoreHook } from "./journal/journalRestoreHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { journalDayRelinkItemCreateHook } from "./inbox/journalDayRelinkHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
@@ -118,6 +119,8 @@ registerRelationEdgeDeleteHook(inboxTypeEdgeDeleteHook);
 registerRelationEdgeWriteHook(inboxSourceEdgeWriteHook);
 registerRelationEdgeDeleteHook(inboxSourceEdgeDeleteHook);
 registerItemCreateHook(journalItemCreateHook);
+// Issue #1666: a restored Journal entry takes its period back, or the restore is refused while another entry holds it.
+registerItemRestoreHook(journalItemRestoreHook);
 registerItemCreateHook(journalDayRelinkItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
 registerItemCreateHook(inboxTypeItemCreateHook);
