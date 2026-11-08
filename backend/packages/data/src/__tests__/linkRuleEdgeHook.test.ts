@@ -187,6 +187,16 @@ describe("value link via-edge union", () => {
         ),
       );
       expect(sources.rows).toEqual([{ source_item_id: secondProject.id, state: "on" }]);
+      // R1 P6: a later propagation from the remaining source recomputes the link from that source alone.
+      await handleLinkPropagation(data, {
+        ruleKey: "fixtureUnion.projectCompanies",
+        sourceItemId: secondProject.id,
+        hop: 1,
+      });
+      const recomputed = (await cp.listItemRelations(otherFile.id))
+        ?.filter((edge) => edge.relationPropertyId === targetProperty)
+        .map((edge) => edge.targetItemId);
+      expect(recomputed).toEqual([secondCompany.id]);
     });
   });
 

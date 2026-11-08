@@ -1794,6 +1794,136 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(summaryClient.calls).toHaveLength(2);
   });
 
+  /**
+   * Fault/transform injection (R1 P1, parent D5): strips `meetingNotes` from every write to exactly one
+   * transcript row, so the real pipeline reaches finalize without stored notes, which no production
+   * input can arrange. The id reaches the trigger's WHEN clause as a literal quoted by Postgres
+   * (`format('%L')` in a DO block, read from a session setting). Cleanup runs after `run` settled, on
+   * the same dedicated client; a failed cleanup discards that client and is reported with any primary
+   * failure.
+   */
+  async function withMeetingNotesStripped(transcriptId: string, run: () => Promise<void>): Promise<void> {
+    const client = await pool.connect();
+    let primary: { error: unknown } | undefined;
+    try {
+      await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [transcriptId]);
+      await client.query(`CREATE FUNCTION strip_meeting_notes_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN NEW.computed := NEW.computed - 'meetingNotes'; RETURN NEW; END $$`);
+      await client.query(`DO $$ BEGIN EXECUTE format(
+        'CREATE TRIGGER strip_meeting_notes_test BEFORE UPDATE ON items FOR EACH ROW '
+        'WHEN (NEW.id = %L::uuid) EXECUTE FUNCTION strip_meeting_notes_test()',
+        current_setting('semprec_test.fault_item')); END $$`);
+      await run();
+    } catch (error) {
+      primary = { error };
+    }
+    let cleanup: { error: unknown } | undefined;
+    try {
+      await client.query("DROP TRIGGER IF EXISTS strip_meeting_notes_test ON items");
+      await client.query("DROP FUNCTION IF EXISTS strip_meeting_notes_test()");
+    } catch (error) {
+      cleanup = { error };
+    }
+    client.release(cleanup ? new Error("Fault trigger cleanup failed; the connection is discarded") : undefined);
+    if (primary && cleanup)
+      throw new AggregateError([primary.error, cleanup.error], "Fault test and its cleanup failed");
+    if (primary) throw primary.error;
+    if (cleanup) throw cleanup.error;
+  }
+
+  it("does not finish a transcript whose meeting notes are missing at finalize, and finishes once they are stored (R1 P1)", async () => {
+    const { file } = await createSourceFile();
+    // A first attempt fails in the summary step, so the transcript row exists for the fault below.
+    summaryClient.failure = new Error("simulated gateway failure");
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    summaryClient.failure = null;
+    const transcript = await readTranscript(file.id);
+
+    await withMeetingNotesStripped(transcript.id, async () => {
+      await expect(
+        createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+    });
+    const unfinished = await readTranscript(file.id);
+    expect(unfinished.computed).not.toHaveProperty("meetingNotes");
+    expect(unfinished.properties.status).toBe("processing");
+    expect(await readAutomationStatus(unfinished.id)).toBe("pending");
+    // The finalize guard, not an earlier step, refused the attempt.
+    const failure = await pool.query<{ error: string | null }>("SELECT error FROM item_automation WHERE item_id = $1", [
+      unfinished.id,
+    ]);
+    expect(failure.rows[0]?.error).toContain("has no 'meetingNotes' yet");
+    expect(summaryClient.notesCalls()).toHaveLength(2);
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const finished = await readTranscript(file.id);
+    expect(finished.properties.status).toBe("done");
+    expect(finished.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+    expect(summaryClient.notesCalls()).toHaveLength(3);
+  });
+
+  it("keeps the notes a concurrent run stored between the paid call and the locked write (R1 P1)", async () => {
+    const { file } = await createSourceFile();
+    const competitor = {
+      title: "Competitor",
+      summary: "Stored first.",
+      shortSummary: "Stored first.",
+      decisions: [],
+      actionItems: [],
+    };
+    // The concurrent run's own deterministic transport: its notes, and no speaker mapping.
+    const concurrentClient: AiGatewayClientPort = {
+      async complete(input) {
+        return {
+          content: input.operation === "transcript_speaker_suggestion" ? { mappings: [] } : competitor,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    let concurrentRuns = 0;
+    /** Runs a whole second pipeline run of the same file while this run's meeting-notes call is out. */
+    class InterleavingSummaryClient extends FakeSummaryClient {
+      override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+        if (input.operation === "transcript_summary" && concurrentRuns === 0) {
+          concurrentRuns++;
+          await createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            concurrentClient,
+          )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        }
+        return super.complete(input);
+      }
+    }
+    const interleaving = new InterleavingSummaryClient();
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      interleaving,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const done = await readTranscript(file.id);
+    expect(concurrentRuns).toBe(1);
+    expect(interleaving.notesCalls()).toHaveLength(1);
+    expect(done.computed.meetingNotes).toEqual(competitor);
+    expect(done.properties.status).toBe("done");
+    expect(await readAutomationStatus(done.id)).toBe("done");
+  });
+
   it("never rewrites merged segments or their speaker keys on a replay", async () => {
     const { file } = await createSourceFile();
     await createTranscriptionTask(

@@ -199,6 +199,10 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const lonelyLink = await inheritProjects(lonely, [task]);
       const sharedLink = await inheritProjects(shared, [task, keptSource]);
 
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => {
+        events.push(event);
+      });
       const purged = await cp.purgeExpiredTrashSubtree(task, FAR_FUTURE);
 
       expect(purged.purgedItemIds).toEqual([task]);
@@ -206,6 +210,9 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       expect(rows.links.map((row) => row.id)).toEqual([sharedLink]);
       expect(rows.links.map((row) => row.id)).not.toContain(lonelyLink);
       expect(rows.sources).toEqual([{ link_id: sharedLink, source_item_id: keptSource }]);
+      // R1 P6: both items that lost a source are told to refetch their links once the purge committed.
+      for (const itemId of [lonely, shared])
+        expect(events.some((event) => event.scope === "item" && event.itemId === itemId)).toBe(true);
     });
   });
 

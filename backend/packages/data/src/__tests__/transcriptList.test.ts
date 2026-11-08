@@ -305,6 +305,38 @@ describe("GET /api/transcripts (issue #1636)", () => {
     });
   });
 
+  it("counts a needsClarification pairing card with its Events envelope as awaiting (R1 P5)", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      const transcript = await f.transcript({ name: "Unclear", date: "2026-10-09T08:00:00Z", status: "done" });
+      const [card] = await f.pairingCard(transcript);
+      if (!card) throw new Error("Expected the event-match card");
+      const properties = async () =>
+        (
+          await runtime.query<{ properties: Record<string, unknown> }>(
+            "SELECT properties FROM items WHERE tenant_id = app_tenant_default() AND id = $1",
+            [card],
+          )
+        ).rows[0]?.properties;
+      const before = await properties();
+      expect(before?.status).toBe("proposed");
+      // Labeled historical state (parent D4): no current producer moves a transcript pairing card to
+      // needsClarification while it keeps its Events envelope, so exactly one tenant-scoped UPDATE
+      // changes only `status` on the real event-match card.
+      const updated = await runtime.query(
+        `UPDATE items SET properties = jsonb_set(properties, '{status}', '"needsClarification"')
+         WHERE tenant_id = app_tenant_default() AND id = $1`,
+        [card],
+      );
+      expect(updated.rowCount).toBe(1);
+      const after = await properties();
+      expect(after).toEqual({ ...before, status: "needsClarification" });
+      expect(bodyOf(await list()).transcripts).toEqual([
+        expect.objectContaining({ id: transcript, pairing: "awaitingEvent", proposalId: card }),
+      ]);
+    });
+  });
+
   it("pairs none while the event is in the trash and event again after its restore", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();

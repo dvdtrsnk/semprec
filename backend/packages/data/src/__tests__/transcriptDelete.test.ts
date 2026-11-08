@@ -120,6 +120,50 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
   const remove = (id: string, pool: Pool = runtime) =>
     createTranscriptDeleteRouteHandler(pool)({ params: { id }, identity: { user: { id: USER } } });
 
+  /** Every queued job by key and task, read through graphile-worker's public `jobs` view. */
+  async function jobs() {
+    const { rows } = await admin.query<{ key: string | null; task_identifier: string }>(
+      "SELECT key, task_identifier FROM graphile_worker.jobs ORDER BY id",
+    );
+    return rows;
+  }
+
+  /**
+   * Fault injection (R1 P3, parent D5): makes every update of exactly one card row fail, so the card
+   * owner's own reject fails inside the DELETE, which no production input can arrange. The id reaches
+   * the trigger's WHEN clause as a literal quoted by Postgres (`format('%L')` in a DO block, read from
+   * a session setting). Cleanup runs after `run` settled, on the same dedicated client; a failed
+   * cleanup discards that client and is reported with any primary failure.
+   */
+  async function withCardUpdateFault(cardId: string, run: () => Promise<void>): Promise<void> {
+    const client = await admin.connect();
+    let primary: { error: unknown } | undefined;
+    try {
+      await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [cardId]);
+      await client.query(`CREATE FUNCTION fail_card_update_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'card owner failure'; END $$`);
+      await client.query(`DO $$ BEGIN EXECUTE format(
+        'CREATE TRIGGER fail_card_update_test BEFORE UPDATE ON items FOR EACH ROW '
+        'WHEN (NEW.id = %L::uuid) EXECUTE FUNCTION fail_card_update_test()',
+        current_setting('semprec_test.fault_item')); END $$`);
+      await run();
+    } catch (error) {
+      primary = { error };
+    }
+    let cleanup: { error: unknown } | undefined;
+    try {
+      await client.query("DROP TRIGGER IF EXISTS fail_card_update_test ON items");
+      await client.query("DROP FUNCTION IF EXISTS fail_card_update_test()");
+    } catch (error) {
+      cleanup = { error };
+    }
+    client.release(cleanup ? new Error("Fault trigger cleanup failed; the connection is discarded") : undefined);
+    if (primary && cleanup)
+      throw new AggregateError([primary.error, cleanup.error], "Fault test and its cleanup failed");
+    if (primary) throw primary.error;
+    if (cleanup) throw cleanup.error;
+  }
+
   it("trashes the transcript and its source together, rejects its open cards, and a second call changes nothing", async () => {
     await runInTenant(tenant, async () => {
       const f = await recording();
@@ -207,6 +251,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
       const f = await recording();
       await remove(f.transcript.id);
       const trashed = await state([f.file.id, f.transcript.id, ...f.cards]);
+      const jobsBefore = await jobs();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => {
         events.push(event);
@@ -224,9 +269,31 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
       expect(failure).toBeInstanceOf(DatabaseError);
       expect(failure).toMatchObject({ code: "55P03" });
       expect(await state([f.file.id, f.transcript.id, ...f.cards])).toEqual(trashed);
+      expect(await jobs()).toEqual(jobsBefore);
       expect(events).toEqual([]);
       await f.cp.restoreItem(f.db("transcripts"), f.transcript.id, USER, { writerKind: "user" });
       expect((await state([f.file.id, f.transcript.id])).map((row) => row.deleted_at)).toEqual([null, null]);
+    });
+  });
+
+  it("rolls the whole delete back when the card owner's reject fails (R1 P3)", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await recording();
+      const before = await state([f.file.id, f.transcript.id, ...f.cards]);
+      const jobsBefore = await jobs();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => {
+        events.push(event);
+      });
+      // Cards are rejected in id order after the source Files item was trashed in the same transaction.
+      const firstCard = f.cards[0];
+      if (!firstCard) throw new Error("Expected open cards");
+      await withCardUpdateFault(firstCard, async () => {
+        await expect(remove(f.transcript.id)).rejects.toThrow("card owner failure");
+      });
+      expect(await state([f.file.id, f.transcript.id, ...f.cards])).toEqual(before);
+      expect(await jobs()).toEqual(jobsBefore);
+      expect(events).toEqual([]);
     });
   });
 

@@ -22,16 +22,26 @@ function signal() {
   return { promise, resolve };
 }
 
+/** Every queued job, so a refused write's no-effect check also sees issue #1652's search backfill jobs. */
 async function jobs() {
   // Graphile Worker 0.17.3's public jobs view omits payload; inspect it here to verify migration provenance.
-  // Every committed property write also queues issue #1652's search backfill of its database; these
-  // tests are about the type migration, so that job is left out.
   const { rows } = await pool.query<{ key: string | null; task_identifier: string; payload: unknown }>(
     `SELECT j.key, j.task_identifier, p.payload FROM graphile_worker.jobs j
-     JOIN graphile_worker._private_jobs p ON p.id = j.id
-     WHERE j.task_identifier <> 'itemSearchBackfill' ORDER BY j.id`,
+     JOIN graphile_worker._private_jobs p ON p.id = j.id ORDER BY j.id`,
   );
   return rows;
+}
+
+/** The type-migration jobs alone, for the migration provenance a successful write queues. */
+async function migrationJobs() {
+  return (await jobs()).filter((job) => job.task_identifier === "propertyTypeMigration");
+}
+
+/** The search backfill a successful property write queues for its database (issue #1652), keyed by the database. */
+async function backfillJobs(databaseId: string) {
+  return (await jobs()).filter(
+    (job) => job.task_identifier === "itemSearchBackfill" && job.key?.includes(`:${databaseId}:`) === true,
+  );
 }
 
 async function fixture(type: PropertyType = "text", config: Record<string, unknown> = {}) {
@@ -72,7 +82,8 @@ describe("property default schema coherence", () => {
         migrationStatus: "pending",
       });
       expect(await chokePoint.getProperty(property.id)).toEqual(result.property);
-      expect(await jobs()).toEqual([
+      expect(await backfillJobs(db.id)).toHaveLength(1);
+      expect(await migrationJobs()).toEqual([
         expect.objectContaining({
           key: `property-type-migration:${property.id}`,
           task_identifier: "propertyTypeMigration",
@@ -110,6 +121,7 @@ describe("property default schema coherence", () => {
     (entry) =>
       inTenant(async () => {
         const { property } = await fixture("text", { default: "old" });
+        const beforeJobs = await jobs();
         const pending =
           entry === "changeType"
             ? chokePoint.changePropertyType(property.id, "number")
@@ -118,7 +130,7 @@ describe("property default schema coherence", () => {
               : chokePoint.updateProperty(property.id, { name: "Rejected", type: "number" });
         await expect(pending).rejects.toMatchObject({ code: "validation_failed", details: { field: "config" } });
         expect(await chokePoint.getProperty(property.id)).toEqual(property);
-        expect(await jobs()).toEqual([]);
+        expect(await jobs()).toEqual(beforeJobs);
         expect(invalidation).not.toHaveBeenCalled();
       }),
   );
@@ -131,7 +143,8 @@ describe("property default schema coherence", () => {
         config: { default: "today" },
         migrationStatus: "pending",
       });
-      expect(await jobs()).toHaveLength(1);
+      expect(await migrationJobs()).toHaveLength(1);
+      expect(await backfillJobs(property.databaseId)).toHaveLength(1);
       expect(invalidation).toHaveBeenCalledTimes(1);
     }));
 
@@ -171,12 +184,14 @@ describe("property default schema coherence", () => {
       const result = await chokePoint.updateProperty(property.id, { type: "number", config: {} });
       expect(result.property).toMatchObject({ type: "number", config: {} });
       expect((await chokePoint.createItem({ databaseId: db.id })).properties).not.toHaveProperty("value");
-      expect(await jobs()).toHaveLength(1);
+      expect(await migrationJobs()).toHaveLength(1);
+      expect(await backfillJobs(db.id)).toHaveLength(1);
     }));
 
   it.each(["patch", "config"] as const)("%s validates same-type replacement config and option membership", (entry) =>
     inTenant(async () => {
       const { property } = await fixture("select", { options: [{ key: "one" }], default: "one" });
+      const beforeJobs = await jobs();
       const config = { options: [{ key: "two" }], default: "one" };
       const pending =
         entry === "config"
@@ -184,7 +199,7 @@ describe("property default schema coherence", () => {
           : chokePoint.updateProperty(property.id, { name: "Rejected", type: "select", config });
       await expect(pending).rejects.toMatchObject({ code: "validation_failed", details: { field: "config" } });
       expect(await chokePoint.getProperty(property.id)).toEqual(property);
-      expect(await jobs()).toEqual([]);
+      expect(await jobs()).toEqual(beforeJobs);
       expect(invalidation).not.toHaveBeenCalled();
     }),
   );
@@ -196,7 +211,8 @@ describe("property default schema coherence", () => {
         typeChanged: false,
         property: { type: "text", config: { default: "new" } },
       });
-      expect(await jobs()).toEqual([]);
+      expect(await migrationJobs()).toEqual([]);
+      expect(await backfillJobs(property.databaseId)).toHaveLength(1);
       expect(invalidation).toHaveBeenCalledTimes(1);
     }));
 
@@ -258,7 +274,8 @@ describe("property default schema coherence", () => {
           ? { type: "number", config: {}, migrationStatus: "pending" }
           : { type: "text", config: { default: "text" }, migrationStatus: "stable" },
       );
-      expect(await jobs()).toHaveLength(retyped ? 1 : 0);
+      expect(await migrationJobs()).toHaveLength(retyped ? 1 : 0);
+      expect(await backfillJobs(property.databaseId)).toHaveLength(1);
       expect(invalidation).toHaveBeenCalledTimes(1);
     }),
   );

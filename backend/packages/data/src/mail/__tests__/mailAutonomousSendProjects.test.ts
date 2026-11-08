@@ -5,6 +5,7 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { generatePermissionManifest } from "../../manifest/permissionManifest.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createMailAutonomousSendProjectsRouteHandler } from "../mailAutonomousSendRouteHandlers.js";
@@ -129,6 +130,50 @@ describe("GET /api/mail/autonomous-send-projects (issue #1635)", () => {
       expect((await listMailboxes()).body.mailboxes).toEqual([
         expect.objectContaining({ id, autonomousSendProjectCount: 0 }),
       ]);
+    });
+  });
+
+  it("reads the list, the mailboxes and a mailbox without changing any row, job or client (R1 P4)", async () => {
+    await runInTenant(tenant, async () => {
+      const granted = await project("Granted");
+      await setGrant(granted, true);
+      await project("Plain");
+      const id = await mailbox("Work");
+      /** The tenant's projects and mailboxes as stored, and every queued job, before and after the reads. */
+      const snapshot = async () => ({
+        items: (
+          await runtime.query<{ id: string; properties: unknown; updated_at: string; deleted_at: string | null }>(
+            `SELECT i.id, i.properties, i.updated_at::text AS updated_at, i.deleted_at::text AS deleted_at
+             FROM items i JOIN databases d ON d.tenant_id = i.tenant_id AND d.id = i.database_id
+             WHERE i.tenant_id = app_tenant_default() AND d.system AND d.owner_module_id IN ('projects', 'mailboxes')
+             ORDER BY i.id`,
+          )
+        ).rows,
+        jobs: (
+          await admin.query<{ key: string | null; task_identifier: string }>(
+            "SELECT key, task_identifier FROM graphile_worker.jobs ORDER BY id",
+          )
+        ).rows,
+      });
+      const before = await snapshot();
+      expect(before.items.length).toBeGreaterThanOrEqual(3);
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => {
+        events.push(event);
+      });
+      try {
+        expect((await listProjects()).body).toEqual([{ projectId: granted, name: "Granted" }]);
+        expect((await listMailboxes()).body.mailboxes).toEqual([
+          expect.objectContaining({ id, autonomousSendProjectCount: 1 }),
+        ]);
+        expect(
+          (await createMailboxDetailRouteHandler(runtime)({ params: { id } })).body.autonomousSendProjectCount,
+        ).toBe(1);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await snapshot()).toEqual(before);
+      expect(events).toEqual([]);
     });
   });
 
