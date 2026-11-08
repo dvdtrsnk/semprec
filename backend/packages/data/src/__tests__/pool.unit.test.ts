@@ -785,12 +785,14 @@ describe("search-lane pre-commit flush (R1 D1)", () => {
 
   it("refuses a non-search task, another tenant's job and a key of another task, keeping the valid registration", async () => {
     const { pool, query } = fakeClient();
+    // Prepared in the other tenant's own scope before the target tenant's transaction opens: a tenant scope
+    // cannot enter another tenant, so a foreign job can only arrive as a handle prepared elsewhere.
+    const foreign = runInTenant(OTHER, () => prepareJob(REINDEX, {}, { jobKey: "b" }));
     await runInTenant(TENANT, () =>
       withTransaction(pool, async (client) => {
         expect(() => registerSearchJob(client, prepareJob("someTask", {}, { jobKey: "a" }))).toThrow(
           "item-search task",
         );
-        const foreign = runInTenant(OTHER, () => prepareJob(REINDEX, {}, { jobKey: "b" }));
         expect(() => registerSearchJob(client, foreign)).toThrow("tenant its transaction was opened in");
         registerSearchJob(client, prepareJob(REINDEX, {}, { jobKey: "c" }));
         expect(() => registerSearchJob(client, prepareJob(BACKFILL, {}, { jobKey: "c" }))).toThrow(
