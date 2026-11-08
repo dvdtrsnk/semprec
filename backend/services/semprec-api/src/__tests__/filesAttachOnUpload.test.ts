@@ -1,8 +1,9 @@
 import { createServer, type Server } from "node:http";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -139,20 +140,19 @@ async function fileIds(tenant: TenantFixture): Promise<string[]> {
   });
 }
 
-async function blobCount(tenant: TenantFixture): Promise<number> {
-  return runInTenant(tenant.tenantId, async () => {
-    const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs");
-    return rows[0]?.count ?? -1;
-  });
-}
-
-/** Every stored byte file under the storage root, as relative paths. */
-async function storedFiles(): Promise<string[]> {
+/** Every stored byte file under the storage root, by path, with the SHA-256 of its content. */
+async function storedBytes(): Promise<Record<string, string>> {
   const entries = await readdir(storageDir, { recursive: true, withFileTypes: true });
-  return entries
+  const paths = entries
     .filter((entry) => entry.isFile())
     .map((entry) => join(entry.parentPath, entry.name))
     .sort();
+  const hashes: Record<string, string> = {};
+  for (const path of paths)
+    hashes[path] = createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex");
+  return hashes;
 }
 
 /** The items `fileId`'s Files relation `relationKey` links to, read through the choke point's relation list. */
@@ -166,9 +166,111 @@ async function linked(tenant: TenantFixture, fileId: string, relationKey: string
   });
 }
 
-/** Everything an upload could have stored in `tenant`: Files items, blob rows and stored bytes. */
+/**
+ * The stored bytes once `ready` holds for them, read again for at most 5 s: a content-hash dedup hit removes
+ * its streamed copy after the commit without the response waiting for it. Returns the last read either way, so
+ * the caller's assertion reports any difference.
+ */
+async function storedBytesOnce(ready: (bytes: Record<string, string>) => boolean): Promise<Record<string, string>> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const bytes = await storedBytes();
+    if (ready(bytes) || Date.now() >= deadline) return bytes;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * Everything an upload could have stored in `tenant`, exactly: every Files item row (trashed ones included),
+ * every blob row and every relation edge of the tenant as stored, and every stored byte file with the SHA-256
+ * of its content. Read on the runtime pool in the tenant, so row-level security applies.
+ */
 async function storedState(tenant: TenantFixture) {
-  return { files: await fileIds(tenant), blobs: await blobCount(tenant), bytes: await storedFiles() };
+  const rows = (text: string, values: unknown[] = []) =>
+    runInTenant(tenant.tenantId, async () => (await pool.query<{ row: unknown }>(text, values)).rows.map((r) => r.row));
+  return {
+    files: await rows("SELECT to_jsonb(i) AS row FROM items i WHERE i.database_id = $1 ORDER BY i.id", [
+      tenant.filesId,
+    ]),
+    blobs: await rows("SELECT to_jsonb(b) AS row FROM blobs b ORDER BY b.id"),
+    edges: await rows("SELECT to_jsonb(r) AS row FROM item_relations r ORDER BY r.id"),
+    bytes: await storedBytes(),
+  };
+}
+
+/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Rethrows the case's own failure first: alone, or inside an `AggregateError` with the cleanup failures after it.
+ * A thrown falsy value counts, because `primary` wraps it.
+ */
+function settle(primary: { error: unknown } | undefined, cleanupFailures: unknown[]): void {
+  if (primary && cleanupFailures.length > 0) {
+    throw new AggregateError([primary.error, ...cleanupFailures], "The case and its cleanup failed", {
+      cause: primary.error,
+    });
+  }
+  if (primary) throw primary.error;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, "The case's cleanup failed");
+}
+
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/** `work`'s outcome as a value, so a started request is observed from the start and read when the case is ready. */
+function outcomeOf<T>(work: Promise<T>): Promise<Outcome<T>> {
+  return work.then(
+    (value): Outcome<T> => ({ ok: true, value }),
+    (error: unknown): Outcome<T> => ({ ok: false, error }),
+  );
+}
+
+/** Awaits every started request with a bound, so none outlives the case; returns each one's outcome. */
+async function settleRequests<T>(started: Promise<Outcome<T>>[], what: string): Promise<Outcome<T>[]> {
+  return within(Promise.all(started), 10_000, what);
+}
+
+/** The pids that wait, directly or through another waiter, on the backend `holderPid`. */
+async function waitersOn(holderPid: number): Promise<Set<number>> {
+  const { rows } = await admin.query<{ pid: number; blockers: number[] }>(
+    "SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0",
+  );
+  const waiting = new Set<number>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const row of rows) {
+      if (waiting.has(row.pid)) continue;
+      if (row.blockers.some((blocker) => blocker === holderPid || waiting.has(blocker))) {
+        waiting.add(row.pid);
+        grew = true;
+      }
+    }
+  }
+  return waiting;
+}
+
+/** Sets a relation definition of `tenant`'s Files relation `relationKey` to one-to-one. */
+async function makeOneToOne(tenant: TenantFixture, relationKey: string): Promise<void> {
+  // No writer changes a schema-locked system relation's cardinality, so the one-to-one shape a 409 needs is
+  // set directly on the tenant's definition of that Files relation.
+  const changed = await admin.query(
+    `UPDATE relation_definitions SET cardinality = 'one_to_one'
+     WHERE tenant_id = $1 AND (SELECT id FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = $3)
+       IN (property_id_a, property_id_b)`,
+    [tenant.tenantId, tenant.filesId, relationKey],
+  );
+  expect(changed.rowCount).toBe(1);
 }
 
 const PDF = (marker: string) => Buffer.from(`%PDF-1.4\n% ${marker}\n%%EOF\n`, "latin1");
@@ -320,13 +422,24 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
     );
+    let primary: { error: unknown } | undefined;
     try {
-      await streaming;
+      await within(streaming, 10_000, "The upload's body stream");
       await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record));
-    } finally {
-      release();
+    } catch (error) {
+      primary = { error };
     }
-    const outcome = await settled;
+    // The request settles before the case goes on or ends, whatever happened above.
+    release();
+    const failures: unknown[] = [];
+    let outcome: Awaited<typeof settled> | undefined;
+    try {
+      outcome = await within(settled, 10_000, "The raced upload");
+    } catch (error) {
+      failures.push(error);
+    }
+    settle(primary, failures);
+    if (!outcome) throw new Error("The raced upload did not settle");
     if (!outcome.ok) throw outcome.error;
     expect(outcome.value.status).toBe(404);
     expect(errorBody.parse(JSON.parse(outcome.value.text)).error.code).toBe("not_found");
@@ -338,19 +451,194 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
     expect((await upload(a, { body: PDF("first"), targetItemId: record, relationKey: "healthRecords" })).status).toBe(
       201,
     );
-    // No writer changes a schema-locked system relation's cardinality, so the one-to-one shape a 409 needs is
-    // set directly on A's Files.healthRecords definition.
-    const changed = await admin.query(
-      `UPDATE relation_definitions SET cardinality = 'one_to_one'
-       WHERE tenant_id = $1 AND property_id_a = (
-         SELECT id FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = 'healthRecords')`,
-      [a.tenantId, a.filesId],
-    );
-    expect(changed.rowCount).toBe(1);
+    await makeOneToOne(a, "healthRecords");
     const before = await storedState(a);
     const answer = await upload(a, { body: PDF("second"), targetItemId: record, relationKey: "healthRecords" });
     expect(answer.status, answer.text).toBe(409);
     expect(await storedState(a)).toEqual(before);
+  });
+
+  it("refuses attaching bytes an existing file holds to a missing, trashed or foreign target, or through a wrong relation, leaving that file, its edges and its bytes as they were", async () => {
+    const owner = await createItem(a, a.healthRecordsId, "Owner");
+    const bytes = PDF("already filed");
+    expect((await upload(a, { body: bytes, targetItemId: owner, relationKey: "healthRecords" })).status).toBe(201);
+    const trashed = await createItem(a, a.healthRecordsId, "Old record");
+    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, trashed));
+    const foreign = await createItem(b, b.healthRecordsId, "B's record");
+    const before = await storedState(a);
+    for (const targetItemId of [randomUUID(), trashed, foreign]) {
+      const answer = await upload(a, { body: bytes, targetItemId, relationKey: "healthRecords" });
+      expect(answer.status, targetItemId).toBe(404);
+      expect(errorBody.parse(JSON.parse(answer.text)).error.code).toBe("not_found");
+    }
+    for (const relationKey of ["projects", "name"]) {
+      const answer = await upload(a, { body: bytes, targetItemId: owner, relationKey });
+      expect(answer.status, relationKey).toBe(400);
+      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({ details: { field: "X-Attach-Relation" } });
+    }
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it("keeps an existing file's bytes and edges when attaching its bytes violates the cardinality (409)", async () => {
+    await makeOneToOne(a, "healthRecords");
+    const first = await createItem(a, a.healthRecordsId, "First");
+    const second = await createItem(a, a.healthRecordsId, "Second");
+    const firstBytes = PDF("first record's file");
+    expect((await upload(a, { body: firstBytes, targetItemId: first, relationKey: "healthRecords" })).status).toBe(201);
+    expect(
+      (await upload(a, { body: PDF("second record's file"), targetItemId: second, relationKey: "healthRecords" }))
+        .status,
+    ).toBe(201);
+    const before = await storedState(a);
+    // The first file to the second record: both ends already hold their one edge.
+    const answer = await upload(a, { body: firstBytes, targetItemId: second, relationKey: "healthRecords" });
+    expect(answer.status, answer.text).toBe(409);
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it.each([
+    ["one target", false],
+    ["two targets", true],
+  ])(
+    "serializes two concurrent uploads of an existing file's bytes on its blob row, to %s",
+    async (_name, twoTargets) => {
+      const first = await createItem(a, a.healthRecordsId, "First");
+      const second = twoTargets ? await createItem(a, a.healthRecordsId, "Second") : first;
+      const bytes = PDF("filed under contention");
+      const filed = await upload(a, { body: bytes });
+      expect(filed.status).toBe(201);
+      const file = itemBody.parse(JSON.parse(filed.text));
+      const before = await storedState(a);
+      const blobIds = await runInTenant(a.tenantId, async () =>
+        (await pool.query<{ id: string }>("SELECT id FROM blobs")).rows.map((row) => row.id),
+      );
+      expect(blobIds).toHaveLength(1);
+
+      // A lock-only admin transaction holds the blob row both uploads file under.
+      const holder = await admin.connect();
+      let holding = false;
+      const started: Promise<Outcome<Answer>>[] = [];
+      let primary: { error: unknown } | undefined;
+      let answers: Outcome<Answer>[] | undefined;
+      try {
+        await holder.query("BEGIN");
+        holding = true;
+        const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("no holder pid");
+        expect((await holder.query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [blobIds[0]])).rowCount).toBe(1);
+        for (const targetItemId of [first, second]) {
+          started.push(outcomeOf(upload(a, { body: bytes, targetItemId, relationKey: "healthRecords" })));
+        }
+        // Both uploads wait on the held blob row: one on the holder, the other on it or on the first.
+        const deadline = Date.now() + 10_000;
+        while ((await waitersOn(pid)).size < 2) {
+          if (Date.now() >= deadline) throw new Error("The two uploads did not both wait on the held blob row");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        await holder.query("COMMIT");
+        holding = false;
+        answers = await settleRequests(started, "The two contending uploads");
+      } catch (error) {
+        primary = { error };
+      }
+      const failures: unknown[] = [];
+      if (holding) {
+        try {
+          await holder.query("ROLLBACK");
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      holder.release(
+        failures.length > 0 ? new Error("The holder's ROLLBACK failed; its connection is destroyed") : undefined,
+      );
+      if (!answers) {
+        try {
+          await settleRequests(started, "The two contending uploads");
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      settle(primary, failures);
+      if (!answers) throw new Error("The contending uploads did not settle");
+
+      const values = answers.map((outcome) => {
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value;
+      });
+      expect(values.map((answer) => answer.status)).toEqual([200, 200]);
+      for (const answer of values) expect(itemBody.parse(JSON.parse(answer.text)).id).toBe(file.id);
+      const after = await storedState(a);
+      expect(after.blobs).toEqual(before.blobs);
+      // Each upload's streamed copy is removed again: the stored bytes are the existing file's alone.
+      expect(await storedBytesOnce((bytes) => isDeepStrictEqual(bytes, before.bytes))).toEqual(before.bytes);
+      expect(await fileIds(a)).toEqual([file.id]);
+      expect(await linked(a, file.id, "healthRecords")).toEqual([...new Set([first, second])].sort());
+      expect(after.edges).toHaveLength(before.edges.length + (twoTargets ? 2 : 1));
+    },
+  );
+
+  it("files two concurrent uploads of the same new bytes as one Files item with one edge, answering 201 and 200", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const bytes = PDF("new under contention");
+    const before = await storedState(a);
+    let arrivals = 0;
+    let bothStreaming: () => void = () => {};
+    const streaming = new Promise<void>((resolve) => {
+      bothStreaming = resolve;
+    });
+    let release: () => void = () => {};
+    streamingGate = {
+      started: () => {
+        arrivals += 1;
+        if (arrivals === 2) bothStreaming();
+      },
+      release: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    };
+    const started = [0, 1].map(() =>
+      outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })),
+    );
+    let primary: { error: unknown } | undefined;
+    try {
+      // Both bodies are in flight before either reaches its ingest transaction.
+      await within(streaming, 10_000, "Both upload streams");
+    } catch (error) {
+      primary = { error };
+    }
+    release();
+    streamingGate = null;
+    const failures: unknown[] = [];
+    let answers: Outcome<Answer>[] | undefined;
+    try {
+      answers = await settleRequests(started, "The two concurrent uploads");
+    } catch (error) {
+      failures.push(error);
+    }
+    settle(primary, failures);
+    if (!answers) throw new Error("The concurrent uploads did not settle");
+
+    const values = answers.map((outcome) => {
+      if (!outcome.ok) throw outcome.error;
+      return outcome.value;
+    });
+    expect(values.map((answer) => answer.status).sort()).toEqual([200, 201]);
+    const ids = values.map((answer) => itemBody.parse(JSON.parse(answer.text)).id);
+    expect(new Set(ids).size).toBe(1);
+    const [fileId] = ids;
+    if (fileId === undefined) throw new Error("no file id");
+    expect(await fileIds(a)).toEqual([fileId]);
+    expect(await linked(a, fileId, "healthRecords")).toEqual([record]);
+    const after = await storedState(a);
+    expect(after.blobs).toHaveLength(before.blobs.length + 1);
+    expect(after.edges).toHaveLength(before.edges.length + 1);
+    // One stored copy of the bytes: the second upload's streamed copy is removed again.
+    const stored = await storedBytesOnce(
+      (current) => Object.keys(current).length === Object.keys(before.bytes).length + 1,
+    );
+    expect(Object.keys(stored)).toHaveLength(Object.keys(before.bytes).length + 1);
+    expect(Object.values(stored)).toContain(createHash("sha256").update(bytes).digest("hex"));
   });
 });
 
@@ -416,5 +704,31 @@ describe("attach uploads to a task through the shared upload headers (issue #165
     expect((await upload(a, { body: bytes, targetItemId: task, relationKey: "tasks" })).status).toBe(200);
     expect(await linked(a, file.id, "projects")).toEqual([project]);
     expect(await linked(a, file.id, "tasks")).toEqual([task]);
+  });
+
+  it("answers a tasks attach whose target is not a task with 400 on X-Attach-Relation, for new and for existing bytes, storing nothing", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Not a task");
+    const existing = JPG("already filed");
+    expect((await upload(a, { body: existing })).status).toBe(201);
+    const before = await storedState(a);
+    for (const body of [JPG("new"), existing]) {
+      const answer = await upload(a, { body, targetItemId: record, relationKey: "tasks" });
+      expect(answer.status).toBe(400);
+      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({
+        code: "validation_failed",
+        details: { field: "X-Attach-Relation" },
+      });
+    }
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it("keeps a task cardinality violation's 409 and rolls the new file and its bytes back", async () => {
+    await makeOneToOne(a, "tasks");
+    const task = await createItem(a, a.tasksId, "Task");
+    expect((await upload(a, { body: JPG("first"), targetItemId: task, relationKey: "tasks" })).status).toBe(201);
+    const before = await storedState(a);
+    const answer = await upload(a, { body: JPG("second"), targetItemId: task, relationKey: "tasks" });
+    expect(answer.status, answer.text).toBe(409);
+    expect(await storedState(a)).toEqual(before);
   });
 });
