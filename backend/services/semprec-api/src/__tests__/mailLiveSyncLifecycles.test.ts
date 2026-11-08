@@ -8,6 +8,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES } from "@semprec/queue";
 import {
+  createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
   ensureMailAccountSyncState,
@@ -551,9 +552,14 @@ const assertionClaimsSchema = z.object({
 });
 
 /** A Gmail-mode mailbox in `tenantId` with its refresh token, sync state and provider-verified address. */
-async function insertGmailMailbox(tenantId: string, verifiedAddress: string, claimedAddress?: string): Promise<string> {
+async function insertGmailMailbox(
+  db: Pool,
+  tenantId: string,
+  verifiedAddress: string,
+  claimedAddress?: string,
+): Promise<string> {
   return runInTenant(tenantId, () =>
-    withTransaction(pool, async (client) => {
+    withTransaction(db, async (client) => {
       const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
       const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesDatabaseId,
@@ -641,80 +647,100 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   it("routes a notification for a watched, provider-verified address to one sync per mailbox, never by Mailboxes.addresses", async () => {
     const key = await writeServiceAccountKey(ownDirectory());
     const logs = captureServiceLogs();
-    const otherTenant = await createTestTenant(pool);
-    await runInTenant(otherTenant, () => seedSystem(pool));
-    const first = await insertGmailMailbox(getTenantZeroId(), "Verified@Example.com", "claimed@example.com");
-    const second = await insertGmailMailbox(otherTenant, "verified@example.com");
-    const pending = [
-      pubSubMessage("ack-verified", "verified@example.com"),
-      pubSubMessage("ack-claimed", "claimed@example.com"),
-    ];
-    const acknowledged: string[][] = [];
-    let serviceAccountExchanges = 0;
-    const seen = stubProviders({
-      [`POST ${GOOGLE_TOKEN}`]: async (request) => {
-        const form = await formOf(request);
-        if (form.get("grant_type") === "refresh_token" && form.get("refresh_token") === REFRESH_TOKEN) {
-          return Response.json({ access_token: "gmail-user-access", expires_in: 3600, token_type: "Bearer" });
-        }
-        const claims = assertionClaimsSchema.safeParse(
-          verifiedAssertionClaims(form.get("assertion") ?? "", key.publicKey),
-        );
-        if (form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:jwt-bearer" || !claims.success) {
-          return Response.json({ error: "invalid_grant" }, { status: 400 });
-        }
-        serviceAccountExchanges += 1;
-        return Response.json({ access_token: "pubsub-service-access", expires_in: 3600, token_type: "Bearer" });
-      },
-      [`POST ${GMAIL_WATCH}`]: async (request) => {
-        expect(request.headers.get("authorization")).toBe("Bearer gmail-user-access");
-        expect(z.object({ topicName: z.string() }).parse(await request.json()).topicName).toBe(TOPIC);
-        return Response.json({ historyId: "100", expiration: String(Date.now() + 7 * 24 * 3600 * 1000) });
-      },
-      [`POST ${PUBSUB_PULL}`]: (request) => {
-        expect(request.headers.get("authorization")).toBe("Bearer pubsub-service-access");
-        return Response.json(pending.length === 0 ? {} : { receivedMessages: pending.splice(0) });
-      },
-      [`POST ${PUBSUB_ACK}`]: async (request) => {
-        expect(request.headers.get("authorization")).toBe("Bearer pubsub-service-access");
-        acknowledged.push(z.object({ ackIds: z.array(z.string()) }).parse(await request.json()).ackIds);
-        return Response.json({});
-      },
-    });
+    // Two tenants: every production read and write runs on a runtime-role pool, under row-level security.
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const otherTenant = await createTestTenant(pool);
+      await runInTenant(otherTenant, () => seedSystem(runtime));
+      const first = await insertGmailMailbox(runtime, getTenantZeroId(), "Verified@Example.com", "claimed@example.com");
+      const second = await insertGmailMailbox(runtime, otherTenant, "verified@example.com");
+      const pending = [
+        pubSubMessage("ack-verified", "verified@example.com"),
+        pubSubMessage("ack-claimed", "claimed@example.com"),
+      ];
+      const acknowledged: string[][] = [];
+      let serviceAccountExchanges = 0;
+      const seen = stubProviders({
+        [`POST ${GOOGLE_TOKEN}`]: async (request) => {
+          const form = await formOf(request);
+          if (form.get("grant_type") === "refresh_token" && form.get("refresh_token") === REFRESH_TOKEN) {
+            return Response.json({ access_token: "gmail-user-access", expires_in: 3600, token_type: "Bearer" });
+          }
+          const claims = assertionClaimsSchema.safeParse(
+            verifiedAssertionClaims(form.get("assertion") ?? "", key.publicKey),
+          );
+          if (form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:jwt-bearer" || !claims.success) {
+            return Response.json({ error: "invalid_grant" }, { status: 400 });
+          }
+          serviceAccountExchanges += 1;
+          return Response.json({ access_token: "pubsub-service-access", expires_in: 3600, token_type: "Bearer" });
+        },
+        [`POST ${GMAIL_WATCH}`]: async (request) => {
+          expect(request.headers.get("authorization")).toBe("Bearer gmail-user-access");
+          expect(z.object({ topicName: z.string() }).parse(await request.json()).topicName).toBe(TOPIC);
+          return Response.json({ historyId: "100", expiration: String(Date.now() + 7 * 24 * 3600 * 1000) });
+        },
+        [`POST ${PUBSUB_PULL}`]: (request) => {
+          expect(request.headers.get("authorization")).toBe("Bearer pubsub-service-access");
+          return Response.json(pending.length === 0 ? {} : { receivedMessages: pending.splice(0) });
+        },
+        [`POST ${PUBSUB_ACK}`]: async (request) => {
+          expect(request.headers.get("authorization")).toBe("Bearer pubsub-service-access");
+          acknowledged.push(z.object({ ackIds: z.array(z.string()) }).parse(await request.json()).ackIds);
+          return Response.json({});
+        },
+      });
 
-    const hosting = await resolveGmailWatchHosting(pool, {
-      GMAIL_PUBSUB_TOPIC: TOPIC,
-      GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
-      GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
-      GMAIL_OAUTH_CLIENT_ID: "synthetic-client-id",
-      GMAIL_OAUTH_CLIENT_SECRET: CLIENT_SECRET,
-    });
-    if (!hosting) throw new Error("expected the Gmail watch lifecycle to be hosted");
-    root = composeRoot({ gmail_api: hosting.lifecycle });
-    await root.start();
-    await waitFor(async () =>
-      (await Promise.all([first, second].map(syncStateOf))).every(
-        (state) => state?.gmail_watch_email_address === "verified@example.com",
-      ),
-    );
-    await clearSyncJobsFor(first);
-    await clearSyncJobsFor(second);
+      const hosting = await resolveGmailWatchHosting(runtime, {
+        GMAIL_PUBSUB_TOPIC: TOPIC,
+        GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+        GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
+        GMAIL_OAUTH_CLIENT_ID: "synthetic-client-id",
+        GMAIL_OAUTH_CLIENT_SECRET: CLIENT_SECRET,
+      });
+      if (!hosting) throw new Error("expected the Gmail watch lifecycle to be hosted");
+      root = createMailLiveSyncRoot(
+        runtime,
+        createMailLiveSyncLifecycleFactory({ pool: runtime, hosted: { gmail_api: hosting.lifecycle } }),
+        {
+          discoveryIntervalMs: DISCOVERY_INTERVAL_MS,
+          onLifecycleError: (mailboxItemId, phase, err) => {
+            lifecycleErrors.push({ mailboxItemId, phase, err });
+          },
+        },
+      );
+      await root.start();
+      await waitFor(async () =>
+        (await Promise.all([first, second].map(syncStateOf))).every(
+          (state) => state?.gmail_watch_email_address === "verified@example.com",
+        ),
+      );
+      await clearSyncJobsFor(first);
+      await clearSyncJobsFor(second);
 
-    const running = createGmailPubSubDispatcherFor(pool, hosting);
-    dispatcher = running;
-    await running.start();
-    await waitFor(async () => acknowledged.length === 1);
+      const running = createGmailPubSubDispatcherFor(runtime, hosting);
+      dispatcher = running;
+      await running.start();
+      await waitFor(async () => acknowledged.length === 1);
 
-    expect(acknowledged).toEqual([["ack-verified", "ack-claimed"]]);
-    expect(await syncJobsFor(first)).toBe(1);
-    expect(await syncJobsFor(second)).toBe(1);
-    // One assertion exchange for the pull and the acknowledge: the service-account token is cached.
-    expect(serviceAccountExchanges).toBe(1);
-    expect(lifecycleErrors).toEqual([]);
-    const recorded = JSON.stringify([logs.calls, seen.map((request) => request.url)]);
-    for (const secret of [key.pem, REFRESH_TOKEN, CLIENT_SECRET, "gmail-user-access", "pubsub-service-access"]) {
-      expect(JSON.stringify(logs.calls)).not.toContain(secret);
-      expect(recorded).not.toContain(secret);
+      expect(acknowledged).toEqual([["ack-verified", "ack-claimed"]]);
+      expect(await syncJobsFor(first)).toBe(1);
+      expect(await syncJobsFor(second)).toBe(1);
+      // One assertion exchange for the pull and the acknowledge: the service-account token is cached.
+      expect(serviceAccountExchanges).toBe(1);
+      expect(lifecycleErrors).toEqual([]);
+      const recorded = JSON.stringify([logs.calls, seen.map((request) => request.url)]);
+      for (const secret of [key.pem, REFRESH_TOKEN, CLIENT_SECRET, "gmail-user-access", "pubsub-service-access"]) {
+        expect(JSON.stringify(logs.calls)).not.toContain(secret);
+        expect(recorded).not.toContain(secret);
+      }
+    } finally {
+      // Both run on `runtime`, so they stop before it ends.
+      await dispatcher?.stop();
+      dispatcher = undefined;
+      await root?.stop();
+      root = undefined;
+      await runtime.end();
     }
   });
 
