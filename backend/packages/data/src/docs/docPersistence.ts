@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { requireAffectedRows, runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy, DocKind } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
@@ -8,7 +8,7 @@ import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConf
 import { logger } from "./logger.js";
 import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
-import { tenantLane } from "../tenancy/tenantLane.js";
+import { enqueueSearchLaneJob } from "../search/searchLaneEnqueue.js";
 
 /** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
@@ -196,10 +196,11 @@ async function appendDocUpdateWithClient(
     [id, docId, updateBuffer, createdBy, created_at, retentionHours(retentionDays)],
   );
   if (doc.kind === "page") {
-    // Enqueued in this transaction, so the job exists only if the edit commits. While that job is still waiting,
+    // Registered in this transaction and added at its pre-commit flush (`enqueueSearchLaneJob`), so the job exists
+    // only if the edit commits; its run time is taken now, at the edit. While that job is still waiting,
     // `preserve_run_at` keeps its run time and a burst of edits collapses onto it; the job reads the page back
     // when it runs. Canvas docs have no text to convert and queue nothing.
-    await enqueueJob(
+    enqueueSearchLaneJob(
       client,
       CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT,
       { itemId: doc.item_id },
@@ -207,7 +208,6 @@ async function appendDocUpdateWithClient(
         jobKey: doc.item_id,
         jobKeyMode: "preserve_run_at",
         runAt: new Date(Date.now() + PAGE_TEXT_DEBOUNCE_MS),
-        queueName: tenantLane("item-search-index"),
       },
     );
   }

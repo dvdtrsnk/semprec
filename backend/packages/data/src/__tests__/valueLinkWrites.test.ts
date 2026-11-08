@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import * as queue from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -11,7 +11,8 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { runAfterCommit, SEARCH_FLUSH_TENANT_LOCK_CLASS, withTransaction } from "../db/pool.js";
+import { enqueueItemSearchReindex } from "../search/itemSearchFanout.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import {
@@ -370,6 +371,15 @@ async function settleParticipants<T extends ParticipantOutcome>(
     if (result.status === "rejected") return [result.reason];
     return !result.value.ok && !consumed.has(result.value) ? [result.value.error] : [];
   });
+}
+
+/** Polls a participant's own progress flag (observation only; locks and barriers create the order). */
+async function waitUntil(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("Participant did not start");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 async function waitBlocked(holderPid: number, competitorPid: number): Promise<void> {
@@ -3170,6 +3180,7 @@ describe("value link state on writes (issue #1516)", () => {
             }),
           );
           const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
+          const searchJobKey = `item-search-reindex:item:${unrelated.id}`;
           const jobCount = async () =>
             (
               await pool.query<{ count: string }>(
@@ -3236,9 +3247,11 @@ describe("value link state on writes (issue #1516)", () => {
                       { writer: USER },
                     );
                     await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                    // Registered for the pre-commit flush (R1 D1), which the caught busy below must prevent.
+                    await enqueueItemSearchReindex(client, { kind: "item", itemId: unrelated.id });
                     const queued = await client.query<{ key: string }>(
-                      "SELECT key FROM graphile_worker.jobs WHERE key = $1",
-                      [jobKey],
+                      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
+                      [[jobKey, searchJobKey]],
                     );
                     expect(queued.rows).toEqual([{ key: jobKey }]);
                     runAfterCommit(client, callback);
@@ -3272,6 +3285,11 @@ describe("value link state on writes (issue #1516)", () => {
             expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
             expect(callback).not.toHaveBeenCalled();
             expect(await jobCount()).toBe("0");
+            const searchJobs = await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
+              [searchJobKey],
+            );
+            expect(searchJobs.rows[0]?.count).toBe("0");
           } catch (error) {
             failure = { error };
           } finally {
@@ -3289,6 +3307,95 @@ describe("value link state on writes (issue #1516)", () => {
           if (failure !== undefined) throwFailure(failure.error);
         }),
       );
+    }, 30000);
+
+    /*
+     * R1 D1: a protected valueLinks relation and an ordinary relation that share an endpoint both queue that
+     * endpoint's search job. The protected write registers it in its 1 ms body and adds it at its pre-commit
+     * flush, after the body restored the session's lock timeout and while its lease stays held. A scratch holder
+     * of the tenant's search-flush lock (released and awaited below) makes that flush wait observably.
+     */
+    it("adds a protected relation's search jobs at its flush, waiting there without value_link_busy beside an ordinary writer", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        const other = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: fx.files.id, properties: { name: "b.pdf" } }),
+        );
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        const lockHeld = barrier();
+        const releaseLock = barrier();
+        let holderPid: number | undefined;
+        const holder = runAsSystem("search flush lock holder", () =>
+          withTransaction(pool, async (client) => {
+            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
+              SEARCH_FLUSH_TENANT_LOCK_CLASS,
+              tenant,
+            ]);
+            lockHeld.resolve();
+            await bounded(releaseLock.promise);
+          }),
+        );
+        let protectedPid: number | undefined;
+        let ordinaryPid: number | undefined;
+        type Outcome = { ok: true } | { ok: false; error: unknown };
+        const write = (kind: "protected" | "ordinary", callerItemId: string): Promise<Outcome> =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (kind === "protected") protectedPid = pid;
+              else ordinaryPid = pid;
+              const edge = { relationPropertyId: fx.projectsProperty.id, callerItemId, targetItemId: fx.alpha.id };
+              if (kind === "protected") await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              else await createRelationWithClient(client, edge, undefined, USER);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+        let protectedWrite: Promise<Outcome> | undefined;
+        let ordinaryWrite: Promise<Outcome> | undefined;
+        let failure: { error: unknown } | undefined;
+        try {
+          await bounded(lockHeld.promise);
+          protectedWrite = write("protected", fx.file.id);
+          await waitUntil(() => protectedPid !== undefined);
+          if (!holderPid || !protectedPid) throw new Error("Missing participant PID");
+          // The protected body finished; its flush waits on the tenant's flush lock, far beyond the body's 1 ms.
+          await waitBlocked(holderPid, protectedPid);
+          ordinaryWrite = write("ordinary", other.id);
+          await waitUntil(() => ordinaryPid !== undefined);
+          if (!ordinaryPid) throw new Error("Missing participant PID");
+          // The ordinary write waits behind the protected write's held relation lock, not on the flush.
+          await waitBlocked(protectedPid, ordinaryPid);
+        } catch (error) {
+          failure = { error };
+        } finally {
+          releaseLock.resolve();
+        }
+        const settled = await Promise.allSettled([
+          bounded(holder),
+          bounded(protectedWrite ?? Promise.resolve({ ok: true as const })),
+          bounded(ordinaryWrite ?? Promise.resolve({ ok: true as const })),
+        ]);
+        if (failure) throwFailure(failure.error);
+        const [held, protectedOutcome, ordinaryOutcome] = settled;
+        expect(held.status).toBe("fulfilled");
+        expect(protectedOutcome).toEqual({ status: "fulfilled", value: { ok: true } });
+        expect(ordinaryOutcome).toEqual({ status: "fulfilled", value: { ok: true } });
+        const keys = await pool.query<{ key: string }>(
+          "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+          [[fx.file.id, fx.alpha.id, other.id].map((id) => `item-search-reindex:item:${id}`)],
+        );
+        expect(keys.rows.map((row) => row.key)).toEqual(
+          [fx.file.id, fx.alpha.id, other.id].map((id) => `item-search-reindex:item:${id}`).sort(),
+        );
+        expect(await readStoredLinks(runtime, tenant, fx.file.id)).toMatchObject([{ state: "on" }]);
+      });
     }, 30000);
 
     it("refuses a protected relation waiting on a populated rollup job", async () => {

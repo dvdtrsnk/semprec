@@ -360,32 +360,51 @@ export async function enqueueJournalInboxRecomputeForProposal(client: PoolClient
  * The actual recompute: one query for the day's Inbox items, written to `items.computed` (issue #106), always a full recompute of one day's cell. Mirrors rollup/recompute.ts's `recomputeRollupCell`: one transaction holding `FOR UPDATE` on the day item so overlapping recomputes serialise and the list written is computed from the latest committed state, with the invalidation announced only after the commit.
  */
 export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: string): Promise<void> {
-  await withTransaction(pool, async (client) => {
-    const databases = await resolveInboxPipelineDatabases(client);
-    if (!databases) return;
-    const day = await itemsStore.lockItemById(client, databases.journal.id, journalDayItemId);
-    if (!day) return; // day item was purged since the job was enqueued
-    const items = await computeJournalInboxItems(client, databases, journalDayItemId);
-    const updatedAt = await writeComputed(
-      client,
-      databases.journal.id,
-      journalDayItemId,
-      JOURNAL_INBOX_COMPUTED_KEY,
-      items,
-    );
-    // The day's search `body` quotes these Inbox entries (issue #1658). Same transaction as the computed write, so
-    // the index never quotes a list that did not commit; the stored page text is kept, so the page is not reconverted.
-    await indexItem(client, journalDayItemId);
-    runAfterCommit(client, () =>
-      notifyInvalidation({
-        scope: "item",
-        databaseId: databases.journal.id,
-        itemId: journalDayItemId,
-        op: "update",
-        updatedAt,
-      }),
-    );
-  });
+  await withTransaction(pool, (client) => recomputeJournalInboxDayWithClient(client, journalDayItemId));
+}
+
+/**
+ * `recomputeJournalInboxDay`'s body on the caller's managed transaction: the search job of a Journal
+ * day (`search/itemSearchFanout.ts`) runs it in its own transaction, so the day's cache and its
+ * document are rewritten by this one owner. It re-resolves the pipeline and locks the day itself.
+ */
+export async function recomputeJournalInboxDayWithClient(client: PoolClient, journalDayItemId: string): Promise<void> {
+  const databases = await resolveInboxPipelineDatabases(client);
+  if (!databases) return;
+  const day = await itemsStore.lockItemById(client, databases.journal.id, journalDayItemId);
+  if (!day) return; // day item was purged since the job was enqueued
+  const items = await computeJournalInboxItems(client, databases, journalDayItemId);
+  const updatedAt = await writeComputed(
+    client,
+    databases.journal.id,
+    journalDayItemId,
+    JOURNAL_INBOX_COMPUTED_KEY,
+    items,
+  );
+  // The day's search `body` quotes these Inbox entries (issue #1658). Same transaction as the computed write, so
+  // the index never quotes a list that did not commit; the stored page text is kept, so the page is not reconverted.
+  await indexItem(client, journalDayItemId);
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: databases.journal.id,
+      itemId: journalDayItemId,
+      op: "update",
+      updatedAt,
+    }),
+  );
+}
+
+/**
+ * Whether `itemId` is a live item of this tenant's Journal while the Inbox pipeline resolves, the
+ * case in which `recomputeJournalInboxDayWithClient` indexes it. A plain read: it decides which owner
+ * runs, and that owner locks and re-reads the day itself.
+ */
+export async function isLiveJournalDay(client: PoolClient, itemId: string): Promise<boolean> {
+  const databases = await resolveInboxPipelineDatabases(client);
+  if (!databases) return false;
+  const item = await itemsStore.getItemById(client, databases.journal.id, itemId);
+  return item !== null && item.deletedAt === null;
 }
 
 export async function handleJournalInboxRecomputeTask(

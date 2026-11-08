@@ -1,20 +1,37 @@
 import "../../domainWriteHooks.js";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import {
+  assertSearchTaskIdentifiersRegistered,
+  CORE_TASK_NAMES,
+  enqueueJob,
+  ensureQueueSchema,
+  registerTask,
+  runOnce,
+  SearchTaskIdentifiersNotRegisteredError,
+} from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
-import { withTransaction } from "../../db/pool.js";
+import { createRelationWithClient } from "../../chokePoint/relationOps.js";
+import { SEARCH_FLUSH_TENANT_LOCK_CLASS, withTransaction } from "../../db/pool.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxItemWithClient } from "../../inbox/inboxStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createActionRegistry } from "../../scheduler/actions.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createApiCoreTaskList } from "../../worker.js";
-import { enqueueTenantSearchReindex, handleItemSearchReindexDependentsTask } from "../itemSearchFanout.js";
+import {
+  enqueueItemSearchReindex,
+  enqueueTenantSearchReindex,
+  handleItemSearchReindexDependentsTask,
+} from "../itemSearchFanout.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -26,6 +43,7 @@ let scope: string;
 
 const REINDEX = CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS;
 const BACKFILL = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
+const PAGE_TEXT = CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT;
 /** The Inbox owner's recompute of a Journal day's cached entries (inbox/journalInboxCompute.ts). */
 const RECOMPUTE = CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE;
 const envelope = z.object({ payload: z.record(z.string(), z.unknown()) });
@@ -99,8 +117,164 @@ function searchHandlers() {
   const reindex = taskList[REINDEX];
   const backfill = taskList[BACKFILL];
   const recompute = taskList[RECOMPUTE];
-  if (!reindex || !backfill || !recompute) throw new Error("Search handlers missing from the production API task list");
-  return { reindex, backfill, recompute };
+  const pageText = taskList[PAGE_TEXT];
+  if (!reindex || !backfill || !recompute || !pageText)
+    throw new Error("Search handlers missing from the production API task list");
+  return { reindex, backfill, recompute, pageText };
+}
+
+/** The keys of the queued reindex jobs, sorted, read through graphile-worker's public `jobs` view. */
+async function reindexKeys(): Promise<string[]> {
+  const { rows } = await admin.query<{ key: string | null }>(
+    "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+    [REINDEX],
+  );
+  return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
+}
+
+/** Every queued job, as identifier and key, read through graphile-worker's public `jobs` view. */
+async function allJobs(): Promise<Array<{ task_identifier: string; key: string | null }>> {
+  const { rows } = await admin.query<{ task_identifier: string; key: string | null }>(
+    "SELECT task_identifier, key FROM graphile_worker.jobs ORDER BY id",
+  );
+  return rows;
+}
+
+const itemKey = (itemId: string) => `item-search-reindex:item:${itemId}`;
+
+const cachedEntries = z.array(z.object({ text: z.string().nullable() })).nullable();
+
+/** The texts of a Journal day's cached Inbox entries (`computed.inboxItems`), or null without a cache. */
+async function cachedTexts(dayId: string): Promise<Array<string | null> | null> {
+  const { rows } = await inTenant(() =>
+    pool.query<{ entries: unknown }>("SELECT computed->'inboxItems' AS entries FROM items WHERE id = $1", [dayId]),
+  );
+  return cachedEntries.parse(rows[0]?.entries ?? null)?.map((entry) => entry.text) ?? null;
+}
+
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { open, opened };
+}
+
+async function bounded<T>(promise: Promise<T>, label: string, milliseconds = 10_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Polls until `waiterPid` is blocked by `holderPid` (observation only; locks create the order). */
+async function waitBlocked(holderPid: number, waiterPid: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const { rows } = await admin.query<{ blocked: boolean }>(
+      "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+      [holderPid, waiterPid],
+    );
+    if (rows[0]?.blocked) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Expected ${waiterPid} to wait for ${holderPid}`);
+}
+
+async function backendPid(client: PoolClient): Promise<number> {
+  const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+  const pid = rows[0]?.pid;
+  if (pid === undefined) throw new Error("Missing backend pid");
+  return pid;
+}
+
+/**
+ * Scratch barrier (R1 D1): a dedicated system transaction holds the tenant's search-flush advisory lock, so a
+ * writer that reached its pre-commit flush waits there, observably, until `release`. Always released and
+ * awaited by the caller.
+ */
+async function holdFlushLock(tenantId: string) {
+  const held = gate();
+  const release = gate();
+  let pid = 0;
+  const holder = runAsSystem("search flush lock holder", () =>
+    withTransaction(admin, async (client) => {
+      pid = await backendPid(client);
+      await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
+        SEARCH_FLUSH_TENANT_LOCK_CLASS,
+        tenantId,
+      ]);
+      held.open();
+      await release.opened;
+    }),
+  );
+  await bounded(held.opened, "flush lock held");
+  return {
+    pid: () => pid,
+    release: async () => {
+      release.open();
+      await holder;
+    },
+  };
+}
+
+const graphileWorkerModule = z.object({
+  makeWorkerUtils: z.custom<(options: { pgPool: Pool }) => Promise<unknown>>((value) => typeof value === "function"),
+});
+const workerUtilsShape = z.object({
+  cleanup: z.custom<(options: { tasks: string[] }) => Promise<void>>((value) => typeof value === "function"),
+  release: z.custom<() => Promise<void>>((value) => typeof value === "function"),
+});
+
+/**
+ * graphile-worker 0.17.3's public garbage collection (`WorkerUtils.cleanup`): `GC_TASK_IDENTIFIERS` deletes task
+ * identifier rows and `GC_JOB_QUEUES` queue rows that no job references. Resolved from the queue package, which
+ * depends on graphile-worker; this package does not. The caller drains the queue first, and every test that
+ * collects identifiers restores the search ones through the production bootstrap (`ensureQueueSchema`) before
+ * it ends. Test files run one at a time, so no other test shares the state in between.
+ */
+async function collectUnusedQueueMetadata(tasks: Array<"GC_TASK_IDENTIFIERS" | "GC_JOB_QUEUES">): Promise<void> {
+  const requireFromQueue = createRequire(fileURLToPath(new URL("../../../../queue/package.json", import.meta.url)));
+  const { makeWorkerUtils } = graphileWorkerModule.parse(requireFromQueue("graphile-worker"));
+  const utils = workerUtilsShape.parse(
+    await runAsSystem("queue metadata gc", () => makeWorkerUtils({ pgPool: admin })),
+  );
+  try {
+    await runAsSystem("queue metadata gc", () => utils.cleanup({ tasks }));
+  } finally {
+    await utils.release();
+  }
+}
+
+/** Two databases joined by four distinct relation definitions, and two target items A and B. */
+async function relationNodes() {
+  const source = await inTenant(() => cp.createDatabase({ name: "Uzly" }));
+  const target = await inTenant(() => cp.createDatabase({ name: "Cíle" }));
+  const definitions: string[] = [];
+  for (const key of ["first", "second", "third", "fourth"]) {
+    const { property } = await inTenant(() =>
+      cp.createRelationProperty({
+        sourceDatabaseId: source.id,
+        key,
+        name: key,
+        targetDatabaseId: target.id,
+        cardinality: "many_to_many",
+      }),
+    );
+    definitions.push(property.id);
+  }
+  const [first, second, third, fourth] = definitions;
+  if (!first || !second || !third || !fourth) throw new Error("Expected four relation properties");
+  const a = (await inTenant(() => cp.createItem({ databaseId: target.id, properties: {} }))).id;
+  const b = (await inTenant(() => cp.createItem({ databaseId: target.id, properties: {} }))).id;
+  return { source: source.id, a, b, first, second, third, fourth };
 }
 
 /**
@@ -280,33 +454,87 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(task, "gamaprojekt")).toBe(true);
   });
 
-  it("puts an Inbox entry's new text into its Journal day's document and drops the old one, through the cache owner (R1 F2)", async () => {
+  it("puts an Inbox entry's new text into its Journal day's cache and document and drops the old one, through the cache owner (R1 F2)", async () => {
     const { inbox, day, entry } = await journalEntry("Mléko");
-    // The create queues the day's document (through the new journalDay edge) and the owner's recompute.
+    // The create queues the day's document (through the new journalDay edge) and the owner's own recompute.
     expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
     expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
     await runQueued();
+    expect(await cachedTexts(day.id)).toEqual(["Mléko"]);
     expect(await contains(day.id, "mléko")).toBe(true);
     await inTenant(() => cp.updateItem({ databaseId: inbox, itemId: entry.id, propertiesPatch: { text: "Chléb" } }));
-    expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
-    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
+    // The update queues the day's document job, which runs the owner's recompute; no recompute job of its own.
+    expect((await queued(REINDEX)).filter((payload) => payload.itemId === day.id)).toEqual([
+      { kind: "item", itemId: day.id },
+    ]);
+    expect(await queued(RECOMPUTE)).toEqual([]);
+    expect(await cachedTexts(day.id)).toEqual(["Mléko"]);
     await runQueued();
+    expect(await cachedTexts(day.id)).toEqual(["Chléb"]);
     expect(await contains(day.id, "chléb")).toBe(true);
     expect(await contains(day.id, "mléko")).toBe(false);
   });
 
-  it("drops a trashed Inbox entry's text from its Journal day's document and brings it back after the restore (R1 F2)", async () => {
+  it("drops a trashed Inbox entry's text from its Journal day's cache and document and brings it back after the restore (R1 F2)", async () => {
     const { inbox, day, entry } = await journalEntry("Pečivo");
     await runQueued();
     expect(await contains(day.id, "pečivo")).toBe(true);
     await inTenant(() => cp.softDeleteItem(inbox, entry.id));
-    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
+    expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
+    expect(await queued(RECOMPUTE)).toEqual([]);
     await runQueued();
+    expect(await cachedTexts(day.id)).toEqual([]);
     expect(await contains(day.id, "pečivo")).toBe(false);
     await inTenant(() => cp.restoreItem(inbox, entry.id));
-    expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
+    expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
+    expect(await queued(RECOMPUTE)).toEqual([]);
     await runQueued();
+    expect(await cachedTexts(day.id)).toEqual(["Pečivo"]);
     expect(await contains(day.id, "pečivo")).toBe(true);
+  });
+
+  it("runs a Journal day's item job through the cache owner and another item's through the index write only (R1 F2)", async () => {
+    const { day } = await journalEntry("Rohlík");
+    const event = await item("events", "Snídaně");
+    await runQueued();
+    // A value written past the owner (no write path changes another owner's cache), so the job's recompute shows.
+    await inTenant(() =>
+      withTransaction(pool, (client) =>
+        client.query(
+          "UPDATE items SET computed = computed - 'inboxItems' WHERE tenant_id = app_tenant_default() AND id = $1",
+          [day.id],
+        ),
+      ),
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await inTenant(() => handleItemSearchReindexDependentsTask(pool, { kind: "item", itemId: day.id }));
+      await inTenant(() => handleItemSearchReindexDependentsTask(pool, { kind: "item", itemId: event }));
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(await cachedTexts(day.id)).toEqual(["Rohlík"]);
+    expect(events.filter((entry) => entry.scope === "item").map((entry) => entry.itemId)).toEqual([day.id]);
+    expect(await cachedTexts(event)).toBeNull();
+    expect(await contains(event, "snídaně")).toBe(true);
+  });
+
+  it("rolls a Journal day's item job back, cache and document together, when its index write fails (R1 F2)", async () => {
+    const { inbox, day, entry } = await journalEntry("Máslo");
+    await runQueued();
+    await inTenant(() => cp.updateItem({ databaseId: inbox, itemId: entry.id, propertiesPatch: { text: "Sýr" } }));
+    await withIndexWriteFault(day.id, async () => {
+      await expect(
+        inTenant(() => handleItemSearchReindexDependentsTask(pool, { kind: "item", itemId: day.id })),
+      ).rejects.toThrow("test index write failure");
+    });
+    expect(await cachedTexts(day.id)).toEqual(["Máslo"]);
+    expect(await contains(day.id, "máslo")).toBe(true);
+    expect(await contains(day.id, "sýr")).toBe(false);
+    await runQueued();
+    expect(await cachedTexts(day.id)).toEqual(["Sýr"]);
+    expect(await contains(day.id, "sýr")).toBe(true);
   });
 
   it("queues both ends' documents when an edge is written (R1 P2)", async () => {
@@ -474,4 +702,244 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(foreignTask, "cizíprojekt")).toBe(true);
     expect(await contains(foreignTask, "přejmenovaný")).toBe(false);
   });
+
+  /*
+   * R1 F3: X links A then B while Y links B then A, each edge through its own relation definition, interleaved
+   * edge by edge. Queued inline, each transaction held its first edge's job rows when it reached the other's,
+   * a lock cycle. The jobs are now added at each transaction's pre-commit flush under the tenant's flush lock;
+   * a scratch holder of that lock makes both writers wait observably at their flush before either commits.
+   */
+  type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+  const settle = <T>(promise: Promise<T>): Promise<Outcome<T>> =>
+    promise.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+  async function crossedWrites(
+    nodes: Awaited<ReturnType<typeof relationNodes>>,
+    xFails: boolean,
+  ): Promise<{ x: Outcome<string>; y: string }> {
+    const holder = await holdFlushLock(tenant);
+    const xLinkedA = gate();
+    const xContinue = gate();
+    const yLinkedB = gate();
+    const yContinue = gate();
+    let xPid = 0;
+    let yPid = 0;
+    const xFailure = new Error("X fails after its first edge");
+    const xWrite = settle(
+      inTenant(() =>
+        withTransaction(pool, async (client) => {
+          xPid = await backendPid(client);
+          const x = await createItemWithClient(client, { databaseId: nodes.source, properties: {} });
+          await createRelationWithClient(client, {
+            relationPropertyId: nodes.first,
+            callerItemId: x.id,
+            targetItemId: nodes.a,
+          });
+          xLinkedA.open();
+          await xContinue.opened;
+          if (xFails) throw xFailure;
+          await createRelationWithClient(client, {
+            relationPropertyId: nodes.second,
+            callerItemId: x.id,
+            targetItemId: nodes.b,
+          });
+          return x.id;
+        }),
+      ),
+    );
+    let yWrite: Promise<Outcome<string>> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await bounded(xLinkedA.opened, "X linked A");
+      yWrite = settle(
+        inTenant(() =>
+          withTransaction(pool, async (client) => {
+            yPid = await backendPid(client);
+            const y = await createItemWithClient(client, { databaseId: nodes.source, properties: {} });
+            await createRelationWithClient(client, {
+              relationPropertyId: nodes.third,
+              callerItemId: y.id,
+              targetItemId: nodes.b,
+            });
+            yLinkedB.open();
+            await yContinue.opened;
+            await createRelationWithClient(client, {
+              relationPropertyId: nodes.fourth,
+              callerItemId: y.id,
+              targetItemId: nodes.a,
+            });
+            return y.id;
+          }),
+        ),
+      );
+      await bounded(yLinkedB.opened, "Y linked B");
+      xContinue.open();
+      if (!xFails) await waitBlocked(holder.pid(), xPid);
+      yContinue.open();
+      await waitBlocked(holder.pid(), yPid);
+    } catch (error) {
+      failure = { error };
+    }
+    xContinue.open();
+    yContinue.open();
+    const released = await settle(holder.release());
+    const [x, y] = await bounded(Promise.all([xWrite, yWrite ?? Promise.resolve(undefined)]), "both writes settled");
+    const cleanup = [released, y].flatMap((result) => (result && !result.ok ? [result.error] : []));
+    if (failure)
+      throw cleanup.length ? new AggregateError([failure.error, ...cleanup], "Crossed writes failed") : failure.error;
+    if (cleanup.length || !y?.ok) throw new AggregateError(cleanup, "A crossed writer or the lock holder failed");
+    if (xFails && !(!x.ok && x.error === xFailure)) throw new Error("Expected X's own failure");
+    return { x, y: y.value };
+  }
+
+  it.each(["warm", "cold"] as const)(
+    "commits X→[A, B] and Y→[B, A] interleaved, both waiting at their flush, with exactly their jobs (R1 F3, %s lane)",
+    async (lane) => {
+      const nodes = await relationNodes();
+      await runQueued();
+      // A cold lane: graphile-worker's public GC removes the drained tenant lane's queue row.
+      if (lane === "cold") await collectUnusedQueueMetadata(["GC_JOB_QUEUES"]);
+      const { x, y } = await crossedWrites(nodes, false);
+      if (!x.ok) throw x.error;
+      expect(await reindexKeys()).toEqual([nodes.a, nodes.b, x.value, y].map(itemKey).sort());
+      const edges = async (itemId: string) =>
+        ((await inTenant(() => cp.listItemRelations(itemId))) ?? []).map((edge) => edge.targetItemId).sort();
+      expect(await edges(x.value)).toEqual([nodes.a, nodes.b].sort());
+      expect(await edges(y)).toEqual([nodes.a, nodes.b].sort());
+    },
+  );
+
+  it("adds none of a failed writer's jobs and announces none of its items while the other writer commits (R1 F3)", async () => {
+    const nodes = await relationNodes();
+    await runQueued();
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    const { x, y } = await crossedWrites(nodes, true).finally(() => setInvalidationHook(() => {}));
+    expect(x.ok).toBe(false);
+    expect(await reindexKeys()).toEqual([nodes.a, nodes.b, y].map(itemKey).sort());
+    const announced = new Set(events.flatMap((event) => (event.scope === "item" ? [event.itemId] : [])));
+    expect(announced.has(y)).toBe(true);
+    const { rows } = await inTenant(() =>
+      pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 AND id <> $2 ORDER BY id", [
+        nodes.source,
+        y,
+      ]),
+    );
+    expect(rows).toEqual([]);
+    for (const id of announced) expect([nodes.a, nodes.b, y]).toContain(id);
+  });
+
+  it("refuses a search write before any effect while the search task identifiers are unregistered, and writes after the bootstrap (R1 D1)", async () => {
+    const project = await item("projects", "Omega");
+    const task = await item("tasks", "Uzávěrka");
+    await runQueued();
+    await collectUnusedQueueMetadata(["GC_TASK_IDENTIFIERS"]);
+    try {
+      await expect(assertSearchTaskIdentifiersRegistered(admin)).rejects.toBeInstanceOf(
+        SearchTaskIdentifiersNotRegisteredError,
+      );
+      const jobsBefore = await allJobs();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(link("tasks", "project", task, project)).rejects.toBeInstanceOf(
+          SearchTaskIdentifiersNotRegisteredError,
+        );
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(events).toEqual([]);
+      expect(await allJobs()).toEqual(jobsBefore);
+      expect(await inTenant(() => cp.listItemRelations(task))).toEqual([]);
+    } finally {
+      await ensureQueueSchema(admin);
+    }
+    await link("tasks", "project", task, project);
+    expect(await reindexKeys()).toEqual([project, task].map(itemKey).sort());
+  });
+
+  /*
+   * R1 D1 (the parent's cold counterexample): a writer holds a fresh, uncommitted inline task identifier row while
+   * a worker's own registration of its task list (search identifiers first, the fresh one last) waits on it.
+   * With the search identifiers registered by the bootstrap, the registration holds none of the writer's flush
+   * rows, so the writer's flush adds its job and commits, and the registration then settles. Without them, the
+   * registration holds its own uncommitted search identifier rows while it waits; the writer's flush does not
+   * see them registered and refuses before any add_job instead of waiting on them.
+   */
+  it.each(["registered", "unregistered"] as const)(
+    "settles a writer holding a fresh inline identifier beside a worker's own registration (search identifiers %s, R1 D1)",
+    async (state) => {
+      const event = await item("events", "Sraz");
+      await runQueued();
+      const otherJobs = await allJobs();
+      const probe = `searchFlushProbe${state === "registered" ? "Registered" : "Unregistered"}`;
+      if (state === "unregistered") await collectUnusedQueueMetadata(["GC_TASK_IDENTIFIERS"]);
+      try {
+        const enqueued = gate();
+        const release = gate();
+        let writerPid = 0;
+        const writer = inTenant(() =>
+          withTransaction(pool, async (client) => {
+            writerPid = await backendPid(client);
+            await enqueueJob(client, probe, {});
+            await enqueueItemSearchReindex(client, { kind: "item", itemId: event });
+            enqueued.open();
+            await release.opened;
+          }),
+        ).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        const ran: string[] = [];
+        let worker: Promise<void> | undefined;
+        try {
+          await bounded(enqueued.opened, "writer enqueued");
+          const { reindex, backfill, pageText } = searchHandlers();
+          worker = runOnce(
+            { pgPool: admin },
+            {
+              [BACKFILL]: backfill,
+              [PAGE_TEXT]: pageText,
+              [REINDEX]: reindex,
+              [probe]: registerTask(probe, async () => {
+                ran.push(probe);
+              }),
+            },
+          );
+          const deadline = Date.now() + 5000;
+          let registrationWaits = false;
+          while (!registrationWaits && Date.now() < deadline) {
+            const { rows } = await admin.query<{ waiting: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE position('_private_tasks' IN query) > 0
+                 AND position('unnest' IN query) > 0 AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
+              [writerPid],
+            );
+            registrationWaits = rows[0]?.waiting === true;
+            if (!registrationWaits) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(registrationWaits).toBe(true);
+        } finally {
+          release.open();
+        }
+        const outcome = await bounded(writer, "writer settled");
+        await bounded(worker ?? Promise.resolve(), "worker settled");
+        // The worker ran the writer's probe and search jobs, or the writer's rollback left none.
+        expect(await allJobs()).toEqual(otherJobs);
+        if (state === "registered") {
+          expect(outcome).toEqual({ ok: true });
+          expect(ran).toEqual([probe]);
+        } else {
+          expect(outcome).toMatchObject({ ok: false });
+          if (outcome.ok) throw new Error("Expected the writer's refusal");
+          expect(outcome.error).toBeInstanceOf(SearchTaskIdentifiersNotRegisteredError);
+          expect(ran).toEqual([]);
+        }
+      } finally {
+        await ensureQueueSchema(admin);
+      }
+    },
+  );
 });

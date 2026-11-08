@@ -1,12 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
-import { tenantLane } from "../tenancy/tenantLane.js";
 import { indexItem } from "./itemSearchIndexer.js";
+import { enqueueSearchLaneJob } from "./searchLaneEnqueue.js";
 
 const CHUNK_SIZE = 100;
 const backfillOptionsSchema = z
@@ -18,14 +18,18 @@ const backfillOptionsSchema = z
   .strict();
 export type ItemSearchBackfillOptions = z.infer<typeof backfillOptionsSchema>;
 
-/** Enqueues one chunk; its cursor is part of the key so a running chunk cannot absorb its continuation. */
+/**
+ * Enqueues one chunk in the caller's managed transaction, added at its pre-commit flush
+ * (`enqueueSearchLaneJob`); its cursor is part of the key so a running chunk cannot absorb its
+ * continuation.
+ */
 export async function enqueueItemSearchBackfill(client: PoolClient, options: ItemSearchBackfillOptions): Promise<void> {
   const payload = backfillOptionsSchema.parse(options);
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Item search backfill requires a tenant scope");
-  await enqueueJob(client, CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL, payload, {
+  enqueueSearchLaneJob(client, CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL, payload, {
     jobKey: `item-search-backfill:${scope.tenantId}:${payload.databaseId ?? "all"}:${payload.onlyMissing ? "missing" : "all"}:${payload.afterItemId ?? "start"}`,
-    queueName: tenantLane("item-search-index"),
+    jobKeyMode: "replace",
     maxAttempts: 3,
   });
 }

@@ -8,7 +8,7 @@ import "../domainWriteHooks.js";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { writePageTextBlocks } from "../testSupport/pageFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { mutateDoc, mutateDocWithClient } from "../docs/docPersistence.js";
@@ -26,6 +26,7 @@ let pool: Pool;
 let cp: ChokePoint;
 let tenant: string;
 const taskName = CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT;
+const REINDEX = CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS;
 const DEBOUNCE_MS = 30_000;
 
 interface IndexRow {
@@ -176,6 +177,39 @@ describe("page text search (issue #1658)", () => {
       ),
     );
     expect(updates.rows).toEqual([{ count: "0" }]);
+  });
+
+  it("adds a transaction's page and item jobs at its commit, the page's with its first edit's run time (R1 D1)", async () => {
+    const item = await task("Titulek");
+    const doc = await inTenant(() => withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page")));
+    const firstEdit = Date.now();
+    let queuedInBody: Array<{ task_identifier: string }> | undefined;
+    await inTenant(() =>
+      withTransaction(pool, async (client) => {
+        await mutateDocWithClient(client, doc.id, "user", (ydoc) => ydoc.getMap("test").set("edit", "first"));
+        vi.setSystemTime(firstEdit + 10_000);
+        await mutateDocWithClient(client, doc.id, "user", (ydoc) => ydoc.getMap("test").set("edit", "second"));
+        await updateItemWithClient(client, {
+          databaseId: item.databaseId,
+          itemId: item.id,
+          propertiesPatch: { name: "Nový titulek" },
+        });
+        // Registered, not yet added: the same transaction sees no job of its own before the flush.
+        queuedInBody = (
+          await client.query<{ task_identifier: string }>(
+            "SELECT task_identifier FROM graphile_worker.jobs WHERE task_identifier = ANY($1::text[])",
+            [[taskName, REINDEX]],
+          )
+        ).rows;
+      }),
+    );
+    expect(queuedInBody).toEqual([]);
+    expect(await queuedRunAt()).toEqual([new Date(firstEdit + DEBOUNCE_MS)]);
+    const reindex = await admin.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+      [REINDEX],
+    );
+    expect(reindex.rows).toEqual([{ key: `item-search-reindex:referrers:${item.id}:start` }]);
   });
 
   it("makes a page's text searchable once its job has run, and stores the converted text", async () => {

@@ -743,15 +743,11 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                     ? secondFailure
                     : new Error("Second concurrent operation failed", { cause: secondFailure });
                 expect(secondPid).not.toBe(0);
-                // Issue #1652 keys each item's search reindex job by the item. In the user-first order
-                // the confirm queues one for the same person before it reaches the Event edge, so it
-                // waits on the user write's uncommitted job; the user write still waits at its insert.
-                const statement = order === "user-first" ? "graphile_worker.add_job" : "INSERT INTO item_relations";
-                const blocked = await runtime.query<{ blocked: boolean; waiting: boolean }>(
-                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position($3::text IN query) > 0 AS waiting FROM pg_stat_activity WHERE pid = $1::int",
-                  [secondPid, firstPid, statement],
+                const blocked = await runtime.query<{ blocked: boolean; insertion: boolean }>(
+                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion FROM pg_stat_activity WHERE pid = $1::int",
+                  [secondPid, firstPid],
                 );
-                expect(blocked.rows[0]).toEqual({ blocked: true, waiting: true });
+                expect(blocked.rows[0]).toEqual({ blocked: true, insertion: true });
               },
               { timeout: 5000 },
             );

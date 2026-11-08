@@ -5,10 +5,11 @@
 // (docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md), so a write never expands
 // a referrer set inside its own transaction. Emails are never reindexed here: mail owns their rows.
 // A Journal day quotes its Inbox entries through its cached `computed.inboxItems`, which only the
-// Inbox owner's recompute rewrites, so Inbox writes also queue that recompute (see `journalDaysOf`).
+// Inbox owner's recompute rewrites, so a Journal day's `item` job runs that owner's recompute, which
+// rewrites the cache and reindexes the day (see `journalDaysOf`).
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { currentTenantScope } from "@semprec/shared";
 import type {
   ItemCreateHook,
@@ -20,13 +21,13 @@ import type {
 import { getPropertyByKey, listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { enqueueJournalInboxRecompute } from "../inbox/journalInboxCompute.js";
+import { isLiveJournalDay, recomputeJournalInboxDayWithClient } from "../inbox/journalInboxCompute.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { AREAS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { tenantLane } from "../tenancy/tenantLane.js";
 import { enqueueItemSearchBackfill } from "./itemSearchBackfill.js";
 import { indexItem } from "./itemSearchIndexer.js";
+import { enqueueSearchLaneJob } from "./searchLaneEnqueue.js";
 
 const CHUNK_SIZE = 100;
 
@@ -38,11 +39,12 @@ const reindexPayloadSchema = z.discriminatedUnion("kind", [
 export type ItemSearchReindexPayload = z.infer<typeof reindexPayloadSchema>;
 
 /**
- * Queues one `itemSearchReindexDependents` job in the caller's transaction, on the tenant's
- * `item-search-index` lane. The key names the item or the scope, so repeated changes before the job
- * runs collapse into one (`jobKeyMode: "replace"`); a continuation's cursor is part of its key, so a
- * running chunk never absorbs it. Outside a tenant scope (only the transitional `warn` mode lets a
- * write run there) a tenant task could not run, so nothing is queued.
+ * Queues one `itemSearchReindexDependents` job in the caller's managed transaction, on the tenant's
+ * `item-search-index` lane, added at its pre-commit flush (`enqueueSearchLaneJob`). The key names the
+ * item or the scope, so repeated changes before the job runs collapse into one (`jobKeyMode:
+ * "replace"`); a continuation's cursor is part of its key, so a running chunk never absorbs it.
+ * Outside a tenant scope (only the transitional `warn` mode lets a write run there) a tenant task
+ * could not run, so nothing is queued.
  */
 export async function enqueueItemSearchReindex(client: PoolClient, payload: ItemSearchReindexPayload): Promise<void> {
   const parsed = reindexPayloadSchema.parse(payload);
@@ -51,10 +53,9 @@ export async function enqueueItemSearchReindex(client: PoolClient, payload: Item
     parsed.kind === "item"
       ? parsed.itemId
       : `${parsed.kind === "referrers" ? parsed.itemId : parsed.projectItemId}:${parsed.afterItemId ?? "start"}`;
-  await enqueueJob(client, CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, parsed, {
+  enqueueSearchLaneJob(client, CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, parsed, {
     jobKey: `item-search-reindex:${parsed.kind}:${scopeKey}`,
     jobKeyMode: "replace",
-    queueName: tenantLane("item-search-index"),
     maxAttempts: 3,
   });
 }
@@ -113,7 +114,8 @@ async function ownerModuleOf(client: PoolClient, itemId: string): Promise<string
 const PROJECT_ITEM_MODULE_IDS = ["tasks", "events", "files", "healthRecords"] as const;
 
 /**
- * `itemSearchReindexDependents`: `item` rebuilds one document; `referrers` rebuilds every live item
+ * `itemSearchReindexDependents`: `item` rebuilds one document (a live Journal day's through the Inbox
+ * owner's recompute of its cached entries); `referrers` rebuilds every live item
  * with an edge to `itemId`, and when that item is an Area also queues `projectItems` for each of its
  * live Project referrers, whose items quote the area through their project; `projectItems` rebuilds
  * the project's tasks, events, files and health records. Each invocation commits at most one chunk
@@ -123,7 +125,11 @@ export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPaylo
   const payload = reindexPayloadSchema.parse(rawPayload);
   await withTransaction(pool, async (client) => {
     if (payload.kind === "item") {
-      await indexItem(client, payload.itemId);
+      // A live Journal day's document quotes its cached Inbox entries: its owner rewrites that cache
+      // and indexes the day, in this transaction, under the day's row lock.
+      if (await isLiveJournalDay(client, payload.itemId))
+        await recomputeJournalInboxDayWithClient(client, payload.itemId);
+      else await indexItem(client, payload.itemId);
       return;
     }
     const sourceId = payload.kind === "referrers" ? payload.itemId : payload.projectItemId;
@@ -193,9 +199,9 @@ export const itemSearchTitleUpdateHook: ItemUpdateHook = async ({ client, databa
 /**
  * The Journal days an Inbox entry's `journalDay` edges point at; none for an item of any other
  * database. A day's document quotes its entries through the day's cached `computed.inboxItems`
- * (issue #106), which only the Inbox owner's recompute rewrites: it rewrites the cache and reindexes
- * the day in one transaction under the day's row lock, the lock `indexItem` also takes. So whichever
- * of that recompute and a search job of the day runs last indexes the committed cache.
+ * (issue #106), which only the Inbox owner's recompute rewrites: the day's `item` job runs that
+ * recompute, which rewrites the cache and reindexes the day in one transaction under the day's row
+ * lock, the lock `indexItem` also takes.
  */
 async function journalDaysOf(
   client: PoolClient,
@@ -211,18 +217,20 @@ async function journalDaysOf(
 
 /**
  * A soft-deleted row (issue #1601's hook): the items that link to it stop quoting its text. For an
- * Inbox entry, its Journal days' cached entry lists are recomputed too, which leaves the trashed
- * entry out.
+ * Inbox entry, its Journal days' documents too, whose jobs recompute the days' cached entry lists,
+ * which leaves the trashed entry out.
  */
 export const itemSearchDeleteHook: ItemDeleteHook = async ({ client, database, item }) => {
   await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
-  for (const day of await journalDaysOf(client, database, item.id)) await enqueueJournalInboxRecompute(client, day);
+  for (const day of await journalDaysOf(client, database, item.id))
+    await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
 };
 
-/** A restored row: the items that link to it quote its text again; an Inbox entry's days are recomputed. */
+/** A restored row: the items that link to it quote its text again, and an Inbox entry's Journal days. */
 export const itemSearchRestoreHook: ItemRestoreHook = async ({ client, database, item }) => {
   await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
-  for (const day of await journalDaysOf(client, database, item.id)) await enqueueJournalInboxRecompute(client, day);
+  for (const day of await journalDaysOf(client, database, item.id))
+    await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
 };
 
 /**
@@ -236,10 +244,8 @@ export const itemSearchInboxCreateHook: ItemCreateHook = async ({ client, databa
     await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
 };
 
-/** An Inbox entry changed: the Journal day's document, and the owner's recompute of the day's cached entries. */
+/** An Inbox entry changed: the Journal day's document, whose job recomputes the day's cached entries. */
 export const itemSearchInboxUpdateHook: ItemUpdateHook = async ({ client, database, item }) => {
-  for (const day of await journalDaysOf(client, database, item.id)) {
+  for (const day of await journalDaysOf(client, database, item.id))
     await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
-    await enqueueJournalInboxRecompute(client, day);
-  }
 };
