@@ -60,7 +60,9 @@ async function db(key: string): Promise<string> {
 
 async function item(moduleId: string, name: string): Promise<string> {
   const databaseId = await db(moduleId);
-  return (await inTenant(() => cp.createItem({ databaseId, properties: { name } }))).id;
+  // An Event's create requires a date (issue #1663); Events search documents do not include it.
+  const properties = moduleId === "events" ? { name, date: "2026-10-16" } : { name };
+  return (await inTenant(() => cp.createItem({ databaseId, properties }))).id;
 }
 
 async function relationPropertyId(moduleId: string, key: string): Promise<string> {
