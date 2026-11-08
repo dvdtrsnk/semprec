@@ -110,10 +110,20 @@ try {
     },
   };
   const summary: AiGatewayClientPort = {
-    async complete() {
+    async complete(input) {
       summaryCalls++;
       if (request.mode === "failure") throw new Error(sentinel);
-      return { content: { summary: "Fixture summary", mappings: [] }, usage: { inputTokens: 1, outputTokens: 1 } };
+      const content =
+        input.operation === "transcript_speaker_suggestion"
+          ? { mappings: [] }
+          : {
+              title: "Fixture",
+              summary: "Fixture summary",
+              shortSummary: "Fixture summary",
+              decisions: [],
+              actionItems: [],
+            };
+      return { content, usage: { inputTokens: 1, outputTokens: 1 } };
     },
   };
   const taskList = {

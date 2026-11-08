@@ -24,8 +24,12 @@ function signal() {
 
 async function jobs() {
   // Graphile Worker 0.17.3's public jobs view omits payload; inspect it here to verify migration provenance.
+  // Every committed property write also queues issue #1652's search backfill of its database; these
+  // tests are about the type migration, so that job is left out.
   const { rows } = await pool.query<{ key: string | null; task_identifier: string; payload: unknown }>(
-    "SELECT j.key, j.task_identifier, p.payload FROM graphile_worker.jobs j JOIN graphile_worker._private_jobs p ON p.id = j.id ORDER BY j.id",
+    `SELECT j.key, j.task_identifier, p.payload FROM graphile_worker.jobs j
+     JOIN graphile_worker._private_jobs p ON p.id = j.id
+     WHERE j.task_identifier <> 'itemSearchBackfill' ORDER BY j.id`,
   );
   return rows;
 }

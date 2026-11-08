@@ -62,7 +62,8 @@ const rowSchema = z.object({
  * neither status, so it pairs nothing. The open questions are the transcript's speaker cards in those
  * statuses: a `relation` envelope on `speakers` (its metadata names the speaker) or a `speaker`
  * context; the speaker keys of the segments, in first-appearance order, are read only for a
- * transcript that has one, to number them. `segments` itself is never returned.
+ * transcript that has such a card or stored `meetingNotes`, to number the questions and to name the
+ * speakers of the short summary. `segments` itself is never returned.
  *
  * Order: by recording `date`, descending by default (`asc` on request), then id in the same
  * direction; an undated transcript sorts after every dated one in both directions. The keyset

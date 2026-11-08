@@ -523,6 +523,11 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 },
               ]);
               events.length = 0;
+              // The held rename and the written edge queued issue #1652's search reindex jobs; the two
+              // refusals below must add none.
+              const afterEdgeJobs = await pool.query<{ count: string }>(
+                "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+              );
               await expectAttempt(
                 { speaker: "SPEAKER_99" },
                 {
@@ -544,7 +549,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
               expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
               expect(
                 (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-              ).toEqual(beforeJobs.rows);
+              ).toEqual(afterEdgeJobs.rows);
               expect(events).toEqual([]);
             } catch (error) {
               failure = { error };

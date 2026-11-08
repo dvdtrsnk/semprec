@@ -730,8 +730,11 @@ describe("tenant item search backfill task", () => {
       const item = await cp.createItem({ databaseId: database.id, properties: { title: "Foreign secret" } });
       foreignId = item.id;
       foreignDb = database.id;
-      await removeIndex([item.id]);
     });
+    // Issue #1652: the title property queued the other tenant's own backfill of its collection. Run it
+    // before simulating a pre-deploy item, so only this tenant's jobs run below.
+    await runQueuedBackfill();
+    await runInTenant(other, () => removeIndex([foreignId]));
     await runInTenant(tenant, async () => {
       const live = await task("Tenant visible");
       const trashed = await task("Trashed");

@@ -12,6 +12,7 @@ import { ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { enqueueItemSearchReindex } from "../search/itemSearchFanout.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -316,6 +317,10 @@ describe("derived value creation guard", () => {
       const projectProperty = await property("files", "projects");
       const areaProperty = await property("files", "area");
       const unrelatedProperty = await property("events", "company");
+      // graphile-worker inserts a task's and a queue's row on their first enqueue, and a concurrent first
+      // enqueue waits for that insert to commit. Issue #1652's edge hook queues on this fresh tenant's
+      // search lane, so its first enqueue commits here, before the holder below takes the definition.
+      await withTransaction(data, (client) => enqueueItemSearchReindex(client, { kind: "item", itemId: area.id }));
       let release!: () => void;
       let ready!: (pid: number) => void;
       const barrier = new Promise<void>((resolve) => {

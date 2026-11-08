@@ -303,7 +303,10 @@ class FakeSummaryGateway implements AiGatewayClientPort {
     if (input.operation === "transcript_speaker_suggestion") {
       return { content: { mappings: [] }, usage: { inputTokens: 10, outputTokens: 5 } };
     }
-    return { content: { summary: "a summary" }, usage: { inputTokens: 10, outputTokens: 5 } };
+    return {
+      content: { title: "Notes", summary: "a summary", shortSummary: "a summary", decisions: [], actionItems: [] },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    };
   }
 }
 

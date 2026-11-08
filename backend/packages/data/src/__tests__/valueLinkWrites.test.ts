@@ -1656,7 +1656,8 @@ describe("value link state on writes (issue #1516)", () => {
         const links = await withTenantTransaction(runtime, tenant, (client) =>
           listValueLinksByItemIds(client, [fixture.item.id]),
         );
-        expect(links[0]).toMatchObject({ state: "on" });
+        // Issue #1656: the purge removes the purged item's own link rows.
+        expect(links).toEqual([]);
         const events: InvalidationEvent[] = [];
         setInvalidationHook((event) => events.push(event));
         try {

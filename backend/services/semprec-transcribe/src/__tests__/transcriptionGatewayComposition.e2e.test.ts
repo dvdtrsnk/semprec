@@ -234,7 +234,15 @@ describe("transcription gateway and realtime composition", () => {
         async complete(input) {
           return {
             content:
-              input.operation === "transcript_speaker_suggestion" ? { mappings: [] } : { summary: "fixture summary" },
+              input.operation === "transcript_speaker_suggestion"
+                ? { mappings: [] }
+                : {
+                    title: "Fixture",
+                    summary: "fixture summary",
+                    shortSummary: "fixture summary",
+                    decisions: [],
+                    actionItems: [],
+                  },
             usage: { inputTokens: 0, outputTokens: 0 },
           };
         },
