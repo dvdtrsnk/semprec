@@ -368,7 +368,12 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
   }
 
   it("awaits the dispatcher's stop after the drain and before the mail root and the pool, leaving a pulled notification unacknowledged", async () => {
-    const { server, syncServer, voiceServer, tenantDeactivationListener } = await startServer(dedicatedPool);
+    const started = await startServer(dedicatedPool);
+    const server = started.server;
+    // The shutdown and the fallback close each resource through its owned close, which knows whether it closed.
+    const syncServer = ownedClose(started.syncServer);
+    const voiceServer = ownedClose(started.voiceServer);
+    const tenantDeactivationListener = ownedClose(started.tenantDeactivationListener);
     const pubSub = fakePubSub();
     let pullStarted: () => void = () => {};
     const pulling = new Promise<void>((resolve) => {
@@ -385,8 +390,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     const order: string[] = [];
     let listeningAtDispatcherStop: boolean | undefined;
     let poolEndedAtRootStop: boolean | undefined;
-    // Set only once the graceful shutdown has completed, and so closed the servers and the listener itself.
-    let shutdownCompleted = false;
     let primary: { error: unknown } | undefined;
     try {
       await dispatcher.start();
@@ -422,7 +425,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         pool: dedicatedPool,
         logger,
       })("SIGTERM");
-      shutdownCompleted = true;
       expect(order).toEqual([
         "gmailPubSubDispatcher.stop",
         "gmailPubSubDispatcher.stopped",
@@ -439,8 +441,9 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     await settleAll(primary, [
       () => releasePull(),
       () => dispatcher.stop(),
-      // A case whose shutdown did not complete closes what the shutdown would have closed, each on its own.
-      ...fallbackCloses({ server, syncServer, voiceServer, tenantDeactivationListener }, () => shutdownCompleted),
+      // Each resource whose own close did not fulfil (never called, rejected or still pending) is closed again, each
+      // on its own. A returned shutdown does not prove any of them closed: it only logs a rejected close.
+      ...fallbackCloses({ server, syncServer, voiceServer, tenantDeactivationListener }),
     ]);
     // Pulled, never dispatched, never acknowledged: Pub/Sub still holds it.
     expect(pubSub.pulls()).toBe(1);
@@ -461,87 +464,204 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     expect(pubSub.unacknowledged.size).toBe(0);
   });
 
-  it("attempts every fallback close when the first one rejects, after the case's own failure, and none after a completed shutdown", async () => {
+  it("falls back to every resource whose own close did not fulfil, each on its own after the case's failure, and skips one that closed", async () => {
     const attempted: string[] = [];
+    const receivers: unknown[] = [];
     const first = new Error("The sync server's close failed");
-    // Scripted resources of this test alone; no production seam.
-    const resources = {
-      syncServer: {
-        close: async () => {
-          attempted.push("syncServer");
-          throw first;
-        },
-      },
-      voiceServer: {
-        close: async () => {
-          attempted.push("voiceServer");
-        },
-      },
-      tenantDeactivationListener: {
-        close: async () => {
-          attempted.push("tenantDeactivationListener");
-        },
-      },
-      server: {
-        listening: true,
-        close: (callback: (error?: Error) => void) => {
-          attempted.push("server");
-          callback();
-        },
+    const voiceReturned = Promise.resolve();
+    let releaseFirstListenerClose: () => void = () => {};
+    const firstListenerClose = new Promise<void>((resolve) => {
+      releaseFirstListenerClose = resolve;
+    });
+    let listenerCloses = 0;
+    // Scripted resources of this test alone; no production seam. Each records the receiver its close ran on.
+    const sync = {
+      close(): Promise<void> {
+        attempted.push("syncServer");
+        receivers.push(this);
+        return Promise.reject(first);
       },
     };
-    const early = new Error("The case failed before its shutdown completed");
+    const voice = {
+      close(): Promise<void> {
+        attempted.push("voiceServer");
+        receivers.push(this);
+        return voiceReturned;
+      },
+    };
+    const listener = {
+      close(): Promise<void> {
+        attempted.push("tenantDeactivationListener");
+        receivers.push(this);
+        listenerCloses += 1;
+        // The first close stays pending, as one past the shutdown's listener bound does.
+        return listenerCloses === 1 ? firstListenerClose : Promise.resolve();
+      },
+    };
+    const server = {
+      listening: true,
+      close: (callback: (error?: Error) => void) => {
+        attempted.push("server");
+        callback();
+      },
+    };
+    const owned = {
+      syncServer: ownedClose(sync),
+      voiceServer: ownedClose(voice),
+      tenantDeactivationListener: ownedClose(listener),
+    };
+    // The voice server closed before the failure, through its owned close, which returned the resource's own result.
+    const voiceResult = owned.voiceServer.close();
+    expect(voiceResult).toBe(voiceReturned);
+    await voiceResult;
+    // The listener's close was started and is still pending.
+    const listenerClosing = owned.tenantDeactivationListener.close();
+    const early = new Error("The case failed before its resources were closed");
+    expect(receivers).toHaveLength(2);
+    expect(receivers[0]).toBe(voice);
+    expect(receivers[1]).toBe(listener);
 
-    const thrown = await settleAll(
-      { error: early },
-      fallbackCloses(resources, () => false),
-    ).then(
+    attempted.length = 0;
+    receivers.length = 0;
+    const thrown = await settleAll({ error: early }, fallbackCloses({ server, ...owned })).then(
       () => null,
       (error: unknown) => error,
     );
-    expect(attempted).toEqual(["syncServer", "voiceServer", "tenantDeactivationListener", "server"]);
+    // The first listener close, left pending, is released before any assertion and awaited at the end.
+    releaseFirstListenerClose();
+    // The sync server's rejection skipped no sibling, and only the voice server, which closed, was skipped.
+    expect(attempted).toEqual(["syncServer", "tenantDeactivationListener", "server"]);
+    expect(receivers).toHaveLength(2);
+    expect(receivers[0]).toBe(sync);
+    expect(receivers[1]).toBe(listener);
     if (!(thrown instanceof AggregateError)) throw new Error("expected an AggregateError");
     expect(thrown.errors).toEqual([early, first]);
     expect(thrown.errors[0]).toBe(early);
     expect(thrown.errors[1]).toBe(first);
     expect(thrown.cause).toBe(early);
+    expect(owned.syncServer.rejections).toHaveLength(1);
+    expect(owned.syncServer.rejections[0]).toBe(first);
+    expect(owned.syncServer.closed()).toBe(false);
+    expect(owned.voiceServer.closed()).toBe(true);
+    expect(owned.tenantDeactivationListener.closed()).toBe(true);
+    await within(listenerClosing, 1_000, "The first listener close");
+  });
 
+  it("falls back to the one resource whose close rejected after the graceful shutdown returned past it, and to no sibling it closed", async () => {
+    const attempted: string[] = [];
+    const first = new Error("The sync server's close failed");
+    let syncCloses = 0;
+    // Scripted closes of this test alone around the real graceful shutdown, a real HTTP server and this case's pool.
+    const syncServer = ownedClose({
+      close: async () => {
+        attempted.push("syncServer");
+        syncCloses += 1;
+        if (syncCloses === 1) throw first;
+      },
+    });
+    const voiceServer = ownedClose({
+      close: async () => {
+        attempted.push("voiceServer");
+      },
+    });
+    const tenantDeactivationListener = ownedClose({
+      close: async () => {
+        attempted.push("tenantDeactivationListener");
+      },
+    });
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { logger, lines } = createCapturingLogger();
+    let primary: { error: unknown } | undefined;
+    try {
+      await createGracefulShutdown({
+        server,
+        tenantDeactivationListener,
+        syncServer,
+        voiceServer,
+        queueRuntime: { stop: async () => {} },
+        mailLiveSync: { stop: async () => {} },
+        pool: dedicatedPool,
+        logger,
+      })("SIGTERM");
+      // The shutdown returned although the sync server's close rejected: it logged that failure and moved on.
+      const errors = lines.filter((line) => line.level === "error");
+      expect(errors.map((line) => line.msg)).toEqual(["syncServer.close() failed"]);
+      expect(errors[0]?.obj).toEqual({ err: first, signal: "SIGTERM" });
+      expect(syncServer.rejections).toHaveLength(1);
+      expect(syncServer.rejections[0]).toBe(first);
+      expect(attempted).toEqual(["tenantDeactivationListener", "syncServer", "voiceServer"]);
+      expect(syncServer.closed()).toBe(false);
+      expect(voiceServer.closed()).toBe(true);
+      expect(tenantDeactivationListener.closed()).toBe(true);
+      expect(server.listening).toBe(false);
+    } catch (error) {
+      primary = { error };
+    }
     attempted.length = 0;
-    await settleAll(
-      undefined,
-      fallbackCloses(resources, () => true),
-    );
-    expect(attempted).toEqual([]);
+    await settleAll(primary, fallbackCloses({ server, syncServer, voiceServer, tenantDeactivationListener }));
+    expect(attempted).toEqual(["syncServer"]);
+    expect(syncServer.closed()).toBe(true);
   });
 });
 
+/** One resource's close, owned by a case; see `ownedClose`. */
+interface OwnedClose {
+  close(): Promise<void>;
+  /** True once one call of `close` has fulfilled. */
+  closed(): boolean;
+  /** Every error a call of `close` rejected with, in order. */
+  readonly rejections: unknown[];
+}
+
+/**
+ * Owns the close of `resource` for a case. `close()` calls the resource's own `close()` on the resource itself, with
+ * no arguments as the interface takes none, and returns that call's own promise, so its caller sees exactly the result
+ * or error the resource gave. Only a call whose promise fulfils marks the resource closed. A close that rejected, or
+ * one still pending, leaves it open: the graceful shutdown logs a rejected close and moves on, and moves past a
+ * listener close still pending at its bound, so its return proves neither closed.
+ */
+function ownedClose(resource: { close(): Promise<void> }): OwnedClose {
+  let fulfilled = false;
+  const rejections: unknown[] = [];
+  return {
+    close(): Promise<void> {
+      const result = resource.close();
+      result.then(
+        () => {
+          fulfilled = true;
+        },
+        (error: unknown) => {
+          rejections.push(error);
+        },
+      );
+      return result;
+    },
+    closed: () => fulfilled,
+    rejections,
+  };
+}
+
 /**
  * The fallback closes of `startServer`'s resources, one independently attempted cleanup each, in the order the
- * graceful shutdown closes them, so one rejecting close does not skip the others. Each is skipped only once
- * `closedByShutdown()` says the graceful shutdown completed and so closed it already; the HTTP server is also
- * skipped when it no longer listens.
+ * graceful shutdown closes them, so one rejecting close does not skip the others. Each owned resource is closed
+ * again unless one of its own closes fulfilled, and the HTTP server whenever it still listens.
  */
-function fallbackCloses(
-  resources: {
-    syncServer: { close(): Promise<void> };
-    voiceServer: { close(): Promise<void> };
-    tenantDeactivationListener: { close(): Promise<void> };
-    server: { listening: boolean; close(callback: (error?: Error) => void): unknown };
-  },
-  closedByShutdown: () => boolean,
-): (() => Promise<void>)[] {
+function fallbackCloses(resources: {
+  syncServer: OwnedClose;
+  voiceServer: OwnedClose;
+  tenantDeactivationListener: OwnedClose;
+  server: { listening: boolean; close(callback: (error?: Error) => void): unknown };
+}): (() => Promise<void>)[] {
+  const unlessClosed = (owned: OwnedClose) => async () => {
+    if (!owned.closed()) await owned.close();
+  };
   return [
+    unlessClosed(resources.syncServer),
+    unlessClosed(resources.voiceServer),
+    unlessClosed(resources.tenantDeactivationListener),
     async () => {
-      if (!closedByShutdown()) await resources.syncServer.close();
-    },
-    async () => {
-      if (!closedByShutdown()) await resources.voiceServer.close();
-    },
-    async () => {
-      if (!closedByShutdown()) await resources.tenantDeactivationListener.close();
-    },
-    async () => {
-      if (closedByShutdown() || !resources.server.listening) return;
+      if (!resources.server.listening) return;
       await new Promise<void>((resolve, reject) =>
         resources.server.close((error) => (error ? reject(error) : resolve())),
       );

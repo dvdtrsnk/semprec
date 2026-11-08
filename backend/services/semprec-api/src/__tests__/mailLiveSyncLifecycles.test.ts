@@ -298,14 +298,25 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 
 type OwnerOutcome = { token: string } | { error: unknown };
 
+/** What a bounded wait gave: its value, or the very error it rejected with. */
+type Observation<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/** The value of `observation`, or its rejection rethrown as the same error object. */
+function take<T>(observation: Observation<T>): T {
+  if (!observation.ok) throw observation.error;
+  return observation.value;
+}
+
 /**
  * The held token-provider work of one case, each piece recorded when it is created: every token-owner outcome the
- * case starts, every fake fetch it holds open (with its own release handle and abort listener), every response
- * stream it serves (by its controller) and every stream pull or cancel promise it holds. `release` frees all of it
- * without waiting for any production deadline, then drains every owner outcome.
+ * case starts, every bounded observation of one, every fake fetch it holds open (with its own release handle and
+ * abort listener), every response stream it serves (by its controller) and every stream pull or cancel promise it
+ * holds. `release` frees all of it without waiting for any production deadline, then drains every owner outcome and
+ * every observation.
  */
 function heldProviders() {
   const owners: Promise<OwnerOutcome>[] = [];
+  const observations: Promise<unknown>[] = [];
   const fetches: { reject: (error: Error) => void; removeListener: () => void }[] = [];
   const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
   const holds: (() => void)[] = [];
@@ -321,6 +332,19 @@ function heldProviders() {
       );
       owners.push(outcome);
       return outcome;
+    },
+    /**
+     * Bounds `outcome` within `ms` and observes the bound at once, with both handlers, so a bound that expires while
+     * the case still waits for something else rejects into this observation and never goes unhandled. The returned
+     * promise never rejects; `take` rethrows the bound's own error.
+     */
+    bounded<T>(outcome: Promise<T>, ms: number, what: string): Promise<Observation<T>> {
+      const observation = within(outcome, ms, what).then(
+        (value): Observation<T> => ({ ok: true, value }),
+        (error: unknown): Observation<T> => ({ ok: false, error }),
+      );
+      observations.push(observation);
+      return observation;
     },
     /** A fetch answer that settles only when its request is aborted or the cleanup releases it. */
     heldFetch(request: Request, onHeld: () => void): Promise<Response> {
@@ -361,8 +385,8 @@ function heldProviders() {
     /**
      * Rejects every held fetch and removes its abort listener, errors every served stream (a no-op for one already
      * closed, errored or cancelled), resolves every held pull and cancel, and only then waits for every started owner
-     * outcome within `drainMs`. Each step is attempted whatever an earlier one did; an outcome still pending is a
-     * failure, never a settlement.
+     * outcome within `drainMs`, and then for every bounded observation within `drainMs`. Each step is attempted
+     * whatever an earlier one did; an outcome or observation still pending is a failure, never a settlement.
      */
     async release(drainMs = OWNER_DRAIN_MS): Promise<void> {
       const failures: unknown[] = [];
@@ -381,6 +405,15 @@ function heldProviders() {
       for (const resolve of holds) attempt(() => resolve());
       try {
         await within(Promise.all(owners), drainMs, "A token-owner outcome after its provider work was released");
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await within(
+          Promise.all(observations),
+          drainMs,
+          "A bounded token-owner observation after its provider work was released",
+        );
       } catch (error) {
         failures.push(error);
       }
@@ -1176,34 +1209,28 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         return answer(request);
       },
     });
-    // Every owner outcome is recorded by the harness when it starts and awaited here within a bound.
-    const outcome = (what: string) =>
-      within(
+    // Every owner outcome is recorded by the harness when it starts, and its bound is observed as it is created.
+    const bounded = (what: string) =>
+      providers.bounded(
         providers.owner(() => config.getPubSubAccessToken()),
         OWNER_MS,
         what,
       );
+    const outcome = async (what: string) => take(await bounded(what));
     let primary: { error: unknown } | undefined;
     try {
-      const fetching = within(
-        providers.owner(() => config.getPubSubAccessToken()),
-        OWNER_MS,
-        "The owner of the held fetch",
-      );
+      // Observed from here on: a bound expiring during the readiness wait below cannot reject unhandled.
+      const fetching = bounded("The owner of the held fetch");
       await waitFor(async () => fetchHeld);
       const fetchReason = expire(0);
-      const fetchFailed = await fetching;
+      const fetchFailed = take(await fetching);
       expect("error" in fetchFailed && fetchFailed.error).toBe(fetchReason);
       expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
 
-      const reading = within(
-        providers.owner(() => config.getPubSubAccessToken()),
-        OWNER_MS,
-        "The owner of the held body read",
-      );
+      const reading = bounded("The owner of the held body read");
       await waitFor(async () => readHeld);
       const readReason = expire(2);
-      const readFailed = await reading;
+      const readFailed = take(await reading);
       if (!("error" in readFailed) || !(readFailed.error instanceof AggregateError)) {
         throw new Error("expected an AggregateError for the held read");
       }
@@ -1214,14 +1241,10 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       expect(readFailed.error.cause).toBe(readReason);
       expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
 
-      const cancelling = within(
-        providers.owner(() => config.getPubSubAccessToken()),
-        OWNER_MS,
-        "The owner of the held cancellation",
-      );
+      const cancelling = bounded("The owner of the held cancellation");
       await waitFor(async () => cancelHeld);
       expire(4);
-      const cancelFailed = await cancelling;
+      const cancelFailed = take(await cancelling);
       if (!("error" in cancelFailed) || !(cancelFailed.error instanceof AggregateError)) {
         throw new Error("expected an AggregateError for the held cancellation");
       }
@@ -1237,8 +1260,8 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     } catch (error) {
       primary = { error };
     }
-    // Every held fetch, stream and stream promise is released, then every started owner outcome drained, before
-    // afterEach restores the globals and the spy.
+    // Every held fetch, stream and stream promise is released, then every started owner outcome and every bounded
+    // observation drained, before afterEach restores the globals and the spy.
     await settleAll(primary, [() => providers.release()]);
   });
 
@@ -1298,6 +1321,77 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     // Reported as unsettled, and indeed still pending: no settlement was claimed for it.
     expect(await Promise.race([stuck.then(() => "settled"), Promise.resolve("pending")])).toBe("pending");
   });
+
+  it.each(["delayed", "failed"] as const)(
+    "observes a bounded owner outcome from its creation, so %s readiness past its expired bound leaves no unhandled rejection and keeps the original failure",
+    async (readiness) => {
+      const key = await writeServiceAccountKey(ownDirectory());
+      const loaded = await loadGmailPubSubConfig({
+        GMAIL_PUBSUB_TOPIC: TOPIC,
+        GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
+        GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
+      });
+      if (!loaded.config) throw new Error(loaded.reason);
+      const config = loaded.config;
+      // A deadline that never expires: only the release below frees the held fetch.
+      vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
+      const providers = heldProviders();
+      let fetchHeld = false;
+      stubProviders({
+        [`POST ${GOOGLE_TOKEN}`]: (request) =>
+          providers.heldFetch(request, () => {
+            fetchHeld = true;
+          }),
+      });
+      const owner = providers.owner(() => config.getPubSubAccessToken());
+      // A bound far below the readiness wait. The owner is held until the release, so this bound expires first.
+      const fetching = providers.bounded(owner, 20, "The owner of the held fetch");
+      // Set once the observation has settled; the readiness wait reads this flag and never awaits the observation.
+      let expired = false;
+      const expiring = fetching.then(() => {
+        expired = true;
+      });
+      const readinessFailed = new Error("The case's readiness was never signalled");
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => {
+        unhandled.push(reason);
+      };
+      process.on("unhandledRejection", onUnhandled);
+      let primary: { error: unknown } | undefined;
+      try {
+        // Readiness is held until the owner's fetch is held and the bound has expired, then arrives late or fails.
+        await waitFor(async () => {
+          if (!fetchHeld || !expired) return false;
+          if (readiness === "failed") throw readinessFailed;
+          return true;
+        });
+        take(await fetching);
+        throw new Error("expected the bound to have expired");
+      } catch (error) {
+        primary = { error };
+      }
+      const thrown = await settleAll(primary, [
+        () => providers.release(),
+        // One more turn of the event loop, after which an unhandled rejection would already have been reported.
+        () => new Promise<void>((resolve) => setImmediate(resolve)),
+        () => {
+          process.off("unhandledRejection", onUnhandled);
+        },
+      ]).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await expiring;
+      const observation = await fetching;
+      if (observation.ok) throw new Error("expected the bound to have rejected");
+      expect(observation.error).toEqual(new Error("The owner of the held fetch did not settle within 20 ms"));
+      // The case's own failure is kept: the readiness failure, or the bound's error rethrown unchanged by `take`.
+      expect(thrown).toBe(readiness === "failed" ? readinessFailed : observation.error);
+      expect(unhandled).toEqual([]);
+      // The real owner settled with the release, not with a deadline.
+      expect(await within(owner, OWNER_MS, "The released owner")).toEqual({ error: providers.releasedError });
+    },
+  );
 
   it("settles every failed token response, keeps its own failure first, and caches no failure", async () => {
     const key = await writeServiceAccountKey(ownDirectory());
