@@ -120,7 +120,14 @@ describe("PATCH /api/tasks/series/:seriesId (issue #1667)", () => {
     expect(response.status).toBe(200);
     const body = seriesBody.parse(response.body);
     expect(body).toMatchObject({ seriesId, currentInstanceId: currentId });
-    expect(body.template).toMatchObject({ name: "Stretch", timeFrom: "08:00", timeTo: null });
+    expect(body.template).toEqual({
+      name: "Stretch",
+      timeFrom: "08:00",
+      timeTo: null,
+      notifications: false,
+      flagged: false,
+      description: null,
+    });
     expect(body.recurrence).toEqual({
       preset: "daily",
       mode: "fixed",
@@ -177,6 +184,8 @@ describe("PATCH /api/tasks/series/:seriesId (issue #1667)", () => {
     ["occurrenceDate", { occurrenceDate: "2026-10-20" }],
     ["completedOn", { completedOn: "2026-10-16" }],
     ["every", { every: 2 }],
+    // Issue #2009 removed the Tasks property; the legacy template field is refused like any other unknown key.
+    ["persistent", { persistent: true }],
   ])("refuses a patch of %s with 400 on that field and changes nothing", async (field, body) => {
     const { seriesId, currentId } = await series();
     const before = [await template(seriesId), await stored(currentId)];
