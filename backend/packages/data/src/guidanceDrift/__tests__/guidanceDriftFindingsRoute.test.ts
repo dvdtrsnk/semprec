@@ -23,6 +23,7 @@ let pool: Pool;
 let tenantA: string;
 let tenantB: string;
 let userA: string;
+let userB: string;
 let projectA: string;
 let projectB: string;
 let taskA: string;
@@ -84,6 +85,25 @@ async function moduleItem(tenant: string, moduleId: string): Promise<string> {
 const read = (projectItemId: string) =>
   createProjectGuidanceDriftReadRouteHandler(pool)({ params: { id: projectItemId } });
 
+/** Saves guidance through the real save route (saving never resolves findings) and returns its version. */
+async function saveGuidance(tenant: string, projectItemId: string, userId: string): Promise<string> {
+  await runInTenant(tenant, () =>
+    createProjectAgentGuidanceSaveRouteHandler(pool)({
+      params: { id: projectItemId },
+      identity: { user: { id: userId } },
+      body: {
+        sections: { purpose: "Coordinate", allowed: "Read", notAllowed: "", generalInstructions: "" },
+        expectedUpdatedAt: null,
+      },
+    }),
+  );
+  const guidance = await runInTenant(tenant, () =>
+    withTransaction(pool, (tx) => projectAgentGuidanceStore.load(tx, projectItemId)),
+  );
+  if (!guidance) throw new Error("Guidance was not saved");
+  return guidance.updatedAt;
+}
+
 describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -101,7 +121,7 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
     tenantA = await createTestTenant(admin);
     tenantB = await createTestTenant(admin);
     userA = (await createUser(admin, { email: "a@example.test", passwordHash: "hash", tenantId: tenantA })).id;
-    await createUser(admin, { email: "b@example.test", passwordHash: "hash", tenantId: tenantB });
+    userB = (await createUser(admin, { email: "b@example.test", passwordHash: "hash", tenantId: tenantB })).id;
     for (const tenant of [tenantA, tenantB]) await runInTenant(tenant, () => seedSystem(pool));
     projectA = await moduleItem(tenantA, "projects");
     projectB = await moduleItem(tenantB, "projects");
@@ -141,7 +161,22 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
     expect(result).toEqual({ status: 200, body: { guidanceUpdatedAt: guidance?.updatedAt, findings: [] } });
   });
 
+  it("answers an empty list without guidance even with an active finding, and lists it once guidance is saved (R1 F4)", async () => {
+    // An active finding without guidance: the drift producer can insert one while a concurrent delete
+    // of the guidance resolves the findings it saw (R1 F4).
+    const id = await seedFinding(tenantA, projectA, behaviorPayload("tool_mixed"), new Date("2026-10-17T08:00:00Z"));
+    expect(await runInTenant(tenantA, () => read(projectA))).toEqual({
+      status: 200,
+      body: { guidanceUpdatedAt: null, findings: [] },
+    });
+    const updatedAt = await saveGuidance(tenantA, projectA, userA);
+    const after = await runInTenant(tenantA, () => read(projectA));
+    expect(after.body.guidanceUpdatedAt).toBe(updatedAt);
+    expect(after.body.findings.map((finding) => finding.id)).toEqual([id]);
+  });
+
   it("returns an active behavior finding with its three runs and both suggested lines", async () => {
+    await saveGuidance(tenantA, projectA, userA);
     const seenAt = new Date("2026-10-10T09:00:00.000Z");
     const id = await seedFinding(tenantA, projectA, behaviorPayload("tasks_delete"), seenAt);
     const result = await runInTenant(tenantA, () => read(projectA));
@@ -160,6 +195,7 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("returns an active permission finding with excerpt and manifest facts and no suggestions", async () => {
+    await saveGuidance(tenantA, projectA, userA);
     const seenAt = new Date("2026-10-11T09:00:00.000Z");
     const id = await seedFinding(tenantA, projectA, permissionPayload("items.delete"), seenAt);
     const result = await runInTenant(tenantA, () => read(projectA));
@@ -181,6 +217,7 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("lists findings oldest first by firstSeenAt, breaking a tie by id", async () => {
+    await saveGuidance(tenantA, projectA, userA);
     const later = new Date("2026-10-12T10:00:00.000Z");
     const earlier = new Date("2026-10-12T08:00:00.000Z");
     const tieA = await seedFinding(tenantA, projectA, behaviorPayload("tool_a"), later);
@@ -197,6 +234,7 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("leaves a resolved finding out of the list", async () => {
+    await saveGuidance(tenantA, projectA, userA);
     const kept = await seedFinding(tenantA, projectA, behaviorPayload("tool_kept"), new Date("2026-10-13T08:00:00Z"));
     const resolved = await seedFinding(
       tenantA,
@@ -231,6 +269,8 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("answers another tenant's project id exactly like a random id and leaks none of its findings", async () => {
+    await saveGuidance(tenantA, projectA, userA);
+    await saveGuidance(tenantB, projectB, userB);
     const foreignFinding = await seedFinding(
       tenantA,
       projectA,
@@ -261,6 +301,7 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("reads the guidance version and the findings from one REPEATABLE READ snapshot", async () => {
+    await saveGuidance(tenantA, projectA, userA);
     const first = await seedFinding(tenantA, projectA, behaviorPayload("tool_first"), new Date("2026-10-16T08:00:00Z"));
     let concurrent: string | undefined;
     const load = projectAgentGuidanceStore.load.bind(projectAgentGuidanceStore);

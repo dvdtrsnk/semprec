@@ -940,6 +940,17 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       );
       findingIds.push(finding.finding.id);
     }
+    // R1 F4: a project lists its findings only once it has guidance, so B saves its guidance through
+    // the real route first, against its current version (an earlier case may already have saved one).
+    const current: unknown = JSON.parse(
+      await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` }),
+    );
+    const expectedUpdatedAt = isRecord(current) && typeof current.updatedAt === "string" ? current.updatedAt : null;
+    await sendOk(b.member, {
+      method: "PUT",
+      path: `/api/projects/${b.projectItemId}/agent-guidance`,
+      body: { sections: { purpose: "Drift", allowed: "", notAllowed: "", generalInstructions: "" }, expectedUpdatedAt },
+    });
     const own = await sendOk(b.member, {
       method: "GET",
       path: `/api/projects/${b.projectItemId}/agent-guidance/drift`,

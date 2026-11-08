@@ -63,20 +63,23 @@ async function readDrift(tx: PoolClient, projectItemId: string) {
     throw error;
   }
   const guidance = await projectAgentGuidanceStore.load(tx, projectItemId);
+  // A project without guidance has nothing its findings could be resolved against, so it answers an
+  // empty list even when an active finding row exists (gh-1630: "no guidance or no finding").
+  if (!guidance) return { guidanceUpdatedAt: null, findings: [] };
   // `listActive` returns only `status = 'active'` rows, so a resolved finding is never listed.
   const findings = await agentGuidanceDriftFindingsStore.listActive(tx, projectItemId);
   return {
-    guidanceUpdatedAt: guidance?.updatedAt ?? null,
+    guidanceUpdatedAt: guidance.updatedAt,
     findings: [...findings].sort(compareFindings).map(toView),
   };
 }
 
 /**
  * `GET /api/projects/:id/agent-guidance/drift` (issue #1630): the project's active drift findings
- * and the guidance `updatedAt` the client passes back when it resolves one. The project check, the
- * guidance read and the findings read share one REPEATABLE READ transaction, so the version and the
- * list come from the same snapshot. Another tenant's project is invisible under row-level security
- * and answers the same 404 as an unknown id.
+ * and the guidance `updatedAt` the client passes back when it resolves one; without guidance, an
+ * empty list and `null`. The project check, the guidance read and the findings read share one
+ * REPEATABLE READ transaction, so the version and the list come from the same snapshot. Another
+ * tenant's project is invisible under row-level security and answers the same 404 as an unknown id.
  */
 export function createProjectGuidanceDriftReadRouteHandler(pool: Pool) {
   return async (ctx: Context) => {
