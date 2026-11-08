@@ -177,12 +177,14 @@ export async function revokeOtherSessionsForUser(
   userId: string,
   keepSessionId: string,
 ): Promise<string[]> {
-  const { rows } = await client.query<{ id: string }>(
+  const result = await client.query<{ id: string }>(
     `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL RETURNING id`,
     [userId, keepSessionId],
   );
-  for (const row of rows) fireSessionRevoked(client, row.id);
-  return rows.map((row) => row.id);
+  // Zero rows is a legitimate outcome: the caller has no other active session.
+  if ((result.rowCount ?? 0) === 0) return [];
+  for (const row of result.rows) fireSessionRevoked(client, row.id);
+  return result.rows.map((row) => row.id);
 }
 
 /**
