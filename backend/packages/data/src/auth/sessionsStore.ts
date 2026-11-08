@@ -167,6 +167,25 @@ export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId
 }
 
 /**
+ * Revokes every still-active session of `userId` except `keepSessionId`, in one statement, and returns
+ * the ids it revoked (issue #1650's "sign out all other devices"). Each revoked id fires the realtime
+ * session-revocation event, deferred to the commit when `client` is a transaction client, so a rolled-back
+ * call announces nothing. Already-revoked sessions and other users' sessions are never touched.
+ */
+export async function revokeOtherSessionsForUser(
+  client: Pool | PoolClient,
+  userId: string,
+  keepSessionId: string,
+): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL RETURNING id`,
+    [userId, keepSessionId],
+  );
+  for (const row of rows) fireSessionRevoked(client, row.id);
+  return rows.map((row) => row.id);
+}
+
+/**
  * Whether `id` is still an active session — neither revoked nor expired. `WS /api/sync`'s
  * heartbeat (issue #160) calls this as a fallback to the NOTIFY-driven close, for the case where
  * a socket's connection to the LISTEN channel missed the revocation event (e.g. a reconnect

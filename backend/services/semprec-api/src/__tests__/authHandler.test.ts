@@ -14,7 +14,18 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
-import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
+import {
+  createUser,
+  hashPassword,
+  LOCKOUT_THRESHOLD,
+  upsertWebPushSubscription,
+  type PasswordResetMailer,
+  type UserRow,
+} from "@semprec/data";
+import { WebSocket } from "ws";
+import { z } from "zod";
+import { wireRealtimeHooks, type SyncServer } from "@semprec/realtime";
+import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 
@@ -1584,5 +1595,153 @@ describe("self person HTTP contract", () => {
     expect((await put({ personId: ownId }, false)).status).toBe(401);
     for (const body of [{}, null, [], { personId: 1 }, { personId: "bad" }]) expect((await put(body)).status).toBe(400);
     expect(await personId()).toBeNull();
+  });
+});
+
+describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
+  let server: Server;
+  let syncServer: SyncServer;
+  let baseUrl: string;
+  let wsBaseUrl: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    wireRealtimeHooks(pool);
+    syncServer = await createSyncUpgradeHandler(pool);
+    server = createServer(
+      createAuthRequestListener(pool, { passwordResetMailer: createFakeMailer(), appBaseUrl: APP_BASE_URL }),
+    );
+    server.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    wsBaseUrl = `ws://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await syncServer.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  const loginBody = z.object({ token: z.string() });
+  const sessionBody = z.object({ session: z.object({ id: z.string() }) });
+
+  async function signIn(email: string): Promise<{ token: string; sessionId: string }> {
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD, platform: "ios" }),
+    });
+    const { token } = loginBody.parse(await res.json());
+    const current = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+    return { token, sessionId: sessionBody.parse(await current.json()).session.id };
+  }
+
+  async function sessionStatus(token: string): Promise<number> {
+    return (await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }
+
+  async function revokeOthers(token: string): Promise<Response> {
+    return fetch(`${baseUrl}/api/auth/sessions/revoke-others`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  async function registration(userId: string, sessionId: string): Promise<string> {
+    const row = await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId,
+      endpoint: `https://push.example.test/${randomUUID()}`,
+      p256dh: "key",
+      authSecret: "secret",
+    });
+    return row.id;
+  }
+
+  async function revokedAt(id: string): Promise<Date | null> {
+    const { rows } = await pool.query<{ revoked_at: Date | null }>(
+      "SELECT revoked_at FROM push_subscriptions WHERE id = $1",
+      [id],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("registration not found");
+    return row.revoked_at;
+  }
+
+  async function openSocket(token: string): Promise<{ socket: WebSocket; closed: Promise<number> }> {
+    const socket = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${token}` } });
+    const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code)));
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+    return { socket, closed };
+  }
+
+  it("keeps only the calling session: 200 with the count, 401 for the others, their pushes revoked and sockets closed with 4401", async () => {
+    const user = await makeUser("caller@example.com");
+    const caller = await signIn(user.email);
+    const others = [await signIn(user.email), await signIn(user.email)];
+    const callerRegistration = await registration(user.id, caller.sessionId);
+    const otherRegistrations = await Promise.all(others.map((other) => registration(user.id, other.sessionId)));
+    const callerSocket = await openSocket(caller.token);
+    const otherSocket = await openSocket(others[0]!.token);
+    try {
+      const res = await revokeOthers(caller.token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ revokedCount: 2 });
+
+      expect(await otherSocket.closed).toBe(4401);
+      expect(await sessionStatus(caller.token)).toBe(200);
+      for (const other of others) expect(await sessionStatus(other.token)).toBe(401);
+      for (const id of otherRegistrations) expect(await revokedAt(id)).toBeInstanceOf(Date);
+      expect(await revokedAt(callerRegistration)).toBeNull();
+      expect(callerSocket.socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      callerSocket.socket.terminate();
+      otherSocket.socket.terminate();
+      await Promise.all([callerSocket.closed, otherSocket.closed]);
+    }
+  });
+
+  it("never revokes another user's sessions, and answers 0 when the caller has no other session", async () => {
+    const owner = await makeUser("owner@example.com");
+    const caller = await makeUser("single@example.com");
+    const ownerSessions = [await signIn(owner.email), await signIn(owner.email)];
+    const only = await signIn(caller.email);
+
+    const res = await revokeOthers(only.token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ revokedCount: 0 });
+    expect(await sessionStatus(only.token)).toBe(200);
+    for (const session of ownerSessions) expect(await sessionStatus(session.token)).toBe(200);
+  });
+
+  it("refuses an unauthenticated call with 401 and revokes nothing", async () => {
+    const user = await makeUser("victim@example.com");
+    const session = await signIn(user.email);
+    const res = await fetch(`${baseUrl}/api/auth/sessions/revoke-others`, { method: "POST" });
+    expect(res.status).toBe(401);
+    expect(await sessionStatus(session.token)).toBe(200);
+  });
+
+  it("is matched apart from the single-session revoke route", async () => {
+    const user = await makeUser("router@example.com");
+    const caller = await signIn(user.email);
+    const other = await signIn(user.email);
+    // `revoke-others` used as a session id goes to the single revoke route, which refuses it as no UUID.
+    const single = await fetch(`${baseUrl}/api/auth/sessions/revoke-others/revoke`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${caller.token}` },
+    });
+    expect(single.status).toBe(400);
+    expect(await sessionStatus(other.token)).toBe(200);
   });
 });

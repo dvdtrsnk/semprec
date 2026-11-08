@@ -9,6 +9,7 @@ import {
   createSession,
   type CreateSessionInput,
   getActiveSessionByTokenHash,
+  revokeOtherSessionsForUser,
   revokeSession,
   revokeSessionForUser,
   touchSessionLastSeen,
@@ -319,4 +320,21 @@ export async function revokeUserSession(
   const revoked = await revokeSessionForUser(client, sessionId, userId);
   if (revoked) await revokePushSubscriptionsForSession(client, sessionId);
   return revoked;
+}
+
+/**
+ * "Sign out all other devices" (issue #1650): revokes every other active session of `userId`, keeping
+ * `keepSessionId`, then each revoked session's push registrations, on the same client, and returns how
+ * many sessions it revoked. Registrations without a session (`session_id` NULL) belong to no device being
+ * signed out and are left alone. Run it in one transaction so the sessions, their registrations and the
+ * post-commit socket closes hold together.
+ */
+export async function revokeOtherUserSessions(
+  client: Pool | PoolClient,
+  userId: string,
+  keepSessionId: string,
+): Promise<number> {
+  const revoked = await revokeOtherSessionsForUser(client, userId, keepSessionId);
+  for (const sessionId of revoked) await revokePushSubscriptionsForSession(client, sessionId);
+  return revoked.length;
 }

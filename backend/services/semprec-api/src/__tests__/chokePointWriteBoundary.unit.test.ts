@@ -30,6 +30,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   logout: "services/semprec-api/src/authHandler.ts",
   "list sessions": "services/semprec-api/src/authHandler.ts",
   "revoke session": "services/semprec-api/src/authHandler.ts",
+  "revoke other sessions": "services/semprec-api/src/authHandler.ts",
   "set self person": "services/semprec-api/src/authHandler.ts",
   "current session": "services/semprec-api/src/authHandler.ts",
   "first-account setup (API)": "services/semprec-api/src/setupHandler.ts",

@@ -677,6 +677,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "revokeAllPushSubscriptionsForUser",
   "revokeAllSessionsForUser",
   "revokeInvite",
+  "revokeOtherSessionsForUser",
+  "revokeOtherUserSessions",
   "revokePushSubscription",
   "revokePushSubscriptionByProviderInvalidation",
   "revokePushSubscriptionForUser",

@@ -220,6 +220,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "account",
   },
+  // prettier-ignore
+  { name: "revoke other sessions", method: "POST", path: "/api/auth/sessions/revoke-others", surface: "api", public: false, tenancy: "account" },
   {
     name: "set self person",
     method: "PUT",

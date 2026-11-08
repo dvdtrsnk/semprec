@@ -11,6 +11,7 @@ import {
   logout,
   verifySessionToken,
   revokeUserSession,
+  revokeOtherUserSessions,
   listActiveSessionsForUser,
   requestPasswordReset,
   resetPassword,
@@ -171,6 +172,8 @@ function isSessionPlatform(value: unknown): value is SessionPlatform {
 const MAX_BODY_BYTES = 64 * 1024;
 
 const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
+/** Revokes every other session of the caller and keeps the calling one (issue #1650). */
+const REVOKE_OTHER_SESSIONS_PATH = "/api/auth/sessions/revoke-others";
 
 export interface AuthRequestListenerOptions {
   /** Sends the reset link email; issue #142's SMTP path. */
@@ -371,6 +374,16 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             lastSeenAt: session.lastSeenAt,
           })),
         });
+        return;
+      }
+
+      // Issue #1650: matched before REVOKE_SESSION_PATH, whose `:id/revoke` shape it never collides with.
+      if (req.method === "POST" && url.pathname === REVOKE_OTHER_SESSIONS_PATH) {
+        const identity = await authenticateRequest(pool, req);
+        const revokedCount = await withTransaction(pool, (client) =>
+          revokeOtherUserSessions(client, identity.user.id, identity.session.id),
+        );
+        sendJson(res, 200, { revokedCount });
         return;
       }
 

@@ -1074,6 +1074,17 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     await expectAAccountActive();
   },
+  "revoke other sessions": async () => {
+    // A member of a third tenant calls it: B's own sessions are fixtures the cases after this one use.
+    const caller = await signUp(await createTestTenant(adminPool), "member");
+    const second = await signIn(caller.email, caller.password, "ios");
+    const answer = await send(caller, { method: "POST", path: "/api/auth/sessions/revoke-others", body: {} });
+    expect(answer.status, answer.text).toBe(200);
+    expect(answer.text).toBe(JSON.stringify({ revokedCount: 1 }));
+    expect((await send(second, { method: "GET", path: "/api/auth/session" })).status).toBe(401);
+    expectNoneOf(answer.text, a.ids, "revoke other sessions");
+    await expectAAccountActive();
+  },
   "set self person": async () => {
     const person = async (fixture: TenantFixture) =>
       inTenantTransaction(fixture.tenantId, async (client) => {
