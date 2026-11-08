@@ -42,6 +42,8 @@ import {
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
+  transcriptionSourceLink,
+  TRANSCRIPTION_OWNER_PROCESS,
   getOrCreateJournalItem,
   hashPassword,
   handleObservabilityCheckSystemTask,
@@ -1471,6 +1473,51 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(answer.text).toBe('{"transcripts":[],"nextCursor":null}');
     }
   },
+  // B deletes its own recording through the route and restores it through the generic Trash route;
+  // A's transcript answers like a random id and A's rows stay as A reads them.
+  "transcript delete": () =>
+    leavesAUnchanged(async () => {
+      const fileId = readString(
+        await sendOk(b.member, {
+          method: "POST",
+          path: "/api/files",
+          body: `ID3 audio of ${randomUUID()}`,
+          headers: { "Content-Type": "audio/mpeg", "X-Filename": "delete.mp3" },
+        }),
+        "id",
+      );
+      const transcriptId = await runInTenant(b.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const transcripts = await getDatabaseByModuleId(client, "transcripts");
+          if (!transcripts) throw new Error("Missing transcripts");
+          // The link only the transcription process writes, as its step 0 writes it.
+          const item = await createItemWithClient(
+            client,
+            { databaseId: transcripts.id, properties: { name: "Delete me", link: transcriptionSourceLink(fileId) } },
+            { allowedSystemKeys: ["link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          return item.id;
+        }),
+      );
+      const deleted = await sendOk(b.member, { method: "DELETE", path: `/api/transcripts/${transcriptId}` });
+      expect(deleted).toContain(fileId);
+      const trashed = () =>
+        inTenantTransaction(b.tenantId, async (client) => {
+          const { rows } = await client.query<{ id: string; trashed: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS trashed FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+            [[fileId, transcriptId]],
+          );
+          return rows.map((row) => row.trashed);
+        });
+      expect(await trashed()).toEqual([true, true]);
+      await sendOk(b.member, { method: "POST", path: `/api/items/${transcriptId}/restore`, body: {} });
+      expect(await trashed()).toEqual([false, false]);
+      const result = await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
+        method: "DELETE",
+        path: `/api/transcripts/${id}`,
+      }));
+      expect(result.status).toBe(404);
+    }),
   "transcript detail": async () => {
     await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
       method: "GET",

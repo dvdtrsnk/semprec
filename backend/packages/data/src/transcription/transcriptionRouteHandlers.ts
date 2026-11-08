@@ -5,7 +5,13 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { rejectProposalWithClient } from "../inbox/proposalActions.js";
+import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
+import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { lockItemAutomation } from "../library/itemAutomationStore.js";
 import { readBlobId } from "./transcriptionActions.js";
 import {
@@ -256,5 +262,75 @@ export function createTranscriptListRouteHandler(pool: Pool) {
     const nextCursor =
       rows.length > limit && last ? Buffer.from(JSON.stringify(last.cursor)).toString("base64url") : null;
     return { status: 200, body: { transcripts: page.map((row) => row.transcript), nextCursor } };
+  };
+}
+
+/**
+ * Rejects every open card of the transcript (kind `transcript`, status `proposed` or
+ * `needsClarification`, linked through `sourceTranscript`): the pairing card and the speaker cards.
+ * Each card is locked first, in id order, and rejected through the proposal owner's own reject, so a
+ * card confirmed or rejected meanwhile is left as it is. Returns the ids it rejected.
+ */
+async function rejectOpenTranscriptCards(client: PoolClient, transcriptId: string): Promise<string[]> {
+  const proposals = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+  if (!proposals) throw new NotFoundError(`Database for module '${PROCESSING_PROPOSALS_MODULE_ID}' not found`);
+  const property = await getPropertyByKey(client, proposals.id, "sourceTranscript");
+  const definition = property && (await getRelationDefinitionByPropertyId(client, property.id));
+  if (!definition) throw new NotFoundError("Relation definition for Processing proposals 'sourceTranscript' not found");
+  const cardIds = (await listRelationsForItem(client, definition.id, transcriptId))
+    .map((edge) => otherSide(edge, transcriptId))
+    .sort();
+  const rejected: string[] = [];
+  for (const cardId of cardIds) {
+    const card = await itemsStore.lockItemById(client, proposals.id, cardId);
+    if (!card || card.deletedAt || card.properties.kind !== "transcript") continue;
+    if (card.properties.status !== "proposed" && card.properties.status !== "needsClarification") continue;
+    await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposals.id }, card.id);
+    rejected.push(card.id);
+  }
+  return rejected;
+}
+
+/** `DELETE /api/transcripts/:id`'s request context: the deleting user is the writer of every trash it causes. */
+interface TranscriptDeleteRouteRequestContext {
+  params: Record<string, string>;
+  identity: { user: { id: string } };
+}
+
+/**
+ * `DELETE /api/transcripts/:id` (issue #1642): one transaction trashes the recording as a unit into
+ * the generic Trash, in the lock order the transcription pipeline uses for the pair (the source
+ * Files item, then the transcript): it trashes the Files item the transcript's `link` names, rejects
+ * the transcript's open cards, then trashes the transcript and checks that the locked transcript
+ * still links the Files item it trashed; otherwise everything rolls back. Both trashes share the
+ * transaction's `now()`, the epoch `transcriptRestoreHook` restores them together by. An item already
+ * in the Trash is left as it is, so a repeat call changes nothing. An unknown id, an id of another
+ * database and another tenant's id answer the same 404. A running pipeline stops on its own next
+ * check of the trashed items (issue #1582).
+ */
+export function createTranscriptDeleteRouteHandler(
+  pool: Pool,
+  queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
+) {
+  return async (ctx: TranscriptDeleteRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const transcriptId = parsedId.data;
+    const options = { queueAffinity, actingUserId: ctx.identity.user.id, writer: { writerKind: "user" as const } };
+    return withTransaction(pool, async (client) => {
+      const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
+      if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
+      const transcript = await itemsStore.getItemById(client, transcripts.id, transcriptId);
+      if (!transcript) throw new NotFoundError("Transcript not found", { resource: "item", itemId: transcriptId });
+      const fileItemId = readTranscriptionSourceFileItemId(transcript.properties.link);
+      if (fileItemId) await itemDeleteWithClient(client, await resolveFilesDatabaseId(client), fileItemId, options);
+      await rejectOpenTranscriptCards(client, transcriptId);
+      const deleted = await itemDeleteWithClient(client, transcripts.id, transcriptId, options);
+      if (!deleted) throw new NotFoundError("Transcript not found", { resource: "item", itemId: transcriptId });
+      if (readTranscriptionSourceFileItemId(deleted.properties.link) !== fileItemId) {
+        throw new ConflictError("The transcript's source file changed during the delete", { field: "link" });
+      }
+      return { status: 200, body: { id: transcriptId, fileItemId } };
+    });
   };
 }

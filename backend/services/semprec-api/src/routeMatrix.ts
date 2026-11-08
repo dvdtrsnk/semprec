@@ -400,6 +400,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   },
   // prettier-ignore
   { name: "transcript list", method: "GET", path: "/api/transcripts", surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "transcript delete", method: "DELETE", path: `/api/transcripts/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
   {
     name: "transcript detail",
     method: "GET",

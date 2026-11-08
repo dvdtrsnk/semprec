@@ -24,6 +24,7 @@ import {
   registerRelationEdgeDeleteHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
+  registerItemRestoreHook,
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
 import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
@@ -37,6 +38,7 @@ import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHo
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
+import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
   libraryRatingItemCreateHook,
@@ -78,6 +80,7 @@ registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
+registerItemRestoreHook(transcriptRestoreHook);
 registerRelationEdgeWriteHook(threadValueEdgeWriteHook);
 registerRelationEdgeDeleteHook(threadValueEdgeDeleteHook);
 registerItemCreateHook(libraryRatingItemCreateHook);

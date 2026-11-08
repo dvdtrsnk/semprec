@@ -7,11 +7,13 @@
 // Constrained by: docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 // and, for the pre-write transform registry, docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
 // and, for the delete and restore registries, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
+// and docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
 import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 import type { WriterIdentity, WriterKind } from "./writerKind.js";
+import type { ActionQueueAffinity } from "../scheduler/actions.js";
 
 export interface ItemCreateHookContext {
   client: PoolClient;
@@ -84,6 +86,16 @@ export interface ItemRestoreHookContext {
   rootItemId: string;
   /** The cascade's `deletedAt` that the restore cleared. */
   deletedAt: string;
+  /**
+   * The same epoch at the column's full precision, read by Postgres from the locked root before
+   * anything was restored, as UTC text `YYYY-MM-DDTHH:MI:SS.ffffffZ` (always six fraction digits).
+   * A hook compares it in SQL (`deleted_at = $1::timestamptz`), never through a JS `Date` or
+   * `deletedAt`, which keep only milliseconds. See
+   * docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md.
+   */
+  deletedAtExact: string;
+  /** The queue routing the restoring caller writes with, for a hook that runs a nested choke-point write. */
+  queueAffinity: ActionQueueAffinity;
   /** Who made the write; `system` when the caller supplied no writer. */
   writerKind: WriterKind;
   /** The agent run that made the write; set only for an agent writing under a run credential. */

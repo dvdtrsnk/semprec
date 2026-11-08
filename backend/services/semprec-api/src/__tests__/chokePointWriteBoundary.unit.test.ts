@@ -58,6 +58,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "create transcription": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcription rerun": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript list": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript delete": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript detail": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript speakers": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "register push subscription": "packages/data/src/push/pushRouteHandlers.ts",

@@ -32,6 +32,7 @@ export {
   createCreateTranscriptionRouteHandler,
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
+  createTranscriptDeleteRouteHandler,
   createTranscriptDetailRouteHandler,
   createTranscriptListRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
@@ -303,6 +304,15 @@ export const manifest: ModuleManifest = {
       path: "/api/transcripts/:id",
       handlerExport: "createTranscriptDetailRouteHandler",
       justification: "single-consumer-read",
+    },
+    {
+      name: "deleteTranscript",
+      method: "DELETE",
+      path: "/api/transcripts/:id",
+      handlerExport: "createTranscriptDeleteRouteHandler",
+      // The transcript, its source Files item and its open cards change together in one
+      // transaction (issue #1642), a shape the generic item delete cannot express.
+      justification: "transactional-semantics",
     },
     {
       name: "listTranscriptSpeakers",

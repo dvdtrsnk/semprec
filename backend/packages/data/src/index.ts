@@ -219,6 +219,7 @@ export * from "./library/libraryMetadataActions.js";
 export * from "./mail/personLinkingActions.js";
 export {
   createRerunTranscriptionRouteHandler,
+  createTranscriptDeleteRouteHandler,
   createTranscriptListRouteHandler,
 } from "./transcription/transcriptionRouteHandlers.js";
 export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";

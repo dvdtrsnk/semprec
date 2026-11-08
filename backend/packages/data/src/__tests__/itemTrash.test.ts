@@ -341,6 +341,14 @@ describe("choke-point itemTrash", () => {
       await chokePoint.restoreItem(rootDb.id, root.id);
 
       expect(hookCalls.restore.map((call) => call.item.id)).toEqual([root.id, sibling.id]);
+      // Issue #1642: every restore hook receives the epoch at full precision, read before the restore.
+      for (const call of hookCalls.restore) {
+        expect(call).toMatchObject({
+          deletedAt: "2026-11-07T10:00:00.000Z",
+          deletedAtExact: "2026-11-07T10:00:00.000100Z",
+        });
+        expect(call.queueAffinity).toBeInstanceOf(Map);
+      }
       expect(Object.fromEntries((await snapshot([mid.id, leaf.id])).map((row) => [row.id, row.deleted_at]))).toEqual({
         [mid.id]: "2026-11-07T10:00:00.000101Z",
         [leaf.id]: "2026-11-07T10:00:00.000101Z",

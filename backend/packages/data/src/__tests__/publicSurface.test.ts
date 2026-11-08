@@ -303,6 +303,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createSetHeartbeatEnabledRouteHandler",
   "createSmtpTransporter",
   "createTaskRecurrence",
+  "createTranscriptDeleteRouteHandler",
   "createTranscriptListRouteHandler",
   "createTranscriptionRequeueSweepAction",
   "createUser",

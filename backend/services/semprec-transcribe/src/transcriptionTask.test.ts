@@ -13,6 +13,7 @@ import {
   createChokePoint,
   createItemWithClient,
   createRerunTranscriptionRouteHandler,
+  createTranscriptDeleteRouteHandler,
   createUser as dataCreateUser,
   findIdempotentReplay,
   createTranscriptionRequeueSweepAction,
@@ -2733,6 +2734,51 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           expect(await readNotifications(transcript.id)).toEqual([]);
         });
       }
+
+      it("stops without ASR when DELETE /api/transcripts/:id trashes the recording during diarization (issue #1642)", async () => {
+        const { file } = await createSourceFile();
+        const userId = await createUser();
+        let response: unknown;
+        /** Calls the production DELETE route the moment the diarize call is made, like a user deleting the recording mid-run. */
+        class RouteDeletingGateway extends FakeAudioGatewayClient {
+          override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            const { rows } = await pool.query<{ id: string }>(
+              "SELECT (computed ->> 'create') AS id FROM items WHERE id = $1",
+              [file.id],
+            );
+            const transcriptId = rows[0]?.id;
+            if (!transcriptId) throw new Error("Step 0 created no transcript");
+            response = await runInTenant(getTenantZeroId(), () =>
+              createTranscriptDeleteRouteHandler(pool)({
+                params: { id: transcriptId },
+                identity: { user: { id: userId } },
+              }),
+            );
+            return super.diarize(request);
+          }
+        }
+        const gateway = new RouteDeletingGateway();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+        const transcript = await readTranscript(file.id);
+        expect(response).toEqual({ status: 200, body: { id: transcript.id, fileItemId: file.id } });
+        expect(gateway.diarizeCalls).toHaveLength(1);
+        expect(gateway.transcribeCalls).toEqual([]);
+        expect(summaryClient.calls).toEqual([]);
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcript.id)).toEqual([]);
+        const { rows } = await pool.query<{ epochs: number; trashed: number }>(
+          "SELECT count(DISTINCT deleted_at)::int AS epochs, count(*)::int AS trashed FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL",
+          [[file.id, transcript.id]],
+        );
+        expect(rows).toEqual([{ epochs: 1, trashed: 2 }]);
+      });
 
       for (const [label, sql] of [
         ["transcript", deleteTranscriptSql],
