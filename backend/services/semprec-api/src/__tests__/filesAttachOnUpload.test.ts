@@ -172,6 +172,8 @@ async function storedState(tenant: TenantFixture) {
 }
 
 const PDF = (marker: string) => Buffer.from(`%PDF-1.4\n% ${marker}\n%%EOF\n`, "latin1");
+const JPG = (marker: string) =>
+  Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from(`JFIF ${marker}`, "latin1")]);
 
 beforeAll(async () => {
   admin = getTestPool();
@@ -349,5 +351,70 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
     const answer = await upload(a, { body: PDF("second"), targetItemId: record, relationKey: "healthRecords" });
     expect(answer.status, answer.text).toBe(409);
     expect(await storedState(a)).toEqual(before);
+  });
+});
+
+describe("attach uploads to a task through the shared upload headers (issue #1654)", () => {
+  it("links a JPG and a PDF to a task with Files.tasks edges and the type read from the bytes", async () => {
+    const task = await createItem(a, a.tasksId, "Renew passport");
+    const jpg = await upload(a, {
+      body: JPG("photo"),
+      filename: "photo.jpg",
+      targetItemId: task,
+      relationKey: "tasks",
+    });
+    const pdf = await upload(a, { body: PDF("form"), filename: "form.pdf", targetItemId: task, relationKey: "tasks" });
+    expect([jpg.status, pdf.status]).toEqual([201, 201]);
+    const jpgFile = itemBody.parse(JSON.parse(jpg.text));
+    const pdfFile = itemBody.parse(JSON.parse(pdf.text));
+    expect(jpgFile.properties.type).toBe("jpg");
+    expect(pdfFile.properties.type).toBe("pdf");
+    expect(await linked(a, jpgFile.id, "tasks")).toEqual([task]);
+    expect(await linked(a, pdfFile.id, "tasks")).toEqual([task]);
+  });
+
+  it("gives the same bytes uploaded to two tasks one Files item with two edges, the second answer 200", async () => {
+    const first = await createItem(a, a.tasksId, "First");
+    const second = await createItem(a, a.tasksId, "Second");
+    const bytes = JPG("shared");
+    expect((await upload(a, { body: bytes, targetItemId: first, relationKey: "tasks" })).status).toBe(201);
+    const again = await upload(a, { body: bytes, targetItemId: second, relationKey: "tasks" });
+    expect(again.status).toBe(200);
+    const file = itemBody.parse(JSON.parse(again.text));
+    expect(await fileIds(a)).toEqual([file.id]);
+    expect(await linked(a, file.id, "tasks")).toEqual([first, second].sort());
+  });
+
+  it("answers a missing, trashed or foreign task with 404 and stores no blob or Files item", async () => {
+    const trashed = await createItem(a, a.tasksId, "Done task");
+    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.tasksId, trashed));
+    const foreign = await createItem(b, b.tasksId, "B's task");
+    const before = await storedState(a);
+    for (const targetItemId of [randomUUID(), trashed, foreign]) {
+      const answer = await upload(a, { body: JPG(targetItemId), targetItemId, relationKey: "tasks" });
+      expect(answer.status, targetItemId).toBe(404);
+    }
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it("refuses an X-Attach-Relation that is not a Files relation with 400 and creates nothing", async () => {
+    const task = await createItem(a, a.tasksId, "Task");
+    const before = await storedState(a);
+    const answer = await upload(a, { body: JPG("unknown"), targetItemId: task, relationKey: "attachments" });
+    expect(answer.status).toBe(400);
+    expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({ details: { field: "X-Attach-Relation" } });
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it("keeps an existing file's own project when the same bytes are attached to a task", async () => {
+    const project = await createItem(a, a.projectsId, "Own project");
+    const task = await createItem(a, a.tasksId, "Task");
+    const bytes = PDF("filed under a project");
+    const filed = await upload(a, { body: bytes, targetItemId: project, relationKey: "projects" });
+    expect(filed.status).toBe(201);
+    const file = itemBody.parse(JSON.parse(filed.text));
+    expect((await upload(a, { body: bytes, targetItemId: task, relationKey: "tasks" })).status).toBe(200);
+    expect(await linked(a, file.id, "projects")).toEqual([project]);
+    expect(await linked(a, file.id, "tasks")).toEqual([task]);
   });
 });
