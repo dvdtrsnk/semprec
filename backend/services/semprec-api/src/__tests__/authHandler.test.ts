@@ -1755,7 +1755,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
       for (const other of otherSockets) {
         const closed = await within(other.closed, 10_000, "A revoked session's socket close");
         expect(closed.code).toBe(4401);
-        // Closed after the revocation committed: the row already reads as revoked when the close arrives.
+        // Read as the close arrives, the session already reads as revoked: the close follows the commit.
         expect(closed.sessionRevokedAt).toBeInstanceOf(Date);
       }
       expect(await sessionStatus(caller.token)).toBe(200);

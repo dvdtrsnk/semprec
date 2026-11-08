@@ -272,7 +272,7 @@ interface ObservedEffects {
 
 /**
  * The side effects `operation` announced. Realtime invalidations are recorded through `setInvalidationHook`,
- * because this package's tests wire no realtime publisher, so no realtime NOTIFY could reach a listener here.
+ * because this file wires no realtime publisher, so no realtime NOTIFY could reach a listener here.
  * Job enqueues are observed on a dedicated LISTEN connection subscribed before `operation` runs; afterwards a
  * sentinel is sent on the same channel, and Postgres delivers notifications in commit order, so once the
  * sentinel has arrived every `jobs:insert` committed by `operation` has too. The hook and the subscription are

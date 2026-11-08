@@ -1239,7 +1239,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
 
     /**
      * Makes the account due for the sweep, as the 15 minutes its last pass scheduled elapsing would. Raw SQL on
-     * purpose: no write path makes an account due early, and the test must not wait out the interval.
+     * purpose, so the test need not wait out the interval.
      */
     async function elapseUntilDue(mailboxItemId: string): Promise<void> {
       await pool.query(
