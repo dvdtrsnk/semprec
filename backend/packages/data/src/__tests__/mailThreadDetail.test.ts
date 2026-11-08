@@ -28,6 +28,10 @@ const HOSTILE_BODY =
   '<p onclick="steal()">Dobrý den</p><script>alert(1)</script>' +
   '<img src="https://tracker.example/pixel.gif" onerror="track()" alt="logo"><a href="https://example.test/offer">Nabídka</a>';
 
+/** A protocol-relative tracking pixel beside an inline image (R1 F1). */
+const PROTOCOL_RELATIVE_BODY =
+  '<p>Dobrý den</p><img src="//tracker.example/pixel.gif" alt="pixel"><img src="cid:logo" alt="logo">';
+
 interface AttachmentInput {
   filename: string;
   content: string;
@@ -328,6 +332,62 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
         [last.itemId],
       );
       expect(stored.rows[0]?.body).toBe(HOSTILE_BODY);
+    });
+  });
+
+  it("strips a protocol-relative remote image by default and with false, and keeps it only with allowRemoteImages=true (R1 F1)", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      const message = await f.ingest({
+        id: "<pixel@example.test>",
+        date: new Date("2026-10-07T08:00:00Z"),
+        bodyHtml: PROTOCOL_RELATIVE_BODY,
+      });
+      const threadId = await threadOf(message.itemId);
+      const htmlOf = async (query: string) => (await detail(threadId, query)).body.messages[0]?.bodyHtml;
+      for (const query of ["", "?allowRemoteImages=false"]) {
+        const html = await htmlOf(query);
+        expect(html).toContain("Dobrý den");
+        expect(html).toContain('src="cid:logo"');
+        expect(html).not.toContain("tracker.example");
+      }
+      expect(await htmlOf("?allowRemoteImages=true")).toContain('src="//tracker.example/pixel.gif"');
+      const stored = await runtime.query<{ body: string }>(
+        "SELECT properties->>'body' AS body FROM items WHERE tenant_id = app_tenant_default() AND id = $1",
+        [message.itemId],
+      );
+      expect(stored.rows[0]?.body).toBe(PROTOCOL_RELATIVE_BODY);
+    });
+  });
+
+  it("dates a message without a date by its ingestion time and returns each message's mailbox (R1 P5)", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      // Ingested without a date: the detail falls back to `mail_message_meta.ingested_at`.
+      const undated = await f.ingest({ id: "<undated@example.test>", mailbox: f.boxA.id });
+      const later = await f.ingest({
+        id: "<later@example.test>",
+        mailbox: f.boxB.id,
+        refs: ["<undated@example.test>"],
+        date: new Date("2099-01-01T08:00:00Z"),
+      });
+      const threadId = await threadOf(undated.itemId);
+      expect(await threadOf(later.itemId)).toBe(threadId);
+      const ingested = await runtime.query<{ at: string }>(
+        `SELECT to_char(ingested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at
+         FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND item_id = $1`,
+        [undated.itemId],
+      );
+      const dated = await runtime.query<{ date: string | null }>(
+        "SELECT properties->>'date' AS date FROM items WHERE tenant_id = app_tenant_default() AND id = $1",
+        [undated.itemId],
+      );
+      expect(dated.rows[0]?.date ?? null).toBeNull();
+      const { messages } = (await detail(threadId)).body;
+      expect(messages.map((message) => [message.emailId, message.mailboxId, message.date])).toEqual([
+        [undated.itemId, f.boxA.id, ingested.rows[0]?.at],
+        [later.itemId, f.boxB.id, "2099-01-01T08:00:00.000000Z"],
+      ]);
     });
   });
 

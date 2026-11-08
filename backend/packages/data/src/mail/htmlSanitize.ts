@@ -83,6 +83,29 @@ const ALLOWED_STYLES = {
   },
 };
 
+/**
+ * Whether an `img` source is protocol-relative (`//host/...`, or any mix of `/` and `\`): it names a
+ * remote host without a scheme, so the scheme allowlist below never sees it, and sanitize-html
+ * accepts it by default. The check mirrors how the installed sanitize-html 2.17.7 / launder 1.7.1
+ * classify such a value: characters U+0000-U+0020 are removed and `<!-- ... -->` comments cut out
+ * before two leading slashes are tested. That normalization is their current behavior, not a stable
+ * API of those packages; the cases this code is known to cover are the ones its tests list.
+ * Entities are already decoded by the HTML parser when this runs.
+ */
+function isProtocolRelativeSource(src: string): boolean {
+  let value = Array.from(src)
+    .filter((character) => (character.codePointAt(0) ?? 0) > 0x20)
+    .join("");
+  for (;;) {
+    const start = value.indexOf("<!--");
+    if (start === -1) break;
+    const end = value.indexOf("-->", start + 4);
+    if (end === -1) break;
+    value = value.slice(0, start) + value.slice(end + 3);
+  }
+  return /^[/\\]{2}/.test(value);
+}
+
 export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions = {}): string {
   return sanitizeHtml(html, {
     allowedTags: ALLOWED_TAGS,
@@ -94,12 +117,21 @@ export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions 
     },
     allowedStyles: ALLOWED_STYLES,
     // Inline data:/cid: images (a rendering asset attached to the message itself) are never
-    // "remote" — only a bare http(s) src is a tracking-pixel candidate.
+    // "remote". An http(s) src is a tracking-pixel candidate, and so is a protocol-relative one,
+    // which the `img` transform below drops because no scheme allowlist can see it.
     allowedSchemesByTag: { img: options.allowRemoteImages ? ["http", "https", "data", "cid"] : ["data", "cid"] },
     disallowedTagsMode: "discard",
     allowedSchemes: ["http", "https", "mailto"],
     transformTags: {
       a: sanitizeHtml.simpleTransform("a", { rel: "noopener noreferrer", target: "_blank" }),
+      // Runs before attribute filtering. Links and every other source keep the policy above; only a
+      // protocol-relative image source is dropped unless remote images are allowed.
+      img: (tagName, attribs) => {
+        if (options.allowRemoteImages || typeof attribs.src !== "string" || !isProtocolRelativeSource(attribs.src))
+          return { tagName, attribs };
+        const { src: _remote, ...rest } = attribs;
+        return { tagName, attribs: rest };
+      },
     },
   });
 }
