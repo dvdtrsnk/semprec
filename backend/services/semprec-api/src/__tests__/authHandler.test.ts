@@ -11,7 +11,7 @@ import {
   type InvalidationEvent,
 } from "@semprec/data";
 import { createServer, request as httpRequest, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
@@ -1599,30 +1599,39 @@ describe("self person HTTP contract", () => {
 });
 
 describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
-  let server: Server;
-  let syncServer: SyncServer;
+  let server: Server | undefined;
+  let syncServer: SyncServer | undefined;
   let baseUrl: string;
   let wsBaseUrl: string;
 
+  // The describes above end the file's pool in their afterAll; this one opens and ends its own.
+  beforeAll(() => {
+    pool = getTestPool();
+  });
+
   beforeEach(async () => {
-    pool ??= getTestPool();
     await resetDatabase(pool);
     wireRealtimeHooks(pool);
-    syncServer = await createSyncUpgradeHandler(pool);
-    server = createServer(
+    const sync = await createSyncUpgradeHandler(pool);
+    syncServer = sync;
+    const http = createServer(
       createAuthRequestListener(pool, { passwordResetMailer: createFakeMailer(), appBaseUrl: APP_BASE_URL }),
     );
-    server.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
+    server = http;
+    http.on("upgrade", (req, socket, head) => sync.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
     baseUrl = `http://127.0.0.1:${address.port}`;
     wsBaseUrl = `ws://127.0.0.1:${address.port}`;
   });
 
   afterEach(async () => {
-    await syncServer.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await syncServer?.close();
+    const http = server;
+    if (http) await new Promise<void>((resolve) => http.close(() => resolve()));
+    syncServer = undefined;
+    server = undefined;
   });
 
   afterAll(async () => {

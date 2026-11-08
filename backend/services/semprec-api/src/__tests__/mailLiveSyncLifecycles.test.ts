@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES } from "@semprec/queue";
@@ -600,11 +600,19 @@ function pubSubMessage(ackId: string, emailAddress: string) {
 }
 
 describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () => {
-  let directory: string;
+  let directory: string | undefined;
   let dispatcher: { stop(): Promise<void> } | undefined;
 
+  // The describe above ends the file's pool in its afterAll; this one opens and ends its own.
+  beforeAll(() => {
+    pool = getTestPool();
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
   beforeEach(async () => {
-    pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
     await createTenantZeroUser(pool);
@@ -614,6 +622,11 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     directory = await mkdtemp(join(tmpdir(), "semprec-gmail-pubsub-"));
   });
 
+  function ownDirectory(): string {
+    if (directory === undefined) throw new Error("the test directory was not created");
+    return directory;
+  }
+
   afterEach(async () => {
     await dispatcher?.stop();
     await root?.stop();
@@ -621,11 +634,12 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     // This test's own key directory.
-    await rm(directory, { recursive: true, force: true });
+    if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+    directory = undefined;
   });
 
   it("routes a notification for a watched, provider-verified address to one sync per mailbox, never by Mailboxes.addresses", async () => {
-    const key = await writeServiceAccountKey(directory);
+    const key = await writeServiceAccountKey(ownDirectory());
     const logs = captureServiceLogs();
     const otherTenant = await createTestTenant(pool);
     await runInTenant(otherTenant, () => seedSystem(pool));
@@ -742,13 +756,13 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   });
 
   it("reads the configuration's formats and key file, naming the key that is wrong and never its value", async () => {
-    const key = await writeServiceAccountKey(directory);
+    const key = await writeServiceAccountKey(ownDirectory());
     const complete = {
       GMAIL_PUBSUB_TOPIC: TOPIC,
       GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
       GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: key.path,
     };
-    const notAKey = join(directory, "not-a-key.json");
+    const notAKey = join(ownDirectory(), "not-a-key.json");
     await writeFile(
       notAKey,
       JSON.stringify({ type: "service_account", client_email: SERVICE_ACCOUNT_EMAIL, private_key: "secret-garbage" }),
@@ -763,7 +777,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         "GMAIL_PUBSUB_SUBSCRIPTION is not projects/<project>/subscriptions/<subscription>",
       ],
       [
-        { ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(directory, "absent.json") },
+        { ...complete, GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(ownDirectory(), "absent.json") },
         "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH cannot be read (ENOENT)",
       ],
       [
@@ -780,7 +794,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   });
 
   it("caches the service-account token until shortly before it expires, retries after a failure, and leaks neither key nor token", async () => {
-    const key = await writeServiceAccountKey(directory);
+    const key = await writeServiceAccountKey(ownDirectory());
     const env = {
       GMAIL_PUBSUB_TOPIC: TOPIC,
       GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION,
@@ -851,8 +865,15 @@ async function insertGraphMailbox(): Promise<string> {
 const GRAPH_ENV = { MS_GRAPH_OAUTH_CLIENT_ID: "synthetic-graph-client", MS_GRAPH_OAUTH_CLIENT_SECRET: CLIENT_SECRET };
 
 describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
+  beforeAll(() => {
+    pool = getTestPool();
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
   beforeEach(async () => {
-    pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
     await createTenantZeroUser(pool);
