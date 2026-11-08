@@ -122,8 +122,17 @@ describe("Events time normalization before the write (issue #1598)", () => {
       timeTo: null,
       time: "08:00",
     });
-    // Issue #1663: a timed Event spanning days needs an explicit end, so the write itself is refused.
+    // Issue #1663: a timed Event spanning days needs an explicit end, so the write without one is refused; with one,
+    // the write stores the given end unchanged.
     await expectRefused(createEvent(multiDay), "timeTo");
+    const ended = await createEvent({ ...multiDay, timeTo: "02:00" });
+    expect(times(ended)).toEqual({
+      date: "2026-10-16",
+      endDate: "2026-10-18",
+      timeFrom: "08:00",
+      timeTo: "02:00",
+      time: "08:00–02:00",
+    });
   });
 
   it("stores time null for an all-day Event", async () => {

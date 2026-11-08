@@ -98,10 +98,13 @@ export async function ensureJournalPeriodDoc(
  *    is missing, otherwise row-locked by the same statement (`ON CONFLICT ... DO UPDATE` that changes nothing), so a
  *    reservation that `getOrCreateJournalItem` releases and re-creates concurrently is waited for rather than missed.
  * 2. Holding it, a plain read looks for another live entry of the database with the same `type` and `period`. Every
- *    cooperating writer of a period entry, `getOrCreateJournalItem` and this function, takes the reservation before it
- *    makes an entry live, so an entry made live before this lock was taken is committed and visible here, and one
- *    made live after waits for this transaction. A live peer throws `ConflictError` (409) naming it in
- *    `details.liveItemId`; the caller's restore rolls back, and so does the reservation insert.
+ *    cooperating writer of a period entry, `getOrCreateJournalItem` and this function, takes the reservation inside
+ *    the transaction that makes the entry live and before that transaction commits. The restore itself clears
+ *    `deleted_at` before this hook takes the reservation; what the reservation serializes is the live-peer decision and
+ *    the commit: an entry another cooperating writer made live and committed before this lock was taken is visible
+ *    here, and one whose transaction takes the reservation after it waits for this transaction to end. A live peer
+ *    throws `ConflictError` (409) naming it in `details.liveItemId`; the caller's restore rolls back, and so does the
+ *    reservation insert.
  * 3. Otherwise the reservation is pointed at `itemId`, so the next `getOrCreateJournalItem` for the period returns it.
  *
  * No peer item row is locked: two restores of entries of one period each already hold their own restored row, and

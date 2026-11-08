@@ -235,11 +235,24 @@ describe("the fileCompaniesFromProjects link rule (issue #1653)", () => {
     expect(await valueLinkRows(file)).toEqual([]);
   });
 
-  it("leaves a file whose projects have no company empty", async () => {
+  it("keeps a file whose projects have no company empty but linked, and a later company reaches it through the job", async () => {
     const lone = await item(ids.projects, "Garden");
     const file = await item(ids.files, "Sketch");
     await link(ids.fileProjects, file, lone);
     expect(await fileCompanies(file)).toEqual([]);
+    expect(await valueLinkRows(file)).toEqual([{ property_key: "companies", rule_key: RULE, state: "on" }]);
+    const entry = await companiesLink(file);
+    expect(entry?.valueKind).toBe("inherited");
+    expect(
+      entry?.sources.map((source) => (source.kind === "item" ? `${source.itemId}:${source.propertyKey}` : "")),
+    ).toEqual([`${lone}:company`]);
+
+    const company = await item(ids.companies, "Later s.r.o.");
+    await link(ids.projectCompany, lone, company);
+    // The company edge only queues the propagation; the registered job then writes it to the file.
+    expect(await fileCompanies(file)).toEqual([]);
+    await runPropagation();
+    expect(await fileCompanies(file)).toEqual([company]);
   });
 
   it("changes no existing file when the rule is deployed", async () => {

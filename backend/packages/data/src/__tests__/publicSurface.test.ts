@@ -643,7 +643,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "registerTemporalSwitcherViewType",
   "registerViewType",
   "repairInterruptedSempMessages",
-  "repointJournalPeriodReservation",
   "requestPasswordReset",
   "requestTenantExport",
   "requireAffectedRows",

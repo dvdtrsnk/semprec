@@ -481,7 +481,17 @@ export {
   type ProjectedTaskOccurrence,
 } from "./tasks/projectTaskOccurrences.js";
 
-export * from "./journal/journalStore.js";
+// Explicit, not `export *`: the module's reservation re-point for the Journal restore hook (issue #1666) is internal.
+export {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  ensureJournalPeriodDoc,
+  getOrCreateJournalItem,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  weeksOfMonth,
+  type JournalPeriodType,
+} from "./journal/journalStore.js";
 export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
 

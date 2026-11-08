@@ -47,10 +47,12 @@ item, one would wait on a row the other holds while that one waits on the reserv
 
 ## Consequences
 
-- The serialization holds between the writers that take the reservation before they make a period entry live:
-  `getOrCreateJournalItem` (through `insertItemWithReplay`) and this restore hook. Once one of them holds the row, an
-  entry another one made live earlier is committed and visible to the plain read, and a later one waits for the row.
-  An entry made live by any other path is not covered. Journal `type` and `period` are system-owned, so the generic item
+- The serialization holds between the writers that take the reservation inside the transaction that makes a period
+  entry live, before it commits: `getOrCreateJournalItem` (through `insertItemWithReplay`) and this restore hook. It
+  serializes the live-peer decision and the commit, not the physical row writes: the restore clears `deleted_at` before
+  its hook takes the reservation. Once one of them holds the row, an entry another one made live and committed earlier
+  is visible to the plain read, and a transaction that takes the row later waits for it to end. An entry made live by
+  any other path is not covered. Journal `type` and `period` are system-owned, so the generic item
   create cannot write them today; this is a statement about those writers, not a uniqueness guarantee.
 - A restore of a Journal entry waits while a concurrent `getOrCreateJournalItem` or restore of the same period holds
   the reservation; the loser of two restores gets 409, and a `getOrCreateJournalItem` that waited on a restore returns
