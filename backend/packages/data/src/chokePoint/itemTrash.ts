@@ -14,6 +14,7 @@ import { runItemDeleteHooks, runItemRestoreHooks } from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
+import * as valueLinksStore from "./valueLinksStore.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
@@ -299,7 +300,8 @@ function derivedBlobIds(row: ItemRow): string[] {
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state, origin and search-index row, and its Inbox attachment rows (issue #1564).
+ * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), and its
+ * value links and the value-link sources naming it (issue #1656).
  * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
  * the blob checks below rely on the row already being gone.
  *
@@ -316,6 +318,25 @@ function derivedBlobIds(row: ItemRow): string[] {
  */
 export async function deleteItemDependents(client: PoolClient, row: ItemRow): Promise<{ blobStorageKeys: string[] }> {
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
+  // Issue #1656: the purged item's own value links (their sources cascade), every source naming it,
+  // and each link that is left without a source; the items of those links refetch them after commit.
+  await valueLinksStore.deleteValueLinksByItemId(client, row.id);
+  const detached = await valueLinksStore.deleteValueLinkSourcesBySourceItem(client, row.id);
+  await valueLinksStore.deleteValueLinksWithoutSources(
+    client,
+    detached.map((entry) => entry.linkId),
+  );
+  for (const item of await itemsStore.getItemsByIds(client, [...new Set(detached.map((entry) => entry.itemId))])) {
+    runAfterCommit(client, () =>
+      notifyInvalidation({
+        scope: "item",
+        databaseId: item.databaseId,
+        itemId: item.id,
+        op: "update",
+        updatedAt: item.updatedAt,
+      }),
+    );
+  }
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
   await docsStore.deleteDocByItemId(client, row.id);

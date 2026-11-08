@@ -30,6 +30,7 @@ import {
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
 import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
 import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
+import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
@@ -134,4 +135,5 @@ registerItemUpdateHook(areaItemUpdateHook);
 
 registerItemUpdateHook(linkRuleItemHook);
 registerRelationEdgeChangedHook(linkRuleEdgeHook);
+registerItemDeleteHook(valueLinkSourceDeleteHook);
 registerAutomationBatchReader(readAutomationForItems);

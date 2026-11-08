@@ -304,3 +304,54 @@ export async function deleteEmptyValueLink(client: PoolClient, linkId: string): 
   );
   return result.rowCount === 1;
 }
+
+/**
+ * Removes every item source naming `sourceItemId` (issue #1656), in the caller's transaction. Each
+ * affected link is locked first, in id order, as `moveValueLinkItemSources` locks them. Link states
+ * and the inheriting items' values are not changed. Returns each affected link with its item.
+ */
+export async function deleteValueLinkSourcesBySourceItem(
+  client: PoolClient,
+  sourceItemId: string,
+): Promise<Array<{ linkId: string; itemId: string }>> {
+  const { rows } = await client.query<{ id: string; item_id: string }>(
+    `SELECT l.id, l.item_id FROM value_links l
+     WHERE l.tenant_id = app_tenant_default()
+       AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1)
+     ORDER BY l.id FOR UPDATE`,
+    [sourceItemId],
+  );
+  if (rows.length === 0) return [];
+  const linkIds = rows.map((row) => row.id);
+  const deleted = await client.query(
+    `DELETE FROM value_link_sources
+     WHERE tenant_id = app_tenant_default() AND link_id = ANY($2::uuid[]) AND source_kind = 'item' AND source_item_id = $1`,
+    [sourceItemId, linkIds],
+  );
+  // Every locked link was selected for a source naming the item, so each loses at least one.
+  if ((deleted.rowCount ?? 0) < linkIds.length) throw new Error("Value link sources changed during the detach");
+  return rows.map((row) => ({ linkId: row.id, itemId: row.item_id }));
+}
+
+/** Deletes those caller-locked links among `linkIds` that have no source left; returns their items' ids. */
+export async function deleteValueLinksWithoutSources(client: PoolClient, linkIds: string[]): Promise<string[]> {
+  if (linkIds.length === 0) return [];
+  const deleted = await client.query<{ item_id: string }>(
+    `DELETE FROM value_links l
+     WHERE l.tenant_id = app_tenant_default() AND l.id = ANY($1::uuid[])
+       AND NOT EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id)
+     RETURNING l.item_id`,
+    [linkIds],
+  );
+  // Zero rows is a valid outcome: every link still has another source.
+  if ((deleted.rowCount ?? 0) === 0) return [];
+  return deleted.rows.map((row) => row.item_id);
+}
+
+/** Deletes every link of `itemId` (a purged item's own links); their sources go with them by cascade. Returns how many. */
+export async function deleteValueLinksByItemId(client: PoolClient, itemId: string): Promise<number> {
+  const result = await client.query("DELETE FROM value_links WHERE tenant_id = app_tenant_default() AND item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount ?? 0;
+}
