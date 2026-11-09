@@ -463,8 +463,19 @@ describe("Inbox type lock", () => {
 
   it.each(["missing", "foreign", "module", "property", "definition", "no-edges"] as const)(
     "fails closed on %s Processing proposals configuration without effects",
-    async (scenario) =>
-      runInTenant(tenant, async () => {
+    async (scenario) => {
+      let foreignId: string | undefined;
+      if (scenario === "foreign") {
+        const other = await createTestTenant(admin);
+        await runInTenant(other, () => seedSystem(pool, createViewTypeRegistry()));
+        const result = await admin.query<{ id: string }>(
+          "SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2",
+          [other, PROCESSING_PROPOSALS_MODULE_ID],
+        );
+        foreignId = result.rows[0]?.id;
+        if (!foreignId) throw new Error("Missing foreign proposals database");
+      }
+      await runInTenant(tenant, async () => {
         const { cp, edge, targets, inbox, types, proposals } = await fixture();
         if (scenario === "no-edges") await cp.deleteRelation(edge);
         const originalTargets = await targets();
@@ -479,14 +490,8 @@ describe("Inbox type lock", () => {
         let supplied = proposals;
         if (scenario === "missing" || scenario === "no-edges") supplied = randomUUID();
         if (scenario === "foreign") {
-          const other = await createTestTenant(admin);
-          await runInTenant(other, () => seedSystem(pool, createViewTypeRegistry()));
-          const result = await admin.query<{ id: string }>(
-            "SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2",
-            [other, PROCESSING_PROPOSALS_MODULE_ID],
-          );
-          if (!result.rows[0]) throw new Error("Missing foreign proposals database");
-          supplied = result.rows[0].id;
+          if (!foreignId) throw new Error("Missing foreign proposals database");
+          supplied = foreignId;
         }
         // Synthetic malformed schema: production APIs do not permit these catalog mutations.
         if (scenario === "module") {
@@ -558,7 +563,8 @@ describe("Inbox type lock", () => {
         } finally {
           setInvalidationHook(() => {});
         }
-      }),
+      });
+    },
   );
 
   it("does not let another tenant delete an Inbox type edge", async () => {
