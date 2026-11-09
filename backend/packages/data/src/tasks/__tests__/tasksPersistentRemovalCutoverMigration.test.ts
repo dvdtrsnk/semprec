@@ -1,9 +1,10 @@
 import "../../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { ValidationError } from "../../errors.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
@@ -100,11 +101,18 @@ async function seedOldShape(): Promise<void> {
 
 const WAIT_MS = 4_000;
 const USER = { writerKind: "user" } as const;
-const pidResult = z.object({ rows: z.tuple([z.object({ pid: z.number() })]) });
 const queryText = z.union([z.string(), z.object({ text: z.string() }).transform((query) => query.text)]);
 const lockTimeout = z.object({ code: z.literal("55P03") });
+const queryCancelled = z.object({ code: z.literal("57014") });
 /** The definition read every generic item write validates against (`listPropertiesByDatabase`). */
 const VALIDATION_READ = /FROM properties WHERE database_id = \$1 ORDER BY initial_position/;
+const sessionRow = z.object({ pid: z.number(), started: z.string() });
+const cancelledRow = z.object({ cancelled: z.boolean() });
+const blockedRow = z.object({ blocked: z.boolean() });
+const pidRow = z.object({ pid: z.number() });
+
+/** One database backend: its pid and start time, which together never name a later backend that reuses the pid. */
+type Session = z.infer<typeof sessionRow>;
 
 /** The old-shape definition alone: the property row the seed no longer creates (synthetic, as in `seedOldShape`). */
 async function seedOldDefinition(): Promise<void> {
@@ -118,58 +126,10 @@ async function seedOldDefinition(): Promise<void> {
   });
 }
 
-/**
- * A writer's dedicated runtime-role pool whose clients pause before the first statement after their validation read
- * of `properties`, so the write has validated (and holds ACCESS SHARE on `properties`) but not yet written.
- */
-async function pausedWriterPool() {
-  const writer = await createRuntimeRolePool(admin, "semprec_data");
-  const pids: number[] = [];
-  let reachedNow!: () => void;
-  const reached = new Promise<void>((resolve) => (reachedNow = resolve));
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => (release = resolve));
-  let validated = false;
-  let held = false;
-  const restore = new Map<object, PropertyDescriptor | undefined>();
-  writer.on("acquire", (client) => {
-    const delegate: unknown = Reflect.get(client, "query");
-    if (typeof delegate !== "function") throw new Error("A pg client without query");
-    restore.set(client, Object.getOwnPropertyDescriptor(client, "query"));
-    let identified = false;
-    Object.defineProperty(client, "query", {
-      configurable: true,
-      writable: true,
-      value: async (...args: unknown[]) => {
-        if (!identified) {
-          identified = true;
-          pids.push(
-            pidResult.parse(await Reflect.apply(delegate, client, ["SELECT pg_backend_pid() AS pid"])).rows[0].pid,
-          );
-        }
-        if (validated && !held) {
-          held = true;
-          reachedNow();
-          await released;
-        }
-        if (VALIDATION_READ.test(queryText.parse(args[0]))) validated = true;
-        return Reflect.apply(delegate, client, args);
-      },
-    });
-  });
-  writer.on("release", (_error, client) => {
-    const own = restore.get(client);
-    restore.delete(client);
-    if (own) Object.defineProperty(client, "query", own);
-    else Reflect.deleteProperty(client, "query");
-  });
-  return { writer, pids, reached, release };
-}
-
 const asError = (error: unknown): Error =>
   error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
 
-/** Rejects after `ms` unless `promise` settles first. */
+/** Rejects after `ms` unless `promise` settles first. A rejection only ends the wait: it stops nothing. */
 async function bounded<T>(promise: Promise<T>, what: string, ms = WAIT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -184,55 +144,342 @@ async function bounded<T>(promise: Promise<T>, what: string, ms = WAIT_MS): Prom
   }
 }
 
-/** Waits until some backend is blocked by `pid`. */
-async function blockedBy(pid: number): Promise<void> {
+/** The first failure, the same object, with every later failure appended in order to its cause. */
+function withLaterFailures(first: Error, later: Error[]): Error {
+  if (later.length > 0) {
+    // An earlier cause stays the first entry.
+    first.cause = new AggregateError(first.cause === undefined ? later : [first.cause, ...later], "Later failures");
+  }
+  return first;
+}
+
+async function sessionOf(client: PoolClient): Promise<Session> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    "SELECT pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+  );
+  return sessionRow.parse(rows[0]);
+}
+
+/** Actors whose end was not confirmed. Their pools stay open, and no later reset or pool end may race them. */
+const unsettled: string[] = [];
+
+function assertNothingUnsettled(): void {
+  if (unsettled.length > 0) throw new Error(`Not settled, so nothing is reset or closed: ${unsettled.join(", ")}`);
+}
+
+/**
+ * A runtime-role pool of one actor alone. Each backend it opens is identified by a query queued on it before the pool
+ * hands it out, so that query runs before the actor's first one.
+ */
+interface OwnedPool {
+  readonly pool: Pool;
+  readonly sessions: Array<Promise<Session>>;
+  /** The first backend it opened. */
+  readonly session: Promise<Session>;
+}
+
+async function ownedPool(): Promise<OwnedPool> {
+  const owned = await createRuntimeRolePool(admin, "semprec_data");
+  const sessions: Array<Promise<Session>> = [];
+  let first!: (session: Promise<Session>) => void;
+  const session = new Promise<Session>((resolve) => (first = resolve));
+  owned.on("connect", (client) => {
+    const identified = sessionOf(client);
+    // Marks the rejection as observed; every awaiter of `identified` still receives it.
+    identified.catch(() => undefined);
+    sessions.push(identified);
+    if (sessions.length === 1) first(identified);
+  });
+  return { pool: owned, sessions, session };
+}
+
+/** A concurrently running test actor on its own pool. Its outcome is observed from launch: null, or its error. */
+interface Actor {
+  readonly what: string;
+  readonly owned: OwnedPool;
+  readonly outcome: Promise<Error | null>;
+}
+
+function launch(what: string, owned: OwnedPool, run: (actorPool: Pool) => Promise<unknown>): Actor {
+  const outcome = (async () => {
+    await runInTenant(tenant, () => run(owned.pool));
+    return null;
+  })().catch((error: unknown) => asError(error));
+  return { what, owned, outcome };
+}
+
+/** Cancels the current statement of one backend the actor owns; anything short of a confirmed cancel throws. */
+async function cancelOwned(observer: PoolClient, session: Session): Promise<void> {
+  const { rows } = await observer.query<Record<string, unknown>>(
+    "SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz",
+    [session.pid, session.started],
+  );
+  if (rows.length !== 1 || !cancelledRow.parse(rows[0]).cancelled) {
+    throw new Error(`Cancelling backend ${session.pid} was not confirmed`);
+  }
+}
+
+/**
+ * Waits for the actor's outcome. If that wait fails, cancels the current statement of each backend its pool opened,
+ * then waits once more. Its pool is ended only after its outcome arrived. When the outcome never arrives, `outcome`
+ * is undefined, the actor is recorded in `unsettled` and its pool is not ended; a pool whose end does not complete is
+ * recorded there too.
+ */
+async function settleActor(
+  actor: Actor,
+  observer: PoolClient,
+  observeMs = WAIT_MS,
+): Promise<{ outcome: Error | null | undefined; failures: Error[] }> {
+  const failures: Error[] = [];
+  let outcome: Error | null | undefined;
+  try {
+    outcome = await bounded(actor.outcome, `${actor.what} to settle`, observeMs);
+  } catch (error) {
+    failures.push(asError(error));
+    try {
+      for (const identified of await bounded(Promise.allSettled(actor.owned.sessions), `${actor.what}'s backends`)) {
+        if (identified.status === "rejected") {
+          failures.push(asError(identified.reason));
+          continue;
+        }
+        try {
+          await cancelOwned(observer, identified.value);
+        } catch (cancelError) {
+          failures.push(asError(cancelError));
+        }
+      }
+    } catch (sessionsError) {
+      failures.push(asError(sessionsError));
+    }
+    try {
+      outcome = await bounded(actor.outcome, `${actor.what} to settle after its cancellation`);
+    } catch (settleError) {
+      failures.push(asError(settleError));
+    }
+  }
+  if (outcome === undefined) {
+    unsettled.push(actor.what);
+    return { outcome, failures };
+  }
+  try {
+    await bounded(actor.owned.pool.end(), `${actor.what}'s pool to close`);
+  } catch (endError) {
+    failures.push(asError(endError));
+    unsettled.push(`${actor.what}'s pool`);
+  }
+  return { outcome, failures };
+}
+
+/** Settles each actor in order, each on its own: a failure settling one never skips a later one. */
+async function settleEach(
+  actors: Array<{ actor: Actor; observeMs: number }>,
+  observer: PoolClient,
+): Promise<Array<{ outcome: Error | null | undefined; failures: Error[] }>> {
+  const settled: Array<{ outcome: Error | null | undefined; failures: Error[] }> = [];
+  for (const { actor, observeMs } of actors) settled.push(await settleActor(actor, observer, observeMs));
+  return settled;
+}
+
+function assertOwnSessions(observer: Session, actors: Session[]): void {
+  const pids = actors.map((session) => session.pid);
+  if (pids.includes(observer.pid) || new Set(pids).size !== pids.length) {
+    throw new Error("The observer or two actors share a backend");
+  }
+}
+
+/** Waits until backend `waiter` is blocked by backend `blocker`, as the observer's own session sees it. */
+async function waitsOn(observer: PoolClient, waiter: number, blocker: number, what: string): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
-    const { rows } = await admin.query<{ waiting: boolean }>(
-      "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
-      [pid],
+    const { rows } = await observer.query<Record<string, unknown>>(
+      "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+      [blocker, waiter],
     );
-    if (rows[0]?.waiting === true) return;
-    if (Date.now() > deadline) throw new Error("Nothing waited for the paused writer");
+    if (blockedRow.parse(rows[0]).blocked) return;
+    if (Date.now() > deadline) throw new Error(`Backend ${waiter} never waited for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** The pids of `sessions` still connected, once none is or after `WAIT_MS`, as the observer's own session sees it. */
+async function liveSessions(observer: PoolClient, sessions: Session[]): Promise<number[]> {
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    const { rows } = await observer.query<Record<string, unknown>>(
+      `SELECT pid FROM pg_stat_activity
+       WHERE (pid, backend_start) IN (SELECT * FROM unnest($1::int[], $2::timestamptz[]))`,
+      [sessions.map((session) => session.pid), sessions.map((session) => session.started)],
+    );
+    const live = rows.map((row) => pidRow.parse(row).pid);
+    if (live.length === 0 || Date.now() > deadline) return live;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
 /**
- * Runs `write` on a paused writer pool and the cutover concurrently: the writer validates against the definition and
- * pauses, the cutover is observed waiting for it, then the writer is released and commits. Settles both actors.
+ * A writer's own pool whose clients pause before the first statement after their validation read of `properties`,
+ * so the write has validated (and holds ACCESS SHARE on `properties`) but not yet written.
  */
-async function cutoverAgainstPausedWriter(write: (writerPool: Pool) => Promise<unknown>): Promise<void> {
-  const paused = await pausedWriterPool();
-  const writing = runInTenant(tenant, () => write(paused.writer)).then(
-    () => null,
-    (error: unknown) => asError(error),
-  );
-  let cutover: Promise<Error | null> | undefined;
-  let failure: Error | null = null;
+async function pausedWriterPool() {
+  const owned = await ownedPool();
+  let reachedNow!: () => void;
+  const reached = new Promise<void>((resolve) => (reachedNow = resolve));
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let validated = false;
+  let held = false;
+  const restore = new Map<object, PropertyDescriptor | undefined>();
+  owned.pool.on("acquire", (client) => {
+    const delegate: unknown = Reflect.get(client, "query");
+    if (typeof delegate !== "function") throw new Error("A pg client without query");
+    restore.set(client, Object.getOwnPropertyDescriptor(client, "query"));
+    Object.defineProperty(client, "query", {
+      configurable: true,
+      writable: true,
+      value: async (...args: unknown[]) => {
+        if (validated && !held) {
+          held = true;
+          reachedNow();
+          await released;
+        }
+        if (VALIDATION_READ.test(queryText.parse(args[0]))) validated = true;
+        return Reflect.apply(delegate, client, args);
+      },
+    });
+  });
+  owned.pool.on("release", (_error, client) => {
+    const own = restore.get(client);
+    restore.delete(client);
+    if (own) Object.defineProperty(client, "query", own);
+    else Reflect.deleteProperty(client, "query");
+  });
+  return { owned, reached, release };
+}
+
+/** The observer's client and the two actor backends of `cutoverAgainstPausedWriter`. */
+interface WriterSessions {
+  observer: PoolClient;
+  writer: Session;
+  cutover: Session;
+}
+
+/** Test-local faults for `cutoverAgainstPausedWriter`; production code is never changed. */
+interface PausedWriterFaults {
+  /** Replaces the barrier that observes the cutover blocked by the paused writer. */
+  observe?: (sessions: WriterSessions) => Promise<void>;
+  /** How long the first wait for the writer's outcome lasts. */
+  writerSettleMs?: number;
+  /** Receives each actor backend once identified. */
+  sessions?: Session[];
+}
+
+/**
+ * Runs `write` on a paused writer pool and the cutover concurrently: the writer validates against the definition and
+ * pauses, the cutover is observed waiting for it, then the writer is released. Both actors are then settled in that
+ * order, each on its own (`settleActor`). The first failure is thrown, the same object, with every later failure
+ * appended to its cause.
+ */
+async function cutoverAgainstPausedWriter(
+  write: (writerPool: Pool) => Promise<unknown>,
+  faults: PausedWriterFaults = {},
+): Promise<void> {
+  const observer = await admin.connect();
+  const actors: Array<{ actor: Actor; observeMs: number }> = [];
+  const failures: Error[] = [];
   try {
-    await bounded(paused.reached, "the writer to validate");
-    cutover = runInTenant(tenant, () => runTasksPersistentRemovalCutoverMigration(pool)).then(
-      () => null,
-      (error: unknown) => asError(error),
-    );
-    const pid = paused.pids[0];
-    if (pid === undefined) throw new Error("The writer has no backend");
-    await blockedBy(pid);
-  } catch (error) {
-    failure = asError(error);
+    let paused: Awaited<ReturnType<typeof pausedWriterPool>> | undefined;
+    try {
+      const watching = await sessionOf(observer);
+      paused = await pausedWriterPool();
+      const writer = launch("the writer", paused.owned, write);
+      actors.push({ actor: writer, observeMs: faults.writerSettleMs ?? WAIT_MS });
+      await bounded(paused.reached, "the writer to validate");
+      const cutover = launch("the cutover", await ownedPool(), (cutoverPool) =>
+        runTasksPersistentRemovalCutoverMigration(cutoverPool),
+      );
+      actors.push({ actor: cutover, observeMs: WAIT_MS });
+      const writerSession = await bounded(writer.owned.session, "the writer's backend");
+      const cutoverSession = await bounded(cutover.owned.session, "the cutover's backend");
+      assertOwnSessions(watching, [writerSession, cutoverSession]);
+      faults.sessions?.push(writerSession, cutoverSession);
+      const observe =
+        faults.observe ??
+        ((sessions: WriterSessions) =>
+          waitsOn(sessions.observer, sessions.cutover.pid, sessions.writer.pid, "the paused writer"));
+      await observe({ observer, writer: writerSession, cutover: cutoverSession });
+    } catch (error) {
+      failures.push(asError(error));
+    } finally {
+      paused?.release();
+    }
+    for (const settled of await settleEach(actors, observer)) {
+      failures.push(...settled.failures);
+      // An outcome already recorded as the observation's failure is not appended to itself.
+      if (settled.outcome && !failures.includes(settled.outcome)) failures.push(settled.outcome);
+    }
   } finally {
-    paused.release();
+    observer.release();
   }
+  const [first, ...later] = failures;
+  if (first) throw withLaterFailures(first, later);
+}
+
+/**
+ * Holds ACCESS SHARE on `properties` from an open reader transaction and runs the cutover concurrently. `observe`
+ * runs while the reader is open. The reader is then rolled back and released, and the cutover settled
+ * (`settleActor`). Returns the cutover's outcome. Any other failure is thrown instead: the first one, the same object,
+ * with the later ones and then the cutover's own error appended to its cause.
+ */
+async function cutoverBehindReader(
+  observe: (cutover: Actor, sessions: { observer: PoolClient; reader: Session; cutover: Session }) => Promise<void>,
+): Promise<Error | null> {
+  const observer = await admin.connect();
+  const failures: Error[] = [];
+  let outcome: Error | null | undefined;
   try {
-    const writeError = await bounded(writing, "the writer to settle");
-    const cutoverError = cutover === undefined ? null : await bounded(cutover, "the cutover to settle");
-    if (failure !== null) throw failure;
-    if (writeError !== null) throw writeError;
-    if (cutoverError !== null) throw cutoverError;
+    let reader: PoolClient | undefined;
+    let readerOpen = false;
+    let cutover: Actor | undefined;
+    try {
+      const watching = await sessionOf(observer);
+      reader = await admin.connect();
+      const readerSession = await sessionOf(reader);
+      await reader.query("BEGIN");
+      readerOpen = true;
+      await reader.query("SELECT 1 FROM properties LIMIT 1");
+      cutover = launch("the cutover", await ownedPool(), (cutoverPool) =>
+        runTasksPersistentRemovalCutoverMigration(cutoverPool),
+      );
+      const cutoverSession = await bounded(cutover.owned.session, "the cutover's backend");
+      assertOwnSessions(watching, [readerSession, cutoverSession]);
+      await observe(cutover, { observer, reader: readerSession, cutover: cutoverSession });
+    } catch (error) {
+      failures.push(asError(error));
+    } finally {
+      if (reader) {
+        let rollbackError: Error | undefined;
+        try {
+          if (readerOpen) await reader.query("ROLLBACK");
+        } catch (error) {
+          rollbackError = asError(error);
+          failures.push(rollbackError);
+        } finally {
+          reader.release(rollbackError);
+        }
+      }
+    }
+    if (cutover) {
+      const settled = await settleActor(cutover, observer);
+      failures.push(...settled.failures);
+      outcome = settled.outcome;
+    }
   } finally {
-    await paused.writer.end();
+    observer.release();
   }
+  const [first, ...later] = failures;
+  if (first) throw withLaterFailures(first, outcome && !failures.includes(outcome) ? [...later, outcome] : later);
+  if (outcome === undefined) throw new Error("The cutover never started");
+  return outcome;
 }
 
 const withoutPersistent = (properties: Record<string, unknown>): Record<string, unknown> =>
@@ -251,6 +498,7 @@ describe("removing the Tasks property persistent (issue #2009)", () => {
   });
 
   beforeEach(async () => {
+    assertNothingUnsettled();
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
@@ -264,6 +512,7 @@ describe("removing the Tasks property persistent (issue #2009)", () => {
   });
 
   afterAll(async () => {
+    assertNothingUnsettled();
     await pool?.end();
     await admin?.end();
   });
@@ -395,34 +644,115 @@ describe("removing the Tasks property persistent (issue #2009)", () => {
 
     it("fails with lock timeout 55P03 behind an open reader, keeping the definition, and a rerun completes", async () => {
       await seedOldShape();
-      const reader = await admin.connect();
-      let readerOpen = false;
-      try {
-        await reader.query("BEGIN");
-        readerOpen = true;
-        await reader.query("SELECT 1 FROM properties LIMIT 1");
-        const error: unknown = await bounded(
-          runInTenant(tenant, () => runTasksPersistentRemovalCutoverMigration(pool)).then(
-            () => undefined,
-            (thrown: unknown) => thrown,
-          ),
-          "the cutover to time out",
-          WAIT_MS + 5_000,
-        );
+      await cutoverBehindReader(async (cutover) => {
+        const error = await bounded(cutover.outcome, "the cutover to time out", WAIT_MS + 5_000);
         expect(lockTimeout.safeParse(error).success).toBe(true);
         // The deleting transaction rolled back; the batches stripped before it stay committed.
         expect(await persistentDefinitions()).toBe(1);
         expect((await items()).filter((row) => Object.hasOwn(row.properties, "persistent"))).toEqual([]);
-      } finally {
-        try {
-          if (readerOpen) await reader.query("ROLLBACK");
-        } finally {
-          reader.release();
-        }
-      }
+      });
       await runInTenant(tenant, () => runTasksPersistentRemovalCutoverMigration(pool));
       expect(await persistentDefinitions()).toBe(0);
       expect((await items()).filter((row) => Object.hasOwn(row.properties, "persistent"))).toEqual([]);
+    });
+  });
+
+  describe("settling the concurrent actors when an observation fails (R2-1)", () => {
+    it("settles the cutover still waiting for the reader before returning, when the outer wait times out", async () => {
+      await seedOldShape();
+      const state = await admin.connect();
+      try {
+        const watching = await sessionOf(state);
+        let timedOut: unknown;
+        let cutoverSettled = false;
+        let cutoverOutcome: Promise<Error | null> | undefined;
+        let markSettled: Promise<void> | undefined;
+        const sessions: Session[] = [];
+        const thrown: unknown = await cutoverBehindReader(async (cutover, observed) => {
+          cutoverOutcome = cutover.outcome;
+          // Attached before the harness waits for the outcome, so it runs before the harness can return.
+          markSettled = cutover.outcome.then(() => {
+            cutoverSettled = true;
+          });
+          sessions.push(observed.cutover);
+          await waitsOn(observed.observer, observed.cutover.pid, observed.reader.pid, "the reader");
+          // Far shorter than its 5s lock attempt: the cutover is still waiting when this wait gives up.
+          try {
+            await bounded(cutover.outcome, "the cutover behind the reader", 200);
+          } catch (error) {
+            timedOut = error;
+            throw error;
+          }
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(cutoverSettled).toBe(true);
+        await markSettled;
+        expect(thrown).toBe(timedOut);
+        if (!(thrown instanceof Error)) throw new Error("The harness threw no Error");
+        expect(thrown.message).toBe("Timed out waiting for the cutover behind the reader");
+        expect(thrown.cause).toBeUndefined();
+        // Released, the reader no longer held the lock: the cutover acquired it and completed.
+        expect(await cutoverOutcome).toBeNull();
+        expect(await persistentDefinitions()).toBe(0);
+        expect((await items()).filter((row) => Object.hasOwn(row.properties, "persistent"))).toEqual([]);
+        expect(sessions.map((session) => session.pid)).not.toContain(watching.pid);
+        expect(await liveSessions(state, sessions)).toEqual([]);
+        expect(unsettled).toEqual([]);
+      } finally {
+        state.release();
+      }
+    });
+
+    it("still settles the cutover when the observation fails and the writer's settlement times out", async () => {
+      await seedOldDefinition();
+      const task = await runInTenant(tenant, () =>
+        createChokePoint(pool).createItem({ databaseId: tasksId, properties: { name: "Cancelled update" } }),
+      );
+      const before = (await items()).find((row) => row.id === task.id);
+      const state = await admin.connect();
+      try {
+        const watching = await sessionOf(state);
+        const original = new Error("Injected observation failure");
+        const sessions: Session[] = [];
+        const thrown: unknown = await cutoverAgainstPausedWriter(
+          (writerPool) =>
+            withTransaction(writerPool, async (client) => {
+              await updateItemWithClient(
+                client,
+                { databaseId: tasksId, itemId: task.id, propertiesPatch: { persistent: true } },
+                { writer: USER },
+              );
+              // Keeps the validation's ACCESS SHARE past the release until its own backend is cancelled.
+              await client.query("SELECT pg_sleep(30)");
+            }),
+          {
+            observe: async (observed) => {
+              await waitsOn(observed.observer, observed.cutover.pid, observed.writer.pid, "the paused writer");
+              throw original;
+            },
+            writerSettleMs: 1_000,
+            sessions,
+          },
+        ).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(thrown).toBe(original);
+        if (!(original.cause instanceof AggregateError)) throw new Error("No later failures were appended");
+        const [timedOut, cancelled] = z.tuple([z.instanceof(Error), queryCancelled]).parse(original.cause.errors);
+        expect(timedOut.message).toBe("Timed out waiting for the writer to settle");
+        expect(cancelled.code).toBe("57014");
+        // The cancelled writer rolled back; the cutover, no longer blocked, deleted the definition.
+        expect(await persistentDefinitions()).toBe(0);
+        expect((await items()).find((row) => row.id === task.id)).toEqual(before);
+        expect(sessions.map((session) => session.pid)).not.toContain(watching.pid);
+        expect(await liveSessions(state, sessions)).toEqual([]);
+        expect(unsettled).toEqual([]);
+      } finally {
+        state.release();
+      }
     });
   });
 });
