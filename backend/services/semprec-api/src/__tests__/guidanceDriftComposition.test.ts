@@ -702,6 +702,26 @@ describe("guidance drift production composition", () => {
   });
 
   it("merges two activation notifications for one finding into one problem", async () => {
+    tenant = await createTestTenant(admin);
+    const owner = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      locale: "en",
+    });
+    await runInTenant(tenant, () => seedSystem(pool));
+    project = await runInTenant(tenant, async () => {
+      const database = await withTransaction(pool, (tx) => getDatabaseByModuleId(tx, "projects"));
+      if (!database) throw new Error("Missing Projects database");
+      const item = await createChokePoint(pool).createItem({
+        databaseId: database.id,
+        properties: { name: "Drift project" },
+      });
+      await withTransaction(pool, (tx) =>
+        projectAgentGuidanceStore.upsert(tx, { projectItemId: item.id, ownerUserId: owner.id, markdown: "Guidance" }),
+      );
+      return item.id;
+    });
     let content: unknown = { contradictions: [finding("files.read", "first")] };
     const gateway: AiGatewayClientPort = {
       async complete() {
