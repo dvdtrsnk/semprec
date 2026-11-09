@@ -112,7 +112,7 @@ export async function seedInboxPipelineInTransaction(
   await createProps(client, inbox.id, [
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "time", name: "Time", type: "time", owner: "user" },
-    { key: "text", name: "Text", type: "text", owner: "user" },
+    { key: "text", name: "Text", type: "text", owner: "user", config: { format: "markdown" } },
   ]);
 
   await createProps(client, inboxItemTypes.id, [

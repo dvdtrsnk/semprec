@@ -114,6 +114,10 @@ export function assertValidPropertyConfig(type: PropertyType, config: Record<str
   assertValidSelectOptions(type, config);
   assertValidDefault(type, config);
   assertValidNumberFilterConfig(type, config);
+  if (config && Object.hasOwn(config, "format") &&
+      (config.format !== "markdown" || (type !== "text" && type !== "longText"))) {
+    throw new ValidationError("config.format must be markdown on a text property", { field: "config" });
+  }
 }
 
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];

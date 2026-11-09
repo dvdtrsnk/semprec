@@ -1,3 +1,4 @@
+import { BlockInputError, parseMarkdown } from "@semprec/block-model";
 import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";
@@ -85,6 +86,20 @@ function assertColorValues(properties: PropertyRow[], values: Record<string, unk
   }
 }
 
+function assertMarkdownValues(properties: PropertyRow[], values: Record<string, unknown>): void {
+  const byKey = new Map(properties.map((property) => [property.key, property]));
+  for (const [key, value] of Object.entries(values)) {
+    if (byKey.get(key)?.config.format !== "markdown" || value === null) continue;
+    if (typeof value !== "string") throw new ValidationError("Markdown value must be a string", { field: key });
+    try {
+      parseMarkdown(value, { allowPage: false });
+    } catch (error) {
+      if (error instanceof BlockInputError) throw new ValidationError("Invalid Markdown value", { field: key });
+      throw error;
+    }
+  }
+}
+
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
 function assertWritableProperties(
   properties: PropertyRow[],
@@ -167,6 +182,7 @@ export function assertUserItemPatchValid(
 ): void {
   assertWritableProperties(properties, Object.keys(values));
   assertColorValues(properties, values);
+  assertMarkdownValues(properties, values);
   assertTitlePresent(properties, values, ownerModuleId, { writerKind: "user" }, "patch");
 }
 
@@ -194,6 +210,7 @@ export async function prepareUserItemPatch(
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
   assertTransformAddedKeysWritable(properties, callerKeys, result.patch, database.ownerModuleId);
   assertColorValues(properties, result.patch);
+  assertMarkdownValues(properties, result.patch);
   assertTitlePresent(properties, result.patch, database.ownerModuleId, { writerKind: "user" }, "patch");
   for (const key of result.deferredKeys) {
     const property = properties.find((candidate) => candidate.key === key);
@@ -340,6 +357,7 @@ export async function createItemReportingReplay(
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
   assertColorValues(properties, input.properties ?? {});
+  assertMarkdownValues(properties, input.properties ?? {});
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
@@ -382,6 +400,7 @@ export async function createItemReportingReplay(
         }
       }
       assertColorValues(properties, itemProperties);
+  assertMarkdownValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
@@ -475,6 +494,7 @@ export async function updateItemWithClient(
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
   assertColorValues(properties, input.propertiesPatch);
+  assertMarkdownValues(properties, input.propertiesPatch);
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
@@ -496,6 +516,7 @@ export async function updateItemWithClient(
       properties,
     );
     assertColorValues(properties, propertiesPatch);
+  assertMarkdownValues(properties, propertiesPatch);
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
