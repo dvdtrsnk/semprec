@@ -16,7 +16,7 @@ import {
 } from "@semprec/block-model";
 import type { PageInsertInput } from "@semprec/shared";
 import { ConflictError, ValidationError } from "../errors.js";
-import type { CreatedBy } from "../types.js";
+import type { CreatedBy, ItemRow } from "../types.js";
 import { assertItemLinksExist } from "./assertItemLinksExist.js";
 import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc } from "./docsStore.js";
@@ -113,11 +113,8 @@ function resolveBlockIds(count: number, supplied: readonly string[] | undefined)
   return [...supplied];
 }
 
-/** Checks every parsed block against the block registry and returns it as an insertable block with its id. */
-/** A block ready to insert, whose id is always set. */
-type IdentifiedBlock = NewBlockInput & { id: string };
-
-function toNewBlocks(parsed: readonly ParsedBlock[], ids: readonly string[]): IdentifiedBlock[] {
+/** Checks every parsed block against the block registry and returns it as an insertable block with its id, one `ids` entry per block. */
+export function identifyBlocks(parsed: readonly ParsedBlock[], ids: readonly string[]): IdentifiedBlock[] {
   const issues = parsed.flatMap((block, index) =>
     validateBlockInput({ ...block, id: ids[index] }).map((issue) => ({
       ...issue,
@@ -141,26 +138,18 @@ function toNewBlocks(parsed: readonly ParsedBlock[], ids: readonly string[]): Id
   });
 }
 
+/** A block ready to insert, whose id is always set. */
+export type IdentifiedBlock = NewBlockInput & { id: string };
+
 /**
- * Inserts the blocks parsed from `input.markdown` into the page of `itemId` (issue #1679), at the start, at the end or
- * directly after `placement.afterBlockId`, in one `mutateDocWithClient` call and so as one document update authored
- * `input.origin`. Page links are refused: a link to a subpage is validated against the host's subpages, which only the
- * replace operation (#1765) does. Everything that can refuse the Markdown runs before the document is created or
- * written: the item is resolved live and locked, the Markdown is parsed and checked against the block registry, every
- * `semprec://items/` link must name a live item of the tenant (`assertItemLinksExist`), and the ids are resolved. An
- * unknown `afterBlockId` or an id already in the document is refused inside the write, and the caller's transaction
- * rolls back with it, lazy document creation included. Markdown with no block writes nothing and creates no document.
- * The flat block model has no nesting, so "after a block" means directly after it in document order.
+ * The blocks `markdown` parses to (issue #1679): page links refused, every block checked against the block registry
+ * and every `semprec://items/` link against the tenant (`assertItemLinksExist`, which must hold on the caller's
+ * tenant-scoped write client). Reads only; nothing is written and no block has an id yet.
  */
-export async function insertPageMarkdown(
-  client: PoolClient,
-  itemId: string,
-  input: InsertPageMarkdownInput,
-): Promise<{ blockIds: string[] }> {
-  await lockLiveItem(client, itemId);
+export async function parseCheckedMarkdown(client: PoolClient, markdown: string): Promise<ParsedBlock[]> {
   let parsed: ParsedBlock[];
   try {
-    parsed = parseMarkdown(input.markdown, { allowPage: false });
+    parsed = parseMarkdown(markdown, { allowPage: false });
   } catch (error) {
     if (error instanceof BlockInputError) throw invalidMarkdown(error.issues);
     throw error;
@@ -172,23 +161,44 @@ export async function insertPageMarkdown(
     if (error instanceof ValidationError) throw new ValidationError(error.message, { field: "markdown" });
     throw error;
   }
-  const ids = resolveBlockIds(parsed.length, input.blockIds);
-  const blocks = toNewBlocks(parsed, ids);
-  if (blocks.length === 0) return { blockIds: [] };
+  return parsed;
+}
 
-  const doc = await getOrCreateDoc(client, itemId, "page");
-  await mutateDocWithClient(client, doc.id, input.origin, (ydoc) => {
-    const { placement } = input;
-    const afterId =
-      placement === "start"
-        ? null
-        : placement === "end"
-          ? (readPageBlocks(ydoc)
-              .filter((block) => !block.synthetic && block.id !== null)
-              .at(-1)?.id ?? null)
-          : placement.afterBlockId;
+/** `parseCheckedMarkdown` plus an id for each block, from `blockIds` or generated, checked and ready to insert. */
+export async function prepareMarkdownBlocks(
+  client: PoolClient,
+  markdown: string,
+  blockIds?: readonly string[],
+): Promise<IdentifiedBlock[]> {
+  const parsed = await parseCheckedMarkdown(client, markdown);
+  return identifyBlocks(parsed, resolveBlockIds(parsed.length, blockIds));
+}
+
+/** Where, and which blocks: what a caller decides inside the document write, from the document as it stands. */
+export interface PageBlockPlan {
+  /** The block to insert after, or `null` for the start of the page. */
+  afterId: string | null;
+  blocks: IdentifiedBlock[];
+}
+
+/**
+ * Inserts the blocks `plan` returns into the page of the live, locked item `host` as one document update authored
+ * `origin`, creating the document when the item has none. `plan` runs inside the write on the loaded document, so the
+ * position it picks is the one the blocks are inserted at: an unknown `afterId` is a `ValidationError` on
+ * `placement.afterBlockId` and an id already in the page a `ConflictError` on `blockIds`; the caller's transaction rolls
+ * a lazily created document back with either. `plan` may throw its own error, which propagates unchanged.
+ */
+export async function insertPlannedBlocks(
+  client: PoolClient,
+  host: ItemRow,
+  origin: CreatedBy,
+  plan: (doc: Y.Doc) => PageBlockPlan,
+): Promise<string[]> {
+  const row = await getOrCreateDoc(client, host.id, "page");
+  return mutateDocWithClient(client, row.id, origin, (ydoc) => {
+    const { afterId, blocks } = plan(ydoc);
     try {
-      insertBlocks(ydoc, afterId, blocks);
+      return insertBlocks(ydoc, afterId, blocks);
     } catch (error) {
       if (error instanceof BlockOperationError && error.code === "invalid_after_id") {
         throw new ValidationError("afterBlockId does not name a block of the page", {
@@ -201,5 +211,36 @@ export async function insertPageMarkdown(
       throw error;
     }
   });
-  return { blockIds: blocks.map((block) => block.id) };
+}
+
+/**
+ * Inserts the blocks parsed from `input.markdown` into the page of `itemId` (issue #1679), at the start, at the end or
+ * directly after `placement.afterBlockId`, as one document update authored `input.origin`. Page links are refused: a
+ * link to a subpage is validated against the host's subpages, which only the replace operation (#1765) does.
+ * Everything that can refuse the Markdown runs before the document is created or written: the item is resolved live
+ * and locked, then the blocks are prepared (`prepareMarkdownBlocks`). An unknown `afterBlockId` or an id already in the
+ * document is refused inside the write. Markdown with no block writes nothing and creates no document. The flat block
+ * model has no nesting, so "after a block" means directly after it in document order.
+ */
+export async function insertPageMarkdown(
+  client: PoolClient,
+  itemId: string,
+  input: InsertPageMarkdownInput,
+): Promise<{ blockIds: string[] }> {
+  const host = await lockLiveItem(client, itemId);
+  const blocks = await prepareMarkdownBlocks(client, input.markdown, input.blockIds);
+  if (blocks.length === 0) return { blockIds: [] };
+  const { placement } = input;
+  const blockIds = await insertPlannedBlocks(client, host, input.origin, (ydoc) => ({
+    blocks,
+    afterId:
+      placement === "start"
+        ? null
+        : placement === "end"
+          ? (readPageBlocks(ydoc)
+              .filter((block) => !block.synthetic && block.id !== null)
+              .at(-1)?.id ?? null)
+          : placement.afterBlockId,
+  }));
+  return { blockIds };
 }

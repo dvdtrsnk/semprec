@@ -13,6 +13,8 @@ import {
   createRelationWithClient,
 } from "../chokePoint/relationOps.js";
 import { putBlockWithClient } from "../docs/docStore.js";
+import { pageContentV2Schema } from "./proposalEnvelope.js";
+import { insertProposalPageContent } from "./proposalPageContent.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
   aiProposalPatch,
@@ -114,6 +116,14 @@ interface TranscriptCardEdge {
  * envelope (`null` for `'relation'`/`'pageContent'`) — `confirmProposalWithClient`'s credential
  * guard reuses that row instead of re-fetching it (issue #735).
  */
+/** Whether `error` is the v2 page-content check's refusal of a heading that is no longer on the page. */
+function isHeadingUnavailable(error: ValidationError): boolean {
+  const details: unknown = error.details;
+  return (
+    typeof details === "object" && details !== null && "reason" in details && details.reason === "heading_unavailable"
+  );
+}
+
 interface EnvelopeForCard {
   transcriptCardEdge: TranscriptCardEdge | null;
   targetDatabase: DatabaseRow | null;
@@ -380,7 +390,13 @@ async function assertValidEnvelopeForCard(
  * proposal was computed — the target database/page could have been deleted or had its
  * schema changed since.
  *
- * For `pageContent`, the appended block's `id` is the proposal's own id, not a freshly
+ * A v2 `pageContent` envelope (a Markdown `{ markdown, placement, heading? }`, issue #1681) is written by
+ * `insertProposalPageContent` in this same transaction, before the card is locked `confirmed`: the page document is
+ * created when the target has none, the placement is resolved on the page as it stands, and the blocks (the optional
+ * heading first) get ids derived from the proposal id. A chosen heading that is gone is a `ConflictError` (409) and the
+ * card stays `proposed`. Its blocks are authored `user`, like the old shape's.
+ *
+ * For an old-shape `pageContent`, the appended block's `id` is the proposal's own id, not a freshly
  * generated one: `putBlockWithClient`'s block upsert is itself idempotent on a given id, so
  * a confirm retried after a crash between the block write and the `confirmed` lock below
  * (both in the same transaction here, but a caller retrying after an earlier failed attempt
@@ -429,12 +445,21 @@ export async function confirmProposalWithClient(
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
   if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
-  if (envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown")) {
-    if (proposal.properties.kind === "transcript")
-      throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
-    throw new ConflictError("Markdown page proposals cannot yet be confirmed");
+  const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
+  if (markdownPageContent && proposal.properties.kind === "transcript")
+    throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
+  let validated: EnvelopeForCard;
+  try {
+    validated = await assertValidEnvelopeForCard(client, config, proposal, envelope);
+  } catch (error) {
+    // A heading removed since the card was computed is a conflict the client can answer with a new choice, not a
+    // malformed proposal: 409, the card stays `proposed` and nothing is written.
+    if (markdownPageContent && error instanceof ValidationError && isHeadingUnavailable(error)) {
+      throw new ConflictError("The chosen heading no longer exists on the page", { field: "placement" });
+    }
+    throw error;
   }
-  const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
+  const { transcriptCardEdge, targetDatabase } = validated;
 
   let resultItemId: string;
   let resultLabel: string;
@@ -535,26 +560,32 @@ export async function confirmProposalWithClient(
     stepResults = [{ ref: "primary", itemId: transcript.id, databaseId: transcript.databaseId }];
     resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : envelope.target;
   } else {
-    // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
-    // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
-    // string, or whose `fields`/`children` (if present) aren't a plain object / string
-    // array respectively.
-    const { flavour, fields, children } = envelope.properties as {
-      flavour: string;
-      fields?: Record<string, unknown>;
-      children?: string[];
-    };
-    const inserted = await putBlockWithClient(
-      client,
-      envelope.target,
-      { id: proposal.id, flavour, fields, children },
-      "user",
-    );
+    if (markdownPageContent) {
+      // Validated by `assertValidProposalEnvelope` above, so the parse cannot fail; it types the stored properties.
+      const content = pageContentV2Schema.parse(envelope.properties);
+      blockIds = await insertProposalPageContent(client, proposal.id, envelope.target, content);
+    } else {
+      // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
+      // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
+      // string, or whose `fields`/`children` (if present) aren't a plain object / string
+      // array respectively.
+      const { flavour, fields, children } = envelope.properties as {
+        flavour: string;
+        fields?: Record<string, unknown>;
+        children?: string[];
+      };
+      const inserted = await putBlockWithClient(
+        client,
+        envelope.target,
+        { id: proposal.id, flavour, fields, children },
+        "user",
+      );
+      blockIds = inserted ? [proposal.id] : [];
+    }
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
     if (!targetPage) throw new Error("Target page disappeared during confirm");
     stepResults = [{ ref: "primary", itemId: targetPage.id, databaseId: targetPage.databaseId }];
-    blockIds = inserted ? [proposal.id] : [];
     resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
   }
 
