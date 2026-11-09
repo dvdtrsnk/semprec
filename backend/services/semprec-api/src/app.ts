@@ -19,6 +19,7 @@ import { createAccountExportDownloadListener, createAccountRoutes } from "./acco
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createItemRoutes } from "./itemsHandler.js";
+import { createPageChangesRoutes } from "./pageChangesHandler.js";
 import { createPropertyRoutes } from "./propertiesHandler.js";
 import { createViewRoutes } from "./viewsHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
@@ -112,6 +113,7 @@ export async function createDispatcher(
     ...createViewRoutes(genericApplicationService, pool),
     ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
     ...createPageMarkdownRoutes(genericApplicationService),
+    ...createPageChangesRoutes(pool),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with

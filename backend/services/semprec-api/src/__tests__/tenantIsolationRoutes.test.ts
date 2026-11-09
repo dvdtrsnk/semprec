@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { WebSocket } from "ws";
+import { z } from "zod";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
@@ -2159,6 +2160,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(refused.status).toBe(404);
     expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
+  },
+  "list page changes": async () => {
+    const since = encodeURIComponent(new Date(Date.now() - 1_000).toISOString());
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page/changes?since=${since}`,
+    }));
+    expect(refused.status).toBe(404);
+    // The allowed side: B lists the changes of an item of its own that has no page, an empty list.
+    const created = await send(b.member, {
+      method: "POST",
+      path: `/api/databases/${b.databaseId}/items`,
+      body: { properties: {} },
+    });
+    expect(created.status, created.text).toBe(201);
+    const fresh = z.object({ id: z.string() }).parse(JSON.parse(created.text)).id;
+    const own = await send(b.member, { method: "GET", path: `/api/items/${fresh}/page/changes?since=${since}` });
+    expect(own.status, own.text).toBe(200);
+    expect(JSON.parse(own.text)).toEqual([]);
   },
   "read page markdown": async () => {
     const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({

@@ -250,17 +250,15 @@ export async function assertDocVersionReadable(
 }
 
 /**
- * The checkpoint-then-replay read behind `openDocVersionAt`, run on the caller's client so a
- * caller that also writes (the page restore, issue #1617) reads the history in its own transaction.
+ * The latest checkpoint of `docId` represented at or before `at`: its state and the last history update it contains.
+ * `HistoryNotRetainedError` when there is none. Shared by the version read and the page change list (issue #1680),
+ * which both replay `doc_history_updates` forward from it.
  */
-export async function openDocVersionAtWithClient(
+export async function readCheckpointAtOrBefore(
   client: PoolClient,
   docId: string,
   at: Date,
-  retentionDays = resolveDocHistoryRetentionDays(),
-): Promise<Y.Doc> {
-  await assertDocVersionReadable(client, docId, at, retentionDays);
-
+): Promise<{ throughUpdateId: string; state: Buffer }> {
   const { rows: checkpointRows } = await client.query<{
     through_update_id: string;
     represented_at: Date;
@@ -275,6 +273,22 @@ export async function openDocVersionAtWithClient(
   if (!checkpoint) {
     throw new HistoryNotRetainedError(docId, at);
   }
+  return { throughUpdateId: checkpoint.through_update_id, state: checkpoint.state };
+}
+
+/**
+ * The checkpoint-then-replay read behind `openDocVersionAt`, run on the caller's client so a
+ * caller that also writes (the page restore, issue #1617) reads the history in its own transaction.
+ */
+export async function openDocVersionAtWithClient(
+  client: PoolClient,
+  docId: string,
+  at: Date,
+  retentionDays = resolveDocHistoryRetentionDays(),
+): Promise<Y.Doc> {
+  await assertDocVersionReadable(client, docId, at, retentionDays);
+
+  const checkpoint = await readCheckpointAtOrBefore(client, docId, at);
 
   const doc = new Y.Doc();
   doc.gc = false;
@@ -284,7 +298,7 @@ export async function openDocVersionAtWithClient(
     `SELECT update FROM doc_history_updates
        WHERE doc_id = $1 AND update_id > $2 AND created_at <= $3
        ORDER BY update_id ASC`,
-    [docId, checkpoint.through_update_id, at],
+    [docId, checkpoint.throughUpdateId, at],
   );
   for (const row of historyRows) Y.applyUpdate(doc, row.update);
 

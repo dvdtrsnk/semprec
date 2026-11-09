@@ -531,6 +531,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listInvites",
   "listMcpToolGrantsForProject",
   "listMcpToolRegistrationsForServer",
+  "listPageChanges",
   "listPendingApprovalRequests",
   "listProjectMcpGrants",
   "listPropertiesByDatabase",

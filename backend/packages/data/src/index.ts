@@ -422,6 +422,7 @@ export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 export { PAGES_MODULE_ID, ensurePagesDatabase } from "./docs/pagesDatabase.js";
 export { docEtag, readPageMarkdown, type PageMarkdownRead } from "./docs/pageMarkdown.js";
+export { listPageChanges, type PageChange, type PageChangeKind } from "./docs/pageChanges.js";
 export { PAGE_TITLE_MAX_LENGTH, normalizePageTitle } from "./docs/pageTitle.js";
 
 export {
