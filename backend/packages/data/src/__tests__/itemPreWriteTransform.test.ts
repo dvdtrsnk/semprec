@@ -101,6 +101,8 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     const database = await chokePoint.getDatabase(databaseId);
     if (!database) throw new Error("Missing probe database");
     const properties = await chokePoint.listProperties(databaseId);
+    const before = await chokePoint.getItem(databaseId, item.id);
+    expect(before).not.toBeNull();
     const paired = async ({ patch }: { patch: Record<string, unknown> }) => patch;
     registerItemPreWriteTransform(
       PROBE_MODULE,
@@ -120,7 +122,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     await expect(
       chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }),
     ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
-    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(item);
+    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
   });
 
   describe("effective patch validation", () => {
