@@ -21,9 +21,34 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 let admin: Pool;
 let pool: Pool;
 let tenant: string;
+const pendingRaceActors = new Set<Promise<unknown>>();
+
+function trackRaceActor<T>(actor: Promise<T>): Promise<T> {
+  pendingRaceActors.add(actor);
+  void actor.then(
+    () => pendingRaceActors.delete(actor),
+    () => pendingRaceActors.delete(actor),
+  );
+  return actor;
+}
+
+async function boundRace<T>(actor: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      actor,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Race actor did not settle")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 describe("Inbox type lock", () => {
   beforeEach(async () => {
+    if (pendingRaceActors.size) throw new Error("A prior race actor remains unsettled");
     admin ??= getTestPool();
     pool ??= await createRuntimeRolePool(admin, "semprec_data");
     await resetDatabase(admin);
@@ -31,6 +56,7 @@ describe("Inbox type lock", () => {
     await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
   });
   afterAll(async () => {
+    if (pendingRaceActors.size) throw new Error("A race actor remains unsettled; pools remain open");
     await pool?.end();
     await admin?.end();
   });
@@ -251,99 +277,130 @@ describe("Inbox type lock", () => {
         if (edges.length !== 1 || !edges[0]) throw new Error("Expected one proposal");
         return otherSide(edges[0], edge.callerItemId);
       });
-      let release: (attempt: boolean) => void = () => {};
-      let signalHolder: (identity: { pid: number; started: string }) => void = () => {};
+      let release: (commit: boolean) => void = () => {};
+      let signalReady: (identity: { pid: number; started: string }) => void = () => {};
       const gate = new Promise<boolean>((resolve) => {
         release = resolve;
       });
       const ready = new Promise<{ pid: number; started: string }>((resolve) => {
-        signalHolder = resolve;
+        signalReady = resolve;
       });
-      const marker = new Error("release source reservation");
-      const holder = withTransaction(pool, async (client) => {
+      const cancelled = new Error("cancel confirmation");
+      const confirmation = withTransaction(pool, async (client) => {
         const identity = await client.query<{ pid: number; started: string }>(
           "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
         );
-        if (!identity.rows[0]) throw new Error("Missing source holder identity");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
-          inbox,
-          edge.callerItemId,
-        ]);
-        signalHolder(identity.rows[0]);
-        if (!(await gate)) throw marker;
-        await deleteRelationWithClient(client, edge);
+        if (!identity.rows[0]) throw new Error("Missing confirmer identity");
+        await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposals }, cardId);
+        signalReady(identity.rows[0]);
+        if (!(await gate)) throw cancelled;
       }).then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       );
-      let confirmIdentity: { pid: number; started: string } | undefined;
-      let confirmation: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+      trackRaceActor(confirmation);
+      const invalidations: InvalidationEvent[] = [];
       let primary: { error: unknown } | undefined;
-      let attempted = false;
+      let commit = false;
       try {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const identity = await Promise.race([
+        const confirmer = await Promise.race([
           ready,
-          holder.then((outcome) => {
-            throw outcome.ok ? new Error("Holder ended early") : outcome.error;
+          confirmation.then((outcome) => {
+            throw outcome.ok ? new Error("Confirmation ended early") : outcome.error;
           }),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Source holder did not start")), 5000);
+            timer = setTimeout(() => reject(new Error("Confirmation did not reach its commit gate")), 5000);
           }),
         ]).finally(() => {
           if (timer) clearTimeout(timer);
         });
-        confirmation = withTransaction(pool, async (client) => {
-          const result = await client.query<{ pid: number; started: string }>(
+        const observed = await admin.query<{ present: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+          [confirmer.pid, confirmer.started],
+        );
+        expect(observed.rows).toEqual([{ present: true }]);
+        let probeIdentity: { pid: number; started: string } | undefined;
+        const probe = withTransaction(pool, async (client) => {
+          const identity = await client.query<{ pid: number; started: string }>(
             "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
           );
-          confirmIdentity = result.rows[0];
-          if (!confirmIdentity) throw new Error("Missing confirmer identity");
-          await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposals }, cardId);
+          probeIdentity = identity.rows[0];
+          if (!probeIdentity) throw new Error("Missing probe identity");
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT", [
+            proposals,
+            cardId,
+          ]);
         }).then(
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        const deadline = Date.now() + 5000;
-        let blocked = false;
-        while (Date.now() < deadline && !blocked) {
-          if (confirmIdentity) {
-            const observed = await admin.query<{ blockers: number[] }>(
-              "SELECT pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz",
-              [confirmIdentity.pid, confirmIdentity.started],
-            );
-            blocked =
-              observed.rows.length === 1 &&
-              observed.rows[0]?.blockers.length === 1 &&
-              observed.rows[0]?.blockers[0] === identity.pid;
-          }
-          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        if (!blocked) throw new Error("Confirmation did not wait on the source reservation");
-        attempted = true;
+        trackRaceActor(probe);
+        const probeOutcome = await boundRace(probe);
+        if (probeOutcome.ok) throw new Error("Card reservation probe unexpectedly succeeded");
+        expect(probeIdentity?.pid).not.toBe(confirmer.pid);
+        expect(probeOutcome.error).toMatchObject({ code: "55P03" });
+        const beforeCard = await withTransaction(pool, (client) => getItemById(client, proposals, cardId));
+        const beforeSource = await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId));
+        const jobs = await admin.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        setInvalidationHook((event) => invalidations.push(event));
+        const deletion = createChokePoint(pool)
+          .deleteRelation(edge)
+          .then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+        trackRaceActor(deletion);
+        const deletionOutcome = await boundRace(deletion);
+        if (deletionOutcome.ok) throw new Error("Type deletion unexpectedly succeeded");
+        expect(deletionOutcome.error).toMatchObject({
+          status: 409,
+          code: "version_conflict",
+          details: { field: "type" },
+        });
+        expect(await targets()).toEqual([edge.targetItemId]);
+        expect(await withTransaction(pool, (client) => getItemById(client, proposals, cardId))).toEqual(beforeCard);
+        expect(await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId))).toEqual(
+          beforeSource,
+        );
+        expect(
+          (
+            await admin.query<{ id: string; key: string | null }>(
+              "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+            )
+          ).rows,
+        ).toEqual(jobs.rows);
+        expect(invalidations).toEqual([]);
+        commit = true;
       } catch (error) {
         primary = { error };
       }
-      release(attempted);
-      const holderOutcome = await holder;
-      const confirmationOutcome = confirmation ? await confirmation : null;
-      const unexpected: unknown[] = [];
-      if (primary) unexpected.push(primary.error);
-      if (attempted) {
-        if (holderOutcome.ok) unexpected.push(new Error("Type mutation unexpectedly succeeded"));
-        else {
-          try {
-            expect(holderOutcome.error).toMatchObject({ status: 409, code: "version_conflict" });
-          } catch (error) {
-            unexpected.push(error);
-          }
-        }
-      } else if (holderOutcome.ok || holderOutcome.error !== marker) {
-        unexpected.push(holderOutcome.ok ? new Error("Holder unexpectedly succeeded") : holderOutcome.error);
+      release(commit);
+      let outcome: Awaited<typeof confirmation> | undefined;
+      let cleanup: { error: unknown } | undefined;
+      try {
+        outcome = await boundRace(confirmation);
+        await boundRace(Promise.allSettled([...pendingRaceActors]));
+      } catch (error) {
+        cleanup = { error };
       }
-      if (!confirmationOutcome) unexpected.push(new Error("Confirmation was not started"));
-      else if (!confirmationOutcome.ok) unexpected.push(confirmationOutcome.error);
-      if (unexpected.length) throw new AggregateError(unexpected, "Inbox type race failed", { cause: unexpected[0] });
+      if (!pendingRaceActors.size) setInvalidationHook(() => {});
+      if (cleanup) {
+        if (primary)
+          throw new AggregateError([primary.error, cleanup.error], "Inbox type race cleanup failed", {
+            cause: primary.error,
+          });
+        throw cleanup.error;
+      }
+      if (!outcome) throw new Error("Missing confirmation outcome");
+      if (primary && !outcome.ok && outcome.error !== cancelled)
+        throw new AggregateError([primary.error, outcome.error], "Inbox type race and confirmation failed", {
+          cause: primary.error,
+        });
+      if (primary) throw primary.error;
+      if (!outcome.ok) throw outcome.error;
       expect(await targets()).toEqual([edge.targetItemId]);
       expect((await withTransaction(pool, (client) => getItemById(client, proposals, cardId)))?.properties.status).toBe(
         "confirmed",
