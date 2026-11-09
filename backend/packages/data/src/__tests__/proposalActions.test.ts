@@ -1291,6 +1291,32 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       ]);
     });
 
+    it("writes the heading one level below its section heading and never below h3", async () => {
+      const cases = [
+        { section: "h1", heading: "h2" },
+        { section: "h2", heading: "h3" },
+        { section: "h3", heading: "h3" },
+      ] as const;
+      for (const { section, heading } of cases) {
+        const target = await projectWithPage([
+          { id: "s", type: section, text: "Section" },
+          { id: "inside", type: "text", text: "Inside" },
+        ]);
+        const proposal = await createV2Proposal(target, {
+          markdown: "Body",
+          placement: { afterHeading: "s" },
+          heading: "Added",
+        });
+        await confirm(proposal.id);
+        expect((await pageBlocks(target)).map(([, type, text]) => [type, text])).toEqual([
+          [section, "Section"],
+          ["text", "Inside"],
+          [heading, "Added"],
+          ["text", "Body"],
+        ]);
+      }
+    });
+
     it("writes into the page of a real subpage, the Pages host", async () => {
       const project = await projectWithPage([]);
       const page = await withTransaction(pool, (client) =>

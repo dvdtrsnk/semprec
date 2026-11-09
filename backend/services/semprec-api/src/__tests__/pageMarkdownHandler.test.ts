@@ -37,6 +37,24 @@ describe("GET /api/items/:id/page.md (issue #1678)", () => {
     expect(body).not.toContain("The page title");
   });
 
+  it("serializes an h1 block as a # line of its own, unrelated to the page title", async () => {
+    const host = await harness.createHost(harness.tenantA);
+    const insertion = await fetch(`${harness.baseUrl}/api/items/${host}/page/insert`, {
+      method: "POST",
+      headers: { ...harness.headersA, "Content-Type": "application/json" },
+      body: JSON.stringify({ placement: "end", markdown: "# Heading\n\nBody text" }),
+    });
+    expect(insertion.status).toBe(200);
+    const docId = await harness.docIdOf(harness.tenantA, host);
+    await runInTenant(harness.tenantA, () =>
+      mutateYDoc(harness.runtime, docId, "user", (ydoc) => ydoc.getMap("meta").set("title", "Other title")),
+    );
+
+    const body = await (await readMd(harness.headersA, host)).text();
+    expect(body).toBe("# Heading\n\nBody text");
+    expect(body).not.toContain("Other title");
+  });
+
   it("returns the same ETag for two reads with a compaction between them", async () => {
     const host = await harness.createHost(harness.tenantA);
     await runInTenant(harness.tenantA, () => writePageTextBlocks(harness.runtime, host, ["one", "two"]));
