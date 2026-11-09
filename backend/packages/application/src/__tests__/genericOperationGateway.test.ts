@@ -1187,6 +1187,100 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(await chokePoint.findItem(item.id)).toEqual(after);
     }));
 
+  it("executes a new series immediately, leaves a rejected ending unchanged, and conflicts on a stale series", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
+        if (!tasks) throw new Error("Tasks missing");
+        const cp = createChokePoint(runtime);
+        const item = await cp.createItem({ databaseId: tasks.id, properties: { name: "Task", date: "2026-10-22" } });
+        const projectItemId = randomUUID();
+        const run = await withTransaction(runtime, (client) =>
+          createAgentRun(client, { projectItemId, triggeredBy: "user", task: "recurrence" }),
+        );
+        const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        await expect(
+          gateway.invoke("item.patch", actor, NO_CAPABILITIES, {
+            itemId: item.id,
+            properties: { recurrence: { preset: "weekly" } },
+            ifVersion: item.updatedAt,
+          }),
+        ).rejects.toMatchObject({ status: 403 });
+        expect(await cp.findItem(item.id)).toEqual(item);
+        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+          properties: { recurrence: { preset: "weekly" } },
+          ifVersion: item.updatedAt,
+        });
+        const weekly = await cp.findItem(item.id);
+        if (!weekly) throw new Error("Task missing");
+        expect(weekly.properties.recurrence).toMatchObject({ preset: "weekly" });
+        const requestFor = async (value: unknown, version: string) => {
+          try {
+            await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+              itemId: item.id,
+              properties: { recurrence: value },
+              ifVersion: version,
+            });
+          } catch (error) {
+            if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
+            throw error;
+          }
+          throw new Error("Approval was not requested");
+        };
+        const rejected = await requestFor(null, weekly.updatedAt);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: rejected,
+            decision: "rejected",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: stale,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const changed = await cp.updateItem({
+          databaseId: tasks.id,
+          itemId: item.id,
+          propertiesPatch: { recurrence: { preset: "daily" } },
+          ifVersion: weekly.updatedAt,
+        });
+        const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
+        if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
+        expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
+          true,
+        );
+        expect(await cp.findItem(item.id)).toEqual(changed);
+        expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
+          "conflict",
+        );
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Recurrence test and cleanup failed", {
+          // The test failure is primary; the cleanup error remains in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
+        });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
+  });
+
   it("snapshots and replays a flagged item patch without the original version guard", async () =>
     inTenantZero(async () => {
       const database = await chokePoint.createDatabase({ name: "Flag patch" });
