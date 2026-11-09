@@ -3708,8 +3708,8 @@
       "sequence": 38,
       "status": "proposed",
       "title": "[backend-delivery 38/74] Implement data/docs, shared/genericOperations, application changes",
-      "bodyCharacters": 57986,
-      "specSha256": "7c8ba6c39032c5b740a95527863e7a868db515aaf30186a0087d4b85037f2296",
+      "bodyCharacters": 58143,
+      "specSha256": "470b52bf7b251f4f4c93cdf195aabe0a9385bd9676782d34cfb3e9f033a2fa47",
       "members": [
         {
           "id": "gh-1676",
@@ -3752,7 +3752,7 @@
         },
         {
           "id": "gh-1715",
-          "specSha256": "c23896d364186047678e6116a76db6e4dd02fbb03118753f026fa783251b5229",
+          "specSha256": "1b6ec201fddbdbb3df59910a2d86c6a8b9abb182a8c839e3d689d95ec0be0352",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1658",
@@ -3763,7 +3763,7 @@
         },
         {
           "id": "gh-1680",
-          "specSha256": "4e533a82defdb49500f70c68ed34fe08d4c9a4ca15e60090eb17dd7a93188270",
+          "specSha256": "6ddc6423295f19e45ea36b20fa7869fef807633f9f91bdaa8648981ce411534b",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1400",
