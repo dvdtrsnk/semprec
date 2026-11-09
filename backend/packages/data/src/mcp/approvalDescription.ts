@@ -95,7 +95,8 @@ export async function buildDestructiveApprovalDescription(
       !Array.isArray(candidate.params)
     ) {
       const params: Record<string, string | number | null> = {};
-      for (const [key, value] of Object.entries<unknown>(candidate.params)) {
+      const entries: Array<[string, unknown]> = Object.entries(candidate.params);
+      for (const [key, value] of entries) {
         if (typeof value !== "string" && typeof value !== "number" && value !== null)
           throw new Error("Invalid approval description parameter");
         params[key] = value;
