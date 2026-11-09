@@ -22,8 +22,10 @@ export async function closeMissedOccurrence(client: PoolClient, databaseId: stri
        AND properties->>'seriesId' = $2 AND properties->>'occurrenceDate' = $3 ORDER BY id LIMIT 1`,
     [databaseId, properties.seriesId, latest],
   );
-  let existing = found.rows[0] ? await lockItemByIdNowait(client, databaseId, found.rows[0].id) : null;
-  if (existing && (existing.deletedAt || existing.properties.seriesId !== properties.seriesId || existing.properties.occurrenceDate !== latest)) existing = null;
+  const existing = found.rows[0] ? await lockItemByIdNowait(client, databaseId, found.rows[0].id) : null;
+  if (found.rows[0] && (!existing || existing.deletedAt || existing.properties.seriesId !== properties.seriesId || existing.properties.occurrenceDate !== latest)) {
+    throw new Error("Latest task occurrence changed during reservation");
+  }
   await rolloverTaskWithClient(client, { databaseId, itemId, status: "missed" });
   if (existing) return;
   const template = series.template;
