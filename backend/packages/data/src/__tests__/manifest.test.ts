@@ -642,8 +642,6 @@ describe("number filter presets in the schema projection (issue #1622)", () => {
     await resetDatabase(pool);
     tenant = await createTestTenant(pool);
     await runInTenant(tenant, () => seedSystem(runtimePool));
-    // The hidden Pages database the docs module declares is created on first use, not by the seed.
-    await runInTenant(tenant, () => withTransaction(runtimePool, (client) => ensurePagesDatabase(client)));
   });
   afterAll(async () => {
     await runtimePool?.end();
@@ -819,6 +817,8 @@ describe("quick filters, default sorts and collection and picker filters (issue 
     await resetDatabase(pool);
     tenant = await createTestTenant(pool);
     await runInTenant(tenant, () => seedSystem(runtimePool));
+    // The hidden Pages database the docs module declares is created on first use, not by the seed.
+    await runInTenant(tenant, () => withTransaction(runtimePool, (client) => ensurePagesDatabase(client)));
   });
   afterAll(async () => {
     await runtimePool?.end();
