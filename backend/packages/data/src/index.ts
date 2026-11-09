@@ -463,6 +463,12 @@ export {
   createProjectAgentGuidanceSaveRouteHandler,
 } from "./projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
 export { createProjectGuidanceDriftReadRouteHandler } from "./guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
+export {
+  createTaskRecurrenceClearRouteHandler,
+  createTaskRecurrenceSetRouteHandler,
+} from "./tasks/taskRecurrenceRoutes.js";
+export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
+export { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "./tasks/tasksDayRolloverAction.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
@@ -481,7 +487,17 @@ export {
   type ProjectedTaskOccurrence,
 } from "./tasks/projectTaskOccurrences.js";
 
-export * from "./journal/journalStore.js";
+// Explicit, not `export *`: the module's reservation re-point for the Journal restore hook (issue #1666) is internal.
+export {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  ensureJournalPeriodDoc,
+  getOrCreateJournalItem,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  weeksOfMonth,
+  type JournalPeriodType,
+} from "./journal/journalStore.js";
 export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
 

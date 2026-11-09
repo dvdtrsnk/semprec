@@ -76,7 +76,7 @@ export async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): P
  * handles at most active tenants × 5 000 rows and one tenant's backlog cannot use up another's tick.
  * See `docs/adr/2026-10-06-system-work-fans-out-per-tenant.md`.
  */
-const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
+export const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
 
 /** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
 export async function handleHeartbeatSweepTask(

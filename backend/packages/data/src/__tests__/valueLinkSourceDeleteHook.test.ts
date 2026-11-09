@@ -36,9 +36,9 @@ async function link(moduleId: string, key: string, from: string, to: string): Pr
 }
 
 /**
- * The file's inherited `projects` link, written through the links store: no link rule of a shipped
- * module creates one yet (the rules are later issues), so the store's own insert stands in for the
- * rule's producer. The file's edge itself is the value the link inherited.
+ * The file's inherited `projects` link, written through the links store: no shipped link rule writes a
+ * `projects` link (the shipped fileCompaniesFromProjects of issue #1653 writes the file's `companies`), so the
+ * store's own insert stands in for such a rule's producer. The file's edge itself is the value the link inherited.
  */
 async function inheritProjects(file: string, sources: string[], sourcePropertyKey = "project"): Promise<string> {
   const { link: created } = await withTransaction(pool, (client) =>
@@ -87,6 +87,18 @@ async function projectEdgeTargets(file: string): Promise<string[]> {
 
 const FAR_FUTURE = new Date("2999-01-01T00:00:00Z");
 
+/** Rows in the order `linkRows` reads them: by link id, then by source item id (UUIDs of equal length). */
+function ordered(rows: Awaited<ReturnType<typeof linkRows>>): Awaited<ReturnType<typeof linkRows>> {
+  const byKey =
+    <T>(key: (row: T) => string) =>
+    (a: T, b: T) =>
+      key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
+  return {
+    links: [...rows.links].sort(byKey((row) => row.id)),
+    sources: [...rows.sources].sort(byKey((row) => `${row.link_id} ${row.source_item_id ?? ""}`)),
+  };
+}
+
 describe("value links detach when their source is deleted (issue #1656)", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -128,8 +140,14 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const file = await item("files", "nabidka.pdf");
       await link("tasks", "project", task, project);
       await link("files", "projects", file, project);
+      // The production rule fileCompaniesFromProjects (issue #1653) links the file's companies to its project.
+      const production = await linkRows();
+      expect(production).toEqual({
+        links: [{ id: expect.any(String), item_id: file, state: "on" }],
+        sources: [{ link_id: production.links[0]?.id, source_item_id: project }],
+      });
       await inheritProjects(file, [task]);
-      expect(Object.keys(await linksOf(file))).toEqual(["projects"]);
+      expect(Object.keys(await linksOf(file)).sort()).toEqual(["companies", "projects"]);
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => {
         events.push(event);
@@ -137,14 +155,15 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
 
       await cp.softDeleteItem(await db("tasks"), task);
 
-      expect(await linkRows()).toEqual({ links: [], sources: [] });
-      expect(await linksOf(file)).toEqual({});
+      // The task-sourced projects link is gone; the companies link and its project source are untouched.
+      expect(await linkRows()).toEqual(production);
+      expect(Object.keys(await linksOf(file))).toEqual(["companies"]);
       expect(await projectEdgeTargets(file)).toEqual([project]);
       expect(events.some((event) => event.scope === "item" && event.itemId === file)).toBe(true);
 
       // Restoring the source relinks nothing: the value stays the file's own.
       await cp.restoreItem(await db("tasks"), task);
-      expect(await linkRows()).toEqual({ links: [], sources: [] });
+      expect(await linkRows()).toEqual(production);
       expect(await projectEdgeTargets(file)).toEqual([project]);
     });
   });
@@ -156,14 +175,32 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const file = await item("files", "smlouva.pdf");
       await link("files", "projects", file, first);
       await link("files", "projects", file, second);
+      // The production rule fileCompaniesFromProjects (issue #1653) links the file's companies to both projects.
+      const production = await linkRows();
+      const productionId = production.links[0]?.id ?? "";
+      expect(production).toEqual(
+        ordered({
+          links: [{ id: productionId, item_id: file, state: "on" }],
+          sources: [first, second].map((source_item_id) => ({ link_id: productionId, source_item_id })),
+        }),
+      );
       const linkId = await inheritProjects(file, [first, second], "name");
 
       await cp.softDeleteItem(await db("projects"), first);
 
-      expect(await linkRows()).toEqual({
-        links: [{ id: linkId, item_id: file, state: "on" }],
-        sources: [{ link_id: linkId, source_item_id: second }],
-      });
+      // Both links stay on with the other source; the trashed project is gone from each link's sources.
+      expect(await linkRows()).toEqual(
+        ordered({
+          links: [
+            { id: linkId, item_id: file, state: "on" },
+            { id: productionId, item_id: file, state: "on" },
+          ],
+          sources: [
+            { link_id: linkId, source_item_id: second },
+            { link_id: productionId, source_item_id: second },
+          ],
+        }),
+      );
       const entry = (await linksOf(file)).projects;
       expect(entry?.valueKind).toBe("inherited");
       expect(entry?.sources.map((source) => (source.kind === "item" ? source.itemId : null))).toEqual([second]);

@@ -25,6 +25,7 @@ import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcripti
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
+import { runPeopleEventsInverseCutoverMigration } from "../calendar/peopleEventsInverseCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
@@ -35,6 +36,8 @@ import { runPeoplePhonesCutoverMigration } from "../seed/peoplePhonesCutoverMigr
 import { runPeopleLastContactCutoverMigration } from "../people/peopleLastContactCutoverMigration.js";
 import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigration.js";
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
+import { runTasksPersistentRemovalCutoverMigration } from "../tasks/tasksPersistentRemovalCutoverMigration.js";
+import { runTasksDayRolloverHeartbeatCutoverMigration } from "../tasks/tasksDayRolloverHeartbeatCutoverMigration.js";
 import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
@@ -66,12 +69,14 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptionLanguageCodeCutoverMigration(pool);
     await runEventTranscriptCardinalityCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+    await runTasksDayRolloverHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
     await runEventsIcalIdentityCutoverMigration(pool);
     await runCalendarsCutoverMigration(pool);
     await runEventsAreaCutoverMigration(pool);
     await runEventsFilesRelationCutoverMigration(pool);
+    await runPeopleEventsInverseCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);
     await runProcessingProposalsCardStateCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);
@@ -92,6 +97,8 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runAreasUnplannedCutoverMigration(pool);
     await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
+    // Issue #2009: registered after the Tasks schema cutover of #1540.
+    await runTasksPersistentRemovalCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
     await runTaskRecurrenceSeriesCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);

@@ -89,9 +89,9 @@ describe("issue #235: databases.key and nullable system names", () => {
         `SELECT p.name FROM properties p
          JOIN databases d ON d.id = p.database_id
          WHERE d.system = true AND d.owner_module_id = 'tasks' AND p.key = ANY($1)`,
-        [["name", "status", "date", "timeFrom", "timeTo", "time", "notifications", "persistent"]],
+        [["name", "status", "date", "timeFrom", "timeTo", "time", "notifications"]],
       );
-      expect(propertyRows).toHaveLength(8);
+      expect(propertyRows).toHaveLength(7);
       for (const row of propertyRows) {
         expect(row.name).toBeNull();
       }

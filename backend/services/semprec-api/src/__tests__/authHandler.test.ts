@@ -1584,7 +1584,10 @@ describe("self person HTTP contract", () => {
     const item = await runInTenant(tenantId, async () => {
       const db = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "events"));
       if (!db) throw new Error("Events missing");
-      return createChokePoint(runtime).createItem({ databaseId: db.id, properties: { name: "Event" } });
+      return createChokePoint(runtime).createItem({
+        databaseId: db.id,
+        properties: { name: "Event", date: "2026-10-22" },
+      });
     });
     const invalid = await put({ personId: item.id });
     const missing = await put({ personId: randomUUID() });

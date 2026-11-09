@@ -123,8 +123,8 @@ describe("recording intake", () => {
       const files = databases.find((d) => d.ownerModuleId === "files");
       const events = databases.find((d) => d.ownerModuleId === "events");
       if (!files || !events) throw new Error("Missing recording databases");
-      const event = await cp.createItem({ databaseId: events.id, properties: { name: "Event" } });
-      const other = await cp.createItem({ databaseId: events.id, properties: { name: "Other" } });
+      const event = await cp.createItem({ databaseId: events.id, properties: { name: "Event", date: "2026-10-16" } });
+      const other = await cp.createItem({ databaseId: events.id, properties: { name: "Other", date: "2026-10-16" } });
       const upload = (eventId: string | null, recordedAt: string | null) =>
         ingestUploadedFileWithTransaction(
           runtime,
@@ -324,8 +324,14 @@ describe("recording intake", () => {
       const files = databases.find((entry) => entry.ownerModuleId === "files");
       const events = databases.find((entry) => entry.ownerModuleId === "events");
       if (!files || !events) throw new Error("Missing recording databases");
-      const firstEvent = await cp.createItem({ databaseId: events.id, properties: { name: "First" } });
-      const secondEvent = await cp.createItem({ databaseId: events.id, properties: { name: "Second" } });
+      const firstEvent = await cp.createItem({
+        databaseId: events.id,
+        properties: { name: "First", date: "2026-10-16" },
+      });
+      const secondEvent = await cp.createItem({
+        databaseId: events.id,
+        properties: { name: "Second", date: "2026-10-16" },
+      });
       const upload = (eventId: string | null, recordedAt: string | null) =>
         ingestUploadedFileWithTransaction(
           runtime,

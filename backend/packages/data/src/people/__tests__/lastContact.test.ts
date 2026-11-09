@@ -557,8 +557,13 @@ describe("People lastContact (issue #1660)", () => {
     await runInTenant(tenantA, () => recomputePersonLastContact(pool, person, { now: after }));
     expect(await lastContactOf(tenantA, c, person)).toBe("2025-03-10");
 
+    // The create derived timeTo 16:00 (an hour after 15:00); a later start needs a later end too (issue #1663).
     await runInTenant(tenantA, () =>
-      chokePoint.updateItem({ databaseId: c.eventsId, itemId: event, propertiesPatch: { timeFrom: "16:00" } }),
+      chokePoint.updateItem({
+        databaseId: c.eventsId,
+        itemId: event,
+        propertiesPatch: { timeFrom: "16:00", timeTo: "16:45" },
+      }),
     );
     expect((await queuedRecomputes()).map((job) => job.key)).toEqual([peopleLastContactJobKey(person)]);
     await discardQueuedJobs();

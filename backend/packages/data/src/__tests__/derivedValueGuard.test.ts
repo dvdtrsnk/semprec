@@ -93,6 +93,8 @@ describe("derived value creation guard", () => {
     };
     return { cp, db, property };
   }
+  /** An Event's create requires a date (issue #1663); the other owners need none. */
+  const dated = (owner: string): Record<string, string> => (owner === "events" ? { date: "2026-10-16" } : {});
   it("rejects each configured side with a live project and allows it without one", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
@@ -113,8 +115,14 @@ describe("derived value creation guard", () => {
                 (await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-01-02"))).itemId,
               ]
             : [
-                (await cp.createItem({ databaseId: db(owner), properties: { name: "With project" } })).id,
-                (await cp.createItem({ databaseId: db(owner), properties: { name: "Without project" } })).id,
+                (await cp.createItem({ databaseId: db(owner), properties: { name: "With project", ...dated(owner) } }))
+                  .id,
+                (
+                  await cp.createItem({
+                    databaseId: db(owner),
+                    properties: { name: "Without project", ...dated(owner) },
+                  })
+                ).id,
               ];
         await cp.createRelation({
           relationPropertyId: await property(owner, projectKey),
@@ -166,11 +174,16 @@ describe("derived value creation guard", () => {
     let foreignEvent = "";
     await runInTenant(foreign, async () => {
       const { cp, db } = await fixture();
-      foreignEvent = (await cp.createItem({ databaseId: db("events"), properties: { name: "Foreign" } })).id;
+      foreignEvent = (
+        await cp.createItem({ databaseId: db("events"), properties: { name: "Foreign", date: "2026-10-16" } })
+      ).id;
     });
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
+      const event = await cp.createItem({
+        databaseId: db("events"),
+        properties: { name: "Event", date: "2026-10-16" },
+      });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
       await cp.createRelation({
@@ -190,7 +203,10 @@ describe("derived value creation guard", () => {
   it("rejects both guarded sides in the shared read-only assertion without reserving definitions", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
+      const event = await cp.createItem({
+        databaseId: db("events"),
+        properties: { name: "Event", date: "2026-10-16" },
+      });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
       const projectProperty = await property("events", "project");
@@ -252,7 +268,10 @@ describe("derived value creation guard", () => {
   it("refuses a changed set before removing its old edge while preserving no-op and delete", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
+      const event = await cp.createItem({
+        databaseId: db("events"),
+        properties: { name: "Event", date: "2026-10-16" },
+      });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const first = await cp.createItem({ databaseId: db("areas"), properties: { name: "First" } });
       const second = await cp.createItem({ databaseId: db("areas"), properties: { name: "Second" } });
@@ -320,7 +339,10 @@ describe("derived value creation guard", () => {
         const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
         const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
-        const unrelatedEvent = await cp.createItem({ databaseId: db("events"), properties: { name: "Unrelated" } });
+        const unrelatedEvent = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Unrelated", date: "2026-10-16" },
+        });
         const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
         const projectProperty = await property("files", "projects");
         const areaProperty = await property("files", "area");

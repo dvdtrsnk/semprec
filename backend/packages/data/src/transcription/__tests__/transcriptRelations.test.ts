@@ -46,8 +46,9 @@ describe("Transcript project, company and people relations (issue #1470)", () =>
     await pool?.end();
   });
 
+  /** An empty item; an Event gets the date its create requires (issue #1663). */
   async function createItem(databaseId: string) {
-    return chokePoint.createItem({ databaseId, properties: {} });
+    return chokePoint.createItem({ databaseId, properties: databaseId === ids.events ? { date: "2026-10-16" } : {} });
   }
 
   it("a fresh install has the three relations and their inverses", async () => {

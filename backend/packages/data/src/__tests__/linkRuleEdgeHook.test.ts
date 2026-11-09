@@ -30,13 +30,9 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [],
   agentTools: [],
+  // The union cases use the real `fileCompaniesFromProjects` rule of the systemDatabases manifest (issue #1653),
+  // which replaced the fixture rule over the same three properties.
   linkRules: [
-    {
-      key: "fixtureUnion.projectCompanies",
-      source: { databaseKey: "projects", propertyKey: "company" },
-      target: { databaseKey: "files", propertyKey: "companies" },
-      via: { databaseKey: "files", relationKey: "projects" },
-    },
     {
       key: "fixtureSingle.taskProject",
       source: { databaseKey: "tasks", propertyKey: "project" },
@@ -168,7 +164,7 @@ describe("value link via-edge union", () => {
         itemDeleteWithClient(client, projects, firstProject.id, { queueAffinity: createActionQueueAffinity() }),
       );
       await handleLinkPropagation(data, {
-        ruleKey: "fixtureUnion.projectCompanies",
+        ruleKey: "fileCompaniesFromProjects",
         sourceItemId: firstProject.id,
         hop: 1,
       });
@@ -189,7 +185,7 @@ describe("value link via-edge union", () => {
       expect(sources.rows).toEqual([{ source_item_id: secondProject.id, state: "on" }]);
       // R1 P6: a later propagation from the remaining source recomputes the link from that source alone.
       await handleLinkPropagation(data, {
-        ruleKey: "fixtureUnion.projectCompanies",
+        ruleKey: "fileCompaniesFromProjects",
         sourceItemId: secondProject.id,
         hop: 1,
       });
@@ -277,8 +273,14 @@ describe("value link via-edge union", () => {
         return db.id;
       });
       const items = [];
+      // Index 3 is Events, whose create requires a date (issue #1663).
       for (const [index, databaseId] of ids.entries())
-        items.push(await cp.createItem({ databaseId, properties: index === 0 ? { name: "Chain source" } : {} }));
+        items.push(
+          await cp.createItem({
+            databaseId,
+            properties: index === 0 ? { name: "Chain source" } : index === 3 ? { date: "2026-10-16" } : {},
+          }),
+        );
       const viaKeys = ["area", "project", "actionItems", "people", "people", "companies"];
       const sourceSide = new Set([4]);
       const edges = [];
@@ -495,7 +497,7 @@ describe("value link via-edge union", () => {
       const secondProject = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
       const firstTask = await cp.createItem({ databaseId: tasks, properties: { name: "One" } });
       const secondTask = await cp.createItem({ databaseId: tasks, properties: { name: "Two" } });
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
       for (const [task, project] of [
         [firstTask, firstProject],
         [secondTask, secondProject],
@@ -551,7 +553,10 @@ describe("value link via-edge union", () => {
         ),
       );
       expect(cards.rows).toHaveLength(1);
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Chosen event" } });
+      const event = await cp.createItem({
+        databaseId: events,
+        properties: { name: "Chosen event", date: "2026-10-16" },
+      });
       const config = { processingProposalsDatabaseId: proposals };
       const cardId = cards.rows[0]!.id;
       await withTransaction(data, (client) =>

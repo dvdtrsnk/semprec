@@ -12,8 +12,10 @@ import {
 
 /**
  * The properties a series' occurrences are created from (issue #1605). The advance takes `name`, `timeFrom`,
- * `timeTo`, `notifications` and `persistent` from it and `flagged`/`description` from the completed occurrence
- * (#1673); the projection uses all seven for a virtual occurrence (#1672).
+ * `timeTo` and `notifications` from it and `flagged`/`description` from the completed occurrence (#1673); the
+ * projection uses every field but `persistent` for a virtual occurrence (#1672). `persistent` is a legacy field: the
+ * Tasks property was removed (issue #2009), stored templates keep the boolean, new series store `false`, and no reader
+ * outside this module sees it (`publicTaskRecurrenceTemplate`).
  */
 const templateSchema = z
   .object({
@@ -28,6 +30,20 @@ const templateSchema = z
   .strict();
 
 export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
+
+/** A template as callers outside the store show it: every field but the legacy `persistent` (issue #2009). */
+export type PublicTaskRecurrenceTemplate = Omit<TaskRecurrenceTemplate, "persistent">;
+
+export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): PublicTaskRecurrenceTemplate {
+  return {
+    name: template.name,
+    timeFrom: template.timeFrom,
+    timeTo: template.timeTo,
+    notifications: template.notifications,
+    flagged: template.flagged,
+    description: template.description,
+  };
+}
 
 /**
  * Not `types.ts`'s `TaskRecurrenceRow` (which keeps `rule` as a loosely-typed jsonb bag,
@@ -111,6 +127,70 @@ export async function createTaskRecurrence(
     [input.itemId, input.mode, JSON.stringify(rule), input.active ?? true, input.anchorDate, JSON.stringify(template)],
   );
   return mapRow(requireSingleRow(rows, "task_recurrence row"));
+}
+
+/**
+ * Starts a new series in the item's own inactive row (issue #1665): `task_recurrence.item_id` is the row's primary key,
+ * so a task whose recurrence was turned off gets its next series in the same row, with a new `series_id`, the given
+ * rule, anchor and template, and `active` again. Occurrences of the old series keep their `seriesId` as history. Call
+ * it holding the row lock; an item without an inactive row has nothing to restart and fails.
+ */
+export async function restartTaskRecurrence(
+  client: PoolClient,
+  input: CreateTaskRecurrenceInput,
+): Promise<TaskRecurrence> {
+  const rule = parseTaskRecurrenceRule(input.mode, input.rule);
+  const template = parseTaskRecurrenceTemplate(input.template);
+  const result = await client.query<TaskRecurrenceDbRow>(
+    `UPDATE task_recurrence
+     SET mode = $2, rule = $3::jsonb, active = true, series_id = gen_random_uuid(), anchor_date = $4::date, template = $5::jsonb
+     WHERE item_id = $1 AND NOT active RETURNING ${COLUMNS}`,
+    [input.itemId, input.mode, JSON.stringify(rule), input.anchorDate, JSON.stringify(template)],
+  );
+  requireAffectedRows(result, "inactive task_recurrence row");
+  return mapRow(requireSingleRow(result.rows, "inactive task_recurrence row"));
+}
+
+/**
+ * Replaces the rule of series `seriesId` (issue #1665) and marks it active; `anchorDate`, when given, moves the series
+ * start. Call it holding the series row lock (`getTaskRecurrenceBySeriesId(..., true)`).
+ */
+export async function replaceTaskRecurrenceRule(
+  client: PoolClient,
+  seriesId: string,
+  input: { mode: TaskRecurrenceMode; rule: TaskRecurrenceRule; anchorDate?: string },
+): Promise<TaskRecurrence> {
+  const rule = parseTaskRecurrenceRule(input.mode, input.rule);
+  const result = await client.query<TaskRecurrenceDbRow>(
+    `UPDATE task_recurrence SET mode = $2, rule = $3::jsonb, active = true, anchor_date = COALESCE($4::date, anchor_date)
+     WHERE series_id = $1::uuid RETURNING ${COLUMNS}`,
+    [seriesId, input.mode, JSON.stringify(rule), input.anchorDate ?? null],
+  );
+  requireAffectedRows(result, "task_recurrence series row");
+  return mapRow(requireSingleRow(result.rows, "task_recurrence series row"));
+}
+
+/**
+ * Stores the merged template of series `seriesId` (issue #1667). Call it holding the series row lock, after locking the
+ * occurrences the series edit writes.
+ */
+export async function updateTaskRecurrenceTemplate(
+  client: PoolClient,
+  seriesId: string,
+  template: TaskRecurrenceTemplate,
+): Promise<void> {
+  const parsed = parseTaskRecurrenceTemplate(template);
+  const result = await client.query("UPDATE task_recurrence SET template = $2::jsonb WHERE series_id = $1::uuid", [
+    seriesId,
+    JSON.stringify(parsed),
+  ]);
+  requireAffectedRows(result, "task_recurrence series row");
+}
+
+/** Turns series `seriesId` off (issue #1665): the row stays, inactive, so the advance creates no next occurrence. */
+export async function deactivateTaskRecurrenceSeries(client: PoolClient, seriesId: string): Promise<void> {
+  const result = await client.query("UPDATE task_recurrence SET active = false WHERE series_id = $1::uuid", [seriesId]);
+  requireAffectedRows(result, "task_recurrence series row");
 }
 
 /**

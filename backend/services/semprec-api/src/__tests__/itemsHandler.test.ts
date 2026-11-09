@@ -109,6 +109,36 @@ interface RelationBody {
   metadata: Record<string, unknown>;
 }
 
+/** The `links` of an item read with `include=links`. */
+const linkedItemBody = z.object({ links: z.record(z.string(), z.unknown()) });
+/** One link entry whose sources are all items, as the `fileCompaniesFromProjects` rule leaves it. */
+const itemLinkEntry = z
+  .object({
+    valueKind: z.string(),
+    sources: z.array(
+      z
+        .object({
+          kind: z.literal("item"),
+          itemId: z.string(),
+          databaseKey: z.string(),
+          title: z.string(),
+          propertyKey: z.string(),
+        })
+        .strict(),
+    ),
+    brokenBy: z.string().nullable(),
+    brokenAt: z.string().nullable(),
+  })
+  .strict();
+/** An error body as REST sends it: its code and details. */
+const httpError = z.object({ error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }) });
+/** The properties of an item body. */
+const itemProperties = z.object({ properties: z.record(z.string(), z.unknown()) });
+/** The targets of an item's relations, from the relation list route. */
+const relationTargets = z.object({
+  relations: z.array(z.object({ propertyKey: z.string(), targetItemId: z.string() })),
+});
+
 describe("item routes (issue #241)", () => {
   let server: Server;
   let baseUrl: string;
@@ -178,8 +208,14 @@ describe("item routes (issue #241)", () => {
           if (!match) throw new Error(`Missing ${key}`);
           return match.id;
         };
-        const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
-        const open = await cp.createItem({ databaseId: db("events"), properties: { name: "Open" } });
+        const event = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Event", date: "2026-10-16" },
+        });
+        const open = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Open", date: "2026-10-16" },
+        });
         const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const openFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Open file" } });
         const health = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Health" } });
@@ -333,9 +369,15 @@ describe("item routes (issue #241)", () => {
           return { tasks: taskDb.id, events: eventDb.id, people: peopleDb.id };
         });
         const task = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Task", date: "2099-10-22" } });
-        const event = await cp.createItem({ databaseId: ids.events, properties: { name: "Event" } });
+        const event = await cp.createItem({
+          databaseId: ids.events,
+          properties: { name: "Event", date: "2026-10-16" },
+        });
         const inverseTask = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Inverse Task" } });
-        const inverseEvent = await cp.createItem({ databaseId: ids.events, properties: { name: "Inverse Event" } });
+        const inverseEvent = await cp.createItem({
+          databaseId: ids.events,
+          properties: { name: "Inverse Event", date: "2026-10-16" },
+        });
         const person = await cp.createItem({ databaseId: ids.people, properties: { name: "Person" } });
         return { task, event, inverseTask, inverseEvent, person };
       });
@@ -2936,6 +2978,131 @@ describe("item routes (issue #241)", () => {
       expect(byId.get(plain.id)?.links).toEqual({});
     });
 
+    it("returns the production fileCompaniesFromProjects link with both project sources through runtime HTTP, and nothing to another tenant (issue #1653)", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const headers = await authHeader();
+      const foreignHeaders = await authHeader();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let runtimeServer: Server | undefined;
+      const failures: unknown[] = [];
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const dispatch = await createDispatcher(runtime, {
+          passwordResetMailer: noopMailer,
+          appBaseUrl: "http://localhost",
+          setupToken: "unused-setup-token",
+          moduleRegistry,
+          blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+          maxFileSizeBytes: 10 * 1024 * 1024,
+        });
+        runtimeServer = createServer(dispatch);
+        const ownedServer = runtimeServer;
+        await new Promise<void>((resolve, reject) => {
+          ownedServer.once("error", reject);
+          ownedServer.listen(0, "127.0.0.1", resolve);
+        });
+        const address = runtimeServer.address();
+        if (!address || typeof address === "string") throw new Error("Expected runtime server");
+        const base = `http://127.0.0.1:${address.port}`;
+        // Real writes in the reader's tenant through the choke point; the link comes from the manifest's rule.
+        const fixture = await runInTenant(getTenantZeroId(), async () => {
+          const cp = createChokePoint(runtime);
+          const databases = await cp.listDatabases();
+          const db = (key: string) => {
+            const match = databases.find((entry) => entry.ownerModuleId === key);
+            if (!match) throw new Error(`Missing ${key}`);
+            return match.id;
+          };
+          const relation = async (databaseKey: string, key: string) => {
+            const match = (await cp.listProperties(db(databaseKey))).find((property) => property.key === key);
+            if (!match) throw new Error(`Missing ${databaseKey}.${key}`);
+            return match.id;
+          };
+          const create = async (databaseKey: string, name: string) =>
+            (await cp.createItem({ databaseId: db(databaseKey), properties: { name } })).id;
+          const user = { writerKind: "user" } as const;
+          const novak = await create("companies", "Novak Web s.r.o.");
+          const siko = await create("companies", "Siko Koupelny a.s.");
+          const web = await create("projects", "Web for client");
+          const bathroom = await create("projects", "Bathroom renovation");
+          const file = await create("files", "Contract");
+          const projectCompany = await relation("projects", "company");
+          const fileProjects = await relation("files", "projects");
+          await cp.createRelation({ relationPropertyId: projectCompany, callerItemId: web, targetItemId: novak }, user);
+          await cp.createRelation(
+            { relationPropertyId: projectCompany, callerItemId: bathroom, targetItemId: siko },
+            user,
+          );
+          await cp.createRelation({ relationPropertyId: fileProjects, callerItemId: file, targetItemId: web }, user);
+          await cp.createRelation(
+            { relationPropertyId: fileProjects, callerItemId: file, targetItemId: bathroom },
+            user,
+          );
+          return { novak, siko, web, bathroom, file };
+        });
+        const byItem = (a: { itemId: string }, b: { itemId: string }) => a.itemId.localeCompare(b.itemId);
+
+        const read = await fetch(`${base}/api/items/${fixture.file}?include=links`, { headers });
+        expect(read.status).toBe(200);
+        const companies = itemLinkEntry.parse(linkedItemBody.parse(await read.json()).links.companies);
+        expect({ ...companies, sources: [...companies.sources].sort(byItem) }).toEqual({
+          valueKind: "inherited",
+          sources: [
+            {
+              kind: "item",
+              itemId: fixture.web,
+              databaseKey: "projects",
+              title: "Web for client",
+              propertyKey: "company",
+            },
+            {
+              kind: "item",
+              itemId: fixture.bathroom,
+              databaseKey: "projects",
+              title: "Bathroom renovation",
+              propertyKey: "company",
+            },
+          ].sort(byItem),
+          brokenBy: null,
+          brokenAt: null,
+        });
+        const listed = await fetch(`${base}/api/items/${fixture.file}/relations?propertyKey=companies`, { headers });
+        expect(listed.status).toBe(200);
+        const targets = relationTargets.parse(await listed.json()).relations.map((entry) => entry.targetItemId);
+        expect(targets.sort()).toEqual([fixture.novak, fixture.siko].sort());
+
+        const foreign = await fetch(`${base}/api/items/${fixture.file}?include=links`, { headers: foreignHeaders });
+        const randomId = randomUUID();
+        const random = await fetch(`${base}/api/items/${randomId}?include=links`, { headers: foreignHeaders });
+        expect(foreign.status).toBe(404);
+        expect(random.status).toBe(404);
+        expect((await foreign.text()).replaceAll(fixture.file, "<id>")).toEqual(
+          (await random.text()).replaceAll(randomId, "<id>"),
+        );
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        try {
+          if (runtimeServer)
+            await new Promise<void>((resolve, reject) =>
+              runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+            );
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
+    });
+
     it("rejects an include value the catalog does not know", async () => {
       const db = await makeMoviesDb();
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
@@ -3560,6 +3727,170 @@ describe("item routes (issue #241)", () => {
         expect(res.status, JSON.stringify(body)).toBe(400);
         expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
       }
+    });
+  });
+
+  describe("batch 37 write boundaries over REST (R1)", () => {
+    let headers: Record<string, string>;
+    let tasksDb: string;
+
+    beforeEach(async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const databases = await runInTenant(getTenantZeroId(), () => chokePoint.listDatabases());
+      tasksDb = databases.find((database) => database.ownerModuleId === "tasks")?.id ?? "";
+      if (!tasksDb) throw new Error("Tasks not seeded");
+    });
+
+    async function createTask(properties: Record<string, unknown>): Promise<{ id: string; updatedAt: string }> {
+      const created = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.createItem({ databaseId: tasksDb, properties: { name: "Task", ...properties } }),
+      );
+      return { id: created.id, updatedAt: created.updatedAt };
+    }
+
+    async function storedItem(id: string): Promise<{ properties: Record<string, unknown>; updatedAt: string }> {
+      const item = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(tasksDb, id));
+      if (!item) throw new Error(`Item ${id} missing`);
+      return { properties: item.properties, updatedAt: item.updatedAt };
+    }
+
+    async function storedProperties(id: string): Promise<Record<string, unknown>> {
+      return (await storedItem(id)).properties;
+    }
+
+    /** A REST PATCH carrying the item's current version, as the generic item.patch requires. */
+    function patch(id: string, properties: Record<string, unknown>, ifVersion: string) {
+      return fetch(`${baseUrl}/api/items/${id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+    }
+
+    function recurrence(method: "PUT" | "DELETE", id: string, body?: unknown) {
+      return fetch(`${baseUrl}/api/tasks/${id}/recurrence`, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+
+    it("sets a weekly recurrence on a Thursday task, refuses one without a date, and turns it off with DELETE (gh-1665)", async () => {
+      const thursday = await createTask({ date: "2026-10-22" });
+      const set = await recurrence("PUT", thursday.id, { preset: "weekly" });
+      expect(set.status).toBe(200);
+      const setProperties = itemProperties.parse(await set.json()).properties;
+      expect(setProperties.recurrence).toEqual({
+        preset: "weekly",
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["thu"] },
+      });
+      expect(setProperties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+
+      const undated = await createTask({});
+      const before = await storedProperties(undated.id);
+      const refused = await recurrence("PUT", undated.id, { preset: "weekly" });
+      expect(refused.status).toBe(400);
+      expect(httpError.parse(await refused.json()).error).toEqual({
+        code: "validation_failed",
+        details: { field: "date" },
+      });
+      expect(await storedProperties(undated.id)).toEqual(before);
+
+      const cleared = await recurrence("DELETE", thursday.id);
+      expect(cleared.status).toBe(200);
+      expect(itemProperties.parse(await cleared.json()).properties).toMatchObject({
+        date: "2026-10-22",
+        seriesId: null,
+        occurrenceDate: null,
+        recurrence: null,
+      });
+    });
+
+    it.each([
+      ["null", null],
+      ["an empty string", ""],
+    ])(
+      "refuses a PATCH of the date to %s on a recurring task with 400 on date, and keeps the row",
+      async (_label, date) => {
+        const recurring = await createTask({ date: "2026-10-22" });
+        expect((await recurrence("PUT", recurring.id, { preset: "weekly" })).status).toBe(200);
+        // The PUT wrote the task, so the PATCH carries the version read after it.
+        const { properties: before, updatedAt } = await storedItem(recurring.id);
+        const response = await patch(recurring.id, { date }, updatedAt);
+        expect(response.status).toBe(400);
+        expect(httpError.parse(await response.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "date" },
+        });
+        expect(await storedProperties(recurring.id)).toEqual(before);
+      },
+    );
+
+    it("clears the date of a task without a series over REST", async () => {
+      const once = await createTask({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
+      const response = await patch(once.id, { date: null }, once.updatedAt);
+      expect(response.status).toBe(200);
+      expect(await storedProperties(once.id)).toMatchObject({ date: null, timeFrom: null, timeTo: null });
+    });
+
+    it("refuses a client PATCH of status missed with 400 on status, and accepts missed to done (gh-1668)", async () => {
+      const task = await createTask({ date: "2026-10-22" });
+      const before = await storedProperties(task.id);
+      const refused = await patch(task.id, { status: "missed" }, task.updatedAt);
+      expect(refused.status).toBe(400);
+      expect(httpError.parse(await refused.json()).error).toEqual({
+        code: "validation_failed",
+        details: { field: "status" },
+      });
+      expect(await storedProperties(task.id)).toEqual(before);
+
+      // The Tasks module, a system writer, may store missed.
+      await runInTenant(getTenantZeroId(), () =>
+        chokePoint.updateItem({ databaseId: tasksDb, itemId: task.id, propertiesPatch: { status: "missed" } }),
+      );
+      // The system write changed the version; the PATCH carries the one read after it.
+      const done = await patch(task.id, { status: "done" }, (await storedItem(task.id)).updatedAt);
+      expect(done.status).toBe(200);
+      expect(await storedProperties(task.id)).toMatchObject({ status: "done", completedOn: expect.any(String) });
+    });
+
+    it("answers 409 naming the live entry when restoring a Journal entry whose period is held, and 200 otherwise (gh-1666)", async () => {
+      const databases = await runInTenant(getTenantZeroId(), () => chokePoint.listDatabases());
+      const journalDb = databases.find((database) => database.ownerModuleId === "journal")?.id ?? "";
+      if (!journalDb) throw new Error("Journal not seeded");
+      const ensure = (period: string) =>
+        runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", period)),
+        );
+      const trashed = (await ensure("2026-05-03")).itemId;
+      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(journalDb, trashed));
+      const live = (await ensure("2026-05-03")).itemId;
+      expect(live).not.toBe(trashed);
+
+      const held = await fetch(`${baseUrl}/api/items/${trashed}/restore`, { method: "POST", headers });
+      expect(held.status).toBe(409);
+      expect(httpError.parse(await held.json()).error).toEqual({
+        code: "version_conflict",
+        details: { liveItemId: live },
+      });
+      const { rows: trashRows } = await pool.query<{ deleted: boolean }>(
+        "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE id = $1",
+        [trashed],
+      );
+      expect(trashRows).toEqual([{ deleted: true }]);
+
+      const alone = (await ensure("2026-05-04")).itemId;
+      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(journalDb, alone));
+      const restored = await fetch(`${baseUrl}/api/items/${alone}/restore`, { method: "POST", headers });
+      expect(restored.status).toBe(200);
+      expect(
+        z
+          .object({ deletedAt: z.null() })
+          .passthrough()
+          .parse(await restored.json()).deletedAt,
+      ).toBeNull();
     });
   });
 });

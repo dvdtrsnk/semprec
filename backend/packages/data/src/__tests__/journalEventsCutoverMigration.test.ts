@@ -148,7 +148,7 @@ describe("Journal events relation (issue #1609)", () => {
       day: await withTransaction(pool, (client) =>
         getOrCreateJournalItem(client, journal, "day", new Date("2026-10-16T10:00:00Z"), "Europe/Prague"),
       ),
-      event: await cp.createItem({ databaseId: events, properties: { name: "Standup" } }),
+      event: await cp.createItem({ databaseId: events, properties: { name: "Standup", date: "2026-10-16" } }),
     }));
     const input = { relationPropertyId: property!.id, callerItemId: day.id, targetItemId: event.id };
 

@@ -886,6 +886,55 @@ function seedMailThread(
   );
 }
 
+/** A dated Tasks item of `tenant`, created through the choke point, for the recurrence routes (issue #1665). */
+async function datedTask(tenant: TenantFixture): Promise<string> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const tasks = await getDatabaseByModuleId(client, "tasks");
+    if (!tasks) throw new Error("Tasks not seeded");
+    return (
+      await createItemWithClient(client, { databaseId: tasks.id, properties: { name: "Weekly", date: "2026-10-22" } })
+    ).id;
+  });
+}
+
+interface TaskItemSnapshot {
+  properties: unknown;
+  updated_at: string;
+}
+
+interface TaskRecurrenceSnapshot {
+  series_id: string;
+  mode: string;
+  rule: unknown;
+  active: boolean;
+  anchor_date: string | null;
+}
+
+/** A task's stored properties and its `task_recurrence` row, read in its own tenant. */
+async function recurrenceState(tenant: TenantFixture, taskId: string): Promise<unknown> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const item = await client.query<TaskItemSnapshot>("SELECT properties, updated_at::text FROM items WHERE id = $1", [
+      taskId,
+    ]);
+    const series = await client.query<TaskRecurrenceSnapshot>(
+      "SELECT series_id::text, mode, rule, active, anchor_date::text FROM task_recurrence WHERE item_id = $1",
+      [taskId],
+    );
+    return { item: item.rows, series: series.rows };
+  });
+}
+
+/** A series' stored `template`, read in its own tenant. */
+async function seriesTemplate(tenant: TenantFixture, seriesId: string): Promise<Array<{ template: unknown }>> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const { rows } = await client.query<{ template: unknown }>(
+      "SELECT template FROM task_recurrence WHERE series_id = $1::uuid",
+      [seriesId],
+    );
+    return rows;
+  });
+}
+
 const ROUTE_CASES: Record<string, RouteCase> = {
   "project guidance read": async () => {
     const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` });
@@ -1429,6 +1478,54 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "task recurrence set": async () => {
+    const [own, foreign] = [await datedTask(b), await datedTask(a)];
+    const request = (id: string) => ({
+      method: "PUT",
+      path: `/api/tasks/${id}/recurrence`,
+      body: { preset: "weekly" },
+    });
+    const answer = await sendOk(b.member, request(own));
+    expect(readString(answer, "properties", "seriesId")).toMatch(/^[0-9a-f-]{36}$/);
+    const before = await recurrenceState(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
+    expect(result.status).toBe(404);
+    expect(await recurrenceState(a, foreign)).toEqual(before);
+  },
+  "task series edit": async () => {
+    const seriesOf = async (tenant: TenantFixture): Promise<string> => {
+      const task = await datedTask(tenant);
+      const answer = await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/tasks/${task}/recurrence`,
+        body: { preset: "daily" },
+      });
+      return readString(answer, "properties", "seriesId");
+    };
+    const [own, foreign] = [await seriesOf(b), await seriesOf(a)];
+    const request = (id: string) => ({ method: "PATCH", path: `/api/tasks/series/${id}`, body: { timeFrom: "08:00" } });
+    const answer = await sendOk(b.member, request(own));
+    expect(readString(answer, "seriesId")).toBe(own);
+    const before = await seriesTemplate(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
+    expect(result.status).toBe(404);
+    expect(await seriesTemplate(a, foreign)).toEqual(before);
+  },
+  "task recurrence clear": async () => {
+    const [own, foreign] = [await datedTask(b), await datedTask(a)];
+    const path = (id: string) => `/api/tasks/${id}/recurrence`;
+    await sendOk(b.member, { method: "PUT", path: path(own), body: { preset: "weekly" } });
+    await sendOk(a.member, { method: "PUT", path: path(foreign), body: { preset: "weekly" } });
+    const cleared = await sendOk(b.member, { method: "DELETE", path: path(own) });
+    expect(JSON.parse(cleared)).toMatchObject({ properties: { seriesId: null, recurrence: null } });
+    const before = await recurrenceState(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+      method: "DELETE",
+      path: path(id!),
+    }));
+    expect(result.status).toBe(404);
+    expect(await recurrenceState(a, foreign)).toEqual(before);
+  },
   "journal period ensure": async () => {
     const request = { method: "PUT", path: "/api/journal/periods/day/2032-08-15/doc", body: {} };
     const owner = await sendOk(a.member, request);

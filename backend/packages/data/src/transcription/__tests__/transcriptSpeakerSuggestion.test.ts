@@ -85,7 +85,8 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
       return item.id;
     });
-    eventId = await createItem(eventsId, "Sync");
+    // An Event's create requires a date (issue #1663); the speaker suggestion reads only its participants.
+    eventId = await createItem(eventsId, "Sync", { date: "2026-10-16" });
     aliceId = await createParticipant("Alice");
     bobId = await createParticipant("Bob");
   });
@@ -94,9 +95,9 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     await pool?.end();
   });
 
-  async function createItem(databaseId: string, name: string): Promise<string> {
+  async function createItem(databaseId: string, name: string, extra: Record<string, unknown> = {}): Promise<string> {
     const item = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId, properties: { name } }),
+      createItemWithClient(client, { databaseId, properties: { name, ...extra } }),
     );
     return item.id;
   }

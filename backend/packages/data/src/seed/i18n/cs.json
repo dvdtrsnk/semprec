@@ -43,7 +43,7 @@
   "database.tasks.searchPlaceholder": "Hledat v Úkolech",
   "property.tasks.name.name": "Název",
   "property.tasks.status.name": "Stav",
-  "property.tasks.status.option.notDone": "Otevřeno",
+  "property.tasks.status.option.notDone": "Nehotovo",
   "property.tasks.status.option.done": "Splněno",
   "property.tasks.status.option.wontDo": "Nebude splněno",
   "property.tasks.date.name": "Datum",
@@ -69,10 +69,9 @@
   "property.files.tasks.name": "Úkoly",
   "property.events.hostedTasks.name": "Hostované úkoly",
   "property.events.completedTasks.name": "Dokončené úkoly",
-  "property.tasks.status.option.missed": "Zmeškáno",
+  "property.tasks.status.option.missed": "Nesplněno",
   "property.tasks.time.name": "Čas",
   "property.tasks.notifications.name": "Oznámení",
-  "property.tasks.persistent.name": "Trvalý",
   "property.tasks.project.name": "Projekt",
 
   "database.people.name": "Lidé",
@@ -95,6 +94,7 @@
   "property.people.contact.option.email": "E-mail",
   "property.people.projects.name": "Projekty",
   "property.people.companies.name": "Firmy",
+  "property.people.events.name": "Události",
   "property.people.emails.name": "E-maily",
 
   "database.files.name": "Soubory",

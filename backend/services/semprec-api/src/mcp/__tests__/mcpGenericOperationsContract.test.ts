@@ -1111,8 +1111,14 @@ describe("generic operation MCP contract (issue #220)", () => {
           if (events.ownerProcess === null) throw new Error("Journal.events has no owner process");
           const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
           const eventsDb = await database("events");
-          const standup = await cp.createItem({ databaseId: eventsDb.id, properties: { name: "Standup" } });
-          const linked = await cp.createItem({ databaseId: eventsDb.id, properties: { name: "Retro" } });
+          const standup = await cp.createItem({
+            databaseId: eventsDb.id,
+            properties: { name: "Standup", date: "2026-10-16" },
+          });
+          const linked = await cp.createItem({
+            databaseId: eventsDb.id,
+            properties: { name: "Retro", date: "2026-10-16" },
+          });
           const projectItem = await cp.createItem({
             databaseId: (await database("projects")).id,
             properties: { name: "Journal project" },

@@ -12,6 +12,7 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
   MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+  TASKS_DAY_ROLLOVER_ACTION_ID,
   createActionRegistry,
   createDriftCheckAction,
   createFilesTranscriptionTriggerAction,
@@ -22,6 +23,7 @@ import {
   createPersonEmailReindexAction,
   createSemprecTickAction,
   createTranscriptionRequeueSweepAction,
+  createTasksDayRolloverAction,
   type ActionRegistry,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -63,6 +65,7 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
   registry.set(MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, createLinkEmailToPeopleAction(pool));
   registry.set(FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, createFilesTranscriptionTriggerAction(pool));
   registry.set(TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID, createTranscriptionRequeueSweepAction(pool));
+  registry.set(TASKS_DAY_ROLLOVER_ACTION_ID, createTasksDayRolloverAction(pool));
   registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, createProposalComputation({ pool, gateway })));
   registry.set(AGENT_GUIDANCE_DRIFT_ACTION_ID, (_actionConfig, context) =>
     agentGuidanceDrift({ projectItemId: context.projectItemId }),

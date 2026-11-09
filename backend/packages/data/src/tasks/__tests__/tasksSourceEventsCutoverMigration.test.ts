@@ -125,7 +125,7 @@ describe("Tasks source events cutover", () => {
       const action = (await cp.listProperties(events)).find((p) => p.key === "actionItems");
       const inverse = (await cp.listProperties(tasks)).find((p) => p.key === "sourceEvents");
       if (!action || !inverse) throw new Error("Missing seeded relation");
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Meeting" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Meeting", date: "2026-10-16" } });
       const task = await cp.createItem({ databaseId: tasks, properties: { name: "Action" } });
       await cp.createRelation({ relationPropertyId: action.id, callerItemId: event.id, targetItemId: task.id });
       // Synthetic pre-change schema: the locked production catalog cannot remove this inverse through its public API.

@@ -2,10 +2,11 @@ import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
-import { NotFoundError } from "../errors.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import {
@@ -23,6 +24,11 @@ export {
   weeksOfMonth,
   type JournalPeriodType,
 } from "./journalPeriods.js";
+
+/** The reservation a Journal period's entry is found by: one `idempotency_keys` row per Journal database, type and period. */
+function journalPeriodReservationKey(journalDatabaseId: string, type: string, period: string): string {
+  return `journal:${journalDatabaseId}:${type}:${period}`;
+}
 
 /**
  * Lazily creates the Journal item for a given period on first write (issue #24, point 10):
@@ -62,7 +68,7 @@ export async function getOrCreateJournalItem(
     {
       databaseId: journalDatabaseId,
       properties: { name: `\u{1F4D3} ${period}`, type, period },
-      idempotencyKey: `journal:${journalDatabaseId}:${type}:${period}`,
+      idempotencyKey: journalPeriodReservationKey(journalDatabaseId, type, period),
     },
     { allowedSystemKeys: ["name", "type", "period"] },
   );
@@ -82,4 +88,59 @@ export async function ensureJournalPeriodDoc(
   const doc = await getOrCreateDoc(client, item.id, "page");
   const bounds = describeJournalPeriods(parsed.reference.toJSDate(), timezone)[type];
   return { itemId: item.id, docId: doc.id, period, range: { from: bounds.from, to: bounds.to } };
+}
+
+/**
+ * Points the period reservation of a restored Journal entry at it (issue #1666), inside the restore's transaction, or
+ * refuses the restore when the period already has another live entry.
+ *
+ * 1. The reservation row `journal:<journalDatabaseId>:<type>:<period>` is taken first: inserted for `itemId` when it
+ *    is missing, otherwise row-locked by the same statement (`ON CONFLICT ... DO UPDATE` that changes nothing), so a
+ *    reservation that `getOrCreateJournalItem` releases and re-creates concurrently is waited for rather than missed.
+ * 2. Holding it, a plain read looks for another live entry of the database with the same `type` and `period`. Every
+ *    cooperating writer of a period entry, `getOrCreateJournalItem` and this function, takes the reservation inside
+ *    the transaction that makes the entry live and before that transaction commits. The restore itself clears
+ *    `deleted_at` before this hook takes the reservation; what the reservation serializes is the live-peer decision and
+ *    the commit: an entry another cooperating writer made live and committed before this lock was taken is visible
+ *    here, and one whose transaction takes the reservation after it waits for this transaction to end. A live peer
+ *    throws `ConflictError` (409) naming it in `details.liveItemId`; the caller's restore rolls back, and so does the
+ *    reservation insert.
+ * 3. Otherwise the reservation is pointed at `itemId`, so the next `getOrCreateJournalItem` for the period returns it.
+ *
+ * No peer item row is locked: two restores of entries of one period each already hold their own restored row, and
+ * waiting for the other's would close a cycle. The serialization holds only between writers that take the
+ * reservation; an entry made live by any other path is not covered. See
+ * docs/adr/2026-11-08-journal-restore-serializes-on-its-period-reservation.md.
+ */
+export async function repointJournalPeriodReservation(
+  client: PoolClient,
+  input: { journalDatabaseId: string; type: string; period: string; itemId: string },
+): Promise<void> {
+  const key = journalPeriodReservationKey(input.journalDatabaseId, input.type, input.period);
+  const reserved = await client.query<{ database_id: string }>(
+    `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, key) DO UPDATE SET item_id = idempotency_keys.item_id
+     RETURNING database_id`,
+    [key, input.journalDatabaseId, input.itemId],
+  );
+  if (requireSingleRow(reserved.rows, "journal period reservation").database_id !== input.journalDatabaseId) {
+    throw new ConflictError(`Idempotency key '${key}' was already used for a different database`, { key });
+  }
+  const { rows: live } = await client.query<{ id: string }>(
+    `SELECT id FROM items
+     WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL
+       AND properties->>'type' = $3 AND properties->>'period' = $4
+     ORDER BY id LIMIT 1`,
+    [input.journalDatabaseId, input.itemId, input.type, input.period],
+  );
+  const peer = live[0];
+  if (peer) {
+    throw new ConflictError("This Journal period already has a live entry", { liveItemId: peer.id });
+  }
+  const pointed = await client.query("UPDATE idempotency_keys SET item_id = $2 WHERE key = $1 AND database_id = $3", [
+    key,
+    input.itemId,
+    input.journalDatabaseId,
+  ]);
+  requireAffectedRows(pointed, "journal period reservation");
 }

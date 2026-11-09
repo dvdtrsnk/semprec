@@ -336,7 +336,7 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
         const people = rows.find((row) => row.owner_module_id === "people");
         if (!transcripts || !events || !people) throw new Error("Missing transcript, event or people database");
         const transcript = await chokePoint.createItem({ databaseId: transcripts.id, properties: {} });
-        const event = await chokePoint.createItem({ databaseId: events.id, properties: {} });
+        const event = await chokePoint.createItem({ databaseId: events.id, properties: { date: "2026-10-16" } });
         eventIds.set(tenantId, event.id);
         const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
         await withTransaction(dataPool, (client) =>

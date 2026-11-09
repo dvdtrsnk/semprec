@@ -85,7 +85,7 @@ describe("Events and Areas cutover", () => {
     expect(row).toMatchObject({ cardinality: "one_to_many", area_target: row.event_id, event_target: row.area_id });
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(pool);
-      const event = await cp.createItem({ databaseId: row.event_id, properties: {} });
+      const event = await cp.createItem({ databaseId: row.event_id, properties: { date: "2026-10-16" } });
       const area1 = await cp.createItem({ databaseId: row.area_id, properties: {} });
       const area2 = await cp.createItem({ databaseId: row.area_id, properties: {} });
       await cp.createRelation({

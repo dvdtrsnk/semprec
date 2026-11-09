@@ -281,8 +281,14 @@ describe("batch 34 entry-point contracts", () => {
     const fixture = await runInTenant(own.id, async () => {
       const cp = createChokePoint(runtime);
       const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
-      const standup = await cp.createItem({ databaseId: databaseOf(own, "events"), properties: { name: "Standup" } });
-      const linked = await cp.createItem({ databaseId: databaseOf(own, "events"), properties: { name: "Retro" } });
+      const standup = await cp.createItem({
+        databaseId: databaseOf(own, "events"),
+        properties: { name: "Standup", date: "2026-10-16" },
+      });
+      const linked = await cp.createItem({
+        databaseId: databaseOf(own, "events"),
+        properties: { name: "Retro", date: "2026-10-16" },
+      });
       const project = await cp.createItem({ databaseId: databaseOf(own, "projects"), properties: { name: "Project" } });
       // The derived edge as its owning process writes it (the event-link sync), through the system choke point.
       await withTransaction(runtime, (client) =>

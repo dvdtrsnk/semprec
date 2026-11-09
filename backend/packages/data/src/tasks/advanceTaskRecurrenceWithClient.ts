@@ -71,7 +71,7 @@ function isCalendarDate(value: unknown): value is string {
  * - When a non-deleted occurrence of the series already has that date, nothing is created, so repeated
  *   transitions of one occurrence create at most one occurrence per date.
  * - Otherwise the next instance is created with that `date` and `occurrenceDate`, the same `seriesId` and a copy
- *   of `recurrence`; its `name`, `timeFrom`, `timeTo`, `notifications` and `persistent` come from the series
+ *   of `recurrence`; its `name`, `timeFrom`, `timeTo` and `notifications` come from the series
  *   template, its `flagged` and `description` from the completed occurrence (issue #1673). The series row is moved to
  *   it; the `project`, `people` and `files` edges are re-created on it; and the value-link sources naming the old
  *   instance are moved to it. The series template itself is not changed.
@@ -142,7 +142,6 @@ function templateProperties(template: TaskRecurrenceTemplate): Record<string, un
     timeFrom: template.timeFrom,
     timeTo: template.timeTo,
     notifications: template.notifications,
-    persistent: template.persistent,
   };
 }
 

@@ -763,7 +763,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       }
     });
 
-    it("takes name, times, notifications and persistence from the template and flag and description from the completed item", async () => {
+    it("takes name, times and notifications from the template and flag and description from the completed item", async () => {
       const task = await runInTenant(tenant, () =>
         cp.createItem({
           databaseId: tasks,
@@ -773,7 +773,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
             timeFrom: "11:00",
             timeTo: "12:00",
             notifications: false,
-            persistent: false,
             flagged: true,
             description: "Current notes",
           },
@@ -799,12 +798,14 @@ describe("recurring task series (issues #1605, #1670)", () => {
       await setStatus(task.id, { status: "done" });
       const next = (await occurrencesOf(tenant, seriesId)).find((o) => o.id !== task.id);
       if (!next) throw new Error("No next occurrence");
-      expect((await runInTenant(tenant, () => cp.getItem(tasks, next.id)))?.properties).toMatchObject({
+      const nextProperties = (await runInTenant(tenant, () => cp.getItem(tasks, next.id)))?.properties;
+      // The legacy template's `persistent: true` is not copied: the Tasks property is gone (issue #2009).
+      expect(nextProperties && Object.hasOwn(nextProperties, "persistent")).toBe(false);
+      expect(nextProperties).toMatchObject({
         name: "Template name",
         timeFrom: "09:00",
         timeTo: "10:30",
         notifications: true,
-        persistent: true,
         flagged: true,
         description: "Current notes",
         date: "2026-10-19",

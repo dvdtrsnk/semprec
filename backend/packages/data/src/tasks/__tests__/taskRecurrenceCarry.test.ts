@@ -138,9 +138,9 @@ describe("carrying Tasks fields and relations to the next recurring instance (is
     const alice = await create("people", { name: "Alice" });
     const bob = await create("people", { name: "Bob" });
     const file = await create("files", { name: "Checklist.pdf" });
-    const standup = await create("events", { name: "Standup" });
-    const workshop = await create("events", { name: "Workshop" });
-    const retro = await create("events", { name: "Retro" });
+    const standup = await create("events", { name: "Standup", date: "2026-10-16" });
+    const workshop = await create("events", { name: "Workshop", date: "2026-10-16" });
+    const retro = await create("events", { name: "Retro", date: "2026-10-16" });
     await link(["tasks", "project"], task.id, project.id);
     await link(["tasks", "people"], task.id, alice.id, { role: "owner" });
     await link(["tasks", "people"], task.id, bob.id);

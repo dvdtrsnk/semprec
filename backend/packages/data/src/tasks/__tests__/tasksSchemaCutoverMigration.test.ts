@@ -267,6 +267,39 @@ describe("Tasks schema cutover", () => {
     expect(after.rows[0]?.target).toBeTruthy();
     expect(after.rows[0]?.relation_id).toBeTruthy();
   });
+  it("offers missed exactly once after the cutover and a second run changes nothing (issue #1668)", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
+    const statusConfig = async (): Promise<unknown> =>
+      runInTenant(tenant, async () => {
+        const { rows } = await pool.query<{ config: unknown }>(
+          `SELECT p.config FROM properties p JOIN databases d ON d.id = p.database_id
+           WHERE d.owner_module_id = 'tasks' AND p.key = 'status'`,
+        );
+        return rows[0]?.config;
+      });
+    // Synthetic historical schema: a tenant seeded before `missed` existed; no production writer removes an option.
+    await runInTenant(tenant, async () => {
+      const reverted = await pool.query(
+        `UPDATE properties p SET config = jsonb_set(p.config, '{options}', (SELECT jsonb_agg(o) FROM jsonb_array_elements(p.config->'options') o WHERE o->>'key' <> 'missed'))
+         FROM databases d WHERE d.id = p.database_id AND d.owner_module_id = 'tasks' AND p.key = 'status'`,
+      );
+      expect(reverted.rowCount).toBe(1);
+    });
+    const keys = (config: unknown): string[] =>
+      z
+        .object({ options: z.array(z.object({ key: z.string() })) })
+        .parse(config)
+        .options.map((option) => option.key);
+    expect(keys(await statusConfig())).toEqual(["notDone", "done", "wontDo"]);
+
+    await runAsSystem("test:tasks-cutover", () => runTenantCutoverMigrations(pool));
+    const once = await statusConfig();
+    expect(keys(once)).toEqual(["notDone", "done", "wontDo", "missed"]);
+    await runAsSystem("test:tasks-cutover", () => runTenantCutoverMigrations(pool));
+    expect(await statusConfig()).toEqual(once);
+  });
+
   it.each(["tasks", "events", "people", "files"])("does nothing when %s is missing", async (moduleId) => {
     const tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));

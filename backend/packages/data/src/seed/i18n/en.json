@@ -72,7 +72,6 @@
   "property.tasks.status.option.missed": "Missed",
   "property.tasks.time.name": "Time",
   "property.tasks.notifications.name": "Notifications",
-  "property.tasks.persistent.name": "Persistent",
   "property.tasks.project.name": "Project",
 
   "database.people.name": "People",
@@ -95,6 +94,7 @@
   "property.people.contact.option.email": "Email",
   "property.people.projects.name": "Projects",
   "property.people.companies.name": "Companies",
+  "property.people.events.name": "Events",
   "property.people.emails.name": "Emails",
 
   "database.files.name": "Files",
