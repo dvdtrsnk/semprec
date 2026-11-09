@@ -135,9 +135,10 @@ async function executeDestructiveWithClient(
     case "item.patch": {
       const { item } = currentResource as { item: { databaseId: string } };
       const patch = input as InputByOperation["item.patch"];
+      const commandSnapshot = typeof currentResource === "object" && currentResource !== null && "command" in currentResource;
       return updateItemWithClient(
         client,
-        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties, ifVersion: patch.ifVersion },
+        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties, ...(commandSnapshot ? { ifVersion: patch.ifVersion } : {}) },
         { writer, queueAffinity: createActionQueueAffinity() },
       );
     }

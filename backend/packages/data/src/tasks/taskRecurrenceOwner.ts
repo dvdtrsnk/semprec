@@ -1,3 +1,6 @@
+import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { getTenantUserLocale } from "../auth/usersStore.js";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { isDeepStrictEqual } from "node:util";
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
@@ -148,8 +151,11 @@ export async function projectRecurrenceApproval(client: PoolClient, task: ItemRo
   const request = value === null ? null : parseRequest(value);
   const to = request ? resolveRule(request, date) : null;
   if (request && series.mode === request.mode && isDeepStrictEqual(series.rule, to)) throw new ValidationError("Series changed before approval", { field: "recurrence" });
+  const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
+  const catalogs = await loadModuleCatalogs(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
+  const end = resolveCatalogLabel(null, catalogs[locale], catalogs.en, "approval.recurrence.end");
   return {
     snapshot: { seriesId: series.seriesId, active: series.active, mode: series.mode, rule: series.rule, date: task.properties.date ?? null },
-    description: { key: "approval.changesSeries", params: { taskName: typeof task.properties.name === "string" ? task.properties.name : null, fromRule: JSON.stringify(series.rule), toRule: to === null ? "" : JSON.stringify(to) } },
+    description: { key: "approval.changesSeries", params: { taskName: typeof task.properties.name === "string" ? task.properties.name : null, fromRule: JSON.stringify(series.rule), toRule: to === null ? end : JSON.stringify(to) } },
   };
 }

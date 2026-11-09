@@ -1,4 +1,5 @@
 {
+  "approval.recurrence.end": "ukončení",
   "approval.changesSeries": "Změnit opakování úkolu {taskName} z {fromRule} na {toRule}",
   "inbox.originNote.prefix": "Vytvořeno ze schránky:",
   "collection.custom.searchPlaceholder": "Hledat ve sbírce",

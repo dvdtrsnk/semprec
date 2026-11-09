@@ -1,4 +1,5 @@
 {
+  "approval.recurrence.end": "end",
   "approval.changesSeries": "Change recurrence of {taskName} from {fromRule} to {toRule}",
   "inbox.originNote.prefix": "Created from Inbox:",
   "collection.custom.searchPlaceholder": "Search collection",
