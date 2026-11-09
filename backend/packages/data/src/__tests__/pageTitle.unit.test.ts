@@ -34,4 +34,14 @@ describe("normalizePageTitle", () => {
   it("measures the limit after the normalization, not before", () => {
     expect(normalizePageTitle(`${"x".repeat(500)}\n\n   `)).toHaveLength(500);
   });
+
+  it("cuts an over-long title to the limit, without trailing spaces, when asked to truncate instead of failing", () => {
+    expect(normalizePageTitle("x".repeat(600), { truncate: true })).toBe("x".repeat(500));
+    // The cut falls inside a run of spaces: they are not left at the end.
+    expect(normalizePageTitle(`${"x".repeat(499)} yyyy`, { truncate: true })).toBe("x".repeat(499));
+    // A title within the limit is only normalized.
+    expect(normalizePageTitle(" a\nb ", { truncate: true })).toBe("a b");
+    // Code points, not UTF-16 units, are cut.
+    expect(Array.from(normalizePageTitle("\u{1F4D3}".repeat(600), { truncate: true }))).toHaveLength(500);
+  });
 });

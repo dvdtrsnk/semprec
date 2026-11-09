@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
+import * as Y from "yjs";
 import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
 import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
@@ -55,6 +56,7 @@ import {
   LocalFsBlobStorageWriter,
   mergeModuleTaskListForAffinity,
   mintMcpRunCredential,
+  mutateYDoc,
   provisionTenant,
   resolveMailModuleIds,
   recordHeartbeatFailure,
@@ -778,6 +780,38 @@ const cases: Record<string, TaskCase> = {
           requirePayloadString(payload, "itemId"),
         ]),
       ).toEqual([{ page_text: "Stránka tenanta A" }]);
+    },
+  },
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
+        const host = await chokePoint.createItem({ databaseId, properties: { name: "Mirror host" } });
+        const docStore = createDocStore(pool);
+        const created = await docStore.createSubpage({ parent: { itemId: host.id }, title: "Before" }, "user");
+        const blockId = created.pages[0]?.blockId;
+        const doc = await docStore.getDoc(host.id);
+        if (!blockId || !doc) throw new Error("expected a subpage block in the host document");
+        // A title typed into the parent document, as a sync client writes it; the Pages item still holds the old one.
+        await mutateYDoc(pool, doc.id, "user", (ydoc) => {
+          const title = ydoc.getMap<Y.Map<unknown>>("blocks").get(blockId)?.get("text");
+          if (!(title instanceof Y.Text)) throw new Error("expected the page block title to be a Y.Text");
+          title.delete(0, title.length);
+          title.insert(0, "Stránka tenanta A");
+        });
+        return { itemId: host.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ title: string }>(
+          tenant,
+          `SELECT i.properties ->> 'title' AS title FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'pages' AND i.properties ->> 'parentItemId' = $1`,
+          [requirePayloadString(payload, "itemId")],
+        ),
+      ).toEqual([{ title: "Stránka tenanta A" }]);
     },
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {
