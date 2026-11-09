@@ -3551,6 +3551,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "From Inbox" } },
       ]);
       const confirmed = await confirm(card);
+      const createdId = z.string().parse(confirmed.properties.resultItemId);
+      expect((await docStore.readPageMarkdown(createdId)).markdown).toBe("Vytvořeno ze schránky: seed");
       const manual = await createIn("files", { name: "Manual" });
       const page = await createChokePoint(pool).queryDatabaseItems(await databaseIdFor("files"), {});
       expect(page.items.find((item) => item.id === confirmed.properties.resultItemId)?.fromInbox).toBe(true);
@@ -3835,6 +3837,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const rows = await originRows();
         expect(rows).toHaveLength(1);
         expect(rows[0]!.item_id).not.toBe(existing);
+        expect((await docStore.readPageMarkdown(existing)).docId).toBeNull();
       });
 
       it("writes no row when the confirm fails and rolls back", async () => {
