@@ -919,6 +919,15 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
     );
     expect((await docStore.readPageMarkdown(itemId)).markdown).toBe(first.markdown);
+    const blocks = await docStore.listBlocks(itemId);
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0];
+    if (!block) throw new Error("Missing origin block");
+    await docStore.deleteBlock(itemId, block.id, "user");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
   });
 
   it("confirm is idempotent under retry: a second confirm does not create a second target item", async () => {
