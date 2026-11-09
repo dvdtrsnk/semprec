@@ -5,13 +5,15 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { listRelationsForItem, getRelationDefinitionByPropertyId, otherSide } from "../chokePoint/relationsStore.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { insertItem, softDeleteItem } from "../chokePoint/itemsStore.js";
+import { getItemById, insertItem, softDeleteItem } from "../chokePoint/itemsStore.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -230,6 +232,88 @@ describe("Inbox type lock", () => {
         expect(await targets()).toEqual([edge.targetItemId]);
       }),
   );
+
+  it("refuses a type change racing a real confirmation that holds the card", async () =>
+    runInTenant(tenant, async () => {
+      const { edge, targets, proposals, inbox, types } = await fixture();
+      await createSemprecTickAction(pool, async () => ({ properties: { name: "Race task" } }))(
+        { inboxDatabaseId: inbox, inboxItemTypesDatabaseId: types, processingProposalsDatabaseId: proposals },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: edge.callerItemId },
+      );
+      const sourceProperty = (await createChokePoint(pool).listProperties(proposals)).find(
+        (p) => p.key === "sourceInbox",
+      );
+      if (!sourceProperty) throw new Error("Missing source relation");
+      const cardId = await withTransaction(pool, async (client) => {
+        const definition = await getRelationDefinitionByPropertyId(client, sourceProperty.id);
+        if (!definition) throw new Error("Missing source relation definition");
+        const edges = await listRelationsForItem(client, definition.id, edge.callerItemId);
+        if (edges.length !== 1 || !edges[0]) throw new Error("Expected one proposal");
+        return otherSide(edges[0], edge.callerItemId);
+      });
+      let confirmOutcome: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+      let confirmIdentity: { pid: number; started: string } | undefined;
+      const marker = new Error("release source reservation");
+      let primary: { error: unknown } | undefined;
+      try {
+        await withTransaction(pool, async (client) => {
+          const holder = await client.query<{ pid: number; started: string }>(
+            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+          );
+          if (!holder.rows[0]) throw new Error("Missing source holder identity");
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+            inbox,
+            edge.callerItemId,
+          ]);
+          confirmOutcome = withTransaction(pool, async (confirmer) => {
+            const identity = await confirmer.query<{ pid: number; started: string }>(
+              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+            );
+            confirmIdentity = identity.rows[0];
+            if (!confirmIdentity) throw new Error("Missing confirmer identity");
+            await confirmProposalWithClient(confirmer, { processingProposalsDatabaseId: proposals }, cardId);
+          }).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          const deadline = Date.now() + 5000;
+          let blocked = false;
+          while (Date.now() < deadline && !blocked) {
+            if (confirmIdentity) {
+              const observed = await admin.query<{ blockers: number[] }>(
+                "SELECT pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz",
+                [confirmIdentity.pid, confirmIdentity.started],
+              );
+              blocked =
+                observed.rows.length === 1 &&
+                observed.rows[0]?.blockers.length === 1 &&
+                observed.rows[0]?.blockers[0] === holder.rows[0].pid;
+            }
+            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          if (!blocked) throw new Error("Confirmation did not wait on the source reservation");
+          await expect(deleteRelationWithClient(client, edge)).rejects.toMatchObject({
+            status: 409,
+            code: "version_conflict",
+          });
+          throw marker;
+        });
+      } catch (error) {
+        if (error !== marker) primary = { error };
+      }
+      const outcome = confirmOutcome ? await confirmOutcome : null;
+      if (primary && outcome && !outcome.ok)
+        throw new AggregateError([primary.error, outcome.error], "Race and confirmation failed", {
+          cause: primary.error,
+        });
+      if (primary) throw primary.error;
+      if (!outcome) throw new Error("Confirmation was not started");
+      if (!outcome.ok) throw outcome.error;
+      expect(await targets()).toEqual([edge.targetItemId]);
+      expect((await withTransaction(pool, (client) => getItemById(client, proposals, cardId)))?.properties.status).toBe(
+        "confirmed",
+      );
+    }));
 
   it("does not let another tenant delete an Inbox type edge", async () => {
     const own = await runInTenant(tenant, () => fixture("proposed"));
