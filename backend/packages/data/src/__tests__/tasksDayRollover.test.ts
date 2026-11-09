@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -346,6 +346,71 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     );
     expect((await row(due)).properties.status).toBe("missed");
     expect(await Promise.all(ids.slice(0, 3).map(row))).toEqual(before);
+  });
+
+  it("projects the locked current rule when an older reopened occurrence is processed first", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
+      const old = await task({ date: "2026-10-12" });
+      const started = await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: old },
+          body: { preset: "weekly" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      const seriesId = started.item.properties.seriesId;
+      if (typeof seriesId !== "string") throw new Error("Missing series");
+      vi.setSystemTime(new Date("2026-10-13T10:00:00Z"));
+      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } }));
+      const pointer = await inTenant(() =>
+        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
+      );
+      const current = pointer.rows[0]?.item_id;
+      if (!current || current === old) throw new Error("Missing next occurrence");
+      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "notDone" } }));
+      await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: current },
+          body: { preset: "monthly" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
+      await inTenant(() =>
+        withTransaction(pool, (client) => closeMissedOccurrence(client, tasksId, old, "2026-11-20")),
+      );
+      const moved = await inTenant(() =>
+        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
+      );
+      const latest = moved.rows[0]?.item_id;
+      if (!latest || latest === old || latest === current) throw new Error("Missing new occurrence");
+      const before = await row(latest);
+      expect(before.properties).toMatchObject({
+        occurrenceDate: "2026-11-19",
+        recurrence: {
+          preset: null,
+          mode: "fixed",
+          rule: { kind: "monthDates", dates: [19] },
+        },
+      });
+      await inTenant(() =>
+        createTasksDayRolloverAction(pool)(heartbeat.config, {
+          heartbeatId: heartbeat.id,
+          projectItemId: heartbeat.projectItemId,
+        }),
+      );
+      const after = await row(latest);
+      expect(after).toEqual(before);
+      const noOp = await inTenant(() =>
+        cp.updateItem({ databaseId: tasksId, itemId: latest, propertiesPatch: { recurrence: { preset: "monthly" } } }),
+      );
+      expect(noOp.properties.recurrence).toEqual(before.properties.recurrence);
+      expect(await row(latest)).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rolls back the current recurring batch when the existing latest occurrence is reserved", async () => {

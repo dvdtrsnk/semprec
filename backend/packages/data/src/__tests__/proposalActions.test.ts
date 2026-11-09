@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { createUser } from "../auth/usersStore.js";
+import { readPageMarkdown } from "../docs/pageMarkdown.js";
 import { z } from "zod";
 import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
 import "../domainWriteHooks.js";
@@ -939,6 +941,41 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
     );
     expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
+  });
+
+  it("uses the confirming user's English locale and user author for the created page", async () => {
+    const actor = await createUser(pool, {
+      email: "english-origin@example.test",
+      passwordHash: "hash",
+      tenantId: getTenantZeroId(),
+      locale: "en",
+    });
+    const proposal = await createDatabaseProposal("English capture");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const confirmed = await withTransaction(runtime, (client) =>
+          confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            proposal.id,
+            undefined,
+            actor.id,
+          ),
+        );
+        const itemId = z.string().parse(confirmed.properties.resultItemId);
+        const page = await withTransaction(runtime, (client) => readPageMarkdown(client, itemId));
+        expect(page.markdown).toBe("Created from Inbox: English capture");
+        expect(page.docId).not.toBeNull();
+        const updates = await runtime.query<{ created_by: string }>(
+          "SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id",
+          [page.docId],
+        );
+        expect(updates.rows).toEqual([{ created_by: "user" }]);
+      });
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("rolls back confirmation when the origin page write fails", async () => {
