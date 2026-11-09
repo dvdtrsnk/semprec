@@ -34,6 +34,7 @@ import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
+import { createPageMarkdownRequestListener, isPageMarkdownPath } from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { isAllowedOrigin } from "./originCheck.js";
@@ -147,6 +148,7 @@ export async function createDispatcher(
     files: options.blobStorage,
     mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
   });
+  const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
@@ -174,6 +176,10 @@ export async function createDispatcher(
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (req.method === "POST" && isMessageSpeechPath(pathname)) {
       speechListener(req, res);
+      return;
+    }
+    if (req.method === "GET" && isPageMarkdownPath(pathname)) {
+      pageMarkdownListener(req, res);
       return;
     }
     if (pathname === "/healthz") {

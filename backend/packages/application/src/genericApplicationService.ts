@@ -479,6 +479,10 @@ export function createGenericApplicationService(
 
     async getPage(actor, input) {
       const item = await requireItem(input.itemId);
+      if (input.format === "markdown") {
+        const { docId, markdown, etag } = await docStore.readPageMarkdown(item.id);
+        return { docId, kind: "page", markdown, etag };
+      }
       const summary = await docStore.getPageSummary(
         item.id,
         (await chokePoint.findUserLocale(actor.userId)) ?? "en",

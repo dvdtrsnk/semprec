@@ -56,7 +56,7 @@ export interface OutputByOperation {
   "page.restoreVersion": PageRestoreOutput;
   "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
   "link.relink": { itemId: string; propertyKey: string } & ItemLink;
-  "page.get": PageSummary;
+  "page.get": PageSummary | PageMarkdown;
   "page.ensure": { docId: string };
   "page.createSubpage": PageCreateSubpageOutput;
 }
@@ -64,6 +64,14 @@ export interface OutputByOperation {
 /** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
 export interface PageCreateSubpageOutput {
   pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
+}
+
+/** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
+export interface PageMarkdown {
+  docId: string | null;
+  kind: "page";
+  markdown: string;
+  etag: string;
 }
 
 export interface PageSummary {

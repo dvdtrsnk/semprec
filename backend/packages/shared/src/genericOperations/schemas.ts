@@ -402,7 +402,8 @@ export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 export const PageGetInputSchema = z
   .object({
     itemId: canonicalUuid,
-    format: z.literal("summary").default("summary"),
+    format: z.enum(["summary", "markdown"]).default("summary"),
+    /** Bounds `blocks` of the summary; the Markdown format returns the whole page and ignores it. */
     limit: z.number().int().nonnegative().optional(),
   })
   .strict();
