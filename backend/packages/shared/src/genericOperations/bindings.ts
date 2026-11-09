@@ -8,6 +8,7 @@ import {
   PageRestoreVersionInputSchema,
   PageGetInputSchema,
   PageEnsureInputSchema,
+  PageCreateSubpageInputSchema,
   DatabaseCreateInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
@@ -54,7 +55,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 36 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 37 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -67,6 +68,10 @@ export type GenericOperationBindings = {
  */
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },
+  "page.createSubpage": {
+    input: PageCreateSubpageInputSchema,
+    invoke: (service, actor, input) => service.createSubpage(actor, input),
+  },
   "page.get": { input: PageGetInputSchema, invoke: (service, actor, input) => service.getPage(actor, input) },
   "link.unlink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.unlinkValue(actor, input) },
   "link.relink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.relinkValue(actor, input) },

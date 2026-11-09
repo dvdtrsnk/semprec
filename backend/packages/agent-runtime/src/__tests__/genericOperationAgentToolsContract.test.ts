@@ -151,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 36-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 37-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -263,6 +263,7 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
@@ -670,6 +671,16 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         if (operation === "relation.set") {
           const relations = await chokePoint.listItemRelations(fx.itemB.id, fx.singleRelationProperty.id);
           expect(relations).toMatchObject([{ targetItemId: fx.secondTarget.id }]);
+        }
+        if (operation === "page.createSubpage") {
+          // The agent's call is a direct write attributed to the agent: the parent's page document gets one update
+          // authored `ai_agent`, and no approval request exists (checked below with every non-destructive call).
+          const { rows } = await pool.query<{ created_by: string }>(
+            `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
+             WHERE d.item_id = $1 ORDER BY u.id`,
+            [fx.itemA.id],
+          );
+          expect(rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
         }
         if (operation === "item.create") {
           const { rows } = await pool.query<{ id: string }>(

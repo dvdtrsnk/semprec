@@ -2160,6 +2160,24 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(refused.status).toBe(404);
     expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
   },
+  "create subpage": () =>
+    leavesAUnchanged(async () => {
+      // A foreign parent answers exactly as a random one does, and nothing of A's is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/subpages`,
+        body: { title: "Foreign subpage" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B creates one under B's own item.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/subpages`,
+        body: { title: "Own subpage" },
+      });
+      expect(own.status, own.text).toBe(201);
+      expectNoneOf(own.text, a.ids, "B's own subpage");
+    }),
   "restore page version": () =>
     leavesAUnchanged(async () => {
       // A foreign item answers exactly as a random one does, and nothing of A's page is written.
@@ -2751,6 +2769,10 @@ const MCP_CASES = {
   "page.ensure": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
     await p.excludesA({ itemId: b.itemId }, []);
+  },
+  "page.createSubpage": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ parent: { itemId }, title: "Foreign subpage" }));
+    await p.excludesA({ parent: { itemId: b.itemId }, title: "Own subpage" }, []);
   },
   "page.get": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));

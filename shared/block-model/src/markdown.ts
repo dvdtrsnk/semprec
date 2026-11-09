@@ -836,7 +836,8 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
     const block: ParsedBlock = { id, type: draft.type, indent: draft.indent };
     if (isBlockType(draft.type)) {
       const rule = BLOCK_TYPE_RULES[draft.type];
-      if (rule.hasText) block.text = draft.text ?? [];
+      // A page link carries no title text here; the title is resolved separately from the block's own text.
+      if (!rule.hasPageId) block.text = draft.text ?? [];
       if (rule.hasDone) block.done = draft.done === true;
       if (rule.hasPageId) block.pageId = draft.pageId;
       const issues: BlockIssue[] = validateBlockInput(block).map((issue) => ({

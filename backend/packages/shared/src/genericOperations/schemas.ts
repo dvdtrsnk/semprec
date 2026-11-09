@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 36-operation catalog (issues #252, #1404), extracted from #37's
+ * Strict Zod input schemas for the 37-operation catalog (issues #252, #1404, #1676), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -408,6 +408,31 @@ export const PageGetInputSchema = z
   .strict();
 export type PageGetInput = z.infer<typeof PageGetInputSchema>;
 
+/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
+const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
+
+/**
+ * Creates one new subpage under an item's page, or under a Journal period's page (issue #1676): the parent names a
+ * live item or a Journal `{ type, period }` whose entry is created when missing. `afterBlockId` places the `page`
+ * block after a block of the parent's document (the end when absent). The period key itself is validated by the
+ * operation, not by this schema.
+ */
+export const PageCreateSubpageInputSchema = z
+  .object({
+    parent: z.union([
+      z.object({ itemId: canonicalUuid }).strict(),
+      z
+        .object({
+          journal: z.object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) }).strict(),
+        })
+        .strict(),
+    ]),
+    afterBlockId: z.string().min(1).optional(),
+    title: z.string().optional(),
+  })
+  .strict();
+export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;
+
 export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
@@ -420,7 +445,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 36 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 37 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -458,6 +483,7 @@ export interface InputByOperation {
   "link.relink": ValueLinkInput;
   "page.get": PageGetInput;
   "page.ensure": PageEnsureInput;
+  "page.createSubpage": PageCreateSubpageInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

@@ -157,9 +157,7 @@ function toInput(block: PageBlock, id: string): BlockInput {
   if (BLOCK_TYPE_RULES[block.type].hasDone) {
     input.done = block.done;
   }
-  if (BLOCK_TYPE_RULES[block.type].hasText) {
-    input.text = block.text;
-  }
+  input.text = block.text;
   if (block.pageId !== null) {
     input.pageId = block.pageId;
   }

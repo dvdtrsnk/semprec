@@ -420,6 +420,8 @@ export {
 } from "./docs/docHistoryConfig.js";
 export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
+export { PAGES_MODULE_ID, ensurePagesDatabase } from "./docs/pagesDatabase.js";
+export { PAGE_TITLE_MAX_LENGTH, normalizePageTitle } from "./docs/pageTitle.js";
 
 export {
   tenantBlobStorageKey,

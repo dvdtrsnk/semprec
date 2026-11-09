@@ -24,6 +24,7 @@ import {
   RelationPutInputSchema,
   RelationSetInputSchema,
   PageRestoreVersionInputSchema,
+  PageCreateSubpageInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -68,6 +69,7 @@ const ALL_SCHEMAS = [
   RelationDeleteInputSchema,
   RelationListInputSchema,
   PageRestoreVersionInputSchema,
+  PageCreateSubpageInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -495,5 +497,38 @@ describe("item.create initial relations", () => {
         .success,
     ).toBe(false);
     expect(ItemCreateInputSchema.safeParse({ ...base, relations: [{ ...relation, extra: true }] }).success).toBe(false);
+  });
+});
+
+describe("PageCreateSubpageInputSchema (issue #1676)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+  it("accepts an item parent or a Journal period parent, with optional placement and title", () => {
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId } }).success).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, afterBlockId: "b1", title: "Notes" }).success,
+    ).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({ parent: { journal: { type: "day", period: "2026-10-16" } } }).success,
+    ).toBe(true);
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, title: "" }).success).toBe(true);
+  });
+
+  it("refuses a missing, malformed, mixed or unknown parent and unknown keys", () => {
+    for (const input of [
+      {},
+      { parent: {} },
+      { parent: { itemId: "not-a-uuid" } },
+      { parent: { itemId, journal: { type: "day", period: "2026-10-16" } } },
+      { parent: { itemId, extra: true } },
+      { parent: { journal: { type: "decade", period: "2020" } } },
+      { parent: { journal: { type: "day", period: "" } } },
+      { parent: { journal: { type: "day", period: "2026-10-16", extra: true } } },
+      { parent: { itemId }, afterBlockId: "" },
+      { parent: { itemId }, title: 5 },
+      { parent: { itemId }, unexpected: true },
+    ]) {
+      expect(PageCreateSubpageInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
   });
 });

@@ -15,7 +15,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 36 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 37 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -58,6 +58,12 @@ export interface OutputByOperation {
   "link.relink": { itemId: string; propertyKey: string } & ItemLink;
   "page.get": PageSummary;
   "page.ensure": { docId: string };
+  "page.createSubpage": PageCreateSubpageOutput;
+}
+
+/** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
+export interface PageCreateSubpageOutput {
+  pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
 }
 
 export interface PageSummary {
@@ -231,6 +237,10 @@ export interface GenericApplicationPort {
     input: InputByOperation["page.ensure"],
   ): Promise<OutputByOperation["page.ensure"]>;
   getPage(actor: AuthenticatedActor, input: InputByOperation["page.get"]): Promise<OutputByOperation["page.get"]>;
+  createSubpage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.createSubpage"],
+  ): Promise<OutputByOperation["page.createSubpage"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

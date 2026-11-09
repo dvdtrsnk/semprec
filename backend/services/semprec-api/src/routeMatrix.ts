@@ -733,30 +733,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
-  {
-    name: "ensure page",
-    method: "PUT",
-    path: `/api/items/${EXAMPLE_ID}/page`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "get page",
-    method: "GET",
-    path: `/api/items/${EXAMPLE_ID}/page`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "restore page version",
-    method: "POST",
-    path: `/api/items/${EXAMPLE_ID}/page/restore`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
+  // prettier-ignore
+  { name: "ensure page", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "get page", method: "GET", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "create subpage", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/subpages`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "restore page version", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/restore`, surface: "api", public: false, tenancy: "tenant" },
   // Also takes the optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645), which link the
   // upload to an item in the same request; tenantIsolationRoutes.test.ts answers a foreign target like a random one.
   {

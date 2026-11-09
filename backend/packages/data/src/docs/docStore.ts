@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
-import type { PageRestoreOutput } from "@semprec/shared";
+import type { PageCreateSubpageInput, PageCreateSubpageOutput, PageRestoreOutput } from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
@@ -13,6 +13,7 @@ import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
 import { openDocVersionAt } from "./docHistory.js";
 import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
+import { createSubpageWithClient } from "./pageOperations.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -90,6 +91,11 @@ export function createDocStore(pool: Pool) {
         const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
         return { docId: doc.id };
       });
+    },
+
+    /** Creates one subpage (issue #1676) in one transaction; `origin` is derived server-side from the caller. */
+    async createSubpage(input: PageCreateSubpageInput, origin: CreatedBy): Promise<PageCreateSubpageOutput> {
+      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin));
     },
 
     // ---- page content (blocks) ----
