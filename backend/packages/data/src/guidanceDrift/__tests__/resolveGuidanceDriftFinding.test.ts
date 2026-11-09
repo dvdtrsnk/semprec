@@ -11,6 +11,19 @@ import { saveGuidanceSections } from "../../projectAgentGuidance/projectAgentGui
 import { agentGuidanceDriftFindingsStore } from "../agentGuidanceDriftFindingsStore.js";
 import { createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDriftFindingsRouteHandlers.js";
 
+const pendingGuidanceActors = new Set<Promise<unknown>>();
+function trackGuidanceActor<T>(actor: Promise<T>): Promise<T> {
+  pendingGuidanceActors.add(actor);
+  void actor.then(() => pendingGuidanceActors.delete(actor), () => pendingGuidanceActors.delete(actor));
+  return actor;
+}
+async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([actor, new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Guidance actor did not settle")), 5000);
+  })]); } finally { if (timer) clearTimeout(timer); }
+}
+
 let admin: Pool;
 let pool: Pool;
 let tenant: string;
@@ -39,6 +52,7 @@ describe("guidance drift decisions", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
+    if (pendingGuidanceActors.size) throw new Error("A guidance actor remains unsettled");
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     user = (
@@ -53,6 +67,7 @@ describe("guidance drift decisions", () => {
     });
   });
   afterAll(async () => {
+    if (pendingGuidanceActors.size) throw new Error("A guidance actor remains unsettled; pools remain open");
     await pool.end();
     await admin.end();
   });
@@ -327,7 +342,7 @@ describe("guidance drift decisions", () => {
       const acquired = new Promise<number>((resolve) => {
         waiterReady = resolve;
       });
-      const holder = withTransaction(pool, async (client) => {
+      const holder = trackGuidanceActor(withTransaction(pool, async (client) => {
         const identity = await client.query<Identity>(
           "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
         );
@@ -344,7 +359,7 @@ describe("guidance drift decisions", () => {
       }).then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
-      );
+      ));
       let contender:
         | Promise<
             | { ok: true; value: Awaited<ReturnType<ReturnType<typeof createResolveGuidanceDriftFindingRouteHandler>>> }
@@ -372,14 +387,14 @@ describe("guidance drift decisions", () => {
         });
         pool.on("acquire", onAcquire);
         const route = createResolveGuidanceDriftFindingRouteHandler(pool);
-        contender = route({
+        contender = trackGuidanceActor(route({
           params: { id: first.finding.id },
           identity: { user: { id: user } },
           body: { choice: "allow", expectedGuidanceUpdatedAt: saved.updatedAt },
         }).then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
-        );
+        ));
         let waitTimer: ReturnType<typeof setTimeout> | undefined;
         const waiterPid = await Promise.race([
           acquired,
@@ -417,16 +432,21 @@ describe("guidance drift decisions", () => {
       }
       pool.off("acquire", onAcquire);
       release();
-      const ownerResult = await holder;
-      const contenderResult = contender ? await contender : undefined;
-      const actorErrors = [ownerResult, contenderResult].flatMap((result) =>
-        result && !result.ok ? [result.error] : [],
-      );
+      const [ownerSettled, contenderSettled] = await Promise.allSettled([
+        settleGuidanceActor(holder), contender ? settleGuidanceActor(contender) : Promise.resolve(undefined),
+      ]);
+      const actorErrors: unknown[] = [];
+      const ownerResult = ownerSettled.status === "fulfilled" ? ownerSettled.value : undefined;
+      const contenderResult = contenderSettled.status === "fulfilled" ? contenderSettled.value : undefined;
+      if (ownerSettled.status === "rejected") actorErrors.push(ownerSettled.reason);
+      else if (!ownerSettled.value.ok) actorErrors.push(ownerSettled.value.error);
+      if (contenderSettled.status === "rejected") actorErrors.push(contenderSettled.reason);
+      else if (contenderSettled.value && !contenderSettled.value.ok) actorErrors.push(contenderSettled.value.error);
       if (failure && actorErrors.length)
         throw new AggregateError([failure.error, ...actorErrors], "Guidance overlap failed", { cause: failure.error });
       if (failure) throw failure.error;
       if (actorErrors.length) throw new AggregateError(actorErrors, "Guidance overlap actors failed");
-      if (!ownerResult.ok || !contenderResult?.ok) throw new Error("Missing overlap outcomes");
+      if (!ownerResult?.ok || !contenderResult?.ok) throw new Error("Missing overlap outcomes");
       expect(contenderResult.value).toMatchObject({ status: 409, body: { error: { code: "version_conflict" } } });
       const current = await pool.query<{ markdown: string }>(
         "SELECT markdown FROM project_agent_guidance WHERE project_item_id = $1",

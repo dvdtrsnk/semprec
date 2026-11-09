@@ -215,6 +215,8 @@ describe("Inbox type lock", () => {
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         );
+        const records: RaceActor[] = [];
+        trackRaceActor(records, holder);
         let failure: { error: unknown } | undefined;
         try {
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -268,14 +270,8 @@ describe("Inbox type lock", () => {
           failure = { error };
         }
         release();
-        const outcome = await holder;
         setInvalidationHook(() => {});
-        if (!outcome.ok && failure)
-          throw new AggregateError([failure.error, outcome.error], "Reservation test and holder failed", {
-            cause: failure.error,
-          });
-        if (!outcome.ok) throw outcome.error;
-        if (failure) throw failure.error;
+        await finishRaceActors(records, failure);
         expect(await targets()).toEqual([edge.targetItemId]);
       }),
   );
@@ -461,7 +457,7 @@ describe("Inbox type lock", () => {
     expect(pendingRaceActors.size).toBe(0);
   });
 
-  it.each(["missing", "foreign", "module", "property", "definition", "no-edges"] as const)(
+  it.each(["missing", "foreign", "module", "property", "definition", "no-edges", "property-type", "target", "config-definition"] as const)(
     "fails closed on %s Processing proposals configuration without effects",
     async (scenario) => {
       let foreignId: string | undefined;
@@ -509,6 +505,15 @@ describe("Inbox type lock", () => {
           ]);
           expect(changed.rowCount).toBe(1);
         }
+        if (scenario === "property-type") {
+          const changed = await admin.query("UPDATE properties SET type = 'text' WHERE tenant_id = $1 AND id = $2", [tenant, sourceProperty.id]);
+          expect(changed.rowCount).toBe(1);
+        }
+        if (scenario === "target" || scenario === "config-definition") {
+          const key = scenario === "target" ? "targetDatabaseId" : "relationDefinitionId";
+          const changed = await admin.query("UPDATE properties SET config = jsonb_set(config, ARRAY[$3]::text[], to_jsonb($4::text)) WHERE tenant_id = $1 AND id = $2", [tenant, sourceProperty.id, key, randomUUID()]);
+          expect(changed.rowCount).toBe(1);
+        }
         if (scenario === "definition") {
           const changed = await admin.query("DELETE FROM relation_definitions WHERE tenant_id = $1 AND id = $2", [
             tenant,
@@ -523,7 +528,7 @@ describe("Inbox type lock", () => {
         const message =
           scenario === "property"
             ? "Processing proposals sourceInbox property not found"
-            : scenario === "definition"
+            : ["definition", "property-type", "target", "config-definition"].includes(scenario)
               ? "Processing proposals sourceInbox relation not found"
               : "Processing proposals configuration not found";
         const expected = { status: 404, code: "not_found", message };

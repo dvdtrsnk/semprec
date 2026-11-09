@@ -107,7 +107,7 @@ async function completedInEventEdge(
  * several days writes each task once. See docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md and
  * docs/adr/2026-11-09-task-rollover-excludes-its-current-result-state.md.
  */
-export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
+export function createTasksDayRolloverAction(pool: Pool, options: { recurringLimit?: number } = {}): ActionHandler {
   return async (actionConfig) => {
     const { tasksDatabaseId } = configSchema.parse(actionConfig);
     const context = await withTransaction(pool, async (client) => {
@@ -126,7 +126,7 @@ export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
 
     for (const skipLocked of [true, false]) {
       let afterRecurringId: string | null = null;
-      for (let count = 0; count < MAX_SWEEP_CHUNKS_PER_TENANT * CHUNK_SIZE; count++) {
+      for (let count = 0; count < (options.recurringLimit ?? MAX_SWEEP_CHUNKS_PER_TENANT * CHUNK_SIZE); count++) {
         const id: string | null = await withTransaction(pool, async (client) => {
           const result = await client.query<{ id: string }>(
             `SELECT i.id FROM items i
