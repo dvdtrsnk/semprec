@@ -2480,6 +2480,78 @@ describe("queued Semp messages", () => {
     if (failure) throw failure.error;
   });
 
+  it("terminalizes a queued outcome without starting a disabled heartbeat", async () => {
+    const fixture = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId,
+          name: "Disabled",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Review" },
+        });
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
+        const threadId = thread.rows[0]?.id;
+        if (!threadId) throw new Error("Missing thread");
+        const run = await createAgentRun(client, {
+          triggeredBy: "heartbeat",
+          task: "Review",
+          projectItemId: inbox.ownerProjectItemId,
+          heartbeatId: heartbeat.id,
+          threadId,
+        });
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "test",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        await decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        });
+        const reply = await client.query<{ id: string }>(
+          "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected'",
+          [threadId],
+        );
+        if (!reply.rows[0]) throw new Error("Missing continuation");
+        const disabled = await client.query("UPDATE project_heartbeats SET enabled = false WHERE id = $1", [
+          heartbeat.id,
+        ]);
+        expect(disabled.rowCount).toBe(1);
+        return { threadId, assistantMessageId: reply.rows[0].id };
+      }),
+    );
+    const faux = fauxProvider();
+    faux.setResponses([fauxAssistantMessage("must not run")]);
+    const task = createSempMessageTask(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      createInFlightAgentRuns(),
+    );
+    await runInTenant(tenant, () => task(fixture, { job: { id: "disabled" } }));
+    const result = await runInTenant(tenant, () =>
+      pool.query<{ status: string; agent_run_id: string | null; text: string | null }>(
+        "SELECT status, agent_run_id, text FROM semp_messages WHERE id = $1",
+        [fixture.assistantMessageId],
+      ),
+    );
+    expect(result.rows).toEqual([{ status: "error", agent_run_id: null, text: null }]);
+    expect(faux.getPendingResponseCount()).toBe(1);
+  });
+
   it("clears the current message attribution after a failed session turn", async () => {
     await runtime?.stop();
     runtime = undefined;
