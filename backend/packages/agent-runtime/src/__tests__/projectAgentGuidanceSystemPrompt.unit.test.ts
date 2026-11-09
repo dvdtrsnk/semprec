@@ -49,7 +49,7 @@ describe("project notes", () => {
   });
 
   it("keeps a multiline block intact instead of cutting at a Markdown line", async () => {
-    const markdown = `\`\`\`text\n${"x".repeat(32768)}\n\`\`\`\n\nVisible later`;
+    const markdown = `First<br>${"x".repeat(32768)}<br>Last\n\nVisible later`;
     const subpages = [{ id: "child", title: "Child" }];
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       async () => null,
