@@ -966,7 +966,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         (await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
           .rows,
       ).toEqual(jobsBefore.rows);
-      const origins = await pool.query("SELECT id FROM item_origins WHERE proposal_id = $1", [proposal.id]);
+      const origins = await pool.query<{ item_id: string }>("SELECT item_id FROM item_origins WHERE proposal_id = $1", [
+        proposal.id,
+      ]);
       expect(origins.rows).toEqual([]);
     } catch (error) {
       failure = { error };
