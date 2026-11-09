@@ -13,6 +13,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import { insertItem, softDeleteItem } from "../chokePoint/itemsStore.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -142,6 +143,8 @@ describe("Inbox type lock", () => {
         const jobsBefore = await admin.query<{ key: string | null }>(
           "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
         );
+        const invalidations: InvalidationEvent[] = [];
+        setInvalidationHook((event) => invalidations.push(event));
         let release = () => {};
         let signalReady: (identity: { pid: number; started: string }) => void = () => {};
         const gate = new Promise<void>((resolve) => {
@@ -211,11 +214,13 @@ describe("Inbox type lock", () => {
               .rows,
           ).toEqual(jobsBefore.rows);
           expect(await targets()).toEqual([edge.targetItemId]);
+          expect(invalidations).toEqual([]);
         } catch (error) {
           failure = { error };
         }
         release();
         const outcome = await holder;
+        setInvalidationHook(() => {});
         if (!outcome.ok && failure)
           throw new AggregateError([failure.error, outcome.error], "Reservation test and holder failed", {
             cause: failure.error,
