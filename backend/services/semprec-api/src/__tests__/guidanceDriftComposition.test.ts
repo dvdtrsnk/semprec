@@ -9,6 +9,7 @@ import {
   seedSystem,
   createChokePoint,
   createAgentRun,
+  createResolveGuidanceDriftFindingRouteHandler,
   insertAgentRunEvent,
   getDatabaseByModuleId,
   withTransaction,
@@ -505,6 +506,148 @@ describe("guidance drift production composition", () => {
     await pool?.end();
     await admin?.end();
   });
+  it.each(["allow", "forbid", "dismiss"] as const)(
+    "keeps a manually decided %s finding closed on a later real drift action",
+    async (choice) => {
+      const ownTenant = await createTestTenant(admin);
+      const owner = await createUser(admin, {
+        tenantId: ownTenant,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "unused",
+        locale: "en",
+      });
+      await runInTenant(ownTenant, () => seedSystem(pool));
+      const ownProject = await runInTenant(ownTenant, async () => {
+        const database = await withTransaction(pool, (tx) => getDatabaseByModuleId(tx, "projects"));
+        if (!database) throw new Error("Missing Projects database");
+        const item = await createChokePoint(pool).createItem({
+          databaseId: database.id,
+          properties: { name: "Drift project" },
+        });
+        await withTransaction(pool, (tx) =>
+          projectAgentGuidanceStore.upsert(tx, { projectItemId: item.id, ownerUserId: owner.id, markdown: "Guidance" }),
+        );
+        return item.id;
+      });
+      const guidance = await runInTenant(ownTenant, () =>
+        withTransaction(pool, (tx) => projectAgentGuidanceStore.load(tx, ownProject)),
+      );
+      if (!guidance) throw new Error("Missing project guidance");
+      const subject = { operation: "item.create", databaseId: null };
+      const fingerprint = fingerprintGuidanceDriftSubject(ownProject, "behavior", subject);
+      const addRun = () =>
+        runInTenant(ownTenant, () =>
+          withTransaction(pool, async (tx) => {
+            const run = await createAgentRun(tx, {
+              projectItemId: ownProject,
+              userId: guidance.ownerUserId,
+              triggeredBy: "user",
+              task: "Drift detection",
+            });
+            await insertAgentRunEvent(tx, run.id, "tool_use", {
+              toolCallId: randomUUID(),
+              name: "item_create",
+              operation: "item.create",
+              arguments: {},
+            });
+            return run.id;
+          }),
+        );
+      for (let i = 0; i < 3; i++) await addRun();
+      const observed: Array<{ fingerprint: string; count: number }> = [];
+      const gateway: AiGatewayClientPort = {
+        async complete(input) {
+          if (input.operation === "agent_guidance_drift")
+            return { content: { contradictions: [] }, usage: { inputTokens: 1, outputTokens: 1 } };
+          expect(input.operation).toBe("agent_behavior_drift");
+          const message = z.string().parse(input.messages[0]?.content);
+          const request = z
+            .object({ groups: z.array(z.object({ fingerprint: z.string(), count: z.number() })) })
+            .parse(JSON.parse(message));
+          expect(request.groups).toHaveLength(1);
+          const group = request.groups[0];
+          if (!group) throw new Error("Missing behavior group");
+          observed.push(group);
+          return {
+            content: {
+              findings: [
+                {
+                  fingerprint,
+                  claim: "Creates tasks",
+                  suggestedAllowedLine: "Create tasks from new GitHub issues.",
+                  suggestedNotAllowedLine: "Do not create tasks.",
+                },
+              ],
+            },
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      };
+      const action = createAgentGuidanceDriftActionForApi(pool, gateway);
+      await runInTenant(ownTenant, () => action({ projectItemId: ownProject }));
+      const readFinding = () =>
+        runInTenant(ownTenant, () =>
+          pool.query<{
+            id: string;
+            fingerprint: string;
+            status: string;
+            resolution_choice: string | null;
+            resolved_by: string | null;
+          }>(
+            "SELECT id, fingerprint, status, resolution_choice, resolved_by FROM agent_guidance_drift_findings WHERE project_item_id = $1",
+            [ownProject],
+          ),
+        );
+      const before = (await readFinding()).rows;
+      expect(before).toHaveLength(1);
+      const id = before[0]?.id;
+      if (!id) throw new Error("Missing behavior finding");
+      expect(before[0]).toMatchObject({ fingerprint, status: "active", resolution_choice: null, resolved_by: null });
+      const route = createResolveGuidanceDriftFindingRouteHandler(pool);
+      const decision = await runInTenant(ownTenant, () =>
+        route({
+          params: { id },
+          identity: { user: { id: guidance.ownerUserId } },
+          body: { choice, expectedGuidanceUpdatedAt: guidance.updatedAt },
+        }),
+      );
+      expect(decision.status).toBe(200);
+      if (decision.status !== 200) throw new Error("Decision failed");
+      expect(decision.body.guidance.sections).toMatchObject({
+        allowed: choice === "allow" ? "- Create tasks from new GitHub issues." : "",
+        generalInstructions: "Guidance",
+        notAllowed: choice === "forbid" ? "- Do not create tasks." : "",
+      });
+      const decided = (await readFinding()).rows;
+      expect(decided).toEqual([
+        {
+          id,
+          fingerprint,
+          status: choice === "dismiss" ? "dismissed" : "resolved",
+          resolution_choice: choice,
+          resolved_by: guidance.ownerUserId,
+        },
+      ]);
+      const readNotifications = () =>
+        runInTenant(ownTenant, () =>
+          pool.query<{ id: string; kind: string; source_id: string }>(
+            "SELECT id, kind, source_id FROM notifications WHERE source_id = $1 ORDER BY kind, id",
+            [id],
+          ),
+        );
+      const notifications = (await readNotifications()).rows;
+      expect(notifications.map((row) => row.kind)).toEqual(["agent_guidance_drift", "agent_guidance_drift_resolved"]);
+      await addRun();
+      await runInTenant(ownTenant, () => action({ projectItemId: ownProject }));
+      expect(observed).toEqual([
+        { fingerprint, count: 3 },
+        { fingerprint, count: 4 },
+      ]);
+      expect((await readFinding()).rows).toEqual(decided);
+      expect((await readNotifications()).rows).toEqual(notifications);
+    },
+  );
+
   it("reconciles reworded findings and problems through the real API composition and rejects a missing subject without writes", async () => {
     let content: unknown = { contradictions: [finding("files.read", "first")] };
     const gateway: AiGatewayClientPort = {
