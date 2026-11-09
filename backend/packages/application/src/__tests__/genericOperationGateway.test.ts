@@ -1202,6 +1202,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
         const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
         const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        const initial = await cp.findItem(item.id);
         await expect(
           gateway.invoke("item.patch", actor, NO_CAPABILITIES, {
             itemId: item.id,
@@ -1209,7 +1210,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             ifVersion: item.updatedAt,
           }),
         ).rejects.toMatchObject({ status: 404, code: "not_found" });
-        expect(await cp.findItem(item.id)).toEqual(item);
+        expect(await cp.findItem(item.id)).toEqual(initial);
         await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
           properties: { recurrence: { preset: "weekly" } },
@@ -1254,12 +1255,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
           propertiesPatch: { recurrence: { preset: "daily" } },
           ifVersion: weekly.updatedAt,
         });
+        const changedProjection = await cp.findItem(item.id);
+        expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
         const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
         if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
         expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
           true,
         );
-        expect(await cp.findItem(item.id)).toEqual(changed);
+        expect(await cp.findItem(item.id)).toEqual(changedProjection);
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
