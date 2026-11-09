@@ -217,22 +217,34 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("marks a daily occurrence missed and creates today's occurrence exactly once", async () => {
     const id = await task({ date: day(-1) });
-    const created = await inTenant(() => createTaskRecurrenceSetRouteHandler(pool)({
-      params: { id }, body: { preset: "daily" }, identity: { user: { id: randomUUID() } },
-    }));
+    const created = await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id },
+        body: { preset: "daily" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
     await run();
     expect((await row(id)).properties).toMatchObject({ status: "missed", date: day(-1) });
-    const state = await inTenant(() => pool.query<{ id: string; properties: Record<string, unknown> }>(
-      "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-      [tasksId, created.item.properties.seriesId],
-    ));
+    const state = await inTenant(() =>
+      pool.query<{ id: string; properties: Record<string, unknown> }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+        [tasksId, created.item.properties.seriesId],
+      ),
+    );
     expect(state.rows).toHaveLength(2);
-    expect(state.rows.find((item) => item.id !== id)?.properties).toMatchObject({ status: "notDone", date: day(0), occurrenceDate: day(0) });
+    expect(state.rows.find((item) => item.id !== id)?.properties).toMatchObject({
+      status: "notDone",
+      date: day(0),
+      occurrenceDate: day(0),
+    });
     await run();
-    const again = await inTenant(() => pool.query<{ id: string; properties: Record<string, unknown> }>(
-      "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-      [tasksId, created.item.properties.seriesId],
-    ));
+    const again = await inTenant(() =>
+      pool.query<{ id: string; properties: Record<string, unknown> }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+        [tasksId, created.item.properties.seriesId],
+      ),
+    );
     expect(again.rows).toEqual(state.rows);
   });
 

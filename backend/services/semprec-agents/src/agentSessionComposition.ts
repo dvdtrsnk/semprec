@@ -328,10 +328,9 @@ export async function createAgentSessionFactoryForRun(
         };
       })
     : null;
-  const tools =
-    threadContext?.rejectedOutcome
-      ? []
-      : threadContext?.kind === "item"
+  const tools = threadContext?.rejectedOutcome
+    ? []
+    : threadContext?.kind === "item"
       ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
       : allGenericTools;
   let moduleTools: typeof tools = [];
@@ -363,16 +362,17 @@ export async function createAgentSessionFactoryForRun(
           projectAgentGuidanceStore.load(tx, projectItemId),
         ),
       run.projectItemId,
-      (projectItemId) => transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
-        const page = await readPageMarkdown(tx, projectItemId);
-        if (page.docId === null || page.markdown === "") return null;
-        const subpages = parseMarkdown(page.markdown).flatMap((block) =>
-          block.type === "page" && block.pageId
-            ? [{ id: block.pageId, title: (block.text ?? []).map((run) => run.insert).join("") }]
-            : [],
-        );
-        return { markdown: page.markdown, subpages };
-      }),
+      (projectItemId) =>
+        transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
+          const page = await readPageMarkdown(tx, projectItemId);
+          if (page.docId === null || page.markdown === "") return null;
+          const subpages = parseMarkdown(page.markdown).flatMap((block) =>
+            block.type === "page" && block.pageId
+              ? [{ id: block.pageId, title: (block.text ?? []).map((run) => run.insert).join("") }]
+              : [],
+          );
+          return { markdown: page.markdown, subpages };
+        }),
     );
     systemPrompt = override(systemPrompt);
   }

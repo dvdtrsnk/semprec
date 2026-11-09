@@ -1140,15 +1140,26 @@ describe("createGenericOperationGateway (issue #220)", () => {
     inTenantZero(async () => {
       const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
       if (!tasks) throw new Error("Tasks missing");
-      const item = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Task", date: "2026-10-22" } });
-      const weekly = await chokePoint.updateItem({ databaseId: tasks.id, itemId: item.id, propertiesPatch: { recurrence: { preset: "weekly" } } });
+      const item = await chokePoint.createItem({
+        databaseId: tasks.id,
+        properties: { name: "Task", date: "2026-10-22" },
+      });
+      const weekly = await chokePoint.updateItem({
+        databaseId: tasks.id,
+        itemId: item.id,
+        propertiesPatch: { recurrence: { preset: "weekly" } },
+      });
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "change recurrence" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       let requestId = "";
       try {
-        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { itemId: item.id, properties: { recurrence: { preset: "monthly" } }, ifVersion: weekly.updatedAt });
+        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+          properties: { recurrence: { preset: "monthly" } },
+          ifVersion: weekly.updatedAt,
+        });
         expect.unreachable("Expected approval");
       } catch (error) {
         if (!(error instanceof ApprovalRequiredError)) throw error;
@@ -1157,12 +1168,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect((await chokePoint.findItem(item.id))?.properties.recurrence).toEqual(weekly.properties.recurrence);
       const pending = await getApprovalRequest(pool, requestId);
       expect(pending?.description?.key).toBe("approval.changesSeries");
-      await withTransaction(pool, (client) => decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId: run.actorUserId }));
+      await withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: requestId,
+          decision: "approved",
+          decidedByUserId: run.actorUserId,
+        }),
+      );
       const request = await getApprovalRequest(pool, requestId);
       if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
       expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
       const after = await chokePoint.findItem(item.id);
-      expect(after?.properties.recurrence).toMatchObject({ preset: "monthly", rule: { kind: "monthDates", dates: [22] } });
+      expect(after?.properties.recurrence).toMatchObject({
+        preset: "monthly",
+        rule: { kind: "monthDates", dates: [22] },
+      });
       expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
       expect(await chokePoint.findItem(item.id)).toEqual(after);
     }));

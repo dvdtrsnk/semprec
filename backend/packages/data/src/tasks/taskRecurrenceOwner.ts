@@ -9,8 +9,22 @@ import type { ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { requireApprovalForWrite } from "../chokePoint/writeApproval.js";
 import { ValidationError } from "../errors.js";
-import { parseTaskRecurrenceRule, TASK_RECURRENCE_MODES, type TaskRecurrenceMode, type TaskRecurrenceRule, type Weekday } from "./taskRecurrenceRule.js";
-import { createTaskRecurrence, deactivateTaskRecurrenceSeries, getTaskRecurrence, getTaskRecurrenceBySeriesId, replaceTaskRecurrenceRule, restartTaskRecurrence, type TaskRecurrenceTemplate } from "./taskRecurrenceStore.js";
+import {
+  parseTaskRecurrenceRule,
+  TASK_RECURRENCE_MODES,
+  type TaskRecurrenceMode,
+  type TaskRecurrenceRule,
+  type Weekday,
+} from "./taskRecurrenceRule.js";
+import {
+  createTaskRecurrence,
+  deactivateTaskRecurrenceSeries,
+  getTaskRecurrence,
+  getTaskRecurrenceBySeriesId,
+  replaceTaskRecurrenceRule,
+  restartTaskRecurrence,
+  type TaskRecurrenceTemplate,
+} from "./taskRecurrenceStore.js";
 
 const PRESETS = ["daily", "weekdays", "weekly", "monthly", "yearly"] as const;
 type Preset = (typeof PRESETS)[number];
@@ -99,18 +113,28 @@ export function templateOf(properties: Record<string, unknown>): TaskRecurrenceT
   };
 }
 
-
 export function validateRecurrenceCommand(value: unknown): void {
   if (value !== null) {
     const request = parseRequest(value);
-    if (request.date !== undefined) throw new ValidationError("Date belongs in the item patch", { field: "recurrence" });
+    if (request.date !== undefined)
+      throw new ValidationError("Date belongs in the item patch", { field: "recurrence" });
   }
 }
 
-export async function applyRecurrenceCommand(client: PoolClient, task: ItemRow, patch: Record<string, unknown>, value: unknown, writer: WriterIdentity, preserveRouteWrite = false): Promise<Record<string, unknown>> {
+export async function applyRecurrenceCommand(
+  client: PoolClient,
+  task: ItemRow,
+  patch: Record<string, unknown>,
+  value: unknown,
+  writer: WriterIdentity,
+  preserveRouteWrite = false,
+): Promise<Record<string, unknown>> {
   const seriesId = typeof task.properties.seriesId === "string" ? task.properties.seriesId : null;
-  const series = seriesId ? await getTaskRecurrenceBySeriesId(client, seriesId, true) : await getTaskRecurrence(client, task.id, true);
-  if (seriesId && (!series || series.itemId !== task.id)) throw new ValidationError("Only the current occurrence of a series can change its recurrence", { field: "id" });
+  const series = seriesId
+    ? await getTaskRecurrenceBySeriesId(client, seriesId, true)
+    : await getTaskRecurrence(client, task.id, true);
+  if (seriesId && (!series || series.itemId !== task.id))
+    throw new ValidationError("Only the current occurrence of a series can change its recurrence", { field: "id" });
   if (value === null) {
     if (!seriesId || !series) return {};
     if (series.active) {
@@ -126,36 +150,84 @@ export async function applyRecurrenceCommand(client: PoolClient, task: ItemRow, 
   if (!date) throw new ValidationError("A recurring task needs a date", { field: "date" });
   const rule = resolveRule(request, date);
   if (seriesId && series) {
-    if (!preserveRouteWrite && series.active && series.mode === request.mode && isDeepStrictEqual(series.rule, rule) && request.date === undefined) return {};
+    if (
+      !preserveRouteWrite &&
+      series.active &&
+      series.mode === request.mode &&
+      isDeepStrictEqual(series.rule, rule) &&
+      request.date === undefined
+    )
+      return {};
     const reason = { kind: "changesSeries", seriesId, from: series.rule, to: rule };
     requireApprovalForWrite(client, writer, [reason]);
-    const updated = await replaceTaskRecurrenceRule(client, seriesId, { mode: request.mode, rule, anchorDate: request.date });
-    const occurrenceDate = request.date === undefined && isCalendarDate(task.properties.occurrenceDate) ? task.properties.occurrenceDate : date;
-    return { ...(request.date === undefined ? {} : { date }), seriesId: updated.seriesId, occurrenceDate, recurrence: { preset: request.preset, mode: request.mode, rule } };
+    const updated = await replaceTaskRecurrenceRule(client, seriesId, {
+      mode: request.mode,
+      rule,
+      anchorDate: request.date,
+    });
+    const occurrenceDate =
+      request.date === undefined && isCalendarDate(task.properties.occurrenceDate)
+        ? task.properties.occurrenceDate
+        : date;
+    return {
+      ...(request.date === undefined ? {} : { date }),
+      seriesId: updated.seriesId,
+      occurrenceDate,
+      recurrence: { preset: request.preset, mode: request.mode, rule },
+    };
   }
   const input = { itemId: task.id, mode: request.mode, rule, anchorDate: date, template: templateOf(properties) };
-  const created = series === null ? await createTaskRecurrence(client, input) : !series.active ? await restartTaskRecurrence(client, input) : null;
+  const created =
+    series === null
+      ? await createTaskRecurrence(client, input)
+      : !series.active
+        ? await restartTaskRecurrence(client, input)
+        : null;
   if (!created) throw new Error(`Task ${task.id} has an active recurrence row but no series property`);
-  return { ...(request.date === undefined ? {} : { date }), seriesId: created.seriesId, occurrenceDate: date, recurrence: { preset: request.preset, mode: request.mode, rule } };
+  return {
+    ...(request.date === undefined ? {} : { date }),
+    seriesId: created.seriesId,
+    occurrenceDate: date,
+    recurrence: { preset: request.preset, mode: request.mode, rule },
+  };
 }
 
 export async function projectRecurrenceApproval(client: PoolClient, task: ItemRow, patch: Record<string, unknown>) {
   if (!Object.hasOwn(patch, "recurrence")) return null;
   const seriesId = typeof task.properties.seriesId === "string" ? task.properties.seriesId : null;
   const series = seriesId ? await getTaskRecurrenceBySeriesId(client, seriesId, true) : null;
-  if (!series || !series.active || series.itemId !== task.id) throw new ValidationError("Series changed before approval", { field: "recurrence" });
+  if (!series || !series.active || series.itemId !== task.id)
+    throw new ValidationError("Series changed before approval", { field: "recurrence" });
   const value = patch.recurrence;
   validateRecurrenceCommand(value);
-  const date = isCalendarDate(patch.date) ? patch.date : isCalendarDate(task.properties.date) ? task.properties.date : null;
+  const date = isCalendarDate(patch.date)
+    ? patch.date
+    : isCalendarDate(task.properties.date)
+      ? task.properties.date
+      : null;
   if (!date) throw new ValidationError("A recurring task needs a date", { field: "date" });
   const request = value === null ? null : parseRequest(value);
   const to = request ? resolveRule(request, date) : null;
-  if (request && series.mode === request.mode && isDeepStrictEqual(series.rule, to)) throw new ValidationError("Series changed before approval", { field: "recurrence" });
+  if (request && series.mode === request.mode && isDeepStrictEqual(series.rule, to))
+    throw new ValidationError("Series changed before approval", { field: "recurrence" });
   const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
   const catalogs = await loadModuleCatalogs(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
   const end = resolveCatalogLabel(null, catalogs[locale], catalogs.en, "approval.recurrence.end");
   return {
-    snapshot: { seriesId: series.seriesId, active: series.active, mode: series.mode, rule: series.rule, date: task.properties.date ?? null },
-    description: { key: "approval.changesSeries", params: { taskName: typeof task.properties.name === "string" ? task.properties.name : null, fromRule: JSON.stringify(series.rule), toRule: to === null ? end : JSON.stringify(to) } },
+    snapshot: {
+      seriesId: series.seriesId,
+      active: series.active,
+      mode: series.mode,
+      rule: series.rule,
+      date: task.properties.date ?? null,
+    },
+    description: {
+      key: "approval.changesSeries",
+      params: {
+        taskName: typeof task.properties.name === "string" ? task.properties.name : null,
+        fromRule: JSON.stringify(series.rule),
+        toRule: to === null ? end : JSON.stringify(to),
+      },
+    },
   };
 }

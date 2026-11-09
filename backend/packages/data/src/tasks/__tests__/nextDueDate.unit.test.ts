@@ -117,12 +117,19 @@ describe("occurrenceDatesInRange (issue #1672)", () => {
   });
 });
 
-
 describe("yearly recurrence", () => {
   it("validates real month/day combinations including leap day", () => {
-    for (const rule of [{ kind: "yearDates", month: 3, day: 15 }, { kind: "yearDates", month: 2, day: 29 }])
+    for (const rule of [
+      { kind: "yearDates", month: 3, day: 15 },
+      { kind: "yearDates", month: 2, day: 29 },
+    ])
       expect(fixedRecurrenceRuleSchema.safeParse(rule).success).toBe(true);
-    for (const rule of [{ kind: "yearDates", month: 13, day: 1 }, { kind: "yearDates", month: 1, day: 0 }, { kind: "yearDates", month: 4, day: 31 }, { kind: "yearDates", month: 2, day: 30 }])
+    for (const rule of [
+      { kind: "yearDates", month: 13, day: 1 },
+      { kind: "yearDates", month: 1, day: 0 },
+      { kind: "yearDates", month: 4, day: 31 },
+      { kind: "yearDates", month: 2, day: 30 },
+    ])
       expect(fixedRecurrenceRuleSchema.safeParse(rule).success).toBe(false);
   });
 
@@ -134,6 +141,9 @@ describe("yearly recurrence", () => {
     expect(firstOccurrenceAfter(leap, "2096-02-29", "2096-02-29")).toBe("2104-02-29");
     expect(latestOccurrenceOnOrBefore(leap, "2096-02-29", "2103-12-31")).toBe("2096-02-29");
     expect(latestOccurrenceOnOrBefore(march, "2025-03-15", "2026-10-16")).toBe("2026-03-15");
-    expect(occurrenceDatesInRange(leap, "2028-02-29", "2028-01-01", "2032-12-31")).toEqual(["2028-02-29", "2032-02-29"]);
+    expect(occurrenceDatesInRange(leap, "2028-02-29", "2028-01-01", "2032-12-31")).toEqual([
+      "2028-02-29",
+      "2032-02-29",
+    ]);
   });
 });

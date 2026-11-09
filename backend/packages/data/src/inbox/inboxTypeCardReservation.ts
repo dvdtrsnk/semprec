@@ -11,7 +11,7 @@ export async function reserveInboxTypeCards(client: PoolClient, sourceId: string
   const database = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
   if (!database) return [];
   const property = await getPropertyByKey(client, database.id, "sourceInbox");
-  const definition = property && await getRelationDefinitionByPropertyId(client, property.id);
+  const definition = property && (await getRelationDefinitionByPropertyId(client, property.id));
   if (!definition) return [];
   const edges = await listRelationsForItem(client, definition.id, sourceId);
   const ids = [...new Set(edges.map((edge) => otherSide(edge, sourceId)))].sort();

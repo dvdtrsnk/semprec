@@ -150,20 +150,20 @@ export function createSempMessageTask(
             let result: Awaited<ReturnType<typeof conversation.send>>;
             try {
               result = await conversation.send(message, thread, {
-              context: expanded.context,
-              images: expanded.images,
-              signal,
-              modelPrefix: expanded.text ? `${prefix}\n\n${expanded.text}` : prefix,
-              messageId: assistantMessageId,
-              onFailurePersistenceError: () => {
-                runPersistenceFailed = true;
-              },
-              onTurnStart: async (value) => {
-                turnState.start = value;
-                await withTransaction(pool, (client) =>
-                  startSempMessageTurn(client, assistantMessageId, value.agentRunId, value.firstEventId),
-                );
-              },
+                context: expanded.context,
+                images: expanded.images,
+                signal,
+                modelPrefix: expanded.text ? `${prefix}\n\n${expanded.text}` : prefix,
+                messageId: assistantMessageId,
+                onFailurePersistenceError: () => {
+                  runPersistenceFailed = true;
+                },
+                onTurnStart: async (value) => {
+                  turnState.start = value;
+                  await withTransaction(pool, (client) =>
+                    startSempMessageTurn(client, assistantMessageId, value.agentRunId, value.firstEventId),
+                  );
+                },
               });
             } catch (error) {
               if (rejected) {
@@ -172,7 +172,9 @@ export function createSempMessageTask(
                 } catch (cleanupError) {
                   // Preserve the turn error as primary while retaining the cleanup error.
                   // eslint-disable-next-line preserve-caught-error
-                  throw new AggregateError([error, cleanupError], "Semp turn and acknowledgment cleanup failed", { cause: error });
+                  throw new AggregateError([error, cleanupError], "Semp turn and acknowledgment cleanup failed", {
+                    cause: error,
+                  });
                 }
               }
               throw error;

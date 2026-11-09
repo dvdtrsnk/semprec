@@ -33,7 +33,10 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
-export { createProjectGuidanceDriftReadRouteHandler, createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
+export {
+  createProjectGuidanceDriftReadRouteHandler,
+  createResolveGuidanceDriftFindingRouteHandler,
+} from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
 
 export {
   createCreateTranscriptionRouteHandler,

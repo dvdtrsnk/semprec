@@ -202,12 +202,19 @@ export interface ItemUpdateCommand {
   consume: (context: ItemPreWriteTransformContext, value: unknown) => Promise<Record<string, unknown>>;
   prepare: (value: unknown) => void;
 }
-export type ItemPatchApprovalContribution = (client: PoolClient, item: ItemRow, patch: Record<string, unknown>) => Promise<{
+export type ItemPatchApprovalContribution = (
+  client: PoolClient,
+  item: ItemRow,
+  patch: Record<string, unknown>,
+) => Promise<{
   snapshot: unknown;
   description: { key: string; params: Record<string, string | null> };
 } | null>;
 const itemPatchApprovalContributions = new Map<string, ItemPatchApprovalContribution>();
-export function registerItemPatchApprovalContribution(moduleId: string, contribution: ItemPatchApprovalContribution): void {
+export function registerItemPatchApprovalContribution(
+  moduleId: string,
+  contribution: ItemPatchApprovalContribution,
+): void {
   if (itemPatchApprovalContributions.has(moduleId)) throw new Error("Duplicate item approval contribution");
   itemPatchApprovalContributions.set(moduleId, contribution);
 }
@@ -222,7 +229,6 @@ export function registerItemUpdateCommand(moduleId: string, command: ItemUpdateC
 export function getItemUpdateCommand(moduleId: string): ItemUpdateCommand | undefined {
   return itemUpdateCommands.get(moduleId);
 }
-
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {
   itemCreateHooks.add(hook);

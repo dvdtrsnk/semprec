@@ -135,7 +135,12 @@ function fakeFindings(): GuidanceDriftFindingStore<FakeTx> & { rows: Map<string,
       const entry = [...rows.entries()].find(([, row]) => row.id === findingId && row.status === "active");
       if (!entry) throw new Error(`finding ${findingId} not found`);
       const [key, existing] = entry;
-      const updated = { ...existing, status: decision.status, lastSeenAt: decision.at.toISOString(), resolvedAt: decision.at.toISOString() };
+      const updated = {
+        ...existing,
+        status: decision.status,
+        lastSeenAt: decision.at.toISOString(),
+        resolvedAt: decision.at.toISOString(),
+      };
       rows.set(key, updated);
       return updated;
     },

@@ -2250,59 +2250,130 @@ describe("queued Semp messages", () => {
   it("runs a rejected tick outcome without tools and restores tools for the next user turn", async () => {
     const faux = fauxProvider();
     const observed: Array<{ tools: string[]; messages: string }> = [];
-    const task = createSempMessageTask(pool, registry, {
-      model: faux.getModel(),
-      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
-      isBudgetRefusal: () => false,
-    }, createInFlightAgentRuns());
+    const task = createSempMessageTask(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      createInFlightAgentRuns(),
+    );
     const fixture = await runInTenant(tenant, async () => {
       const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
       if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
-      const heartbeat = await withTransaction(pool, (client) => createHeartbeat(client, {
-        projectItemId: inbox.ownerProjectItemId!, name: "Outcome test", rule: { kind: "interval", minutes: 10 },
-        actionId: "core.agentRun", actionConfig: { task: "Review tasks" },
-      }));
-      const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id", [heartbeat.id]);
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId!,
+          name: "Outcome test",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Review tasks" },
+        }),
+      );
+      const thread = await pool.query<{ id: string }>(
+        "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+        [heartbeat.id],
+      );
       const threadId = thread.rows[0]?.id;
       if (!threadId) throw new Error("Missing thread");
-      const run = await createAgentRun(pool, { projectItemId: inbox.ownerProjectItemId, heartbeatId: heartbeat.id, threadId, triggeredBy: "heartbeat", task: "Review tasks" });
+      const run = await createAgentRun(pool, {
+        projectItemId: inbox.ownerProjectItemId,
+        heartbeatId: heartbeat.id,
+        threadId,
+        triggeredBy: "heartbeat",
+        task: "Review tasks",
+      });
       return { threadId, runId: run.id, heartbeatId: heartbeat.id };
     });
     faux.setResponses([
       (context) => {
-        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+        observed.push({
+          tools: (context.tools ?? []).map((tool) => tool.name),
+          messages: JSON.stringify(context.messages),
+        });
         return fauxAssistantMessage("before");
       },
       (context) => {
-        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
-        return fauxAssistantMessage([fauxToolCall("heartbeat_trigger", { heartbeatId: fixture.heartbeatId }, { id: "forbidden-trigger" })], { stopReason: "toolUse" });
+        observed.push({
+          tools: (context.tools ?? []).map((tool) => tool.name),
+          messages: JSON.stringify(context.messages),
+        });
+        return fauxAssistantMessage(
+          [fauxToolCall("heartbeat_trigger", { heartbeatId: fixture.heartbeatId }, { id: "forbidden-trigger" })],
+          { stopReason: "toolUse" },
+        );
       },
       () => fauxAssistantMessage("acknowledged"),
       (context) => {
-        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+        observed.push({
+          tools: (context.tools ?? []).map((tool) => tool.name),
+          messages: JSON.stringify(context.messages),
+        });
         return fauxAssistantMessage("after");
       },
     ]);
-    const send = (text: string) => runInTenant(tenant, () => withTransaction(pool, (client) => sendSempMessage(client, { threadId: fixture.threadId, text, context: [], hasContext: false })));
+    const send = (text: string) =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { threadId: fixture.threadId, text, context: [], hasContext: false }),
+        ),
+      );
     const first = await send("before");
-    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }));
-    await runInTenant(tenant, () => withTransaction(pool, async (client) => {
-      const request = await createPendingApprovalRequest(client, { agentRunId: fixture.runId, toolName: "test", riskClass: "unclassified", payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }, resourceSnapshot: { kind: "test", resourceId: "test", sha256: null } });
-      expect((await decideAndEnqueueApprovalRequest(client, { approvalRequestId: request.id, decision: "rejected", decidedByUserId: userId }))?.outcome).toBe("decided");
-    }));
-    const queued = await runInTenant(tenant, () => pool.query<{ id: string }>("SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.id = reply.reply_to_message_id AND source.tenant_id = reply.tenant_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND reply.status = 'queued'", [fixture.threadId]));
+    await runInTenant(tenant, () =>
+      task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }),
+    );
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: fixture.runId,
+          toolName: "test",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        expect(
+          (
+            await decideAndEnqueueApprovalRequest(client, {
+              approvalRequestId: request.id,
+              decision: "rejected",
+              decidedByUserId: userId,
+            })
+          )?.outcome,
+        ).toBe("decided");
+      }),
+    );
+    const queued = await runInTenant(tenant, () =>
+      pool.query<{ id: string }>(
+        "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.id = reply.reply_to_message_id AND source.tenant_id = reply.tenant_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND reply.status = 'queued'",
+        [fixture.threadId],
+      ),
+    );
     const assistantMessageId = queued.rows[0]?.id;
     if (!assistantMessageId) throw new Error("Missing queued acknowledgment");
-    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId }, { job: { id: "rejected" } }));
+    await runInTenant(tenant, () =>
+      task({ threadId: fixture.threadId, assistantMessageId }, { job: { id: "rejected" } }),
+    );
     const later = await send("after");
-    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId: later.assistantMessageId }, { job: { id: "after" } }));
+    await runInTenant(tenant, () =>
+      task({ threadId: fixture.threadId, assistantMessageId: later.assistantMessageId }, { job: { id: "after" } }),
+    );
     expect(observed[0]?.tools.length).toBeGreaterThan(0);
     expect(observed[1]?.tools).toEqual([]);
     expect(observed[1]?.messages).toContain("The action did not happen");
     expect(observed[2]?.tools.length).toBeGreaterThan(0);
-    const reply = await runInTenant(tenant, () => pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [assistantMessageId]));
+    const reply = await runInTenant(tenant, () =>
+      pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [
+        assistantMessageId,
+      ]),
+    );
     expect(reply.rows).toEqual([{ status: "done", text: "\nacknowledged" }]);
-    const jobs = await runInTenant(tenant, () => pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`heartbeat-fire:manual:${fixture.heartbeatId}`]));
+    const jobs = await runInTenant(tenant, () =>
+      pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+        `heartbeat-fire:manual:${fixture.heartbeatId}`,
+      ]),
+    );
     expect(jobs.rows).toEqual([]);
     await closeIdleThreadSessions(pool);
   });
@@ -2321,32 +2392,74 @@ describe("queued Semp messages", () => {
       },
       isBudgetRefusal: () => false,
     };
-    const fixture = await runInTenant(tenant, () => withTransaction(pool, async (client) => {
-      const inbox = await getDatabaseByModuleId(client, "inbox");
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
-      const heartbeat = await createHeartbeat(client, { projectItemId: inbox.ownerProjectItemId, name: "FIFO", rule: { kind: "interval", minutes: 10 }, actionId: "core.agentRun", actionConfig: { task: "Review" } });
-      const thread = await client.query<{ id: string }>("INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id", [heartbeat.id]);
-      const threadId = thread.rows[0]?.id;
-      if (!threadId) throw new Error("Missing thread");
-      const run = await createAgentRun(client, { triggeredBy: "heartbeat", task: "Review", projectItemId: inbox.ownerProjectItemId, heartbeatId: heartbeat.id, threadId });
-      const request = await createPendingApprovalRequest(client, { agentRunId: run.id, toolName: "test", riskClass: "unclassified", payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }, resourceSnapshot: { kind: "test", resourceId: "test", sha256: null } });
-      const first = await sendSempMessage(client, { threadId, text: "earlier", context: [], hasContext: false });
-      await decideAndEnqueueApprovalRequest(client, { approvalRequestId: request.id, decision: "rejected", decidedByUserId: userId });
-      const later = await client.query<{ id: string }>("SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected'", [threadId]);
-      if (!later.rows[0]) throw new Error("Missing continuation");
-      return { threadId, first: first.assistantMessageId, later: later.rows[0].id };
-    }));
-    runtime = await createAgentsQueueRuntime(pool, registry, { sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()) });
+    const fixture = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId,
+          name: "FIFO",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Review" },
+        });
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
+        const threadId = thread.rows[0]?.id;
+        if (!threadId) throw new Error("Missing thread");
+        const run = await createAgentRun(client, {
+          triggeredBy: "heartbeat",
+          task: "Review",
+          projectItemId: inbox.ownerProjectItemId,
+          heartbeatId: heartbeat.id,
+          threadId,
+        });
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "test",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        const first = await sendSempMessage(client, { threadId, text: "earlier", context: [], hasContext: false });
+        await decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        });
+        const later = await client.query<{ id: string }>(
+          "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected'",
+          [threadId],
+        );
+        if (!later.rows[0]) throw new Error("Missing continuation");
+        return { threadId, first: first.assistantMessageId, later: later.rows[0].id };
+      }),
+    );
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
     let failure: { error: unknown } | undefined;
     try {
       const deadline = Date.now() + 15_000;
       let rows: Array<{ id: string; status: string; text: string | null }> = [];
       do {
-        rows = (await runInTenant(tenant, () => pool.query<{ id: string; status: string; text: string | null }>("SELECT id, status, text FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id", [[fixture.first, fixture.later]]))).rows;
+        rows = (
+          await runInTenant(tenant, () =>
+            pool.query<{ id: string; status: string; text: string | null }>(
+              "SELECT id, status, text FROM semp_messages WHERE id = ANY($1::uuid[]) ORDER BY created_at, id",
+              [[fixture.first, fixture.later]],
+            ),
+          )
+        ).rows;
         if (rows.length === 2 && rows.every((row) => row.status === "done")) break;
         await sleep(50);
       } while (Date.now() < deadline);
-      expect(rows).toEqual([{ id: fixture.first, status: "done", text: "earlier answer" }, { id: fixture.later, status: "done", text: "acknowledged" }]);
+      expect(rows).toEqual([
+        { id: fixture.first, status: "done", text: "earlier answer" },
+        { id: fixture.later, status: "done", text: "acknowledged" },
+      ]);
       expect(headers).toEqual([fixture.first, fixture.later]);
     } catch (error) {
       failure = { error };
@@ -2358,7 +2471,10 @@ describe("queued Semp messages", () => {
     } catch (cleanupError) {
       // Preserve the test failure as primary while retaining the cleanup error.
       // eslint-disable-next-line preserve-caught-error
-      if (failure) throw new AggregateError([failure.error, cleanupError], "Queue test and cleanup failed", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Queue test and cleanup failed", {
+          cause: failure.error,
+        });
       throw cleanupError;
     }
     if (failure) throw failure.error;

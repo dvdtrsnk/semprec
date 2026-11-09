@@ -155,19 +155,23 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
 
   it("adds Inbox Markdown format for each old tenant once and preserves existing values", async () => {
     for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
-    const read = (tenant: string) => runInTenant(tenant, async () => {
-      const result = await dataPool.query<{ id: string; config: Record<string, unknown>; version: string }>(
-        `SELECT p.id, p.config, p.xmin::text AS version FROM properties p
+    const read = (tenant: string) =>
+      runInTenant(tenant, async () => {
+        const result = await dataPool.query<{ id: string; config: Record<string, unknown>; version: string }>(
+          `SELECT p.id, p.config, p.xmin::text AS version FROM properties p
          JOIN databases d ON d.id = p.database_id AND d.tenant_id = p.tenant_id
          WHERE d.owner_module_id = 'inbox' AND p.key = 'text'`,
-      );
-      if (!result.rows[0]) throw new Error("Inbox text property missing");
-      return result.rows[0];
-    });
+        );
+        if (!result.rows[0]) throw new Error("Inbox text property missing");
+        return result.rows[0];
+      });
     expect((await read(zero)).config.format).toBe("markdown");
     const old = await read(b);
     // The schema-locked historical catalog cannot be reverted through the public property API.
-    const result = await adminPool.query("UPDATE properties SET config = config - 'format' WHERE tenant_id = $1 AND id = $2", [b, old.id]);
+    const result = await adminPool.query(
+      "UPDATE properties SET config = config - 'format' WHERE tenant_id = $1 AND id = $2",
+      [b, old.id],
+    );
     expect(result.rowCount).toBe(1);
     await runCutovers(dataPool);
     const upgraded = await read(b);

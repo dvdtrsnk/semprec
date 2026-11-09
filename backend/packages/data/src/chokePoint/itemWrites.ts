@@ -401,7 +401,7 @@ export async function createItemReportingReplay(
         }
       }
       assertColorValues(properties, itemProperties);
-  assertMarkdownValues(properties, itemProperties);
+      assertMarkdownValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
@@ -497,11 +497,21 @@ export async function updateItemWithClient(
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
   const commandProperty = command && properties.find((property) => property.key === command.key);
-  const hasCommand = !!command && Object.hasOwn(input.propertiesPatch, command.key) && !options.allowedSystemKeys?.includes(command.key);
-  if (hasCommand && (!commandProperty || commandProperty.owner !== "system" || commandProperty.ownerProcess !== database.ownerModuleId)) {
+  const hasCommand =
+    !!command && Object.hasOwn(input.propertiesPatch, command.key) && !options.allowedSystemKeys?.includes(command.key);
+  if (
+    hasCommand &&
+    (!commandProperty || commandProperty.owner !== "system" || commandProperty.ownerProcess !== database.ownerModuleId)
+  ) {
     throw new ForbiddenError("Item command owner does not match", { field: command?.key }, "owner_violation");
   }
-  assertWritableProperties(properties, patchKeys, hasCommand && command ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] } : options);
+  assertWritableProperties(
+    properties,
+    patchKeys,
+    hasCommand && command
+      ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] }
+      : options,
+  );
   assertColorValues(properties, input.propertiesPatch);
   assertMarkdownValues(properties, input.propertiesPatch);
   const writer = options.writer ?? SYSTEM_WRITER;
@@ -528,15 +538,19 @@ export async function updateItemWithClient(
       properties,
     );
     assertColorValues(properties, propertiesPatch);
-  assertMarkdownValues(properties, propertiesPatch);
+    assertMarkdownValues(properties, propertiesPatch);
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
   if (hasCommand && command && moduleId && stored) {
     command.prepare(input.propertiesPatch[command.key]);
-    const generated = await command.consume({ client, database, stored, patch: propertiesPatch, writer, humanWriterUserId: options.humanWriterUserId }, input.propertiesPatch[command.key]);
+    const generated = await command.consume(
+      { client, database, stored, patch: propertiesPatch, writer, humanWriterUserId: options.humanWriterUserId },
+      input.propertiesPatch[command.key],
+    );
     assertTransformAddedKeysWritable(properties, Object.keys(ordinaryPatch), generated, moduleId);
     propertiesPatch = { ...propertiesPatch, ...generated };
-    if (Object.keys(propertiesPatch).length === 0) return { ...stored, previous: { [command.key]: stored.properties[command.key] ?? null } };
+    if (Object.keys(propertiesPatch).length === 0)
+      return { ...stored, previous: { [command.key]: stored.properties[command.key] ?? null } };
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
@@ -661,9 +675,8 @@ export type RolloverTaskInput =
 
 /** Nightly Tasks ownership handover; see the rollover and missed-occurrence ADRs. */
 export async function rolloverTaskWithClient(client: PoolClient, input: RolloverTaskInput): Promise<ItemRow> {
-  const propertiesPatch = input.status === "missed"
-    ? { status: "missed" }
-    : { date: input.date, timeFrom: null, timeTo: null };
+  const propertiesPatch =
+    input.status === "missed" ? { status: "missed" } : { date: input.date, timeFrom: null, timeTo: null };
   return updateItemWithClient(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch });
 }
 

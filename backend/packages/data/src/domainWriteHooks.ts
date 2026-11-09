@@ -1,4 +1,8 @@
-import { applyRecurrenceCommand, validateRecurrenceCommand, projectRecurrenceApproval } from "./tasks/taskRecurrenceOwner.js";
+import {
+  applyRecurrenceCommand,
+  validateRecurrenceCommand,
+  projectRecurrenceApproval,
+} from "./tasks/taskRecurrenceOwner.js";
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";

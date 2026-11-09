@@ -84,10 +84,20 @@ export async function buildDestructiveApprovalDescription(
 ): Promise<ApprovalDescription> {
   if (typeof currentResource === "object" && currentResource !== null && "approvalDescription" in currentResource) {
     const candidate: unknown = currentResource.approvalDescription;
-    if (typeof candidate === "object" && candidate !== null && "key" in candidate && typeof candidate.key === "string" && "params" in candidate && typeof candidate.params === "object" && candidate.params !== null && !Array.isArray(candidate.params)) {
+    if (
+      typeof candidate === "object" &&
+      candidate !== null &&
+      "key" in candidate &&
+      typeof candidate.key === "string" &&
+      "params" in candidate &&
+      typeof candidate.params === "object" &&
+      candidate.params !== null &&
+      !Array.isArray(candidate.params)
+    ) {
       const params: Record<string, string | number | null> = {};
       for (const [key, value] of Object.entries<unknown>(candidate.params)) {
-        if (typeof value !== "string" && typeof value !== "number" && value !== null) throw new Error("Invalid approval description parameter");
+        if (typeof value !== "string" && typeof value !== "number" && value !== null)
+          throw new Error("Invalid approval description parameter");
         params[key] = value;
       }
       return { key: candidate.key, params };

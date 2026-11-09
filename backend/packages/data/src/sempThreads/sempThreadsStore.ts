@@ -79,13 +79,22 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
       throw new Error("Invalid approval outcome source");
     }
     const entry: unknown = row.context[0];
-    if (typeof entry !== "object" || entry === null || !("kind" in entry) || entry.kind !== "approvalRequest" ||
-        !("approvalRequestId" in entry) || typeof entry.approvalRequestId !== "string" ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.approvalRequestId)) {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("kind" in entry) ||
+      entry.kind !== "approvalRequest" ||
+      !("approvalRequestId" in entry) ||
+      typeof entry.approvalRequestId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.approvalRequestId)
+    ) {
       throw new Error("Invalid approval outcome context");
     }
-    const kind = assertKnownValue(["approval.outcome.executed", "approval.outcome.rejected", "approval.outcome.conflict"] as const,
-      row.system_key ?? "", "approval outcome key");
+    const kind = assertKnownValue(
+      ["approval.outcome.executed", "approval.outcome.rejected", "approval.outcome.conflict"] as const,
+      row.system_key ?? "",
+      "approval outcome key",
+    );
     const result = await client.query<{ status: string; execution_status: string; execution_result_jsonb: unknown }>(
       `SELECT a.status, a.execution_status, a.execution_result_jsonb FROM approval_requests a
        JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id
@@ -93,11 +102,24 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
       [entry.approvalRequestId, threadId, row.heartbeat_id],
     );
     const request = result.rows[0];
-    if (!request || (kind === "approval.outcome.rejected" ? request.status !== "rejected" :
-      request.status !== "approved" || request.execution_status !== (kind === "approval.outcome.executed" ? "succeeded" : "conflict"))) {
+    if (
+      !request ||
+      (kind === "approval.outcome.rejected"
+        ? request.status !== "rejected"
+        : request.status !== "approved" ||
+          request.execution_status !== (kind === "approval.outcome.executed" ? "succeeded" : "conflict"))
+    ) {
       throw new Error("Approval outcome provenance mismatch");
     }
-    outcome = { kind: kind === "approval.outcome.executed" ? "executed" : kind === "approval.outcome.rejected" ? "rejected" : "conflict", result: request.execution_result_jsonb };
+    outcome = {
+      kind:
+        kind === "approval.outcome.executed"
+          ? "executed"
+          : kind === "approval.outcome.rejected"
+            ? "rejected"
+            : "conflict",
+      result: request.execution_result_jsonb,
+    };
   }
   return {
     kind: assertKnownValue(["chat", "item", "tick"] as const, row.kind, "thread kind"),

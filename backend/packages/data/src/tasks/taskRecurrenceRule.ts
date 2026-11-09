@@ -22,16 +22,23 @@ const nthWeekdayRule = z.object({
   weekday,
 });
 
-const yearDatesRule = z.object({
-  kind: z.literal("yearDates"),
-  month: z.number().int().min(1).max(12),
-  day: z.number().int().min(1).max(31),
-}).refine(({ month, day }) => day <= [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!, {
-  message: "Day does not exist in month",
-  path: ["day"],
-});
+const yearDatesRule = z
+  .object({
+    kind: z.literal("yearDates"),
+    month: z.number().int().min(1).max(12),
+    day: z.number().int().min(1).max(31),
+  })
+  .refine(({ month, day }) => day <= [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!, {
+    message: "Day does not exist in month",
+    path: ["day"],
+  });
 
-export const fixedRecurrenceRuleSchema = z.discriminatedUnion("kind", [weekdaysRule, monthDatesRule, nthWeekdayRule, yearDatesRule]);
+export const fixedRecurrenceRuleSchema = z.discriminatedUnion("kind", [
+  weekdaysRule,
+  monthDatesRule,
+  nthWeekdayRule,
+  yearDatesRule,
+]);
 export type FixedRecurrenceRule = z.infer<typeof fixedRecurrenceRuleSchema>;
 
 export const floatingRecurrenceRuleSchema = z.object({

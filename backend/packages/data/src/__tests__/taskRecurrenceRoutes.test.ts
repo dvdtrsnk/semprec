@@ -127,12 +127,32 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
 
   it("accepts a generic recurrence command and keeps identical commands as no-ops", async () => {
     const id = await task({ date: "2026-10-22" });
-    const first = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }));
-    expect(first.properties.recurrence).toEqual({ preset: "weekly", mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } });
-    const same = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: first.updatedAt, propertiesPatch: { recurrence: { preset: "weekly" } } }));
+    const first = await runInTenant(tenant, () =>
+      cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
+    );
+    expect(first.properties.recurrence).toEqual({
+      preset: "weekly",
+      mode: "fixed",
+      rule: { kind: "weekdays", days: ["thu"] },
+    });
+    const same = await runInTenant(tenant, () =>
+      cp.updateItem({
+        databaseId: tasksId,
+        itemId: id,
+        ifVersion: first.updatedAt,
+        propertiesPatch: { recurrence: { preset: "weekly" } },
+      }),
+    );
     expect(same.updatedAt).toBe(first.updatedAt);
     expect(await seriesRows()).toHaveLength(1);
-    const ended = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: same.updatedAt, propertiesPatch: { recurrence: null } }));
+    const ended = await runInTenant(tenant, () =>
+      cp.updateItem({
+        databaseId: tasksId,
+        itemId: id,
+        ifVersion: same.updatedAt,
+        propertiesPatch: { recurrence: null },
+      }),
+    );
     expect(ended.properties.recurrence).toBeNull();
     expect((await seriesRows())[0]?.active).toBe(false);
   });
@@ -142,11 +162,22 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     await put(id, { preset: "weekly" });
     const before = await seriesRows();
     const beforeItem = await stored(id);
-    await expect(inTenantWrite()).rejects.toMatchObject({ name: "ApprovalRequiredForWrite", reasons: [expect.objectContaining({ kind: "changesSeries", to: { kind: "monthDates", dates: [22] } })] });
+    await expect(inTenantWrite()).rejects.toMatchObject({
+      name: "ApprovalRequiredForWrite",
+      reasons: [expect.objectContaining({ kind: "changesSeries", to: { kind: "monthDates", dates: [22] } })],
+    });
     expect(await seriesRows()).toEqual(before);
     expect(await stored(id)).toEqual(beforeItem);
     function inTenantWrite() {
-      return runInTenant(tenant, () => withTransaction(pool, (client) => updateItemWithClient(client, { databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "monthly" } } }, { writer: { writerKind: "agent", agentRunId: randomUUID() } })));
+      return runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "monthly" } } },
+            { writer: { writerKind: "agent", agentRunId: randomUUID() } },
+          ),
+        ),
+      );
     }
   });
 
@@ -154,7 +185,16 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     const id = await task({ date: "2026-10-22" });
     await put(id, { preset: "weekly" });
     const before = await seriesRows();
-    await expect(runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: "stale", propertiesPatch: { recurrence: { preset: "monthly" } } }))).rejects.toMatchObject({ status: 409, code: "version_conflict" });
+    await expect(
+      runInTenant(tenant, () =>
+        cp.updateItem({
+          databaseId: tasksId,
+          itemId: id,
+          ifVersion: "stale",
+          propertiesPatch: { recurrence: { preset: "monthly" } },
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "version_conflict" });
     expect(await seriesRows()).toEqual(before);
   });
 
@@ -213,23 +253,36 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     const previousNow = Settings.now;
     Settings.now = () => Date.parse("2026-10-22T12:00:00Z");
     try {
-      await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status: "done" } }));
+      await runInTenant(tenant, () =>
+        cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status: "done" } }),
+      );
     } finally {
       Settings.now = previousNow;
     }
     const [series] = await seriesRows();
     if (!series) throw new Error("Missing series");
     expect(series.item_id).not.toBe(id);
-    expect(await stored(series.item_id)).toMatchObject({ date: "2027-10-22", occurrenceDate: "2027-10-22", seriesId: first.item.properties.seriesId });
+    expect(await stored(series.item_id)).toMatchObject({
+      date: "2027-10-22",
+      occurrenceDate: "2027-10-22",
+      seriesId: first.item.properties.seriesId,
+    });
   });
 
   it("uses the supplied date for the yearly preset and refuses impossible dates without writes", async () => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset: "yearly", date: "2026-12-24" });
-    expect(response.item.properties.recurrence).toEqual({ preset: "yearly", mode: "fixed", rule: { kind: "yearDates", month: 12, day: 24 } });
+    expect(response.item.properties.recurrence).toEqual({
+      preset: "yearly",
+      mode: "fixed",
+      rule: { kind: "yearDates", month: 12, day: 24 },
+    });
     const before = await stored(id);
     const rows = await seriesRows();
-    for (const rule of [{ kind: "yearDates", month: 4, day: 31 }, { kind: "yearDates", month: 13, day: 1 }]) {
+    for (const rule of [
+      { kind: "yearDates", month: 4, day: 31 },
+      { kind: "yearDates", month: 13, day: 1 },
+    ]) {
       await expect(put(id, { mode: "fixed", rule })).rejects.toMatchObject({ status: 400 });
       expect(await stored(id)).toEqual(before);
       expect(await seriesRows()).toEqual(rows);

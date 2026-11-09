@@ -110,16 +110,20 @@ export async function computeDestructiveResourceProjection(
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
       if (database.archivedAt) throw new ForbiddenError("Database is archived", undefined, "database_archived");
-      const contribution = database.ownerModuleId && check.input.properties
-        ? await getItemPatchApprovalContribution(database.ownerModuleId)?.(client, item, check.input.properties)
-        : null;
+      const contribution =
+        database.ownerModuleId && check.input.properties
+          ? await getItemPatchApprovalContribution(database.ownerModuleId)?.(client, item, check.input.properties)
+          : null;
       if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.updatedAt) {
         throw new ConflictError("Item was modified since ifVersion was read", { current: item });
       }
       const projected = contribution
         ? { item, databaseArchivedAt: database.archivedAt, command: contribution.snapshot }
         : { item, databaseArchivedAt: database.archivedAt };
-      return { snapshot: buildResourceSnapshot("item_patch", item.id, projected), currentResource: { ...projected, approvalDescription: contribution?.description } };
+      return {
+        snapshot: buildResourceSnapshot("item_patch", item.id, projected),
+        currentResource: { ...projected, approvalDescription: contribution?.description },
+      };
     }
     case "relation.put":
     case "relation.set": {

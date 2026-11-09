@@ -68,43 +68,110 @@ describe("approval outcome messages", () => {
       return withTransaction(runtime, async (client) => {
         const inbox = await getDatabaseByModuleId(client, "inbox");
         if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
-        const heartbeat = await createHeartbeat(client, { projectItemId: inbox.ownerProjectItemId, name: "Test", rule: { kind: "interval", minutes: 10 }, actionId: "core.agentRun", actionConfig: { task: "Test" } });
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId,
+          name: "Test",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Test" },
+        });
         if (!enabled) await client.query("UPDATE project_heartbeats SET enabled = false WHERE id = $1", [heartbeat.id]);
-        const thread = await client.query<{ id: string }>("INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id", [heartbeat.id]);
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
         const threadId = thread.rows[0]?.id;
         if (!threadId) throw new Error("Missing tick thread");
-        const run = await createAgentRun(client, { triggeredBy: "heartbeat", task: "Test", projectItemId: inbox.ownerProjectItemId, heartbeatId: heartbeat.id, threadId });
-        const request = await createPendingApprovalRequest(client, { agentRunId: run.id, toolName: "test", riskClass: "write", payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }, resourceSnapshot: { kind: "test", resourceId: randomUUID(), sha256: null } });
+        const run = await createAgentRun(client, {
+          triggeredBy: "heartbeat",
+          task: "Test",
+          projectItemId: inbox.ownerProjectItemId,
+          heartbeatId: heartbeat.id,
+          threadId,
+        });
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "test",
+          riskClass: "write",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: randomUUID(), sha256: null },
+        });
         return { threadId, requestId: request.id };
       });
     });
   }
   it("queues one tick acknowledgment after an earlier user turn and rolls it back with the decision", async () => {
     const fixture = await tickFixture(true);
-    const prior = await runInTenant(tenant(), () => withTransaction(runtime, (client) => sendSempMessage(client, { threadId: fixture.threadId, text: "earlier", context: [], hasContext: false })));
-    const decide = () => runInTenant(tenant(), () => withTransaction(runtime, (client) => decideAndEnqueueApprovalRequest(client, { approvalRequestId: fixture.requestId, decision: "rejected", decidedByUserId: userId })));
-    await expect(runInTenant(tenant(), () => withTransaction(runtime, async (client) => {
-      await decideAndEnqueueApprovalRequest(client, { approvalRequestId: fixture.requestId, decision: "rejected", decidedByUserId: userId });
-      throw new Error("rollback tick decision");
-    }))).rejects.toThrow("rollback tick decision");
+    const prior = await runInTenant(tenant(), () =>
+      withTransaction(runtime, (client) =>
+        sendSempMessage(client, { threadId: fixture.threadId, text: "earlier", context: [], hasContext: false }),
+      ),
+    );
+    const decide = () =>
+      runInTenant(tenant(), () =>
+        withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: fixture.requestId,
+            decision: "rejected",
+            decidedByUserId: userId,
+          }),
+        ),
+      );
+    await expect(
+      runInTenant(tenant(), () =>
+        withTransaction(runtime, async (client) => {
+          await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: fixture.requestId,
+            decision: "rejected",
+            decidedByUserId: userId,
+          });
+          throw new Error("rollback tick decision");
+        }),
+      ),
+    ).rejects.toThrow("rollback tick decision");
     expect((await runInTenant(tenant(), () => getApprovalRequest(runtime, fixture.requestId)))?.status).toBe("pending");
     expect((await decide())?.outcome).toBe("decided");
     expect((await decide())?.outcome).toBe("unchanged");
-    const rows = await runInTenant(tenant(), () => runtime.query<{ id: string; role: string; reply_to_message_id: string | null; system_key: string | null; status: string | null }>(
-      "SELECT id, role, reply_to_message_id, system_key, status FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id", [fixture.threadId],
-    ));
+    const rows = await runInTenant(tenant(), () =>
+      runtime.query<{
+        id: string;
+        role: string;
+        reply_to_message_id: string | null;
+        system_key: string | null;
+        status: string | null;
+      }>(
+        "SELECT id, role, reply_to_message_id, system_key, status FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id",
+        [fixture.threadId],
+      ),
+    );
     expect(rows.rows.map((row) => row.role)).toEqual(["user", "assistant", "system", "assistant"]);
     expect(rows.rows[1]?.id).toBe(prior.assistantMessageId);
     expect(rows.rows[2]?.system_key).toBe("approval.outcome.rejected");
     expect(rows.rows[3]).toMatchObject({ role: "assistant", status: "queued", reply_to_message_id: rows.rows[2]?.id });
     const keys = [prior.assistantMessageId, rows.rows[3]?.id].map((id) => `sempMessage:${id}`);
-    const jobs = await admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key", [keys]);
+    const jobs = await admin.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+      [keys],
+    );
     expect(jobs.rows).toEqual([...keys].sort().map((key) => ({ key })));
   });
   it("keeps the outcome without a continuation for a disabled heartbeat", async () => {
     const fixture = await tickFixture(false);
-    await runInTenant(tenant(), () => withTransaction(runtime, (client) => decideAndEnqueueApprovalRequest(client, { approvalRequestId: fixture.requestId, decision: "rejected", decidedByUserId: userId })));
-    const rows = await runInTenant(tenant(), () => runtime.query<{ role: string; system_key: string | null }>("SELECT role, system_key FROM semp_messages WHERE thread_id = $1", [fixture.threadId]));
+    await runInTenant(tenant(), () =>
+      withTransaction(runtime, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: fixture.requestId,
+          decision: "rejected",
+          decidedByUserId: userId,
+        }),
+      ),
+    );
+    const rows = await runInTenant(tenant(), () =>
+      runtime.query<{ role: string; system_key: string | null }>(
+        "SELECT role, system_key FROM semp_messages WHERE thread_id = $1",
+        [fixture.threadId],
+      ),
+    );
     expect(rows.rows).toEqual([{ role: "system", system_key: "approval.outcome.rejected" }]);
   });
   it("posts one canonical rejection on the decision transaction and ignores redelivery", async () => {

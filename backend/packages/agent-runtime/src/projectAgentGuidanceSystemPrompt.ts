@@ -14,9 +14,10 @@ function boundedNotes(markdown: string): { markdown: string; truncated: boolean 
     return { markdown, truncated: false };
   }
   const blocks = parseMarkdown(markdown);
-  const render = (count: number) => serializeBlocks(blocks.slice(0, count), {
-    resolvePageTitle: (_id, block) => (block.text ?? []).map((run) => run.insert).join(""),
-  });
+  const render = (count: number) =>
+    serializeBlocks(blocks.slice(0, count), {
+      resolvePageTitle: (_id, block) => (block.text ?? []).map((run) => run.insert).join(""),
+    });
   let low = 0;
   let high = blocks.length;
   while (low < high) {

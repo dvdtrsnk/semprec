@@ -1016,16 +1016,26 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "guidance drift resolve": async () => {
     const subject = { operation: "items.delete", databaseId: null };
-    const finding = await runInTenant(a.tenantId, () => withTransaction(pool, (client) =>
-      agentGuidanceDriftFindingsStore.upsertActive(client, {
-        projectItemId: a.projectItemId,
-        fingerprint: fingerprintGuidanceDriftSubject(a.projectItemId, "permission", subject),
-        payload: { kind: "permission", subject, claim: "Claim", guidanceExcerpt: "Excerpt", manifestFacts: ["Fact"], severity: "blocking" },
-        seenAt: new Date("2026-10-01T08:00:00.000Z"),
-      }),
-    ));
+    const finding = await runInTenant(a.tenantId, () =>
+      withTransaction(pool, (client) =>
+        agentGuidanceDriftFindingsStore.upsertActive(client, {
+          projectItemId: a.projectItemId,
+          fingerprint: fingerprintGuidanceDriftSubject(a.projectItemId, "permission", subject),
+          payload: {
+            kind: "permission",
+            subject,
+            claim: "Claim",
+            guidanceExcerpt: "Excerpt",
+            manifestFacts: ["Fact"],
+            severity: "blocking",
+          },
+          seenAt: new Date("2026-10-01T08:00:00.000Z"),
+        }),
+      ),
+    );
     const result = await expectForeignLikeRandom(b.member, [finding.finding.id], ([id]) => ({
-      method: "POST", path: `/api/agent-guidance-drift/${id}/resolve`,
+      method: "POST",
+      path: `/api/agent-guidance-drift/${id}/resolve`,
       body: { choice: "dismiss", expectedGuidanceUpdatedAt: null },
     }));
     expect(result.status).toBe(404);

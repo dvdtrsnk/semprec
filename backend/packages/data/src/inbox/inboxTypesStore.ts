@@ -198,8 +198,8 @@ export async function deleteInboxTypeWithClient(
       markManagedTransactionRollbackOnly(client, error);
       throw error;
     }
-    const locked = cards.some((card) =>
-      typeof card.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(card.properties.status),
+    const locked = cards.some(
+      (card) => typeof card.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(card.properties.status),
     );
     if (locked) continue;
 

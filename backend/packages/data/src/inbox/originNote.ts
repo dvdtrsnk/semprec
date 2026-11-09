@@ -18,8 +18,16 @@ export async function insertInboxOriginNotes(
   if (!source) throw new Error("Inbox origin source disappeared");
   const locale = actingUserId ? (await getUserById(client, actingUserId))?.locale : await getTenantUserLocale(client);
   const catalogs = await loadModuleCatalogs(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
-  const label = resolveCatalogLabel(null, catalogs[toManifestLocale(locale ?? "cs")], catalogs.en, "inbox.originNote.prefix");
+  const label = resolveCatalogLabel(
+    null,
+    catalogs[toManifestLocale(locale ?? "cs")],
+    catalogs.en,
+    "inbox.originNote.prefix",
+  );
   const text = typeof source.properties.text === "string" ? source.properties.text : "";
-  const markdown = serializeBlocks([{ id: randomUUID(), type: "text", indent: 0, text: [{ insert: `${label} ${text}` }] }]);
-  for (const itemId of itemIds) await insertPageMarkdown(client, itemId, { markdown, placement: "start", origin: "user" });
+  const markdown = serializeBlocks([
+    { id: randomUUID(), type: "text", indent: 0, text: [{ insert: `${label} ${text}` }] },
+  ]);
+  for (const itemId of itemIds)
+    await insertPageMarkdown(client, itemId, { markdown, placement: "start", origin: "user" });
 }
