@@ -514,6 +514,13 @@ describe("PageCreateSubpageInputSchema (issue #1676)", () => {
       PageCreateSubpageInputSchema.safeParse({ parent: { journal: { type: "day", period: "2026-10-16" } } }).success,
     ).toBe(true);
     expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, title: "" }).success).toBe(true);
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, fromBlockIds: ["a", "b"] }).success).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({
+        parent: { itemId },
+        fromBlockIds: Array.from({ length: 200 }, (_, i) => `b${i}`),
+      }).success,
+    ).toBe(true);
   });
 
   it("refuses a missing, malformed, mixed or unknown parent and unknown keys", () => {
@@ -529,6 +536,10 @@ describe("PageCreateSubpageInputSchema (issue #1676)", () => {
       { parent: { itemId }, afterBlockId: "" },
       { parent: { itemId }, title: 5 },
       { parent: { itemId }, unexpected: true },
+      { parent: { itemId }, fromBlockIds: [] },
+      { parent: { itemId }, fromBlockIds: ["a", "a"] },
+      { parent: { itemId }, fromBlockIds: [""] },
+      { parent: { itemId }, fromBlockIds: Array.from({ length: 201 }, (_, i) => `b${i}`) },
     ]) {
       expect(PageCreateSubpageInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
     }

@@ -379,12 +379,15 @@ export function createItemRoutes(
       path: "/api/items/:id/page/subpages",
       handler: async (ctx) => {
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
-        const unexpected = Object.keys(body).find((key) => key !== "afterBlockId" && key !== "title");
+        const unexpected = Object.keys(body).find(
+          (key) => key !== "afterBlockId" && key !== "title" && key !== "fromBlockIds",
+        );
         if (unexpected !== undefined) throw new ValidationError("Unexpected subpage field", { field: unexpected });
         const created = await dispatchGenericOperation(service, "page.createSubpage", restActor(ctx.identity.user.id), {
           parent: { itemId: requireUuidParam(ctx.params, "id") },
           afterBlockId: body.afterBlockId,
           title: body.title,
+          fromBlockIds: body.fromBlockIds,
         });
         return { status: 201, body: created };
       },

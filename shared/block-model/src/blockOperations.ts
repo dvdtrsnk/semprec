@@ -32,6 +32,7 @@ export type BlockOperationErrorCode =
   | "no_previous_block"
   | "page_block_not_splittable"
   | "page_block_not_mergeable"
+  | "block_already_page"
   | "page_conversion_required";
 
 /** Thrown when an operation is refused; the document is unchanged. */
@@ -307,6 +308,53 @@ export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, ori
       } else {
         block.delete("done");
       }
+    }
+  }, origin);
+}
+
+/**
+ * Converts each selected block into a `page` block in place (issue #2013): the id and the position stay, the type
+ * becomes `page`, `pageId` is `pageIdFor(id)` and the block's text stays as the plain-text title (inline attributes are
+ * dropped; `done` goes with the old type). Refuses a repeated id (`duplicate_block_id`), an unknown id
+ * (`block_not_found`) and a block that is already a page (`block_already_page`) before changing anything; the one
+ * `doc.transact` then converts every block or none. This is the page layer's counterpart of `setType`, which still
+ * refuses every conversion to or from `page`.
+ */
+export function convertBlocksToPages(
+  doc: Y.Doc,
+  ids: readonly string[],
+  pageIdFor: (blockId: string) => string,
+  origin?: unknown,
+): void {
+  if (new Set(ids).size !== ids.length) {
+    throw new BlockOperationError("duplicate_block_id", "A block id is listed twice");
+  }
+  const current = currentBlocks(doc);
+  const selected = requireBlocks(current, ids);
+  if (selected.size === 0) {
+    return;
+  }
+  const already = current.find((block) => selected.has(block.id as string) && block.type === "page");
+  if (already) {
+    throw new BlockOperationError("block_already_page", `Block ${already.id as string} is already a page block`);
+  }
+  const conversions: BlockInput[] = current
+    .filter((block) => selected.has(block.id as string))
+    .map((block) => ({
+      id: block.id as string,
+      type: "page",
+      indent: block.indent,
+      pageId: pageIdFor(block.id as string),
+      text: block.text.map((run) => run.insert).join(""),
+    }));
+  const issues = conversions.flatMap((input) => validateBlockInput(input));
+  if (issues.length > 0) {
+    throw new BlockInputError(issues);
+  }
+  doc.transact(() => {
+    tidyOrder(doc, current);
+    for (const input of conversions) {
+      writeBlock(doc, input);
     }
   }, origin);
 }

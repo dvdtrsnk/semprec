@@ -24,6 +24,7 @@ export {
 } from "./pageBlocks.js";
 export {
   BlockOperationError,
+  convertBlocksToPages,
   deleteBlocks,
   duplicateBlocks,
   insertBlocks,

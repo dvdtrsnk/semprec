@@ -412,11 +412,15 @@ export type PageGetInput = z.infer<typeof PageGetInputSchema>;
 /** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
 const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
 
+/** Most blocks one conversion may name; it bounds the Pages items and documents one transaction creates. */
+const PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS = 200;
+
 /**
  * Creates one new subpage under an item's page, or under a Journal period's page (issue #1676): the parent names a
  * live item or a Journal `{ type, period }` whose entry is created when missing. `afterBlockId` places the `page`
- * block after a block of the parent's document (the end when absent). The period key itself is validated by the
- * operation, not by this schema.
+ * block after a block of the parent's document (the end when absent). With `fromBlockIds` (issue #2013) the named
+ * non-page blocks of the parent are converted in place into one empty subpage each, and `afterBlockId` and `title` are
+ * ignored. The period key itself is validated by the operation, not by this schema.
  */
 export const PageCreateSubpageInputSchema = z
   .object({
@@ -430,6 +434,12 @@ export const PageCreateSubpageInputSchema = z
     ]),
     afterBlockId: z.string().min(1).optional(),
     title: z.string().optional(),
+    fromBlockIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS)
+      .refine((ids) => new Set(ids).size === ids.length, "fromBlockIds must not repeat an id")
+      .optional(),
   })
   .strict();
 export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;

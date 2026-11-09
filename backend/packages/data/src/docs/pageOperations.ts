@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type * as Y from "yjs";
-import { BlockOperationError, insertBlocks, readPageBlocks } from "@semprec/block-model";
+import { BlockOperationError, convertBlocksToPages, insertBlocks, readPageBlocks } from "@semprec/block-model";
 import type { PageCreateSubpageInput, PageCreateSubpageOutput } from "@semprec/shared";
 import { getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import type { CreatedBy, ItemRow } from "../types.js";
-import { mutateDocWithClient } from "./docPersistence.js";
+import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getOrCreateDoc } from "./docsStore.js";
 import { lockLiveItem } from "./lockLiveItem.js";
 import { normalizePageTitle } from "./pageTitle.js";
@@ -99,9 +99,59 @@ function insertPageBlock(
 }
 
 /**
+ * Converts the named blocks of the parent's document into subpages (issue #2013): each becomes its own empty Pages
+ * item and document, titled from the block's plain text, and all blocks are converted in one document write. Every
+ * refusal (an unknown block, a block that is already a page, a title over the limit) happens before the first row is
+ * created, and a failure of the document write rolls the created items back with the transaction. The pages are
+ * returned in document order, each with the id of the block it replaced.
+ */
+async function convertBlocksToSubpages(
+  client: PoolClient,
+  parent: ItemRow,
+  parentDocId: string,
+  pagesDatabaseId: string,
+  fromBlockIds: readonly string[],
+  origin: CreatedBy,
+): Promise<PageCreateSubpageOutput> {
+  const inspected = await loadDocWithClient(client, parentDocId);
+  let planned: Array<{ blockId: string; title: string }>;
+  try {
+    const blocks = readPageBlocks(inspected).filter((block) => !block.synthetic && block.id !== null);
+    const wanted = new Set(fromBlockIds);
+    const selected = blocks.filter((block) => block.id !== null && wanted.has(block.id));
+    if (
+      wanted.size !== fromBlockIds.length ||
+      selected.length !== wanted.size ||
+      selected.some((block) => block.type === "page")
+    ) {
+      throw new ValidationError("fromBlockIds must name each existing non-page block of the parent page once", {
+        field: "fromBlockIds",
+      });
+    }
+    planned = selected.map((block) => ({
+      blockId: block.id ?? "",
+      title: normalizePageTitle(block.text.map((run) => run.insert).join("")),
+    }));
+  } finally {
+    inspected.destroy();
+  }
+
+  const pages: PageCreateSubpageOutput["pages"] = [];
+  for (const { blockId, title } of planned) {
+    pages.push({ ...(await createPagesItem(client, pagesDatabaseId, parent.id, title)), blockId });
+  }
+  const pageItemIds = new Map(pages.map((page) => [page.blockId, page.pageItemId]));
+  await mutateDocWithClient(client, parentDocId, origin, (doc) =>
+    convertBlocksToPages(doc, fromBlockIds, (blockId) => pageItemIds.get(blockId) ?? ""),
+  );
+  return { pages };
+}
+
+/**
  * `page.createSubpage` (issue #1676) in the caller's transaction: creates one Pages item and its page document and
  * inserts a `page` block naming it into the parent's document, so the three exist together or, if any step fails
  * (including the creation of a Journal period entry), none of them. `origin` is the caller's, derived server-side.
+ * With `fromBlockIds` it converts existing blocks instead of creating one (`convertBlocksToSubpages`).
  */
 export async function createSubpageWithClient(
   client: PoolClient,
@@ -112,6 +162,9 @@ export async function createSubpageWithClient(
   const parentDoc = await getOrCreateDoc(client, parent.id, "page");
   const pagesDatabase = await ensurePagesDatabase(client);
   await assertParentChainIsAcyclic(client, pagesDatabase.id, parent);
+  if (input.fromBlockIds !== undefined) {
+    return convertBlocksToSubpages(client, parent, parentDoc.id, pagesDatabase.id, input.fromBlockIds, origin);
+  }
 
   const title = normalizePageTitle(input.title ?? "");
   const { pageItemId, docId } = await createPagesItem(client, pagesDatabase.id, parent.id, title);
