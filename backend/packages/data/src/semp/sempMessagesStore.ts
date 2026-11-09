@@ -4,6 +4,7 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
 import { currentTenantScope } from "@semprec/shared";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
+import { enqueueSempMessage } from "./sempMessageQueue.js";
 
 // A fixed SQL fragment; no caller input is interpolated.
 const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 'status', status,
@@ -124,10 +125,16 @@ export async function insertApprovalOutcomeSystemMessage(
   params: Record<string, string | number | null>,
 ): Promise<void> {
   requireManagedTransaction(client);
+  const heartbeat = await client.query<{ id: string }>(
+    `SELECT h.id FROM semp_threads t
+       JOIN project_heartbeats h ON h.tenant_id = t.tenant_id AND h.id = t.heartbeat_id
+      WHERE t.id = $1 AND t.kind = 'tick' AND h.enabled = true FOR UPDATE OF h`,
+    [threadId],
+  );
   const createdAt = await allocateSempMessageTimestamp(client, threadId);
-  const inserted = await client.query(
+  const inserted = await client.query<{ id: string }>(
     `INSERT INTO semp_messages (thread_id, role, system_key, system_params, context, created_at)
-     VALUES ($1, 'system', $2, $3::jsonb, $4::jsonb, $5::timestamptz)`,
+     VALUES ($1, 'system', $2, $3::jsonb, $4::jsonb, $5::timestamptz) RETURNING id`,
     [
       threadId,
       key,
@@ -137,6 +144,19 @@ export async function insertApprovalOutcomeSystemMessage(
     ],
   );
   requireAffectedRows(inserted, "inserting approval outcome message");
+  const sourceId = inserted.rows[0]?.id;
+  if (!sourceId) throw new Error("Approval outcome message has no id");
+  if (heartbeat.rows.length > 0) {
+    const assistantTimestamp = await allocateSempMessageTimestamp(client, threadId);
+    const assistant = await client.query<{ id: string }>(
+      `INSERT INTO semp_messages (thread_id, role, reply_to_message_id, status, created_at)
+       VALUES ($1, 'assistant', $2, 'queued', $3::timestamptz) RETURNING id`,
+      [threadId, sourceId, assistantTimestamp],
+    );
+    const assistantMessageId = assistant.rows[0]?.id;
+    if (!assistantMessageId) throw new Error("Approval continuation has no id");
+    await enqueueSempMessage(client, { threadId, assistantMessageId });
+  }
   const result = await client.query(
     "UPDATE semp_threads SET last_activity_at = GREATEST(last_activity_at, now()) WHERE id = $1",
     [threadId],

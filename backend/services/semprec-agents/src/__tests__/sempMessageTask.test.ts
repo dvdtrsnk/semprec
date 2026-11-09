@@ -24,6 +24,7 @@ import {
   claimSempMessage,
   createChokePoint,
   createAgentRun,
+  createHeartbeat,
   createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
@@ -2243,6 +2244,53 @@ describe("queued Semp messages", () => {
     expect(prompts[1]).toContain("first question");
     expect(prompts[1]).toContain("first answer");
     expect(prompts[1]).toContain("second question");
+    await closeIdleThreadSessions(pool);
+  });
+
+  it("runs a rejected tick outcome without tools and restores tools for the next user turn", async () => {
+    const faux = fauxProvider();
+    const observed: Array<{ tools: string[]; messages: string }> = [];
+    faux.setResponses(["before", "acknowledged", "after"].map((text) => (context) => {
+      observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+      return fauxAssistantMessage(text);
+    }));
+    const task = createSempMessageTask(pool, registry, {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    }, createInFlightAgentRuns());
+    const fixture = await runInTenant(tenant, async () => {
+      const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+      const heartbeat = await withTransaction(pool, (client) => createHeartbeat(client, {
+        projectItemId: inbox.ownerProjectItemId!, name: "Outcome test", rule: { kind: "interval", minutes: 10 },
+        actionId: "core.agentRun", actionConfig: { task: "Review tasks" },
+      }));
+      const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id", [heartbeat.id]);
+      const threadId = thread.rows[0]?.id;
+      if (!threadId) throw new Error("Missing thread");
+      const run = await createAgentRun(pool, { projectItemId: inbox.ownerProjectItemId, heartbeatId: heartbeat.id, threadId, triggeredBy: "heartbeat", task: "Review tasks" });
+      return { threadId, runId: run.id };
+    });
+    const send = (text: string) => runInTenant(tenant, () => withTransaction(pool, (client) => sendSempMessage(client, { threadId: fixture.threadId, text, context: [], hasContext: false })));
+    const first = await send("before");
+    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }));
+    await runInTenant(tenant, () => withTransaction(pool, async (client) => {
+      const request = await createPendingApprovalRequest(client, { agentRunId: fixture.runId, toolName: "test", riskClass: "unclassified", payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }, resourceSnapshot: { kind: "test", resourceId: "test", sha256: null } });
+      expect((await decideAndEnqueueApprovalRequest(client, { approvalRequestId: request.id, decision: "rejected", decidedByUserId: userId }))?.outcome).toBe("decided");
+    }));
+    const queued = await runInTenant(tenant, () => pool.query<{ id: string }>("SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.id = reply.reply_to_message_id AND source.tenant_id = reply.tenant_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND reply.status = 'queued'", [fixture.threadId]));
+    const assistantMessageId = queued.rows[0]?.id;
+    if (!assistantMessageId) throw new Error("Missing queued acknowledgment");
+    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId }, { job: { id: "rejected" } }));
+    const later = await send("after");
+    await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId: later.assistantMessageId }, { job: { id: "after" } }));
+    expect(observed[0]?.tools.length).toBeGreaterThan(0);
+    expect(observed[1]?.tools).toEqual([]);
+    expect(observed[1]?.messages).toContain("The action did not happen");
+    expect(observed[2]?.tools.length).toBeGreaterThan(0);
+    const reply = await runInTenant(tenant, () => pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [assistantMessageId]));
+    expect(reply.rows).toEqual([{ status: "done", text: "acknowledged" }]);
     await closeIdleThreadSessions(pool);
   });
 

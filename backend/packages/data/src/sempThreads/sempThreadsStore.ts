@@ -58,8 +58,11 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
     source_id: string;
     text: string | null;
     context: unknown;
+    system_key: string | null;
+    heartbeat_enabled: boolean | null;
   }>(
-    `SELECT t.kind, t.heartbeat_id, h.project_item_id, source.id AS source_id, source.role, source.text, source.context
+    `SELECT t.kind, t.heartbeat_id, h.project_item_id, h.enabled AS heartbeat_enabled,
+            source.id AS source_id, source.role, source.text, source.context, source.system_key
        FROM semp_messages reply
        JOIN semp_threads t ON t.tenant_id = reply.tenant_id AND t.id = reply.thread_id
        JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id
@@ -70,6 +73,32 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
   );
   const row = rows[0];
   if (!row) return null;
+  let outcome: { kind: "executed" | "rejected" | "conflict"; result: unknown } | null = null;
+  if (row.role === "system" && row.text === null) {
+    if (row.kind !== "tick" || !Array.isArray(row.context) || row.context.length !== 1) {
+      throw new Error("Invalid approval outcome source");
+    }
+    const entry: unknown = row.context[0];
+    if (typeof entry !== "object" || entry === null || !("kind" in entry) || entry.kind !== "approvalRequest" ||
+        !("approvalRequestId" in entry) || typeof entry.approvalRequestId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.approvalRequestId)) {
+      throw new Error("Invalid approval outcome context");
+    }
+    const kind = assertKnownValue(["approval.outcome.executed", "approval.outcome.rejected", "approval.outcome.conflict"] as const,
+      row.system_key ?? "", "approval outcome key");
+    const result = await client.query<{ status: string; execution_status: string; execution_result_jsonb: unknown }>(
+      `SELECT a.status, a.execution_status, a.execution_result_jsonb FROM approval_requests a
+       JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id
+       WHERE a.id = $1 AND r.thread_id = $2 AND r.heartbeat_id = $3`,
+      [entry.approvalRequestId, threadId, row.heartbeat_id],
+    );
+    const request = result.rows[0];
+    if (!request || (kind === "approval.outcome.rejected" ? request.status !== "rejected" :
+      request.status !== "approved" || request.execution_status !== (kind === "approval.outcome.executed" ? "succeeded" : "conflict"))) {
+      throw new Error("Approval outcome provenance mismatch");
+    }
+    outcome = { kind: kind === "approval.outcome.executed" ? "executed" : kind === "approval.outcome.rejected" ? "rejected" : "conflict", result: request.execution_result_jsonb };
+  }
   return {
     kind: assertKnownValue(["chat", "item", "tick"] as const, row.kind, "thread kind"),
     heartbeatId: row.heartbeat_id,
@@ -78,6 +107,8 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
     sourceId: row.source_id,
     text: row.text,
     context: row.context,
+    heartbeatEnabled: row.heartbeat_enabled === true,
+    outcome,
   };
 }
 

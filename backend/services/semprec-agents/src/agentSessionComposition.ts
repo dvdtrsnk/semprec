@@ -324,11 +324,14 @@ export async function createAgentSessionFactoryForRun(
           kind: thread.kind,
           databases: schema.databases,
           missingHeartbeat: thread.kind === "tick" && !!currentSempMessage?.current && !turn?.projectItemId,
+          rejectedOutcome: turn?.outcome?.kind === "rejected",
         };
       })
     : null;
   const tools =
-    threadContext?.kind === "item"
+    threadContext?.rejectedOutcome
+      ? []
+      : threadContext?.kind === "item"
       ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
       : allGenericTools;
   let moduleTools: typeof tools = [];
@@ -346,7 +349,7 @@ export async function createAgentSessionFactoryForRun(
   let systemPrompt = instruction ? `${basePrompt}\n${instruction}` : basePrompt;
 
   if (run.projectItemId) {
-    if (threadContext?.kind !== "item") {
+    if (threadContext?.kind !== "item" && !threadContext?.rejectedOutcome) {
       tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
       moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
       if (threadContext?.missingHeartbeat)
