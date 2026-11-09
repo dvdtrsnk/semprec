@@ -33,6 +33,20 @@ let tenant: string;
 const taskName = CORE_TASK_NAMES.PAGE_TITLE_MIRROR;
 const DEBOUNCE_MS = 10_000;
 
+/**
+ * Set while an actor the race tests started has not settled (its backend may still hold locks): the file then refuses to
+ * reset the database or close the shared pools. `recover` finishes the cleanup once the actors have settled.
+ */
+let abandoned: { names: string[]; recover: () => Promise<void> } | undefined;
+
+function assertNoAbandonedActors(): void {
+  if (abandoned !== undefined) {
+    throw new Error(
+      `Owned actors are not settled (${abandoned.names.join(", ")}); the shared database and pools stay as they are`,
+    );
+  }
+}
+
 /*
  * Tenant scope is entered per helper and never around `runOnce`: the queue drain is a system scope, and the
  * production task list enters each job's own tenant from its envelope.
@@ -132,6 +146,7 @@ beforeAll(async () => {
   cp = createChokePoint(pool);
 });
 beforeEach(async () => {
+  assertNoAbandonedActors();
   await resetDatabase(admin);
   tenant = getTenantZeroId();
   await inTenant(() => seedSystem(pool));
@@ -144,6 +159,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 afterAll(async () => {
+  assertNoAbandonedActors();
   await pool?.end();
   await admin?.end();
 });
@@ -295,6 +311,8 @@ describe("subpage title mirror (issue #1715)", () => {
       name: string;
       session: Session;
       done: boolean;
+      /** Set when the operation ends, so a failed run can name its own rejection without awaiting it. */
+      settled: Settled | undefined;
       outcome: Promise<Settled>;
     }
 
@@ -303,23 +321,24 @@ describe("subpage title mirror (issue #1715)", () => {
       inject: () => Promise<void>;
     }
 
-    const sleepReal = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
     function startActor(name: string, session: Session, run: () => Promise<unknown>): Actor {
       const actor: Actor = {
         name,
         session,
         done: false,
+        settled: undefined,
         outcome: Promise.resolve({ ok: true, value: undefined }),
       };
       actor.outcome = run().then(
         (value): Settled => {
           actor.done = true;
-          return { ok: true, value };
+          actor.settled = { ok: true, value };
+          return actor.settled;
         },
         (error: unknown): Settled => {
           actor.done = true;
-          return { ok: false, error };
+          actor.settled = { ok: false, error };
+          return actor.settled;
         },
       );
       return actor;
@@ -380,32 +399,192 @@ describe("subpage title mirror (issue #1715)", () => {
       }
     }
 
+    /** A promise the test resolves by hand: a gate an injected statement can wait on. */
+    function gateOf(): { promise: Promise<void>; release: () => void } {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    }
+
     /**
-     * Waits for every actor's own outcome. An actor still pending after the bound has its own backend terminated (only
-     * while its pid and start time still match) and is awaited again; terminating proves nothing, the outcome does.
-     * An actor that still has not settled fails the call, so the caller does not restore hooks, reset or close pools.
+     * Test-local deadlines and fault injection for the failure controls; the defaults are the bounds of a real run.
+     * `attempted` and `sessions` are filled by the helpers, so a control can read them after the call failed.
      */
-    async function settleActors(observer: PoolClient, actors: Actor[]): Promise<void> {
-      const allSettled = async (ms: number): Promise<boolean> =>
-        Promise.race([
+    interface Faults {
+      /** The bound on the first wait for the job(s). */
+      outcomeMs: number;
+      /** The bound on each wait of `settleActors`. */
+      settleMs: number;
+      /** Actors whose guarded termination fails with an injected error instead of reaching the database. */
+      failTerminateFor: string[];
+      /** Adds one cleanup step that throws, so the cleanup itself fails. */
+      failCleanup: boolean;
+      attempted: string[];
+      sessions: Session[];
+    }
+
+    function faultsOf(overrides: Partial<Omit<Faults, "attempted" | "sessions">> = {}): Faults {
+      return {
+        outcomeMs: 10_000,
+        settleMs: 5_000,
+        failTerminateFor: [],
+        failCleanup: false,
+        attempted: [],
+        sessions: [],
+        ...overrides,
+      };
+    }
+
+    const failingCleanup = (): Promise<void> => Promise.reject(new Error("Injected cleanup failure"));
+
+    /** Whether every actor has settled within `ms`; the timer is cleared on every result. */
+    async function boundedSettled(actors: Actor[], ms: number): Promise<boolean> {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
           Promise.allSettled(actors.map((actor) => actor.outcome)).then(() => true),
-          sleepReal(ms).then(() => false),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), ms);
+          }),
         ]);
-      if (await allSettled(5_000)) return;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
+
+    async function within(actors: Actor[], ms: number, what: string): Promise<void> {
+      if (!(await boundedSettled(actors, ms))) throw new Error(`${what} did not settle within ${ms} ms`);
+    }
+
+    /**
+     * Waits for every actor's own outcome. When some are still pending after the bound, a guarded termination of each
+     * pending actor's backend is attempted independently (only while its pid and start time still match; a failed
+     * attempt is recorded and the next actor is still tried) and the actors are awaited once more. Settlement is the
+     * actors' own outcomes, never the result of a termination: `unsettled` names the actors that still have none, and
+     * `errors` holds the termination failures, which do not by themselves mean an actor is unsettled.
+     */
+    async function settleActors(
+      observer: PoolClient,
+      actors: Actor[],
+      faults: Faults,
+    ): Promise<{ unsettled: string[]; errors: unknown[] }> {
+      const errors: unknown[] = [];
+      if (await boundedSettled(actors, faults.settleMs)) return { unsettled: [], errors };
       for (const actor of actors.filter((candidate) => !candidate.done)) {
-        await observer.query(
-          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2",
-          [actor.session.pid, actor.session.backendStart],
-        );
+        faults.attempted.push(actor.name);
+        try {
+          if (faults.failTerminateFor.includes(actor.name)) {
+            throw new Error(`Injected termination failure for ${actor.name}`);
+          }
+          await observer.query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2",
+            [actor.session.pid, actor.session.backendStart],
+          );
+        } catch (error) {
+          errors.push(error);
+        }
       }
-      if (!(await allSettled(5_000))) {
-        throw new Error(
-          `Owned actors not settled: ${actors
-            .filter((actor) => !actor.done)
-            .map((a) => a.name)
-            .join(", ")}`,
-        );
+      const settled = await boundedSettled(actors, faults.settleMs);
+      return { unsettled: settled ? [] : actors.filter((actor) => !actor.done).map((actor) => actor.name), errors };
+    }
+
+    /** What a helper has started and must release again, whichever way the call ends. */
+    interface Run {
+      observer: PoolClient | undefined;
+      /** Everything the run started, jobs and trash. */
+      actors: Actor[];
+      /** The actors whose own rejection is the run's failure. */
+      jobs: Actor[];
+      cleanups: Array<() => Promise<void>>;
+      hook: { restore: () => void } | undefined;
+      timer: NodeJS.Timeout | undefined;
+      /** Lets every actor the test itself holds back go on; called before settlement when the run failed. */
+      releaseGates: () => void;
+    }
+
+    function newRun(): Run {
+      return {
+        observer: undefined,
+        actors: [],
+        jobs: [],
+        cleanups: [],
+        hook: undefined,
+        timer: undefined,
+        releaseGates: () => undefined,
+      };
+    }
+
+    /**
+     * Ends a run. A failed run first releases the gates it holds, then every actor is settled (`settleActors`). Only when
+     * all have settled are the hook restored and the observer and pools released, each step on its own `try`; if one has
+     * not, nothing is restored or closed under it and the file-level `abandoned` flag is set, which `beforeEach` and
+     * `afterAll` honour. The error thrown keeps the original failure as its first entry and its `cause` (also a falsy
+     * one): the failure that ended the run, else the rejection of the job itself.
+     */
+    async function finishRun(run: Run, primary: { error: unknown } | undefined, faults: Faults): Promise<void> {
+      const failures: unknown[] = [];
+      if (primary !== undefined) {
+        try {
+          run.releaseGates();
+        } catch (error) {
+          failures.push(error);
+        }
       }
+      let unsettled: string[] = [];
+      if (run.observer !== undefined && run.actors.length > 0) {
+        try {
+          const result = await settleActors(run.observer, run.actors, faults);
+          unsettled = result.unsettled;
+          failures.push(...result.errors);
+        } catch (error) {
+          // The observation itself failed: nothing proves the actors are done.
+          unsettled = run.actors.filter((actor) => !actor.done).map((actor) => actor.name);
+          failures.push(error);
+        }
+      }
+      if (run.timer !== undefined) clearTimeout(run.timer);
+      const teardown = async (): Promise<unknown[]> => {
+        const errors: unknown[] = [];
+        try {
+          run.hook?.restore();
+        } catch (error) {
+          errors.push(error);
+        }
+        for (const cleanup of [...run.cleanups].reverse()) {
+          try {
+            await cleanup();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        return errors;
+      };
+      if (unsettled.length === 0) {
+        failures.push(...(await teardown()));
+      } else {
+        failures.push(new Error(`Owned actors not settled: ${unsettled.join(", ")}`));
+        abandoned = {
+          names: unsettled,
+          recover: async () => {
+            if (!(await boundedSettled(run.actors, faults.settleMs))) throw new Error("Owned actors still not settled");
+            const errors = await teardown();
+            if (errors.length > 0) throw new AggregateError(errors, "Recovering the abandoned actors failed");
+            abandoned = undefined;
+          },
+        };
+      }
+      const rejected = run.jobs.map((job) => job.settled).find((outcome) => outcome?.ok === false);
+      const original = primary ?? (rejected?.ok === false ? { error: rejected.error } : undefined);
+      if (failures.length === 0) {
+        if (primary !== undefined) throw primary.error;
+        return;
+      }
+      if (original === undefined) throw new AggregateError(failures, "The race cleanup failed");
+      throw new AggregateError([original.error, ...failures], "The race and its cleanup both failed", {
+        cause: original.error,
+      });
     }
 
     async function trashVia(trashPool: Pool, itemId: string): Promise<void> {
@@ -439,126 +618,101 @@ describe("subpage title mirror (issue #1715)", () => {
 
     /**
      * Runs the mirror job of `parent` on a session of its own and, once the job holds the host reservation, starts a
-     * trash of the host on another owned session and calls `afterTrashQueued`. Everything the call starts is settled on
-     * every exit before the hook is restored and the pools are closed; the first failure is rethrown as it was thrown.
+     * trash of the host on another owned session and calls `afterTrashQueued` (with a probe for the blocked trash and a
+     * `hold` that waits on a gate the helper releases on any failure). The wait for the job is bounded; everything the
+     * call starts is settled on every exit before the hook is restored and the pools are closed (see `finishRun`).
      */
     async function mirrorWhileTrashing(
       parent: string,
-      afterTrashQueued: (assertTrashBlockedByJob: () => Promise<void>) => Promise<void>,
+      afterTrashQueued: (assertTrashBlockedByJob: () => Promise<void>, hold: () => Promise<void>) => Promise<void>,
+      faults: Faults = faultsOf(),
     ): Promise<{ job: Settled; trash: Settled | undefined; sessions: Session[] }> {
-      const cleanups: Array<() => Promise<void>> = [];
-      const actors: Actor[] = [];
-      const sessions: Session[] = [];
+      const run = newRun();
+      const gate = gateOf();
+      run.releaseGates = gate.release;
       let primary: { error: unknown } | undefined;
-      let observer: PoolClient | undefined;
-      let hook: { restore: () => void } | undefined;
       let job: Actor | undefined;
       let trashActor: Actor | undefined;
       try {
         const watching = await admin.connect();
-        observer = watching;
-        cleanups.push(async () => watching.release());
+        run.observer = watching;
+        run.cleanups.push(async () => watching.release());
+        if (faults.failCleanup) run.cleanups.push(failingCleanup);
         const jobOwned = await ownedPool(watching);
-        cleanups.push(() => jobOwned.pool.end());
+        run.cleanups.push(() => jobOwned.pool.end());
         const trashOwned = await ownedPool(watching);
-        cleanups.push(() => trashOwned.pool.end());
-        sessions.push(jobOwned.session, trashOwned.session);
-        hook = onStatements([
+        run.cleanups.push(() => trashOwned.pool.end());
+        faults.sessions.push(jobOwned.session, trashOwned.session);
+        run.hook = onStatements([
           {
             match: (text, values) => /FOR UPDATE/.test(text) && values.includes(parent),
             inject: async () => {
               const queued = startActor("trash", trashOwned.session, () => trashVia(trashOwned.pool, parent));
               trashActor = queued;
-              actors.push(queued);
-              await afterTrashQueued(async () => {
-                // The trash is this test's own session, waiting on a lock the job's own session holds.
-                await vi.waitFor(
-                  async () => {
-                    const { rows } = await watching.query<{ waiting: boolean; blockers: number[] }>(
-                      `SELECT wait_event_type = 'Lock' AS waiting, pg_blocking_pids(pid) AS blockers
-                       FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2`,
-                      [trashOwned.session.pid, trashOwned.session.backendStart],
-                    );
-                    expect(rows[0]?.waiting).toBe(true);
-                    expect(rows[0]?.blockers).toContain(jobOwned.session.pid);
-                  },
-                  { timeout: 5_000, interval: 25 },
-                );
-                expect(queued.done).toBe(false);
-                expect(await hostDeletedAt(parent)).toBeNull();
-              });
+              run.actors.push(queued);
+              await afterTrashQueued(
+                async () => {
+                  // The trash is this test's own session, waiting on a lock the job's own session holds.
+                  await vi.waitFor(
+                    async () => {
+                      const { rows } = await watching.query<{ waiting: boolean; blockers: number[] }>(
+                        `SELECT wait_event_type = 'Lock' AS waiting, pg_blocking_pids(pid) AS blockers
+                         FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2`,
+                        [trashOwned.session.pid, trashOwned.session.backendStart],
+                      );
+                      expect(rows[0]?.waiting).toBe(true);
+                      expect(rows[0]?.blockers).toContain(jobOwned.session.pid);
+                    },
+                    { timeout: 5_000, interval: 25 },
+                  );
+                  expect(queued.done).toBe(false);
+                  expect(await hostDeletedAt(parent)).toBeNull();
+                },
+                () => gate.promise,
+              );
             },
           },
         ]);
         job = startActor("job", jobOwned.session, () =>
           inTenant(() => handlePageTitleMirrorTask(jobOwned.pool, { itemId: parent })),
         );
-        actors.push(job);
-        await job.outcome;
+        run.actors.push(job);
+        run.jobs.push(job);
+        await within([job], faults.outcomeMs, "The mirror job");
       } catch (error) {
         primary = { error };
       }
-      const failures: unknown[] = [];
-      let settled = true;
-      if (observer !== undefined && actors.length > 0) {
-        try {
-          await settleActors(observer, actors);
-        } catch (error) {
-          settled = false;
-          failures.push(error);
-        }
-      }
-      if (settled) {
-        try {
-          hook?.restore();
-        } catch (error) {
-          failures.push(error);
-        }
-        for (const cleanup of cleanups.reverse()) {
-          try {
-            await cleanup();
-          } catch (error) {
-            failures.push(error);
-          }
-        }
-      }
-      if (primary !== undefined) {
-        if (failures.length === 0) throw primary.error;
-        throw new AggregateError([primary.error, ...failures], "The race and its cleanup both failed", {
-          cause: primary.error,
-        });
-      }
-      if (failures.length > 0) throw new AggregateError(failures, "The race cleanup failed");
+      await finishRun(run, primary, faults);
       if (job === undefined) throw new Error("The job was not started");
-      return { job: await job.outcome, trash: trashActor ? await trashActor.outcome : undefined, sessions };
+      return {
+        job: await job.outcome,
+        trash: trashActor ? await trashActor.outcome : undefined,
+        sessions: faults.sessions,
+      };
     }
 
     /**
      * Runs the mirror jobs of two hosts at once, each on a session of its own, and holds each job at its host
-     * reservation until both have reserved theirs (a barrier that gives up after 5 s). Every job is settled on every
-     * exit, with the same rules as `mirrorWhileTrashing`.
+     * reservation until both have reserved theirs (a barrier that gives up after 5 s and is released on any failure).
+     * The wait for the jobs is bounded and every job is settled on every exit, with the rules of `finishRun`.
      */
     async function mirrorTwoHosts(
       hostA: string,
       hostB: string,
+      faults: Faults = faultsOf(),
     ): Promise<{ a: Settled; b: Settled; sessions: Session[] }> {
-      const cleanups: Array<() => Promise<void>> = [];
-      const actors: Actor[] = [];
-      const sessions: Session[] = [];
+      const run = newRun();
       let primary: { error: unknown } | undefined;
-      let observer: PoolClient | undefined;
-      let hook: { restore: () => void } | undefined;
-      let timer: NodeJS.Timeout | undefined;
-      const jobs: Actor[] = [];
       try {
         const watching = await admin.connect();
-        observer = watching;
-        cleanups.push(async () => watching.release());
+        run.observer = watching;
+        run.cleanups.push(async () => watching.release());
+        if (faults.failCleanup) run.cleanups.push(failingCleanup);
         const ownedA = await ownedPool(watching);
-        cleanups.push(() => ownedA.pool.end());
+        run.cleanups.push(() => ownedA.pool.end());
         const ownedB = await ownedPool(watching);
-        cleanups.push(() => ownedB.pool.end());
-        sessions.push(ownedA.session, ownedB.session);
+        run.cleanups.push(() => ownedB.pool.end());
+        faults.sessions.push(ownedA.session, ownedB.session);
         let arrived = 0;
         let release!: () => void;
         let giveUp!: (error: Error) => void;
@@ -566,14 +720,15 @@ describe("subpage title mirror (issue #1715)", () => {
           release = resolve;
           giveUp = reject;
         });
+        run.releaseGates = release;
         // The timer starts with the first arrival, so a give-up always has an arrival to deliver it to.
         const arrive = async (): Promise<void> => {
           arrived += 1;
-          timer ??= setTimeout(() => giveUp(new Error("Only one job reserved its host within 5 s")), 5_000);
+          run.timer ??= setTimeout(() => giveUp(new Error("Only one job reserved its host within 5 s")), 5_000);
           if (arrived === 2) release();
           await bothReserved;
         };
-        hook = onStatements(
+        run.hook = onStatements(
           [hostA, hostB].map((reserved) => ({
             match: (text: string, values: readonly unknown[]) => /FOR UPDATE/.test(text) && values.includes(reserved),
             inject: arrive,
@@ -586,48 +741,17 @@ describe("subpage title mirror (issue #1715)", () => {
           const started = startActor(name, owned.session, () =>
             inTenant(() => handlePageTitleMirrorTask(owned.pool, { itemId })),
           );
-          jobs.push(started);
-          actors.push(started);
+          run.actors.push(started);
+          run.jobs.push(started);
         }
-        await Promise.all(jobs.map((started) => started.outcome));
+        await within(run.jobs, faults.outcomeMs, "The mirror jobs");
       } catch (error) {
         primary = { error };
       }
-      const failures: unknown[] = [];
-      let settled = true;
-      if (observer !== undefined && actors.length > 0) {
-        try {
-          await settleActors(observer, actors);
-        } catch (error) {
-          settled = false;
-          failures.push(error);
-        }
-      }
-      if (timer !== undefined) clearTimeout(timer);
-      if (settled) {
-        try {
-          hook?.restore();
-        } catch (error) {
-          failures.push(error);
-        }
-        for (const cleanup of cleanups.reverse()) {
-          try {
-            await cleanup();
-          } catch (error) {
-            failures.push(error);
-          }
-        }
-      }
-      if (primary !== undefined) {
-        if (failures.length === 0) throw primary.error;
-        throw new AggregateError([primary.error, ...failures], "The race and its cleanup both failed", {
-          cause: primary.error,
-        });
-      }
-      if (failures.length > 0) throw new AggregateError(failures, "The race cleanup failed");
-      const [first, second] = jobs;
+      await finishRun(run, primary, faults);
+      const [first, second] = run.jobs;
       if (first === undefined || second === undefined) throw new Error("The jobs were not started");
-      return { a: await first.outcome, b: await second.outcome, sessions };
+      return { a: await first.outcome, b: await second.outcome, sessions: faults.sessions };
     }
 
     /** A page block of `host`'s document that names `pageId` with `caption`, as a sync client could leave it. */
@@ -746,6 +870,103 @@ describe("subpage title mirror (issue #1715)", () => {
       expect(await titleOf(page.pageItemId)).toBe("Kept");
       expect(await hostDeletedAt(parent)).not.toBeNull();
       await vi.waitFor(async () => expect(await liveSessions(sessions)).toBe(0), { timeout: 5_000, interval: 25 });
+    });
+
+    it("bounds the wait for the job, releases the gate that holds it and settles the queued trash before the file goes on", async () => {
+      const parent = await host("Held parent");
+      const page = await subpage(parent, "Kept");
+      await typeTitle(parent, page.blockId, "Changed");
+      const faults = faultsOf({ outcomeMs: 300 });
+
+      // The injection waits on the helper's own gate, so only the failure path of the bounded wait can let the job go on.
+      await expect(mirrorWhileTrashing(parent, (_blocked, hold) => hold(), faults)).rejects.toThrow(
+        "The mirror job did not settle within 300 ms",
+      );
+
+      expect(abandoned).toBeUndefined();
+      expect(await titleOf(page.pageItemId)).toBe("Changed");
+      expect(await hostDeletedAt(parent)).not.toBeNull();
+      await vi.waitFor(async () => expect(await liveSessions(faults.sessions)).toBe(0), {
+        timeout: 5_000,
+        interval: 25,
+      });
+    });
+
+    it("tries every pending actor's termination even when the first fails, and refuses to continue while one stays unsettled", async () => {
+      const parent = await host("Stuck parent");
+      const page = await subpage(parent, "Kept");
+      await typeTitle(parent, page.blockId, "Changed");
+      // The job is stuck in an injection only this test can release. The bound is wide enough for the job to reach it.
+      const stuck = gateOf();
+      const faults = faultsOf({ outcomeMs: 3_000, settleMs: 1_000, failTerminateFor: ["job"] });
+      let failure: unknown;
+      try {
+        failure = await mirrorWhileTrashing(parent, () => stuck.promise, faults).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        if (!(failure instanceof AggregateError)) throw new Error("Expected the run to fail with an AggregateError");
+        const errors: unknown[] = failure.errors;
+        expect(errors.map((error) => (error instanceof Error ? error.message : error))).toEqual([
+          "The mirror job did not settle within 3000 ms",
+          "Injected termination failure for job",
+          "Owned actors not settled: job",
+        ]);
+        expect(failure.cause).toBe(errors[0]);
+        // The failed attempt for the job did not skip the trash, whose backend was terminated and which then settled.
+        expect(faults.attempted).toEqual(["job", "trash"]);
+        expect(await hostDeletedAt(parent)).toBeNull();
+        expect(abandoned?.names).toEqual(["job"]);
+        // While an actor is unsettled, the hooks of the file refuse to reset the database or close the shared pools.
+        expect(() => assertNoAbandonedActors()).toThrow("job");
+      } finally {
+        stuck.release();
+        await abandoned?.recover();
+      }
+
+      expect(abandoned).toBeUndefined();
+      expect(() => assertNoAbandonedActors()).not.toThrow();
+      expect(await titleOf(page.pageItemId)).toBe("Changed");
+      await vi.waitFor(async () => expect(await liveSessions(faults.sessions)).toBe(0), {
+        timeout: 5_000,
+        interval: 25,
+      });
+    });
+
+    it("keeps the job's own falsy rejection as the first error and the cause when the cleanup fails as well", async () => {
+      const parent = await host("Failing cleanup parent");
+      const page = await subpage(parent, "Kept");
+      await typeTitle(parent, page.blockId, "Changed");
+      const faults = faultsOf({ failCleanup: true });
+
+      const failure = await mirrorWhileTrashing(
+        parent,
+        async () => {
+          // A falsy value on purpose: it must stay the first error of the failure and its cause.
+          // eslint-disable-next-line @typescript-eslint/only-throw-error
+          throw 0;
+        },
+        faults,
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      if (!(failure instanceof AggregateError)) throw new Error("Expected the run to fail with an AggregateError");
+      const errors: unknown[] = failure.errors;
+      expect(errors[0]).toBe(0);
+      expect(failure.cause).toBe(0);
+      expect(errors.slice(1).map((error) => (error instanceof Error ? error.message : error))).toEqual([
+        "Injected cleanup failure",
+      ]);
+      // The step that failed did not stop the other cleanups: the sessions are gone, the trash settled.
+      expect(abandoned).toBeUndefined();
+      expect(await titleOf(page.pageItemId)).toBe("Kept");
+      expect(await hostDeletedAt(parent)).not.toBeNull();
+      await vi.waitFor(async () => expect(await liveSessions(faults.sessions)).toBe(0), {
+        timeout: 5_000,
+        interval: 25,
+      });
     });
   });
 
