@@ -612,7 +612,7 @@ describe("guidance drift production composition", () => {
         }),
       );
       expect(decision.status).toBe(200);
-      if (decision.status !== 200) throw new Error("Decision failed");
+      if (decision.status !== 200 || !("guidance" in decision.body)) throw new Error("Decision failed");
       expect(decision.body.guidance.sections).toMatchObject({
         allowed: choice === "allow" ? "- Create tasks from new GitHub issues." : "",
         generalInstructions: "Guidance",
