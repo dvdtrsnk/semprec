@@ -132,6 +132,9 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mailbox detail": "packages/data/src/mail/mailboxRouteHandlers.ts",
   "mailbox removal impact": "packages/data/src/mail/mailboxRemovalImpact.ts",
   "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
+  "task recurrence set": "packages/data/src/tasks/taskRecurrenceRoutes.ts",
+  "task series edit": "packages/data/src/tasks/taskSeriesRoutes.ts",
+  "task recurrence clear": "packages/data/src/tasks/taskRecurrenceRoutes.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");
