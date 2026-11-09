@@ -3603,8 +3603,8 @@
       "sequence": 37,
       "status": "proposed",
       "title": "[backend-delivery 37/74] Implement data/tasks, data/calendar, data/chokePoint changes",
-      "bodyCharacters": 59972,
-      "specSha256": "0926d19223ae087b48ac2c527a10844608690cd68a4e2fd410f3ffd477d8e8e6",
+      "bodyCharacters": 59958,
+      "specSha256": "4d60d243d9c52ee932a1e827641808d7d93e54200a3378b6c0df086a27927454",
       "members": [
         {
           "id": "gh-1663",
@@ -3626,7 +3626,7 @@
         },
         {
           "id": "gh-1666",
-          "specSha256": "c66f06196f98fe4dc2dbf53fcf09f1c0543131fa8830651d61a8d645b67a4861",
+          "specSha256": "3b06086b9ad118ff050cac296bf86e2da2128e92b86634d08d9168b21eeb037f",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1663"
@@ -3653,7 +3653,7 @@
         },
         {
           "id": "gh-1665",
-          "specSha256": "f67e78707ec75bf0fb9df91a8edb0e28dd6bdf1deed6cd9bc07f59bfcfe27c4a",
+          "specSha256": "6c3a0d8a1142e4c2b0a5652942c6838d9627ec7c07cd1668074509dc5972e64b",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1605",
@@ -3673,7 +3673,7 @@
         },
         {
           "id": "gh-1668",
-          "specSha256": "c9f79b3211117d0aa2975426aa69dfed9f4546290956ee3f670c4ee3f5b7f0b1",
+          "specSha256": "cd25a80450bc017ae078723a06f60a61b1af9a024c64a9f07d1d0cd61d37d37e",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1664"
@@ -3682,7 +3682,7 @@
         },
         {
           "id": "gh-2009",
-          "specSha256": "e47dc99c2f106ca575f363f0accda7efedbce29a15060b1c67b1b62076b5d148",
+          "specSha256": "cc38c5554f836fd5de43a63a5a9fa42effe0158a1ebd6cf0fc494d156e79d87c",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1668",
@@ -3692,7 +3692,7 @@
         },
         {
           "id": "gh-1674",
-          "specSha256": "f80cc754f5de65e9ba352cb09cb61fa00351e2e1fde4334cbdf50e46bb2edaec",
+          "specSha256": "80875edbc99d00be4a97bc6fe50c3f57bac4d05c87b8eafbd6bb1961d31ad135",
           "parent": "gh-1345",
           "dependencies": [
             "gh-1602",
