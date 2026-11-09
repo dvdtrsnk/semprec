@@ -26,6 +26,7 @@ import {
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
+  PageChangesInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -574,6 +575,39 @@ describe("PageInsertInputSchema (issue #1679)", () => {
       { itemId, placement: "end", markdown: "x", extra: true },
     ]) {
       expect(PageInsertInputSchema.safeParse(input).success, JSON.stringify(input).slice(0, 80)).toBe(false);
+    }
+  });
+});
+
+describe("PageChangesInputSchema (issue #1680)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const since = "2026-11-09T10:00:00.000Z";
+
+  it("defaults the author to the assistant and the limit to 100, and accepts every author and the limit bounds", () => {
+    expect(PageChangesInputSchema.parse({ itemId, since })).toEqual({ itemId, since, by: "ai_agent", limit: 100 });
+    for (const by of ["user", "ai_agent", "system"]) {
+      expect(PageChangesInputSchema.safeParse({ itemId, since, by }).success, by).toBe(true);
+    }
+    for (const limit of [1, 500]) {
+      expect(PageChangesInputSchema.safeParse({ itemId, since, limit }).success, String(limit)).toBe(true);
+    }
+    expect(PageChangesInputSchema.safeParse({ itemId, since: "2026-11-09T12:00:00+02:00" }).success).toBe(true);
+  });
+
+  it("refuses a missing or malformed field, an unknown author, an out-of-range limit and an unknown key", () => {
+    for (const input of [
+      { since },
+      { itemId },
+      { itemId: "bad", since },
+      { itemId, since: "yesterday" },
+      { itemId, since: "2026-11-09" },
+      { itemId, since, by: "robot" },
+      { itemId, since, limit: 0 },
+      { itemId, since, limit: 501 },
+      { itemId, since, limit: 1.5 },
+      { itemId, since, extra: true },
+    ]) {
+      expect(PageChangesInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
     }
   });
 });

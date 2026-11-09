@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
-import type { Pool, PoolClient } from "pg";
+import pg, { type Pool, type PoolClient } from "pg";
 import { writeBlock } from "@semprec/block-model";
 import { runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
@@ -283,31 +283,39 @@ describe("subpage title mirror (issue #1715)", () => {
 
   describe("host trash racing the mirror (issue #1715 repair)", () => {
     /**
-     * A dedicated runtime pool (never the shared one, so no pooled client is left patched) whose clients call
-     * `afterStatement(text, values)` once each statement has finished, before the job sees its result. The job runs
-     * on it; the interfering trash runs on the shared pool, a different connection.
+     * Runs `inject` once, right after the first statement that matches `match` has finished and before the job sees
+     * its result. Only one job runs while the hook is armed; it disarms itself before `inject`, so the statements of
+     * the interfering trash are never intercepted.
      */
-    async function observedPool(
-      afterStatement: (text: string, values: readonly unknown[]) => Promise<void>,
-    ): Promise<Pool> {
-      const observed = await createRuntimeRolePool(admin, "semprec_data");
-      const connect = observed.connect.bind(observed) as unknown as () => Promise<PoolClient>;
-      vi.spyOn(observed as unknown as { connect: () => Promise<PoolClient> }, "connect").mockImplementation(
-        async () => {
-          const client = await connect();
-          const query = client.query.bind(client) as unknown as (...args: unknown[]) => Promise<unknown>;
-          (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (
-            ...args: unknown[]
-          ) => {
-            const result = await query(...args);
-            const [text, values] = args;
-            if (typeof text === "string") await afterStatement(text, Array.isArray(values) ? values : []);
-            return result;
-          };
-          return client;
-        },
-      );
-      return observed;
+    function afterFirstStatement(
+      match: (text: string, values: readonly unknown[]) => boolean,
+      inject: () => Promise<void>,
+    ): { fired: () => boolean; restore: () => void } {
+      let armed = true;
+      // Called back with the receiving client below, so the unbound reference is safe.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const originalQuery: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
+      const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        const result = originalQuery.apply(this, args);
+        const [text, values] = args;
+        if (
+          armed &&
+          typeof text === "string" &&
+          match(text, Array.isArray(values) ? values : []) &&
+          result instanceof Promise
+        ) {
+          armed = false;
+          return result.then(async (value: unknown) => {
+            await inject();
+            return value;
+          });
+        }
+        return result;
+      });
+      return { fired: () => !armed, restore: () => spy.mockRestore() };
     }
 
     async function hostDeletedAt(itemId: string): Promise<Date | null> {
@@ -321,21 +329,17 @@ describe("subpage title mirror (issue #1715)", () => {
       const parent = await host("Racing parent");
       const page = await subpage(parent, "Kept");
       await typeTitle(parent, page.blockId, "Changed");
-      let trashed = false;
-      const observed = await observedPool(async (text) => {
-        if (!trashed && /FROM items WHERE id = ANY/.test(text)) {
-          trashed = true;
-          await trash(parent);
-        }
-      });
+      const hook = afterFirstStatement(
+        (text) => /FROM items WHERE id = ANY/.test(text),
+        () => trash(parent),
+      );
       try {
-        await inTenant(() => handlePageTitleMirrorTask(observed, { itemId: parent }));
+        await inTenant(() => handlePageTitleMirrorTask(pool, { itemId: parent }));
       } finally {
-        vi.restoreAllMocks();
-        await observed.end();
+        hook.restore();
       }
 
-      expect(trashed).toBe(true);
+      expect(hook.fired()).toBe(true);
       expect(await hostDeletedAt(parent)).not.toBeNull();
       expect(await titleOf(page.pageItemId)).toBe("Kept");
     });
@@ -345,8 +349,9 @@ describe("subpage title mirror (issue #1715)", () => {
       const page = await subpage(parent, "Kept");
       await typeTitle(parent, page.blockId, "Changed");
       let trashAttempt: Promise<void> | undefined;
-      const observed = await observedPool(async (text, values) => {
-        if (trashAttempt === undefined && /FOR UPDATE/.test(text) && values.includes(parent)) {
+      const hook = afterFirstStatement(
+        (text, values) => /FOR UPDATE/.test(text) && values.includes(parent),
+        async () => {
           trashAttempt = trash(parent);
           // The trash is blocked on the reservation: it shows up as a waiting lock request on another connection.
           await vi.waitFor(async () => {
@@ -356,16 +361,16 @@ describe("subpage title mirror (issue #1715)", () => {
             expect(rows[0]?.n).toBeGreaterThan(0);
           });
           expect(await hostDeletedAt(parent)).toBeNull();
-        }
-      });
+        },
+      );
       try {
-        await inTenant(() => handlePageTitleMirrorTask(observed, { itemId: parent }));
+        await inTenant(() => handlePageTitleMirrorTask(pool, { itemId: parent }));
       } finally {
-        vi.restoreAllMocks();
-        await observed.end();
+        hook.restore();
       }
       await trashAttempt;
 
+      expect(hook.fired()).toBe(true);
       expect(await titleOf(page.pageItemId)).toBe("Changed");
       expect(await hostDeletedAt(parent)).not.toBeNull();
     });

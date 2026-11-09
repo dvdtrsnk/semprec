@@ -87,6 +87,14 @@ export class PageHttpHarness {
     return { Authorization: `Bearer ${token}` };
   }
 
+  /** The `Cookie` header of a new web-platform session of a new user of `tenantId` (the bearer sessions above are native). */
+  async webSessionCookie(tenantId: string): Promise<string> {
+    const email = `${randomUUID()}@example.com`;
+    await createUser(this.admin, { email, passwordHash: await hashPassword(PASSWORD), tenantId });
+    const { token } = await login(this.admin, { email, password: PASSWORD, platform: "web", ip: "127.0.0.1" });
+    return `semprec_session=${encodeURIComponent(token)}`;
+  }
+
   /** A plain item of a database of its own in `tenantId`: the host of the page under test. */
   async createHost(tenantId: string): Promise<string> {
     return runInTenant(tenantId, async () => {

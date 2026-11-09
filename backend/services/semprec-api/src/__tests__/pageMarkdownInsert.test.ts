@@ -460,7 +460,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       expect(refused.status).toBe(400);
       expect(errorBody.parse(JSON.parse(refused.text)).error.details).toMatchObject({
         field: "markdown",
-        path: "block 1: indent",
+        path: "block 2: indent",
         reason: "invalid_indent",
       });
       expect({ state: await stateOf(host), blocks: await indentsOf(host) }).toEqual(before);

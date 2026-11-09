@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
-import type { Pool, PoolClient } from "pg";
+import pg, { type Pool } from "pg";
 import { deleteBlocks, getBlocksMap, insertBlocks, moveBlocks, writeBlock } from "@semprec/block-model";
 import { runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
@@ -282,31 +282,34 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
       { kind: "insert", blockIds: ["b"] },
     ];
 
-    // A dedicated pool whose clients run a 7-day retention sweep (folding both rows into a new baseline and deleting
-    // them and the old checkpoint) right after the reader has read its checkpoint, on another connection.
-    const reader = await createRuntimeRolePool(admin, "semprec_data");
+    // The sweep (7-day retention: it folds both rows into a new baseline and deletes them and the old checkpoint) runs
+    // once, right after the reader's checkpoint statement finished, on another connection. The hook disarms itself
+    // before the sweep, so the sweep's own statements are never intercepted.
     let swept = false;
-    const connect = reader.connect.bind(reader) as unknown as () => Promise<PoolClient>;
-    vi.spyOn(reader as unknown as { connect: () => Promise<PoolClient> }, "connect").mockImplementation(async () => {
-      const client = await connect();
-      const query = client.query.bind(client) as unknown as (...args: unknown[]) => Promise<unknown>;
-      (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (...args: unknown[]) => {
-        const result = await query(...args);
-        if (!swept && typeof args[0] === "string" && /FROM doc_snapshot_history/.test(args[0])) {
-          swept = true;
+    // Called back with the receiving client below, so the unbound reference is safe.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalQuery: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
+    const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const result = originalQuery.apply(this, args);
+      const [text] = args;
+      if (!swept && typeof text === "string" && /FROM doc_snapshot_history/.test(text) && result instanceof Promise) {
+        swept = true;
+        return result.then(async (value: unknown) => {
           expect(await inTenant(() => rebaselineDocHistory(pool, docId, 7))).toBe(true);
-        }
-        return result;
-      };
-      return client;
+          return value;
+        });
+      }
+      return result;
     });
     try {
-      const listed = await inTenant(() => listPageChanges(reader, docId, { since, by: "ai_agent", limit: 100 }));
+      const listed = await inTenant(() => listPageChanges(pool, docId, { since, by: "ai_agent", limit: 100 }));
       expect(swept).toBe(true);
       expect(listed.map(({ kind, blockIds }) => ({ kind, blockIds }))).toEqual(expected);
     } finally {
-      vi.restoreAllMocks();
-      await reader.end();
+      spy.mockRestore();
     }
     const { rows } = await admin.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM doc_history_updates WHERE doc_id = $1`,
@@ -356,7 +359,7 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
       await insertHistory(docId, [first]);
       await admin.query(
         `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at, tenant_id)
-         SELECT 1 + g, $1, '\x00'::bytea, 'user', now(), now() + interval '90 days', (SELECT tenant_id FROM docs WHERE id = $1)
+         SELECT 1 + g, $1, decode('00', 'hex'), 'user', now(), now() + interval '90 days', (SELECT tenant_id FROM docs WHERE id = $1)
          FROM generate_series(1, $2::int) AS g`,
         [docId, PAGE_CHANGES_MAX_UPDATES + 10],
       );

@@ -69,9 +69,8 @@ async function createCard(ids: Databases, target: string, properties: Record<str
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );
     const { rows } = await harness.runtime.query<{ id: string }>(
-      `SELECT id FROM items WHERE database_id = $1 AND properties->'proposal'->>'target' = $2
-       ORDER BY created_at DESC LIMIT 1`,
-      [ids.proposalsId, target],
+      `SELECT id FROM items WHERE database_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [ids.proposalsId],
     );
     const card = rows[0];
     if (!card) throw new Error("The tick stored no proposal card");

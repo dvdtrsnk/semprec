@@ -1303,6 +1303,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("lists a confirmed card's blocks as the user's changes and not as the assistant's", async () => {
       const target = await projectWithPage(sectioned);
+      // Taken after the page and its blocks exist, so only the confirm below is stored after it.
+      const since = new Date();
       const proposal = await createV2Proposal(target, {
         markdown: "- first\n- second",
         placement: { afterHeading: HEADING_ID },
@@ -1312,7 +1314,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const ids = [0, 1, 2].map((index) => proposalBlockId(proposal.id, index));
       const doc = await docStore.getDoc(target);
       if (!doc) throw new Error("Missing page document");
-      const since = new Date(Date.now() - 60 * 60 * 1000);
 
       expect(await listPageChanges(pool, doc.id, { since, by: "user", limit: 100 })).toEqual(
         expect.arrayContaining([expect.objectContaining({ kind: "insert", blockIds: ids })]),

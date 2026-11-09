@@ -55,6 +55,51 @@ describe("GET /api/items/:id/page.md (issue #1678)", () => {
     expect(body).not.toContain("Other title");
   });
 
+  it("keeps each caption when two page blocks name one page id", async () => {
+    const host = await harness.createHost(harness.tenantA);
+    const docId = await runInTenant(
+      harness.tenantA,
+      async () => (await createDocStore(harness.runtime).getOrCreateDoc(host, "page")).id,
+    );
+    await runInTenant(harness.tenantA, () =>
+      mutateYDoc(harness.runtime, docId, "user", (ydoc) => {
+        const blocks = ydoc.getMap<Y.Map<unknown>>("blocks");
+        const order = ydoc.getArray<string>("order");
+        for (const [id, caption] of [
+          ["first", "First caption"],
+          ["second", "Second caption"],
+        ] as const) {
+          const block = new Y.Map<unknown>();
+          block.set("sys:id", id);
+          block.set("sys:flavour", "page");
+          block.set("pageId", "page-one");
+          block.set("text", new Y.Text(caption));
+          blocks.set(id, block);
+          order.push([id]);
+        }
+      }),
+    );
+
+    const body = await (await readMd(harness.headersA, host)).text();
+
+    expect(body).toBe("[First caption](semprec://page/page-one)\n\n[Second caption](semprec://page/page-one)");
+  });
+
+  it("gives a document with the same visible text but another history another version", () => {
+    const direct = new Y.Doc();
+    direct.clientID = 1;
+    direct.getText("t").insert(0, "ab");
+    const detour = new Y.Doc();
+    detour.clientID = 1;
+    detour.getText("t").insert(0, "abc");
+    detour.getText("t").delete(2, 1);
+
+    expect(detour.getText("t").toJSON()).toBe(direct.getText("t").toJSON());
+    expect(docEtag(detour)).not.toBe(docEtag(direct));
+    direct.destroy();
+    detour.destroy();
+  });
+
   it("returns the same ETag for two reads with a compaction between them", async () => {
     const host = await harness.createHost(harness.tenantA);
     await runInTenant(harness.tenantA, () => writePageTextBlocks(harness.runtime, host, ["one", "two"]));

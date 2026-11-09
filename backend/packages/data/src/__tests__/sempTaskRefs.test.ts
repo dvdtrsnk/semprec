@@ -182,6 +182,24 @@ describe("Semp task references (issue #1771)", () => {
       expect(JSON.stringify(refused)).toBe(JSON.stringify(await error(occurrence(randomUUID()))));
     });
 
+    it("keeps an ended but undeleted series valid for validation and expansion", async () => {
+      const c = await fixture();
+      const inC = <T>(fn: (client: Parameters<Parameters<typeof withTransaction>[1]>[0]) => Promise<T>) =>
+        runInTenant(c.tenant, () => withTransaction(runtime, fn));
+      // Ending a series clears its `active` flag and deletes nothing.
+      await inC((client) =>
+        client.query("UPDATE task_recurrence SET active = false WHERE series_id = $1", [c.seriesId]),
+      );
+
+      expect(await inC((client) => validateSempMessageRefs(client, [occurrence(c.seriesId)]))).toEqual([
+        occurrence(c.seriesId),
+      ]);
+      expect(await inC((client) => readSempRefContext(client, occurrence(c.seriesId)))).toMatchObject({
+        label: "Weekly review",
+        state: "active",
+      });
+    });
+
     it("stores first-occurrence deduplicated refs, distinguishing days and trace days", async () => {
       const refs = [
         occurrence(a.seriesId, "2026-11-16"),
