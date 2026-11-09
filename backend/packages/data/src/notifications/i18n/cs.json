@@ -14,6 +14,7 @@
   "notification.body.unnamed": "bez názvu",
   "approval.itemDelete": "Smazat „{itemName}“ z „{databaseName}“ ({databaseKey}); propojených položek: {linkedCount}, uchování: {restorableDays} dní. {projectName}",
   "approval.itemPatch": "Upravit „{itemName}“ v „{databaseName}“ ({databaseKey}).",
+  "approval.changesSeries": "Změnit opakování úkolu „{taskName}“ z {fromRule} na {toRule}.",
   "approval.relationPut": "Propojit „{fromItemName}“ ({fromDatabaseKey}) s „{toItemName}“ ({toDatabaseKey}).",
   "approval.relationSet": "Změnit propojení „{propertyName}“ u „{fromItemName}“ ({fromDatabaseKey}).",
   "approval.propertyDelete": "Smazat „{propertyName}“ z „{databaseName}“ ({databaseKey}); dotčených položek: {affectedCount}.",

@@ -7,6 +7,7 @@ import { approvalNotificationBody } from "../notifications/approvalNotificationB
 const paramsByKey: Record<string, string[]> = {
   "approval.itemDelete": ["itemName", "databaseKey", "databaseName", "projectName", "linkedCount", "restorableDays"],
   "approval.itemPatch": ["itemName", "databaseKey", "databaseName"],
+  "approval.changesSeries": ["taskName", "fromRule", "toRule"],
   "approval.relationPut": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
   "approval.relationSet": ["fromItemName", "fromDatabaseKey", "propertyName"],
   "approval.propertyDelete": ["propertyName", "databaseKey", "databaseName", "affectedCount"],
@@ -77,6 +78,14 @@ describe("approval notification body", () => {
     expect(() => approvalNotificationBody({ ...mcp, description: { key: "approval.unknown", params: {} } })).toThrow(
       /no body entry/,
     );
+  });
+  it("uses the recurrence description and its exact parameters", () => {
+    const params = { taskName: "Task", fromRule: "daily", toRule: "weekly" };
+    expect(approvalNotificationBody({ ...mcp, description: { key: "approval.changesSeries", params } })).toEqual({
+      bodyKey: "approval.changesSeries",
+      bodyParams: params,
+      bodySuffixKey: "notification.body.cannotUndo",
+    });
   });
   it.each([
     ["item.patch", "approval.itemPatch"],

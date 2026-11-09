@@ -12,6 +12,7 @@ import type { WriteNotificationInput } from "./notify.js";
 const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.itemDelete", "approval.itemDelete"],
   ["approval.itemPatch", "approval.itemPatch"],
+  ["approval.changesSeries", "approval.changesSeries"],
   ["approval.propertyDelete", "approval.propertyDelete"],
   ["approval.databaseArchive", "approval.databaseArchive"],
   ["approval.viewDelete", "approval.viewDelete"],
