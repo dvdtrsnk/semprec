@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -278,6 +278,150 @@ describe("guidance drift decisions", () => {
           },
         },
       ]);
+    });
+  });
+
+  it("returns a conflict without deciding when a concurrent guidance save wins", async () => {
+    await runInTenant(tenant, async () => {
+      const saved = await withTransaction(pool, (tx) =>
+        saveGuidanceSections(tx, { actorUserId: user, projectItemId: project, sections, expectedUpdatedAt: null }),
+      );
+      const first = await withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "e".repeat(64),
+          payload,
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      );
+      type Identity = { pid: number; started: string };
+      let release = () => {};
+      let holderReady: (identity: Identity) => void = () => {};
+      let waiterReady: (pid: number) => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const held = new Promise<Identity>((resolve) => {
+        holderReady = resolve;
+      });
+      const acquired = new Promise<number>((resolve) => {
+        waiterReady = resolve;
+      });
+      const holder = withTransaction(pool, async (client) => {
+        const identity = await client.query<Identity>(
+          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+        );
+        if (!identity.rows[0]) throw new Error("Missing holder identity");
+        const value = await saveGuidanceSections(client, {
+          actorUserId: user,
+          projectItemId: project,
+          sections: { ...sections, purpose: "Concurrent save" },
+          expectedUpdatedAt: saved.updatedAt,
+        });
+        holderReady(identity.rows[0]);
+        await gate;
+        return value;
+      }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      let contender:
+        | Promise<
+            | { ok: true; value: Awaited<ReturnType<ReturnType<typeof createResolveGuidanceDriftFindingRouteHandler>>> }
+            | { ok: false; error: unknown }
+          >
+        | undefined;
+      const onAcquire = (client: PoolClient) => {
+        if (!("processID" in client) || typeof client.processID !== "number")
+          throw new Error("Missing acquired backend PID");
+        waiterReady(client.processID);
+      };
+      let failure: { error: unknown } | undefined;
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const owner = await Promise.race([
+          held,
+          holder.then((result) => {
+            throw result.ok ? new Error("Holder ended early") : result.error;
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Holder readiness timed out")), 5000);
+          }),
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+        pool.on("acquire", onAcquire);
+        const route = createResolveGuidanceDriftFindingRouteHandler(pool);
+        contender = route({
+          params: { id: first.finding.id },
+          identity: { user: { id: user } },
+          body: { choice: "allow", expectedGuidanceUpdatedAt: saved.updatedAt },
+        }).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        let waitTimer: ReturnType<typeof setTimeout> | undefined;
+        const waiterPid = await Promise.race([
+          acquired,
+          contender.then((result) => {
+            throw result.ok ? new Error("Contender ended early") : result.error;
+          }),
+          new Promise<never>((_, reject) => {
+            waitTimer = setTimeout(() => reject(new Error("Contender readiness timed out")), 5000);
+          }),
+        ]).finally(() => {
+          if (waitTimer) clearTimeout(waitTimer);
+          pool.off("acquire", onAcquire);
+        });
+        const found = await admin.query<{ started: string }>(
+          "SELECT backend_start::text AS started FROM pg_stat_activity WHERE pid = $1",
+          [waiterPid],
+        );
+        if (!found.rows[0]) throw new Error("Contender backend missing");
+        await expect
+          .poll(
+            async () => {
+              const result = await admin.query<{ blocked: boolean }>(
+                `SELECT EXISTS (SELECT 1 FROM pg_stat_activity h JOIN pg_stat_activity w ON w.pid = $3
+            WHERE h.pid = $1 AND h.backend_start = $2::timestamptz AND w.backend_start = $4::timestamptz
+              AND $1::int = ANY(pg_blocking_pids(w.pid))) AS blocked`,
+                [owner.pid, owner.started, waiterPid, found.rows[0]?.started],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+      } catch (error) {
+        failure = { error };
+      }
+      pool.off("acquire", onAcquire);
+      release();
+      const ownerResult = await holder;
+      const contenderResult = contender ? await contender : undefined;
+      const actorErrors = [ownerResult, contenderResult].flatMap((result) =>
+        result && !result.ok ? [result.error] : [],
+      );
+      if (failure && actorErrors.length)
+        throw new AggregateError([failure.error, ...actorErrors], "Guidance overlap failed", { cause: failure.error });
+      if (failure) throw failure.error;
+      if (actorErrors.length) throw new AggregateError(actorErrors, "Guidance overlap actors failed");
+      if (!ownerResult.ok || !contenderResult?.ok) throw new Error("Missing overlap outcomes");
+      expect(contenderResult.value).toMatchObject({ status: 409, body: { error: { code: "version_conflict" } } });
+      const current = await pool.query<{ markdown: string }>(
+        "SELECT markdown FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
+      expect(current.rows[0]?.markdown).toContain("Concurrent save");
+      expect(current.rows[0]?.markdown).not.toContain(payload.suggestedAllowedLine);
+      const finding = await pool.query<{ status: string; resolution_choice: string | null }>(
+        "SELECT status, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
+        [first.finding.id],
+      );
+      expect(finding.rows).toEqual([{ status: "active", resolution_choice: null }]);
+      expect((await pool.query("SELECT id FROM notifications WHERE source_id = $1", [first.finding.id])).rows).toEqual(
+        [],
+      );
     });
   });
 });
