@@ -193,7 +193,11 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
     ]) {
       const refused = await insert(harness.headersA, host, { placement: "end", markdown });
       expect(refused.status, markdown).toBe(400);
-      expect(errorBody.parse(JSON.parse(refused.text)).error.code).toBe("validation_failed");
+      const body = errorBody.parse(JSON.parse(refused.text));
+      expect(body.error.code).toBe("validation_failed");
+      // Names the request field and the offending line or block, never the Markdown itself.
+      expect(body.error.details).toMatchObject({ field: "markdown", path: expect.stringMatching(/^(line|block) \d+/) });
+      expect(refused.text).not.toContain("Cell");
       expect(await stateOf(host)).toEqual(before);
     }
     expect(before.docs).toBe(0);
@@ -309,7 +313,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       }
       const body = errorBody.parse(JSON.parse(refusals[0]?.text ?? "{}"));
       expect(body.error.code).toBe("validation_failed");
-      expect(JSON.stringify(body.error.details)).toContain('"path":"markdown"');
+      expect(body.error.details).toEqual({ field: "markdown" });
       expect(await stateOf(host)).toEqual(before);
     });
 

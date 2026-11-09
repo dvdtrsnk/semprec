@@ -81,9 +81,17 @@ export interface InsertPageMarkdownInput {
   origin: CreatedBy;
 }
 
-/** The refusal of Markdown that is not a valid list of blocks; `issues` name the offending lines and fields. */
+/**
+ * The refusal of Markdown that is not a valid list of blocks. Its details are a flat record, the only shape the REST
+ * error contract serves (`publicErrorDetails` drops a nested `issues` array): `field` names the request field and
+ * `path` and `reason` the first offending line or block and why, never any of the Markdown itself.
+ */
 function invalidMarkdown(issues: readonly BlockIssue[]): ValidationError {
-  return new ValidationError("Invalid Markdown", { field: "markdown", issues });
+  const first = issues[0];
+  return new ValidationError("Invalid Markdown", {
+    field: "markdown",
+    ...(first === undefined ? {} : { path: first.path, reason: first.code }),
+  });
 }
 
 /**
@@ -157,7 +165,13 @@ export async function insertPageMarkdown(
     if (error instanceof BlockInputError) throw invalidMarkdown(error.issues);
     throw error;
   }
-  await assertItemLinksExist(client, parsed, "markdown");
+  try {
+    await assertItemLinksExist(client, parsed, "markdown");
+  } catch (error) {
+    // The guard's nested `issues` are not served over REST; every failed link answers one flat `{ field }` body.
+    if (error instanceof ValidationError) throw new ValidationError(error.message, { field: "markdown" });
+    throw error;
+  }
   const ids = resolveBlockIds(parsed.length, input.blockIds);
   const blocks = toNewBlocks(parsed, ids);
   if (blocks.length === 0) return { blockIds: [] };
