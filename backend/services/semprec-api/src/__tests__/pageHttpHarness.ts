@@ -39,6 +39,7 @@ export class PageHttpHarness {
   headersA: { Authorization: string } = { Authorization: "" };
   headersB: { Authorization: string } = { Authorization: "" };
   private server: Server | undefined;
+  private readonly emails = new Map<string, string>();
 
   async start(): Promise<void> {
     this.admin = getTestPool();
@@ -83,14 +84,15 @@ export class PageHttpHarness {
   private async signIn(tenantId: string): Promise<{ Authorization: string }> {
     const email = `${randomUUID()}@example.com`;
     await createUser(this.admin, { email, passwordHash: await hashPassword(PASSWORD), tenantId });
+    this.emails.set(tenantId, email);
     const { token } = await login(this.admin, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
     return { Authorization: `Bearer ${token}` };
   }
 
-  /** The `Cookie` header of a new web-platform session of a new user of `tenantId` (the bearer sessions above are native). */
+  /** The `Cookie` header of a new web-platform session of the user of `tenantId` (the bearer sessions above are native). */
   async webSessionCookie(tenantId: string): Promise<string> {
-    const email = `${randomUUID()}@example.com`;
-    await createUser(this.admin, { email, passwordHash: await hashPassword(PASSWORD), tenantId });
+    const email = this.emails.get(tenantId);
+    if (email === undefined) throw new Error(`Tenant ${tenantId} has no signed-in user`);
     const { token } = await login(this.admin, { email, password: PASSWORD, platform: "web", ip: "127.0.0.1" });
     return `semprec_session=${encodeURIComponent(token)}`;
   }

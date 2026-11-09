@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
-import { createInboxItemWithClient } from "@semprec/data/testSupport";
+import { createInboxItemWithClient, createTestProjectItem } from "@semprec/data/testSupport";
 import {
   createItemWithClient,
   createSemprecTickAction,
@@ -139,7 +139,7 @@ describe("POST /api/proposals/:id/confirm for page content (issue #1681)", () =>
 
   it("answers 409 when the chosen heading was removed, keeps the card proposed and writes nothing; then confirms once it exists", async () => {
     const ids = await databases();
-    const host = await harness.createHost(harness.tenantA);
+    const host = await runInTenant(harness.tenantA, () => createTestProjectItem(harness.runtime));
     const [headingId] = await insert(host, "## Tiles\n\nTile one");
     if (!headingId) throw new Error("Missing the heading id");
     const card = await createCard(ids, host, {
@@ -168,7 +168,7 @@ describe("POST /api/proposals/:id/confirm for page content (issue #1681)", () =>
 
   it("confirms at the end of the section over HTTP and adds nothing when the same card is confirmed again", async () => {
     const ids = await databases();
-    const host = await harness.createHost(harness.tenantA);
+    const host = await runInTenant(harness.tenantA, () => createTestProjectItem(harness.runtime));
     const [headingId] = await insert(host, "## Tiles\n\nTile one\n\n## Other\n\nElsewhere");
     if (!headingId) throw new Error("Missing the heading id");
     const card = await createCard(ids, host, {
