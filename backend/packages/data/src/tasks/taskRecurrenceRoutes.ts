@@ -34,7 +34,7 @@ interface Context {
 
 /** The `owner: 'system'` Tasks properties these routes write as the Tasks module (issue #1605). */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate", "recurrence"] as const;
-const PRESETS = ["daily", "weekdays", "weekly", "monthly"] as const;
+const PRESETS = ["daily", "weekdays", "weekly", "monthly", "yearly"] as const;
 type Preset = (typeof PRESETS)[number];
 const REQUEST_KEYS = new Set(["preset", "mode", "rule", "date"]);
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -101,6 +101,8 @@ function resolveRule(request: RecurrenceRequest, date: string): TaskRecurrenceRu
       return { kind: "weekdays", days: [WEEKDAYS[day.weekday - 1]!] };
     case "monthly":
       return { kind: "monthDates", dates: [day.day] };
+    case "yearly":
+      return { kind: "yearDates", month: day.month, day: day.day };
     case null:
       try {
         return parseTaskRecurrenceRule(request.mode, request.rule);

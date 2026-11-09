@@ -7,12 +7,8 @@ const WEEKDAY_TO_LUXON: Record<Weekday, number> = { mon: 1, tue: 2, wed: 3, thu:
 
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/**
- * How far back `latestOccurrenceOnOrBefore` looks for a fixed rule. Every fixed rule the schema can satisfy has a
- * date within any 366 consecutive days (a weekday within 7, a month date within 12 months, the n-th weekday of a
- * month within 12 months), so a longer search could only fail for a rule that never matches.
- */
-const FIXED_LOOKBACK_DAYS = 400;
+/** Eight years covers a skipped Gregorian century for a February 29 rule. */
+const FIXED_LOOKBACK_DAYS = 8 * 366;
 
 /** Calendar days are compared in UTC: a `YYYY-MM-DD` value has no time zone of its own. */
 function parseDay(value: string, label: string): DateTime {
@@ -51,6 +47,8 @@ function matchesFixedRule(rule: FixedRecurrenceRule, day: DateTime): boolean {
       return rule.days.some((weekday) => WEEKDAY_TO_LUXON[weekday] === day.weekday);
     case "monthDates":
       return rule.dates.includes(day.day);
+    case "yearDates":
+      return rule.month === day.month && rule.day === day.day;
     case "nthWeekday": {
       const candidate = nthWeekdayOfMonth(day.startOf("month"), rule.weekday, rule.n).startOf("day");
       return candidate.month === day.month && candidate.hasSame(day, "day");
@@ -83,6 +81,13 @@ function nextFixedDate(rule: FixedRecurrenceRule, reference: DateTime): DateTime
         if (targetDates.has(candidate.day)) return candidate;
       }
       throw new Error("monthDates rule matched no date within a year — unreachable, dates is validated 1-31");
+    }
+    case "yearDates": {
+      for (let yearOffset = 0; yearOffset <= 8; yearOffset++) {
+        const candidate = DateTime.utc(reference.year + yearOffset, rule.month, rule.day);
+        if (candidate.isValid && candidate > reference) return candidate;
+      }
+      throw new Error("yearDates rule matched no date within eight years");
     }
     case "nthWeekday": {
       for (let monthOffset = 0; monthOffset <= 12; monthOffset++) {

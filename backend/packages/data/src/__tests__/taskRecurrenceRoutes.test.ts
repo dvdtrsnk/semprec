@@ -148,6 +148,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     ["daily", { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }],
     ["weekdays", { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] }],
     ["monthly", { kind: "monthDates", dates: [22] }],
+    ["yearly", { kind: "yearDates", month: 10, day: 22 }],
   ])("maps preset %s on 22 October to a fixed rule", async (preset, rule) => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset });
@@ -170,6 +171,19 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     expect(error.details).toEqual({ field: "date" });
     expect(await seriesRows()).toEqual([]);
     expect(await stored(id)).toEqual(before);
+  });
+
+  it("uses the supplied date for the yearly preset and refuses impossible dates without writes", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const response = await put(id, { preset: "yearly", date: "2026-12-24" });
+    expect(response.item.properties.recurrence).toEqual({ preset: "yearly", mode: "fixed", rule: { kind: "yearDates", month: 12, day: 24 } });
+    const before = await stored(id);
+    const rows = await seriesRows();
+    for (const rule of [{ kind: "yearDates", month: 4, day: 31 }, { kind: "yearDates", month: 13, day: 1 }]) {
+      await expect(put(id, { mode: "fixed", rule })).rejects.toMatchObject({ status: 400 });
+      expect(await stored(id)).toEqual(before);
+      expect(await seriesRows()).toEqual(rows);
+    }
   });
 
   it("sets date, anchor and occurrence date to 5 November and the rule to day 5 for monthly with a date", async () => {
