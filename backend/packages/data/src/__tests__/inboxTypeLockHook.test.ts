@@ -1,4 +1,5 @@
 import "../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -169,7 +170,7 @@ describe("Inbox type lock", () => {
           if (timer) clearTimeout(timer);
         });
         const observed = await admin.query<{ present: boolean }>(
-          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2) AS present",
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
           [identity.pid, identity.started],
         );
         expect(observed.rows).toEqual([{ present: true }]);
@@ -197,13 +198,17 @@ describe("Inbox type lock", () => {
     const own = await runInTenant(tenant, () => fixture("proposed"));
     const other = await createTestTenant(admin);
     await runInTenant(other, () => seedSystem(pool, createViewTypeRegistry()));
-    const error = await runInTenant(other, () =>
-      own.cp.deleteRelation(own.edge).then(
-        () => null,
-        (caught: unknown) => caught,
-      ),
-    );
-    expect(error).toMatchObject({ status: 404 });
+    const readError = (relationPropertyId: string) =>
+      runInTenant(other, () =>
+        own.cp.deleteRelation({ ...own.edge, relationPropertyId }).then(
+          () => null,
+          (caught: unknown) => caught,
+        ),
+      );
+    const foreign = await readError(own.edge.relationPropertyId);
+    const missing = await readError(randomUUID());
+    expect(foreign).toMatchObject({ status: 400, code: "validation_failed", details: { field: "relationPropertyId" } });
+    expect(missing).toMatchObject({ status: 400, code: "validation_failed", details: { field: "relationPropertyId" } });
     expect(await runInTenant(tenant, () => own.targets())).toEqual([own.edge.targetItemId]);
   });
 });
