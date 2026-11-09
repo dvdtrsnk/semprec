@@ -123,13 +123,13 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
   async decide(tx, findingId, decision) {
     if ((decision.status === "dismissed") !== (decision.choice === "dismiss"))
       throw new Error("Guidance drift decision status and choice disagree");
-    const { rows } = await tx.query<FindingRow>(
+    const result = await tx.query<FindingRow>(
       `UPDATE agent_guidance_drift_findings
        SET status = $2, resolution_choice = $3, resolved_by = $4, resolved_at = $5, last_seen_at = $5
        WHERE id = $1 AND status = 'active' RETURNING ${COLUMNS}`,
       [findingId, decision.status, decision.choice, decision.userId, decision.at],
     );
-    if (!rows[0]) throw new NotFoundError("Guidance drift finding not found");
-    return mapRow(rows[0]);
+    if (result.rowCount === 0) throw new NotFoundError("Guidance drift finding not found");
+    return mapRow(requireSingleRow(result.rows, "agent_guidance_drift_findings decide"));
   },
 };
