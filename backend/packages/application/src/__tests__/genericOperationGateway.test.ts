@@ -1208,7 +1208,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             properties: { recurrence: { preset: "weekly" } },
             ifVersion: item.updatedAt,
           }),
-        ).rejects.toMatchObject({ status: 403 });
+        ).rejects.toMatchObject({ status: 404, code: "not_found" });
         expect(await cp.findItem(item.id)).toEqual(item);
         await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
