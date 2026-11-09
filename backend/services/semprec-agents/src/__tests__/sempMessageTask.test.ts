@@ -18,7 +18,7 @@ import {
   type SempThread,
   type SempTurnResult,
 } from "@semprec/agent-runtime";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
@@ -2250,10 +2250,6 @@ describe("queued Semp messages", () => {
   it("runs a rejected tick outcome without tools and restores tools for the next user turn", async () => {
     const faux = fauxProvider();
     const observed: Array<{ tools: string[]; messages: string }> = [];
-    faux.setResponses(["before", "acknowledged", "after"].map((text) => (context) => {
-      observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
-      return fauxAssistantMessage(text);
-    }));
     const task = createSempMessageTask(pool, registry, {
       model: faux.getModel(),
       streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
@@ -2270,8 +2266,23 @@ describe("queued Semp messages", () => {
       const threadId = thread.rows[0]?.id;
       if (!threadId) throw new Error("Missing thread");
       const run = await createAgentRun(pool, { projectItemId: inbox.ownerProjectItemId, heartbeatId: heartbeat.id, threadId, triggeredBy: "heartbeat", task: "Review tasks" });
-      return { threadId, runId: run.id };
+      return { threadId, runId: run.id, heartbeatId: heartbeat.id };
     });
+    faux.setResponses([
+      (context) => {
+        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+        return fauxAssistantMessage("before");
+      },
+      (context) => {
+        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+        return fauxAssistantMessage([fauxToolCall("heartbeat_trigger", { heartbeatId: fixture.heartbeatId }, { id: "forbidden-trigger" })], { stopReason: "toolUse" });
+      },
+      () => fauxAssistantMessage("acknowledged"),
+      (context) => {
+        observed.push({ tools: (context.tools ?? []).map((tool) => tool.name), messages: JSON.stringify(context.messages) });
+        return fauxAssistantMessage("after");
+      },
+    ]);
     const send = (text: string) => runInTenant(tenant, () => withTransaction(pool, (client) => sendSempMessage(client, { threadId: fixture.threadId, text, context: [], hasContext: false })));
     const first = await send("before");
     await runInTenant(tenant, () => task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }));
@@ -2291,6 +2302,8 @@ describe("queued Semp messages", () => {
     expect(observed[2]?.tools.length).toBeGreaterThan(0);
     const reply = await runInTenant(tenant, () => pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [assistantMessageId]));
     expect(reply.rows).toEqual([{ status: "done", text: "acknowledged" }]);
+    const jobs = await runInTenant(tenant, () => pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`heartbeat-fire:manual:${fixture.heartbeatId}`]));
+    expect(jobs.rows).toEqual([]);
     await closeIdleThreadSessions(pool);
   });
 
