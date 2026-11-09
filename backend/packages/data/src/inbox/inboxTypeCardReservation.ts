@@ -4,7 +4,7 @@ import { lockItemByIdNowait } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ConflictError, NotFoundError } from "../errors.js";
-import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import type { ItemRow } from "../types.js";
 
 export async function resolveInboxTypeCardConfiguration(client: PoolClient, expectedDatabaseId?: string) {
@@ -14,7 +14,16 @@ export async function resolveInboxTypeCardConfiguration(client: PoolClient, expe
   const property = await getPropertyByKey(client, database.id, "sourceInbox");
   if (!property) throw new NotFoundError("Processing proposals sourceInbox property not found");
   const definition = await getRelationDefinitionByPropertyId(client, property.id);
-  if (!definition) throw new NotFoundError("Processing proposals sourceInbox relation not found");
+  const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
+  const config: unknown = property.config;
+  if (
+    !inbox || !definition || property.type !== "relation" ||
+    typeof config !== "object" || config === null || Array.isArray(config) ||
+    !("relationDefinitionId" in config) || config.relationDefinitionId !== definition.id ||
+    !("targetDatabaseId" in config) || config.targetDatabaseId !== inbox.id ||
+    definition.propertyIdA !== property.id || definition.propertyIdB !== null ||
+    definition.cardinality !== "many_to_many"
+  ) throw new NotFoundError("Processing proposals sourceInbox relation not found");
   return { databaseId: database.id, definitionId: definition.id };
 }
 

@@ -89,6 +89,7 @@ registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTas
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
 registerItemUpdateCommand(TASKS_MODULE_ID, {
   key: "recurrence",
+  transform: taskPreWriteTransform,
   validate: validateRecurrenceCommand,
   prepare: prepareRecurrenceCommand,
   consume: ({ client, stored, patch, writer }, value) => {

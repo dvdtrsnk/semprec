@@ -250,7 +250,6 @@ describe("batch 34 entry-point contracts", () => {
     for (const patch of [
       { seriesId: randomUUID() },
       { occurrenceDate: "2026-10-19" },
-      { recurrence: { preset: null, mode: "fixed", rule } },
     ]) {
       const refused = await call("PATCH", `/api/items/${task.id}`, own.headers, {
         properties: patch,
@@ -262,10 +261,18 @@ describe("batch 34 entry-point contracts", () => {
         details: { field: Object.keys(patch)[0] },
       });
     }
+    const malformed = await call("PATCH", `/api/items/${task.id}`, own.headers, {
+      properties: { recurrence: { preset: null, mode: "fixed", rule } }, ifVersion: before.updatedAt,
+    });
+    expect(malformed.status).toBe(400);
     const after = await call("GET", `/api/items/${task.id}`, own.headers);
     expect(itemEnvelope.parse(after.json)).toEqual(before);
     expect(await recurrenceRows()).toEqual(rowsBefore);
     expect(invalidations).toEqual([]);
+    const permitted = await call("PATCH", `/api/items/${task.id}`, own.headers, {
+      properties: { recurrence: { mode: "fixed", rule } }, ifVersion: before.updatedAt,
+    });
+    expect(permitted.status).toBe(200);
 
     const foreignRead = await call("GET", `/api/items/${task.id}`, foreign.headers);
     const randomRead = await call("GET", `/api/items/${randomUUID()}`, foreign.headers);

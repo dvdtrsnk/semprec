@@ -627,6 +627,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "readBlobId",
   "readItemPatchChangeMetadata",
   "readPageMarkdown",
+  "readProjectNotes",
   "readProposalRelationCatalog",
   "readProposalWorkspaceContext",
   "readRecordingRequest",

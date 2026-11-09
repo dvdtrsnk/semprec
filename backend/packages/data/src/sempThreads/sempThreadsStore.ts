@@ -98,7 +98,9 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
     const result = await client.query<{ status: string; execution_status: string; execution_result_jsonb: unknown }>(
       `SELECT a.status, a.execution_status, a.execution_result_jsonb FROM approval_requests a
        JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id
-       WHERE a.id = $1 AND r.thread_id = $2 AND r.heartbeat_id = $3`,
+       WHERE a.id = $1 AND r.thread_id = $2
+         AND (r.heartbeat_id = $3 OR
+           (r.heartbeat_id IS NULL AND r.unit = 'session' AND r.triggered_by = 'user'))`,
       [entry.approvalRequestId, threadId, row.heartbeat_id],
     );
     const request = result.rows[0];

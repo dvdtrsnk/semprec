@@ -561,13 +561,18 @@ describe("recurring task series (issues #1605, #1670)", () => {
       for (const patch of [
         { seriesId: "00000000-0000-4000-8000-000000000000" },
         { occurrenceDate: "2026-10-13" },
-        { recurrence: { preset: null, mode: "fixed", rule: daily } },
       ]) {
         await expect(
           runInTenant(tenant, () => cp.updateItem({ databaseId: tasks, itemId: task.id, propertiesPatch: patch })),
         ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
       }
+      await expect(runInTenant(tenant, () => cp.updateItem({ databaseId: tasks, itemId: task.id,
+        propertiesPatch: { recurrence: { preset: null, mode: "fixed", rule: daily } } })))
+        .rejects.toMatchObject({ status: 400 });
       expect(await runInTenant(tenant, () => cp.getItem(tasks, task.id))).toEqual(read);
+      const changed = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasks, itemId: task.id,
+        propertiesPatch: { recurrence: { mode: "fixed", rule: daily } } }));
+      expect(changed.properties.recurrence).toMatchObject({ mode: "fixed", rule: daily });
     });
   });
 

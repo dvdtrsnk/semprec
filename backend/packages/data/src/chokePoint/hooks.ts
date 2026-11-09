@@ -199,6 +199,7 @@ const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, Item
 
 export interface ItemUpdateCommand {
   key: string;
+  transform: ItemPreWriteTransform;
   consume: (context: ItemPreWriteTransformContext, value: unknown) => Promise<Record<string, unknown>>;
   validate: (value: unknown) => void;
   prepare: (
@@ -236,6 +237,10 @@ export function registerItemUpdateCommand(moduleId: string, command: ItemUpdateC
 }
 export function getItemUpdateCommand(moduleId: string): ItemUpdateCommand | undefined {
   return itemUpdateCommands.get(moduleId);
+}
+export function isItemUpdateCommandPaired(moduleId: string, command: ItemUpdateCommand): boolean {
+  return (itemPreWriteTransforms.get(moduleId)?.includes(command.transform) ?? false) &&
+    (itemPreWritePreparations.get(moduleId)?.has(command.transform) ?? false);
 }
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {

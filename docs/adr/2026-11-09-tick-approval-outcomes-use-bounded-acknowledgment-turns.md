@@ -2,7 +2,9 @@
 title: Tick approval outcomes use bounded acknowledgment turns
 status: accepted
 date: 2026-11-09
-area: backend
+area: [backend]
+supersedes: []
+superseded-by: null
 ---
 
 # Tick approval outcomes use bounded acknowledgment turns

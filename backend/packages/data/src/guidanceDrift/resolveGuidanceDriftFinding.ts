@@ -41,6 +41,8 @@ export async function resolveGuidanceDriftFinding(
   if (input.choice !== "dismiss" && payload.kind === "behavior") {
     const section = input.choice === "allow" ? "allowed" : "notAllowed";
     const line = input.choice === "allow" ? payload.suggestedAllowedLine : payload.suggestedNotAllowedLine;
+    if (/[\r\n\u0085\u2028\u2029]/u.test(line))
+      throw new ValidationError("Suggestion must be a single line", { field: "choice" });
     const previous = sections[section];
     const amended = {
       ...sections,

@@ -129,10 +129,25 @@ export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
       for (let count = 0; count < MAX_SWEEP_CHUNKS_PER_TENANT * CHUNK_SIZE; count++) {
         const id: string | null = await withTransaction(pool, async (client) => {
           const result = await client.query<{ id: string }>(
-            `SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL
-             AND properties->>'status' = 'notDone' AND COALESCE(properties->>'seriesId', '') <> ''
-             AND properties->>'occurrenceDate' < $2 AND ($3::uuid IS NULL OR id > $3::uuid)
-             ORDER BY id LIMIT 1 FOR UPDATE${skipLocked ? " SKIP LOCKED" : ""}`,
+            `SELECT i.id FROM items i
+             JOIN task_recurrence s ON s.tenant_id = i.tenant_id AND s.series_id =
+               (CASE WHEN i.deleted_at IS NULL AND i.properties->>'status' = 'notDone'
+                 AND jsonb_typeof(i.properties->'seriesId') = 'string'
+                 AND COALESCE(i.properties->>'seriesId', '') <> ''
+                 AND jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+                 AND i.properties->>'occurrenceDate' < $2
+                 THEN (i.properties->>'seriesId')::uuid END)
+             WHERE i.tenant_id = app_tenant_default() AND i.database_id = $1 AND i.deleted_at IS NULL
+               AND i.properties->>'status' = 'notDone'
+               AND jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+               AND i.properties->>'occurrenceDate' < $2 AND s.active
+               AND s.anchor_date IS NOT NULL AND s.template IS NOT NULL
+               AND task_recurrence_due_for_rollover(s.mode, s.rule,
+                 (CASE WHEN jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+                   AND i.properties->>'occurrenceDate' < $2 THEN (i.properties->>'occurrenceDate')::date END),
+                 s.anchor_date, $2::date)
+               AND ($3::uuid IS NULL OR i.id > $3::uuid)
+             ORDER BY i.id LIMIT 1 FOR UPDATE OF i${skipLocked ? " SKIP LOCKED" : ""}`,
             [tasksDatabaseId, context.today, afterRecurringId],
           );
           const id = result.rows[0]?.id;

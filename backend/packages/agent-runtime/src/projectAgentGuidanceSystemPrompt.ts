@@ -9,15 +9,17 @@ export type LoadProjectNotesPort = (projectItemId: string) => Promise<{
   subpages: { id: string; title: string }[];
 } | null>;
 
-function boundedNotes(markdown: string): { markdown: string; truncated: boolean } {
+function boundedNotes(markdown: string, subpages: { id: string; title: string }[]): { markdown: string; truncated: boolean } {
   if (Buffer.byteLength(markdown, "utf8") <= MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES) {
     return { markdown, truncated: false };
   }
   const blocks = parseMarkdown(markdown);
+  let pageIndex = 0;
+  const titles = new Map(
+    blocks.flatMap((block) => block.type === "page" && block.pageId ? [[block.id, subpages[pageIndex++]?.title ?? ""] as const] : []),
+  );
   const render = (count: number) =>
-    serializeBlocks(blocks.slice(0, count), {
-      resolvePageTitle: (_id, block) => (block.text ?? []).map((run) => run.insert).join(""),
-    });
+    serializeBlocks(blocks.slice(0, count), { resolvePageTitle: (_id, block) => titles.get(block.id) ?? "" });
   let low = 0;
   let high = blocks.length;
   while (low < high) {
@@ -36,7 +38,7 @@ export async function createProjectAgentGuidanceSystemPromptOverride(
 ): Promise<(defaultPrompt: string) => string> {
   const guidance = await loadProjectAgentGuidance(projectItemId);
   const notes = await loadProjectNotes?.(projectItemId);
-  const bounded = notes ? boundedNotes(notes.markdown) : null;
+  const bounded = notes ? boundedNotes(notes.markdown, notes.subpages) : null;
   return (defaultPrompt) => {
     let result = guidance ? `${defaultPrompt}\n\n${PROJECT_GUIDANCE_HEADING}\n\n${guidance.markdown}` : defaultPrompt;
     if (bounded && notes && notes.markdown !== "") {

@@ -7,7 +7,7 @@
 // - Names are display names, never ids. `databaseKey` is the canonical database key (null for a
 //   user-created database) so a client can choose the word and its grammatical form; the backend
 //   does not know singular forms or declension of a database name.
-// - A description never carries argument values (an MCP request only names its server and tool).
+// - An MCP request names its server and tool; recurrence descriptions include the old and new rules.
 // - `endsInheritance` is omitted here; the value-link work (#1713, #1791) fills it later.
 // Templates and params:
 //   approval.itemPatch        {itemName, databaseKey, databaseName}
@@ -20,6 +20,7 @@
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
 //   approval.mcpInvoke        {serverName, toolName}
+//   approval.changesSeries    {taskName, fromRule, toRule}
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import type { PoolClient } from "pg";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";

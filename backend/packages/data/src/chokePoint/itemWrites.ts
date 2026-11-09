@@ -44,6 +44,7 @@ import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js
 import {
   hasItemPreWriteTransform,
   getItemUpdateCommand,
+  isItemUpdateCommandPaired,
   prepareItemPreWriteTransforms,
   runItemCreateHooks,
   runItemPreWriteTransforms,
@@ -90,7 +91,12 @@ function assertColorValues(properties: PropertyRow[], values: Record<string, unk
 function assertMarkdownValues(properties: PropertyRow[], values: Record<string, unknown>): void {
   const byKey = new Map(properties.map((property) => [property.key, property]));
   for (const [key, value] of Object.entries(values)) {
-    if (byKey.get(key)?.config.format !== "markdown" || value === null) continue;
+    const property = byKey.get(key);
+    if (!property) continue;
+    const config: unknown = property.config;
+    if (typeof config !== "object" || config === null || Array.isArray(config))
+      throw new Error("Malformed property config");
+    if (!("format" in config) || config.format !== "markdown" || value === null) continue;
     if (typeof value !== "string") throw new ValidationError("Markdown value must be a string", { field: key });
     try {
       parseMarkdown(value, { allowPage: false });
@@ -210,6 +216,8 @@ export async function prepareUserItemPatch(
   let preparedCommand: { key: string; intent: unknown; preconditions: Record<string, unknown> } | undefined;
   if (hasCommand && command) {
     const property = properties.find((candidate) => candidate.key === command.key);
+    if (!database.ownerModuleId || !isItemUpdateCommandPaired(database.ownerModuleId, command))
+      throw new ValidationError("The item command has no owning transform", { field: command.key });
     if (!property || property.owner !== "system" || property.ownerProcess !== database.ownerModuleId)
       throw new ForbiddenError("Item command owner does not match", { field: command.key }, "owner_violation");
     assertWritableProperties(properties, [command.key], { allowedSystemKeys: [command.key] });
@@ -546,7 +554,12 @@ export async function updateItemWithClient(
     throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
   }
   const ordinaryPatch = { ...input.propertiesPatch };
-  if (hasCommand && command) delete ordinaryPatch[command.key];
+  if (hasCommand && command) {
+    delete ordinaryPatch[command.key];
+    if (!moduleId || !isItemUpdateCommandPaired(moduleId, command))
+      throw new ValidationError("The item command has no owning transform", { field: command.key });
+    propertiesPatch = ordinaryPatch;
+  }
   if (moduleId !== null && needsTransform && stored) {
     // The transform reads the locked row that this update will replace.
     propertiesPatch = await applyItemPreWriteTransforms(

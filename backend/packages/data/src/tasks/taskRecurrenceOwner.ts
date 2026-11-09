@@ -129,13 +129,14 @@ export function prepareRecurrenceCommand(value: unknown, stored: ItemRow, patch:
   const request = parseRequest(value);
   const effectiveDate = Object.hasOwn(patch, "date") ? patch.date : stored.properties.date;
   if (!isCalendarDate(effectiveDate)) throw new ValidationError("A recurring task needs a date", { field: "date" });
+  const resolvedRule = request.preset === null ? resolveRule(request, effectiveDate) : null;
   const intent =
     request.preset === null
       ? {
           mode: request.mode,
           rule: {
             ...structuredClone(z.record(z.string(), z.unknown()).parse(request.rule)),
-            ...resolveRule(request, effectiveDate),
+            ...resolvedRule,
           },
         }
       : { preset: request.preset };

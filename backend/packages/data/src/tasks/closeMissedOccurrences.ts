@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { isDeepStrictEqual } from "node:util";
 import { createItemWithClient, rolloverTaskWithClient } from "../chokePoint/itemWrites.js";
 import { lockItemByIdNowait } from "../chokePoint/itemsStore.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -50,9 +51,21 @@ export async function closeMissedOccurrence(
   ) {
     throw new Error("Latest task occurrence changed during reservation");
   }
+  const future = await client.query<{ id: string }>(
+    `SELECT id FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
+       AND properties->>'seriesId' = $3 AND properties->>'occurrenceDate' > $4`,
+    [databaseId, series.itemId, properties.seriesId, today],
+  );
   await rolloverTaskWithClient(client, { databaseId, itemId, status: "missed" });
-  if (existing) return;
+  if (existing || future.rows.length > 0) return;
   const template = series.template;
+  const previous: unknown = properties.recurrence;
+  const preset =
+    series.itemId === itemId && typeof previous === "object" && previous !== null &&
+    "mode" in previous && previous.mode === series.mode && "rule" in previous &&
+    isDeepStrictEqual(previous.rule, series.rule) && "preset" in previous &&
+    (previous.preset === "daily" || previous.preset === "weekdays" || previous.preset === "weekly" ||
+      previous.preset === "monthly" || previous.preset === "yearly") ? previous.preset : null;
   const created = await createItemWithClient(
     client,
     {
@@ -68,7 +81,7 @@ export async function closeMissedOccurrence(
         date: latest,
         seriesId: properties.seriesId,
         occurrenceDate: latest,
-        recurrence: properties.recurrence ?? null,
+        recurrence: { preset, mode: series.mode, rule: series.rule },
       },
     },
     { allowedSystemKeys: ["seriesId", "occurrenceDate", "recurrence"], systemOwnerProcess: TASKS_MODULE_ID },

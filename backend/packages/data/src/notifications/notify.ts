@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { getUserById } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
-import { runAfterCommit } from "../db/pool.js";
+import { markManagedTransactionRollbackOnly, requireManagedTransaction, runAfterCommit } from "../db/pool.js";
 import { notifyNotificationCreated } from "../realtimeHook.js";
 import { enqueueNotificationFanout } from "./notificationFanoutJob.js";
 import type { NotificationKind } from "./notificationKinds.js";
@@ -119,17 +119,11 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const locale = toManifestLocale(user.locale);
   const localeCatalog = catalogs[locale];
   let payload = input.payload ?? {};
-  if (input.kind === "agent_guidance_drift_resolved") {
-    const kind = payload.kind ?? "permission";
-    if (kind !== "permission" && kind !== "behavior") throw new Error("Invalid guidance drift kind");
-    if (typeof payload.projectItemId !== "string") throw new Error("Missing guidance drift project");
-    const [project] = await getItemsByIds(client, [payload.projectItemId]);
-    if (!project) throw new Error("Guidance drift project not found");
-    const projectName = project.properties.name;
-    if (typeof projectName !== "string") throw new Error("Guidance drift project has no name");
-    const template = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.guidanceResolved.${kind}`);
-    payload = { ...payload, kind, resolutionTitle: interpolate(template, { project: projectName }) };
-  }
+  const resolvedKind = input.kind === "agent_guidance_drift_resolved";
+  const driftKind = Object.hasOwn(payload, "kind") ? payload.kind : "permission";
+  if (resolvedKind && driftKind !== "permission" && driftKind !== "behavior")
+    throw new Error("Invalid guidance drift kind");
+  if (resolvedKind && typeof payload.projectItemId !== "string") throw new Error("Missing guidance drift project");
   const titleTemplate = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
   const action =
@@ -146,34 +140,70 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       ? action
       : `${action} ${resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodySuffixKey)}`;
 
-  const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
-    `INSERT INTO notifications (user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-     ON CONFLICT (tenant_id, user_id, source_table, source_id, kind, transition_instance)
-       DO UPDATE SET source_table = notifications.source_table
-     RETURNING id, created_at, (xmax = 0) AS inserted`,
-    [
-      input.userId,
-      input.kind,
-      title,
-      body,
-      input.linkHref,
-      input.sourceTable,
-      input.sourceId,
-      input.transitionInstance,
-      JSON.stringify(payload),
-    ],
-  );
-
-  const row = rows[0];
-  if (!row) {
-    throw new Error("writeNotification: upsert returned no row");
+  let managed = false;
+  if (resolvedKind) {
+    try {
+      requireManagedTransaction(client);
+      managed = true;
+    } catch {
+      // The public writer also accepts clients in a caller-owned transaction.
+    }
+    await client.query("SAVEPOINT guidance_notification_write");
   }
-
-  if (row.inserted) {
-    await enqueueNotificationFanout(client, row.id);
-    runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
+  let savepointOpen = resolvedKind;
+  try {
+    const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
+      `INSERT INTO notifications (user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+       ON CONFLICT (tenant_id, user_id, source_table, source_id, kind, transition_instance)
+         DO UPDATE SET source_table = notifications.source_table
+       RETURNING id, created_at, (xmax = 0) AS inserted`,
+      [input.userId, input.kind, title, body, input.linkHref, input.sourceTable, input.sourceId,
+        input.transitionInstance, JSON.stringify(payload)],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("writeNotification: upsert returned no row");
+    if (row.inserted && resolvedKind) {
+      const projectId = payload.projectItemId;
+      if (typeof projectId !== "string") throw new Error("Missing guidance drift project");
+      const [project] = await getItemsByIds(client, [projectId]);
+      if (!project) throw new Error("Guidance drift project not found");
+      const projectName = project.properties.name;
+      if (typeof projectName !== "string") throw new Error("Guidance drift project has no name");
+      const template = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.guidanceResolved.${driftKind}`);
+      payload = { ...payload, kind: driftKind, resolutionTitle: interpolate(template, { project: projectName }) };
+      const updated = await client.query(
+        "UPDATE notifications SET payload = $2::jsonb WHERE id = $1 AND user_id = $3",
+        [row.id, JSON.stringify(payload), input.userId],
+      );
+      if (updated.rowCount !== 1) throw new Error("Notification disappeared during enrichment");
+    }
+    if (row.inserted) await enqueueNotificationFanout(client, row.id);
+    if (savepointOpen) {
+      await client.query("RELEASE SAVEPOINT guidance_notification_write");
+      savepointOpen = false;
+    }
+    if (row.inserted) runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
+    return row.id;
+  } catch (error) {
+    if (!resolvedKind) throw error;
+    const cleanupErrors: unknown[] = [];
+    if (savepointOpen) {
+      try {
+        await client.query("ROLLBACK TO SAVEPOINT guidance_notification_write");
+        await client.query("RELEASE SAVEPOINT guidance_notification_write");
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length === 0) throw error;
+    }
+    if (managed) {
+      try { markManagedTransactionRollbackOnly(client, error); } catch (markError) { cleanupErrors.push(markError); }
+    }
+    try { await client.query("ROLLBACK"); } catch (rollbackError) { cleanupErrors.push(rollbackError); }
+    if (cleanupErrors.length) {
+      throw new AggregateError([error, ...cleanupErrors], "Notification cleanup failed; connection may be unsafe", { cause: error });
+    }
+    throw error;
   }
-
-  return row.id;
 }
