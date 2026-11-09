@@ -931,6 +931,67 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
   });
 
+  it("rolls back confirmation when the origin page write fails", async () => {
+    const proposal = await createDatabaseProposal("Rollback origin");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const tenant = getTenantZeroId();
+    const before = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+    const tasksBefore = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
+      tasksId,
+    ]);
+    const jobsBefore = await pool.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    );
+    await pool.query(`CREATE FUNCTION reject_origin_note_test() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected origin note failure'; END $$`);
+    let failure: { error: unknown } | undefined;
+    try {
+      await pool.query(
+        "CREATE TRIGGER reject_origin_note_test BEFORE INSERT ON doc_updates FOR EACH ROW EXECUTE FUNCTION reject_origin_note_test()",
+      );
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+          ),
+        ),
+      ).rejects.toThrow("injected origin note failure");
+      expect(await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id))).toEqual(
+        before,
+      );
+      expect(
+        (await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [tasksId])).rows,
+      ).toEqual(tasksBefore.rows);
+      expect(
+        (await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+          .rows,
+      ).toEqual(jobsBefore.rows);
+      const origins = await pool.query("SELECT id FROM item_origins WHERE proposal_id = $1", [proposal.id]);
+      expect(origins.rows).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      () => pool.query("DROP TRIGGER IF EXISTS reject_origin_note_test ON doc_updates"),
+      () => pool.query("DROP FUNCTION reject_origin_note_test()"),
+      () => runtime.end(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Origin test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+  });
+
   it("confirm is idempotent under retry: a second confirm does not create a second target item", async () => {
     const proposal = await createDatabaseProposal("Buy milk");
 
