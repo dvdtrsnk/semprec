@@ -1,3 +1,4 @@
+import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
@@ -116,6 +117,8 @@ registerItemUpdateHook(libraryRatingItemUpdateHook);
 registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
 registerRelationEdgeWriteHook(inboxTypeEdgeWriteHook);
 registerRelationEdgeDeleteHook(inboxTypeEdgeDeleteHook);
+registerRelationEdgeWriteHook(inboxTypeLockWriteHook);
+registerRelationEdgeChangedHook(inboxTypeLockChangedHook);
 registerRelationEdgeWriteHook(inboxSourceEdgeWriteHook);
 registerRelationEdgeDeleteHook(inboxSourceEdgeDeleteHook);
 registerItemCreateHook(journalItemCreateHook);

@@ -548,7 +548,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(lockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(true);
   });
 
-  it("deleting a type referenced by both locked and unlocked Inbox items batches the lock lookup and mirrors the rollup-recompute step", async () => {
+  it("deleting a type referenced by locked and unlocked Inbox items reserves cards and mirrors the rollup-recompute step", async () => {
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
@@ -567,8 +567,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
       .then((props) => props.find((p) => p.key === "sourceInbox")!);
 
     // Three referencing Inbox items with an uneven number of proposals each: one unlocked
-    // with none, one unlocked with several non-locking proposals (proving the lock lookup's
-    // query count doesn't grow with proposals per item), and one locked by a confirmed
+    // with none, one unlocked with several non-locking proposals, and one locked by a confirmed
     // proposal — whose `type` edge must survive the delete.
     const unlockedNoProposals = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -641,16 +640,8 @@ describe("Inbox pipeline databases (issue #101)", () => {
       return texts;
     });
 
-    // The lock lookup is batched: one bulk relations read and one bulk items read, fixed
-    // regardless of how many referencing Inbox items exist or how many proposals any of them
-    // has — not asserting on the overall query total, which still grows with the number of
-    // unlocked items via one `deleteRelationWithClient` call each.
-    const bulkRelationsLookups = queries.filter((sql) =>
-      sql.includes("item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[])"),
-    );
-    const bulkItemsLookups = queries.filter((sql) => sql.includes("database_id = $1 AND id = ANY($2::uuid[])"));
-    expect(bulkRelationsLookups).toHaveLength(1);
-    expect(bulkItemsLookups).toHaveLength(1);
+    // Every associated card is reserved, including all three open cards and the decided card.
+    expect(queries.filter((sql) => sql.includes("FOR UPDATE NOWAIT")).length).toBeGreaterThanOrEqual(4);
 
     // `enqueueRollupRecomputeForEdge` always calls `findDependenciesByRelationDefinition`,
     // which issues a SELECT even when there are no rollup dependencies — so this SELECT is
