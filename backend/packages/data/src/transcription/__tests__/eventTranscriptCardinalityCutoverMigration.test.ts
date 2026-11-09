@@ -37,9 +37,11 @@ async function databaseIdFor(tenantId: string, moduleId: string): Promise<string
   });
 }
 
+/** A bare item of the module's database; an Event carries the date issue #1663 requires of every Event. */
 async function createItemIn(tenantId: string, moduleId: string): Promise<string> {
   const databaseId = await databaseIdFor(tenantId, moduleId);
-  return runInTenant(tenantId, async () => (await chokePoint.createItem({ databaseId, properties: {} })).id);
+  const properties = moduleId === "events" ? { date: "2026-10-22" } : {};
+  return runInTenant(tenantId, async () => (await chokePoint.createItem({ databaseId, properties })).id);
 }
 
 async function eventTranscriptPropertyId(tenantId: string): Promise<string> {

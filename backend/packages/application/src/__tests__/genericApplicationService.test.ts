@@ -14,6 +14,22 @@ import {
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
+/**
+ * The stored link of the production rule fileCompaniesFromProjects (issue #1653) on a file with one project: the
+ * file's companies are inherited from that project's company, and the link is on even while the project has no
+ * company. It is a stored value link, so it is present whatever the derived-links flag says.
+ */
+function inheritedCompaniesLink(project: { id: string }, title: string) {
+  return {
+    companies: {
+      valueKind: "inherited",
+      brokenAt: null,
+      brokenBy: null,
+      sources: [{ kind: "item", itemId: project.id, databaseKey: "projects", title, propertyKey: "company" }],
+    },
+  };
+}
+
 let admin: Pool;
 let runtime: Pool;
 let writer: Pool;
@@ -252,11 +268,13 @@ describe("derived item reads in the generic application service", () => {
       expect(supplied.get(file.id)?.area?.values[0]?.id).toBe(area.id);
       const disabled = await observe(() => cp.getValueLinksForItems([file.id], false, supplied));
       expect(disabled.reads).toBe(0);
-      expect(disabled.result.get(file.id)).toBeUndefined();
+      // Derived links disabled: no area, only the stored inherited companies link.
+      expect(disabled.result.get(file.id)).toEqual(inheritedCompaniesLink(project, "Project"));
       const emptyProjection = await cp.getDerivedValuesForItems([]);
       const preloadedEmpty = await observe(() => cp.getValueLinksForItems([file.id], true, emptyProjection));
       expect(preloadedEmpty.reads).toBe(0);
-      expect(preloadedEmpty.result.get(file.id)).toBeUndefined();
+      // An empty derived projection: no area, only the stored inherited companies link.
+      expect(preloadedEmpty.result.get(file.id)).toEqual(inheritedCompaniesLink(project, "Project"));
     });
   });
   it("requires both flags for derived links and independently opts into derived values", async () => {
@@ -292,7 +310,8 @@ describe("derived item reads in the generic application service", () => {
       const both = await service.getItem(actor, { itemId: file.id, include: ["links", "derived"] });
       expect(neither).not.toHaveProperty("links");
       expect(neither).not.toHaveProperty("derived");
-      expect(links.links).toEqual({});
+      // Without the derived flag no area link; the stored inherited companies link remains.
+      expect(links.links).toEqual(inheritedCompaniesLink(project, "Web"));
       expect(links).not.toHaveProperty("derived");
       expect(derived.derived?.area?.values[0]?.id).toBe(area.id);
       expect(derived).not.toHaveProperty("links");
@@ -317,7 +336,7 @@ describe("derived item reads in the generic application service", () => {
           if (hasDerived) expect(row.derived?.area?.values[0]?.id).toBe(area.id);
           else expect(row).not.toHaveProperty("derived");
           if (hasLinks && hasDerived) expect(row.links?.area?.valueKind).toBe("derived");
-          else if (hasLinks) expect(row.links).toEqual({});
+          else if (hasLinks) expect(row.links).toEqual(inheritedCompaniesLink(project, "Web"));
           else expect(row).not.toHaveProperty("links");
         }
       }

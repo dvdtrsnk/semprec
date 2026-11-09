@@ -50,11 +50,14 @@ async function session(tenantId: string): Promise<string> {
   return `Bearer ${result.token}`;
 }
 
+/** A date-only Event, which has no start, so no transcript is matched to it by time (issue #1663 requires a date). */
 async function event(tenantId: string, name: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "events"));
     if (!database) throw new Error("Missing Events database");
-    return (await createChokePoint(runtime).createItem({ databaseId: database.id, properties: { name } })).id;
+    return (
+      await createChokePoint(runtime).createItem({ databaseId: database.id, properties: { name, date: "2026-10-22" } })
+    ).id;
   });
 }
 

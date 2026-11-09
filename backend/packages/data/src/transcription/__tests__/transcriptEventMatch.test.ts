@@ -83,16 +83,19 @@ describe("matchTranscriptToEvent (issue #247)", () => {
   }
 
   /**
-   * An Event as a row written before issue #1598 stored it: its `date` still carries the instant.
-   * Raw SQL, because every write path now normalizes such a `date` to a date-only value plus `timeFrom`.
+   * An Event row as stored before a write rule existed: a `date` that still carries the instant (written
+   * before issue #1598), or a `date` or `timeFrom` the Event rules of issue #1663 now refuse (a malformed
+   * date, a non-time, a `24:00` start). Raw SQL on a valid Event the choke point created, because every
+   * write path now normalizes or refuses such values; the matcher must still read them defensively.
    */
   async function createLegacyEvent(type: string, date: string, timeFrom?: string): Promise<string> {
     const eventId = await createEvent(type, "2024-01-01");
     const legacy: Record<string, unknown> = { date, ...(timeFrom === undefined ? {} : { timeFrom }) };
-    await pool.query(
+    const updated = await pool.query(
       "UPDATE items SET properties = (properties - 'timeFrom' - 'timeTo' - 'time') || $3::jsonb WHERE database_id = $1 AND id = $2",
       [eventsId, eventId, JSON.stringify(legacy)],
     );
+    expect(updated.rowCount).toBe(1);
     return eventId;
   }
 
@@ -205,7 +208,8 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     await createEvent("meeting", "2024-03-01T13:01:00.000Z");
     await createEvent("event", "2024-03-01T12:05:00.000Z");
     await createEvent("meeting", "2024-03-01");
-    await createEvent("meeting", "not a date");
+    const notADate = await createLegacyEvent("meeting", "not a date");
+    expect(await storedStart(notADate)).toEqual({ date: "not a date", timeFrom: undefined });
     const deletedId = await createEvent("standup", "2024-03-01T12:05:00.000Z");
     await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [deletedId]);
 
@@ -335,9 +339,17 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     // timeFrom would fall inside the window.
     await setTenantZone("Etc/GMT-12");
     const transcriptId = await createTranscript();
-    await createEvent("meeting", "2024-03-01", { timeFrom: "24:00" });
-    await createEvent("meeting", "2024-03-01", { timeFrom: "nine" });
-    await createEvent("meeting", "2024-02-30", { timeFrom: "23:50" });
+    // Stored before the Event rules of issue #1663 refused them.
+    const malformed = [
+      await createLegacyEvent("meeting", "2024-03-01", "24:00"),
+      await createLegacyEvent("meeting", "2024-03-01", "nine"),
+      await createLegacyEvent("meeting", "2024-02-30", "23:50"),
+    ];
+    expect(await Promise.all(malformed.map(storedStart))).toEqual([
+      { date: "2024-03-01", timeFrom: "24:00" },
+      { date: "2024-03-01", timeFrom: "nine" },
+      { date: "2024-02-30", timeFrom: "23:50" },
+    ]);
     await createEvent("meeting", "2024-03-01");
     const validId = await createEvent("standup", "2024-03-01", { timeFrom: "23:50" });
     expect(await storedStart(validId)).toEqual({ date: "2024-03-01", timeFrom: "23:50" });
