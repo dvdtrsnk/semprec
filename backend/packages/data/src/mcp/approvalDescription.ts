@@ -80,7 +80,20 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
   check: DestructiveOperationCheck | PageRestoreCheck,
+  currentResource?: unknown,
 ): Promise<ApprovalDescription> {
+  if (typeof currentResource === "object" && currentResource !== null && "approvalDescription" in currentResource) {
+    const candidate: unknown = currentResource.approvalDescription;
+    if (typeof candidate === "object" && candidate !== null && "key" in candidate && typeof candidate.key === "string" && "params" in candidate && typeof candidate.params === "object" && candidate.params !== null && !Array.isArray(candidate.params)) {
+      const params: Record<string, string | number | null> = {};
+      for (const [key, value] of Object.entries(candidate.params)) {
+        if (typeof value !== "string" && typeof value !== "number" && value !== null) throw new Error("Invalid approval description parameter");
+        params[key] = value;
+      }
+      return { key: candidate.key, params };
+    }
+    if (candidate !== undefined) throw new Error("Invalid approval description");
+  }
   switch (check.operation) {
     case "item.patch": {
       const item = await requireItem(client, check.input.itemId);

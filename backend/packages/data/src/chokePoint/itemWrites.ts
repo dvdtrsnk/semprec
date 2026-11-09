@@ -43,6 +43,7 @@ import { assertValidTimezone } from "../timezone.js";
 import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
 import {
   hasItemPreWriteTransform,
+  getItemUpdateCommand,
   prepareItemPreWriteTransforms,
   runItemCreateHooks,
   runItemPreWriteTransforms,
@@ -492,11 +493,17 @@ export async function updateItemWithClient(
   await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
-  assertWritableProperties(properties, patchKeys, options);
-  assertColorValues(properties, input.propertiesPatch);
-  assertMarkdownValues(properties, input.propertiesPatch);
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
+  const commandProperty = command && properties.find((property) => property.key === command.key);
+  const hasCommand = !!command && Object.hasOwn(input.propertiesPatch, command.key) && !options.allowedSystemKeys?.includes(command.key);
+  if (hasCommand && (!commandProperty || commandProperty.owner !== "system" || commandProperty.ownerProcess !== database.ownerModuleId)) {
+    throw new ForbiddenError("Item command owner does not match", { field: command?.key }, "owner_violation");
+  }
+  assertWritableProperties(properties, patchKeys, hasCommand && command ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] } : options);
+  assertColorValues(properties, input.propertiesPatch);
+  assertMarkdownValues(properties, input.propertiesPatch);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
@@ -504,20 +511,32 @@ export async function updateItemWithClient(
   const valueLinksHandoff = options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS;
   const needsTransform = moduleId !== null && hasItemPreWriteTransform(moduleId);
   let stored: Awaited<ReturnType<typeof itemsStore.lockItemById>> = null;
-  if (valueLinksHandoff || needsTransform) {
+  if (valueLinksHandoff || needsTransform || hasCommand) {
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
   }
+  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.updatedAt) {
+    throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
+  }
+  const ordinaryPatch = { ...input.propertiesPatch };
+  if (hasCommand && command) delete ordinaryPatch[command.key];
   if (moduleId !== null && needsTransform && stored) {
     // The transform reads the locked row that this update will replace.
     propertiesPatch = await applyItemPreWriteTransforms(
       moduleId,
-      { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
+      { client, database, stored, patch: ordinaryPatch, humanWriterUserId: options.humanWriterUserId, writer },
       properties,
     );
     assertColorValues(properties, propertiesPatch);
   assertMarkdownValues(properties, propertiesPatch);
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
+  }
+  if (hasCommand && command && moduleId && stored) {
+    command.prepare(input.propertiesPatch[command.key]);
+    const generated = await command.consume({ client, database, stored, patch: propertiesPatch, writer, humanWriterUserId: options.humanWriterUserId }, input.propertiesPatch[command.key]);
+    assertTransformAddedKeysWritable(properties, Object.keys(ordinaryPatch), generated, moduleId);
+    propertiesPatch = { ...propertiesPatch, ...generated };
+    if (Object.keys(propertiesPatch).length === 0) return { ...stored, previous: { [command.key]: stored.properties[command.key] ?? null } };
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)

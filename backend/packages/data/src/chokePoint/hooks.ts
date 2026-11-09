@@ -197,6 +197,33 @@ const activeChangedEdges = new WeakMap<PoolClient, Set<string>>();
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
 const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
 
+export interface ItemUpdateCommand {
+  key: string;
+  consume: (context: ItemPreWriteTransformContext, value: unknown) => Promise<Record<string, unknown>>;
+  prepare: (value: unknown) => void;
+}
+export type ItemPatchApprovalContribution = (client: PoolClient, item: ItemRow, patch: Record<string, unknown>) => Promise<{
+  snapshot: unknown;
+  description: { key: string; params: Record<string, string | null> };
+} | null>;
+const itemPatchApprovalContributions = new Map<string, ItemPatchApprovalContribution>();
+export function registerItemPatchApprovalContribution(moduleId: string, contribution: ItemPatchApprovalContribution): void {
+  if (itemPatchApprovalContributions.has(moduleId)) throw new Error("Duplicate item approval contribution");
+  itemPatchApprovalContributions.set(moduleId, contribution);
+}
+export function getItemPatchApprovalContribution(moduleId: string): ItemPatchApprovalContribution | undefined {
+  return itemPatchApprovalContributions.get(moduleId);
+}
+const itemUpdateCommands = new Map<string, ItemUpdateCommand>();
+export function registerItemUpdateCommand(moduleId: string, command: ItemUpdateCommand): void {
+  if (itemUpdateCommands.has(moduleId)) throw new Error("Duplicate item update command");
+  itemUpdateCommands.set(moduleId, command);
+}
+export function getItemUpdateCommand(moduleId: string): ItemUpdateCommand | undefined {
+  return itemUpdateCommands.get(moduleId);
+}
+
+
 export function registerItemCreateHook(hook: ItemCreateHook): void {
   itemCreateHooks.add(hook);
 }
@@ -362,6 +389,8 @@ export function clearHooksForTests(): void {
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
   itemPreWritePreparations.clear();
+  itemUpdateCommands.clear();
+  itemPatchApprovalContributions.clear();
   automationBatchReader = undefined;
 }
 

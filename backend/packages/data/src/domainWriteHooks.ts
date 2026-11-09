@@ -1,3 +1,4 @@
+import { applyRecurrenceCommand, validateRecurrenceCommand, projectRecurrenceApproval } from "./tasks/taskRecurrenceOwner.js";
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
@@ -20,6 +21,8 @@ import { registerItemReadProjection } from "./chokePoint/hooks.js";
 import {
   registerItemCreateHook,
   registerItemPreWriteTransform,
+  registerItemUpdateCommand,
+  registerItemPatchApprovalContribution,
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
@@ -78,6 +81,15 @@ import {
 } from "./people/lastContactHooks.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
+registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
+registerItemUpdateCommand(TASKS_MODULE_ID, {
+  key: "recurrence",
+  prepare: validateRecurrenceCommand,
+  consume: ({ client, stored, patch, writer }, value) => {
+    if (!stored) throw new Error("Task command requires an existing item");
+    return applyRecurrenceCommand(client, stored, patch, value, writer);
+  },
+});
 registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (context) => ({
   patch: await booksPreWriteTransform(context),
   deferredKeys: [],

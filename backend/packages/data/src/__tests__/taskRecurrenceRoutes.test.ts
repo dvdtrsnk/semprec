@@ -125,6 +125,39 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     await admin?.end();
   });
 
+  it("accepts a generic recurrence command and keeps identical commands as no-ops", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const first = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }));
+    expect(first.properties.recurrence).toEqual({ preset: "weekly", mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } });
+    const same = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: first.updatedAt, propertiesPatch: { recurrence: { preset: "weekly" } } }));
+    expect(same.updatedAt).toBe(first.updatedAt);
+    expect(await seriesRows()).toHaveLength(1);
+    const ended = await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: same.updatedAt, propertiesPatch: { recurrence: null } }));
+    expect(ended.properties.recurrence).toBeNull();
+    expect((await seriesRows())[0]?.active).toBe(false);
+  });
+
+  it("defers an agent's change of an active series without modifying it", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const before = await seriesRows();
+    const beforeItem = await stored(id);
+    await expect(inTenantWrite()).rejects.toMatchObject({ name: "ApprovalRequiredForWrite", reasons: [expect.objectContaining({ kind: "changesSeries", to: { kind: "monthDates", dates: [22] } })] });
+    expect(await seriesRows()).toEqual(before);
+    expect(await stored(id)).toEqual(beforeItem);
+    function inTenantWrite() {
+      return runInTenant(tenant, () => withTransaction(pool, (client) => updateItemWithClient(client, { databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "monthly" } } }, { writer: { writerKind: "agent", agentRunId: randomUUID() } })));
+    }
+  });
+
+  it("rejects stale generic recurrence changes before touching the series", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const before = await seriesRows();
+    await expect(runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, ifVersion: "stale", propertiesPatch: { recurrence: { preset: "monthly" } } }))).rejects.toMatchObject({ status: 409, code: "version_conflict" });
+    expect(await seriesRows()).toEqual(before);
+  });
+
   it("stores weekdays [thu] for preset weekly on a task dated Thursday 22 October and returns recurrence and seriesId", async () => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset: "weekly" });

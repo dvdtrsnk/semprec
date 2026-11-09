@@ -1,3 +1,4 @@
+import { getItemPatchApprovalContribution } from "./hooks.js";
 // Owns the single authorize-and-project call for approved destructive operations: the read-only
 // projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
 // with the exact domain error the matching mutation would throw. `page_restore` is the one kind this
@@ -8,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { DatabaseError, type PoolClient } from "pg";
 import { canonicalizeJson, currentTenantScope } from "@semprec/shared";
-import { ApprovalResourceBusyError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { ApprovalResourceBusyError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
@@ -69,7 +70,7 @@ export type DestructiveOperationCheck =
   | { operation: "property.delete"; input: { propertyId: string } }
   | { operation: "view.delete"; input: { viewId: string }; actor: Actor }
   | { operation: "item.delete"; input: { itemId: string } }
-  | { operation: "item.patch"; input: { itemId: string } }
+  | { operation: "item.patch"; input: { itemId: string; properties?: Record<string, unknown>; ifVersion?: string } }
   | { operation: "relation.put"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } }
   | {
       operation: "relation.set";
@@ -106,11 +107,17 @@ export async function computeDestructiveResourceProjection(
         throw error;
       }
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      if (check.input.ifVersion !== undefined && check.input.ifVersion !== item.updatedAt) throw new ConflictError("Item was modified since ifVersion was read", { current: item });
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
       if (database.archivedAt) throw new ForbiddenError("Database is archived", undefined, "database_archived");
-      const projected = { item, databaseArchivedAt: database.archivedAt };
-      return { snapshot: buildResourceSnapshot("item_patch", item.id, projected), currentResource: projected };
+      const contribution = database.ownerModuleId && check.input.properties
+        ? await getItemPatchApprovalContribution(database.ownerModuleId)?.(client, item, check.input.properties)
+        : null;
+      const projected = contribution
+        ? { item, databaseArchivedAt: database.archivedAt, command: contribution.snapshot }
+        : { item, databaseArchivedAt: database.archivedAt };
+      return { snapshot: buildResourceSnapshot("item_patch", item.id, projected), currentResource: { ...projected, approvalDescription: contribution?.description } };
     }
     case "relation.put":
     case "relation.set": {

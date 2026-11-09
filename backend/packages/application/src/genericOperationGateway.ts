@@ -103,7 +103,7 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
     case "view.delete":
       return { operation, input: input as { viewId: string }, actor };
     case "item.delete":
-      return { operation, input: input as { itemId: string } };
+      return { operation, input: input as InputByOperation["item.patch"] };
     case "item.patch":
       return { operation, input: input as { itemId: string } };
     case "relation.put":
@@ -137,7 +137,7 @@ async function executeDestructiveWithClient(
       const patch = input as InputByOperation["item.patch"];
       return updateItemWithClient(
         client,
-        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties },
+        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties, ifVersion: patch.ifVersion },
         { writer, queueAffinity: createActionQueueAffinity() },
       );
     }
@@ -288,7 +288,7 @@ async function preflightDestructiveApproval(
     }
 
     const check = buildDestructiveCheck(operation, input, toActor(actor));
-    const { snapshot } = await projectCheck(client, check);
+    const { snapshot, currentResource } = await projectCheck(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
@@ -296,7 +296,7 @@ async function preflightDestructiveApproval(
       actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
       resourceSnapshot: snapshot,
     };
-    const description = await buildDestructiveApprovalDescription(client, check);
+    const description = await buildDestructiveApprovalDescription(client, check, currentResource);
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
       toolName: operation,
