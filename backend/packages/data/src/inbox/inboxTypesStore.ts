@@ -1,4 +1,4 @@
-import { reserveInboxTypeCards } from "./inboxTypeCardReservation.js";
+import { reserveInboxTypeCards, resolveInboxTypeCardConfiguration } from "./inboxTypeCardReservation.js";
 import { lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 import type { PoolClient } from "pg";
 import { markManagedTransactionRollbackOnly, type Queryable } from "../db/pool.js";
@@ -186,6 +186,14 @@ export async function deleteInboxTypeWithClient(
   const typeRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id);
   if (!typeRelationDefinition) throw new NotFoundError(`Property '${typeProperty.id}' has no relation definition`);
 
+  let configuration: Awaited<ReturnType<typeof resolveInboxTypeCardConfiguration>>;
+  try {
+    configuration = await resolveInboxTypeCardConfiguration(client, input.processingProposalsDatabaseId);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
+
   const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
   const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId)).sort();
 
@@ -193,7 +201,7 @@ export async function deleteInboxTypeWithClient(
     if (!(await lockInboxSourceIfPresent(client, inboxItemId, true))) continue;
     let cards: ItemRow[];
     try {
-      cards = await reserveInboxTypeCards(client, inboxItemId);
+      cards = await reserveInboxTypeCards(client, inboxItemId, configuration);
     } catch (error) {
       markManagedTransactionRollbackOnly(client, error);
       throw error;
