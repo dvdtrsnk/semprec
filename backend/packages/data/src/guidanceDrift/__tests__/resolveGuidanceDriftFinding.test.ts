@@ -224,5 +224,60 @@ describe("guidance drift decisions", () => {
       expect(rows.rows).toEqual([{ status: "active", resolution_choice: null }]);
       const notifications = await pool.query("SELECT id FROM notifications WHERE source_id = $1", [first.finding.id]);
       expect(notifications.rows).toEqual([]);
+      expect((await route(context(user, "dismiss", saved.updatedAt))).status).toBe(200);
+      const resolved = await pool.query<{ payload: unknown }>(
+        "SELECT payload FROM notifications WHERE source_id = $1",
+        [first.finding.id],
+      );
+      expect(resolved.rows).toEqual([
+        {
+          payload: {
+            projectItemId: project,
+            fingerprint: "b".repeat(64),
+            kind: "permission",
+            resolutionTitle: "Instructions of project Project match the permissions again",
+          },
+        },
+      ]);
     }));
+  it("localizes a behavior resolution in Czech for the owner", async () => {
+    const changed = await admin.query("UPDATE users SET locale = 'cs' WHERE id = $1", [user]);
+    expect(changed.rowCount).toBe(1);
+    await runInTenant(tenant, async () => {
+      const saved = await withTransaction(pool, (tx) =>
+        saveGuidanceSections(tx, { actorUserId: user, projectItemId: project, sections, expectedUpdatedAt: null }),
+      );
+      const first = await withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "d".repeat(64),
+          payload,
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      );
+      const route = createResolveGuidanceDriftFindingRouteHandler(pool);
+      expect(
+        (
+          await route({
+            params: { id: first.finding.id },
+            identity: { user: { id: user } },
+            body: { choice: "dismiss", expectedGuidanceUpdatedAt: saved.updatedAt },
+          })
+        ).status,
+      ).toBe(200);
+      const rows = await pool.query<{ payload: unknown }>("SELECT payload FROM notifications WHERE source_id = $1", [
+        first.finding.id,
+      ]);
+      expect(rows.rows).toEqual([
+        {
+          payload: {
+            projectItemId: project,
+            fingerprint: "d".repeat(64),
+            kind: "behavior",
+            resolutionTitle: "Pokyny projektu Project opět odpovídají tomu, co Semp dělá",
+          },
+        },
+      ]);
+    });
+  });
 });
