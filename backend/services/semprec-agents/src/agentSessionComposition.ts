@@ -1,3 +1,4 @@
+import { parseMarkdown } from "@semprec/block-model";
 import { createCollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
@@ -21,6 +22,7 @@ import {
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
+  readPageMarkdown,
   withClient,
   resolveModuleAgentToolsForRun,
   resolveModuleRuleKinds,
@@ -358,6 +360,16 @@ export async function createAgentSessionFactoryForRun(
           projectAgentGuidanceStore.load(tx, projectItemId),
         ),
       run.projectItemId,
+      (projectItemId) => transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
+        const page = await readPageMarkdown(tx, projectItemId);
+        if (page.docId === null || page.markdown === "") return null;
+        const subpages = parseMarkdown(page.markdown).flatMap((block) =>
+          block.type === "page" && block.pageId
+            ? [{ id: block.pageId, title: (block.text ?? []).map((run) => run.insert).join("") }]
+            : [],
+        );
+        return { markdown: page.markdown, subpages };
+      }),
     );
     systemPrompt = override(systemPrompt);
   }
