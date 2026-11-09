@@ -61,6 +61,17 @@ describe("project notes", () => {
     );
   });
 
+  it("keeps distinct captions for repeated page ids on a truncated prefix", async () => {
+    const page = "[First](semprec://page/child)\n\n[Second](semprec://page/child)";
+    const markdown = `${page}\n\n${"x".repeat(33000)}`;
+    const subpages = [{ id: "child", title: "First" }, { id: "child", title: "Second" }];
+    const override = await createProjectAgentGuidanceSystemPromptOverride(
+      async () => null, "p1", async () => ({ markdown, subpages }),
+    );
+    expect(override("BASE")).toContain(JSON.stringify(page));
+    expect(override("BASE")).toContain(JSON.stringify(subpages));
+  });
+
   it("leaves the prompt unchanged without a notes page", async () => {
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       async () => null,

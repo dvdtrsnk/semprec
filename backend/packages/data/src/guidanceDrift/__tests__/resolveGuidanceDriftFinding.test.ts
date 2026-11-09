@@ -86,6 +86,9 @@ describe("guidance drift decisions", () => {
       new URL("../../db/migrations/0145_guidance_drift_finding_decisions.sql", import.meta.url),
       "utf8",
     );
+    const tenantFk = await readFile(
+      new URL("../../db/migrations/0146_guidance_drift_resolved_by_tenant_fk.sql", import.meta.url), "utf8",
+    );
     // Synthetic historical schema: global setup already applied the migration to this test database.
     await runAsSystem("test:historical-guidance-schema", () =>
       withTransaction(admin, async (client) => {
@@ -99,6 +102,7 @@ describe("guidance drift decisions", () => {
           "ALTER TABLE agent_guidance_drift_findings ADD CONSTRAINT agent_guidance_drift_findings_status_check CHECK (status IN ('active', 'resolved'))",
         );
         await client.query(sql);
+        await client.query(tenantFk);
       }),
     );
     for (const [scope, id] of [
@@ -113,6 +117,22 @@ describe("guidance drift decisions", () => {
       );
       expect(result.rows).toEqual([{ id, status: "active", resolved_by: null, resolution_choice: null }]);
     }
+  });
+  it("refuses a foreign resolved_by through the runtime role", async () => {
+    const other = await createTestTenant(admin);
+    const foreign = await createUser(admin, { email: "foreign@example.test", passwordHash: "hash", tenantId: other, locale: "en" });
+    const first = await runInTenant(tenant, () => withTransaction(pool, (tx) =>
+      agentGuidanceDriftFindingsStore.upsertActive(tx, {
+        projectItemId: project, fingerprint: "f".repeat(64), payload, seenAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+    ));
+    await expect(runInTenant(tenant, () => pool.query(
+      "UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [first.finding.id, foreign.id],
+    ))).rejects.toMatchObject({ code: "23503" });
+    const after = await runInTenant(tenant, () => pool.query<{ resolved_by: string | null }>(
+      "SELECT resolved_by FROM agent_guidance_drift_findings WHERE id = $1", [first.finding.id],
+    ));
+    expect(after.rows).toEqual([{ resolved_by: null }]);
   });
   it.each(["allow", "forbid", "dismiss"] as const)("decides %s once and never reopens it", async (choice) =>
     runInTenant(tenant, async () => {

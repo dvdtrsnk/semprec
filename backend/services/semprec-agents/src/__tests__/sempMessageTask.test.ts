@@ -2320,6 +2320,8 @@ describe("queued Semp messages", () => {
           sendSempMessage(client, { threadId: fixture.threadId, text, context: [], hasContext: false }),
         ),
       );
+    let failure: { error: unknown } | undefined;
+    try {
     const first = await send("before");
     await runInTenant(tenant, () =>
       task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }),
@@ -2375,7 +2377,16 @@ describe("queued Semp messages", () => {
       ]),
     );
     expect(jobs.rows).toEqual([]);
-    await closeIdleThreadSessions(pool);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await closeIdleThreadSessions(pool);
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure.error, cleanupError], "Rejection test cleanup failed", { cause: failure.error });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
   });
 
   it("executes an earlier queued user turn before the tick outcome through the real queue", async () => {

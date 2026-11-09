@@ -19,7 +19,7 @@ function boundedNotes(markdown: string, subpages: { id: string; title: string }[
     blocks.flatMap((block) => block.type === "page" && block.pageId ? [[block.id, subpages[pageIndex++]?.title ?? ""] as const] : []),
   );
   const render = (count: number) =>
-    serializeBlocks(blocks.slice(0, count), { resolvePageTitle: (_id, block) => titles.get(block.id) ?? "" });
+    serializeBlocks(blocks.slice(0, count), { resolvePageTitle: (_id, block) => block.id === null ? "" : titles.get(block.id) ?? "" });
   let low = 0;
   let high = blocks.length;
   while (low < high) {
