@@ -2301,7 +2301,7 @@ describe("queued Semp messages", () => {
     expect(observed[1]?.messages).toContain("The action did not happen");
     expect(observed[2]?.tools.length).toBeGreaterThan(0);
     const reply = await runInTenant(tenant, () => pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [assistantMessageId]));
-    expect(reply.rows).toEqual([{ status: "done", text: "acknowledged" }]);
+    expect(reply.rows).toEqual([{ status: "done", text: "\nacknowledged" }]);
     const jobs = await runInTenant(tenant, () => pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`heartbeat-fire:manual:${fixture.heartbeatId}`]));
     expect(jobs.rows).toEqual([]);
     await closeIdleThreadSessions(pool);

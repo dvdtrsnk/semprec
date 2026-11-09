@@ -106,12 +106,21 @@ export function createSempMessageTask(
           }
           const turnState: { start?: SempTurnStart } = {};
           let runPersistenceFailed = false;
+          let freshnessFailed = false;
+          const ensureFresh = async (frontier: string | null, strict: boolean) => {
+            try {
+              await conversation.ensureFresh(threadId, frontier);
+            } catch (error) {
+              freshnessFailed = strict;
+              throw error;
+            }
+          };
           try {
             const turn = claimed.turn;
             if (!turn || (turn.text === null && !turn.outcome)) throw new Error("Semp source message is unavailable");
             const expanded = await expandSempRefs(pool, turn.outcome ? [] : turn.context, roots, signal);
             const rejected = turn.outcome?.kind === "rejected";
-            await conversation.ensureFresh(threadId, rejected ? null : claimed.frontier);
+            await ensureFresh(rejected ? null : claimed.frontier, rejected);
             let thread: SempThread;
             if (turn.kind === "tick" && turn.projectItemId)
               thread = { kind: "tick", threadId, projectItemId: turn.projectItemId };
@@ -159,14 +168,14 @@ export function createSempMessageTask(
             } catch (error) {
               if (rejected) {
                 try {
-                  await conversation.ensureFresh(threadId, null);
+                  await ensureFresh(null, true);
                 } catch (cleanupError) {
                   throw new AggregateError([error, cleanupError], "Semp turn and acknowledgment cleanup failed", { cause: error });
                 }
               }
               throw error;
             }
-            if (rejected) await conversation.ensureFresh(threadId, null);
+            if (rejected) await ensureFresh(null, true);
             const start = turnState.start;
             if (!result.ok || !start) throw new Error("Semp turn did not complete");
             const events = await listAgentRunEventsAfter(pool, start.agentRunId, start.firstEventId);
@@ -215,7 +224,7 @@ export function createSempMessageTask(
                 cause: error,
               });
             }
-            if (runPersistenceFailed) throw error;
+            if (runPersistenceFailed || freshnessFailed) throw error;
             logger.warn({ threadId, assistantMessageId }, "Semp turn failed");
           }
         },
