@@ -2356,6 +2356,8 @@ describe("queued Semp messages", () => {
       runtime = undefined;
       await closeIdleThreadSessions(pool);
     } catch (cleanupError) {
+      // Preserve the test failure as primary while retaining the cleanup error.
+      // eslint-disable-next-line preserve-caught-error
       if (failure) throw new AggregateError([failure.error, cleanupError], "Queue test and cleanup failed", { cause: failure.error });
       throw cleanupError;
     }

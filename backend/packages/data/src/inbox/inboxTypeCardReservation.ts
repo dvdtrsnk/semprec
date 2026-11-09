@@ -27,6 +27,8 @@ export async function reserveInboxTypeCards(client: PoolClient, sourceId: string
         await client.query("ROLLBACK TO SAVEPOINT inbox_type_card");
         await client.query("RELEASE SAVEPOINT inbox_type_card");
       } catch (cleanupError) {
+        // The reservation failure is primary; the cleanup failure remains in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([error, cleanupError], "Inbox card reservation cleanup failed", { cause: error });
       }
       if (error instanceof DatabaseError && error.code === "55P03") {

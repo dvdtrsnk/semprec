@@ -170,6 +170,8 @@ export function createSempMessageTask(
                 try {
                   await ensureFresh(null, true);
                 } catch (cleanupError) {
+                  // Preserve the turn error as primary while retaining the cleanup error.
+                  // eslint-disable-next-line preserve-caught-error
                   throw new AggregateError([error, cleanupError], "Semp turn and acknowledgment cleanup failed", { cause: error });
                 }
               }
