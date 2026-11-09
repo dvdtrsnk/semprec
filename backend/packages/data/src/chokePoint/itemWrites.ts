@@ -636,28 +636,16 @@ export async function convergeObservedEmailFlagsWithClient(
   );
 }
 
-export interface RolloverTaskInput {
-  databaseId: string;
-  itemId: string;
-  /** The day the task moves to, `YYYY-MM-DD` in the system time zone. */
-  date: string;
-}
+export type RolloverTaskInput =
+  | { databaseId: string; itemId: string; date: string; status?: never }
+  | { databaseId: string; itemId: string; status: "missed"; date?: never };
 
-/**
- * The explicit ownership handover of docs/adr/2026-09-10-single-writer-ownership-model.md for the nightly Tasks day
- * rollover (issue #1674, docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md): the one system
- * write of Tasks' owner:'user' `date`, `timeFrom` and `timeTo`, which moves an unfinished one-off task to `input.date`
- * as an all-day task. It goes through `updateItemWithClient`, so the Tasks transform sets `since`/`sinceTime` by the
- * shared first-planned-day rule and derives `time`. It passes no acting user, so every moved task announces an
- * invalidation to every socket of the tenant, and it writes no `status`, so it starts no series advance. Never call
- * `updateItemWithClient` with these keys from another system process, and never use this function for any other key.
- */
+/** Nightly Tasks ownership handover; see the rollover and missed-occurrence ADRs. */
 export async function rolloverTaskWithClient(client: PoolClient, input: RolloverTaskInput): Promise<ItemRow> {
-  return updateItemWithClient(client, {
-    databaseId: input.databaseId,
-    itemId: input.itemId,
-    propertiesPatch: { date: input.date, timeFrom: null, timeTo: null },
-  });
+  const propertiesPatch = input.status === "missed"
+    ? { status: "missed" }
+    : { date: input.date, timeFrom: null, timeTo: null };
+  return updateItemWithClient(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch });
 }
 
 /**

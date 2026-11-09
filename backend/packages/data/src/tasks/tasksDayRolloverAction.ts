@@ -1,3 +1,4 @@
+import { closeMissedOccurrence } from "./closeMissedOccurrences.js";
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -122,6 +123,27 @@ export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
         await rolloverTaskWithClient(client, { databaseId: tasksDatabaseId, itemId, date: context.today });
       }
     };
+
+    for (const skipLocked of [true, false]) {
+      let afterRecurringId: string | null = null;
+      for (let count = 0; count < MAX_SWEEP_CHUNKS_PER_TENANT * CHUNK_SIZE; count++) {
+        const id: string | null = await withTransaction(pool, async (client) => {
+          const result = await client.query<{ id: string }>(
+            `SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL
+             AND properties->>'status' = 'notDone' AND COALESCE(properties->>'seriesId', '') <> ''
+             AND properties->>'occurrenceDate' < $2 AND ($3::uuid IS NULL OR id > $3::uuid)
+             ORDER BY id LIMIT 1 FOR UPDATE${skipLocked ? " SKIP LOCKED" : ""}`,
+            [tasksDatabaseId, context.today, afterRecurringId],
+          );
+          const id = result.rows[0]?.id;
+          if (!id) return null;
+          await closeMissedOccurrence(client, tasksDatabaseId, id, context.today);
+          return id;
+        });
+        if (!id) break;
+        afterRecurringId = id;
+      }
+    }
 
     let afterId: string | null = null;
     for (let chunk = 0; chunk < MAX_SWEEP_CHUNKS_PER_TENANT; chunk++) {
