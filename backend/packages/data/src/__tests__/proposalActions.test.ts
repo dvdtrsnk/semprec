@@ -923,7 +923,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(blocks).toHaveLength(1);
     const block = blocks[0];
     if (!block) throw new Error("Missing origin block");
-    await docStore.deleteBlock(itemId, block.id, "user");
+    await docStore.deleteBlock(itemId, z.string().parse(block["sys:id"]), "user");
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
     await withTransaction(pool, (client) =>
       confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
     );
