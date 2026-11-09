@@ -15,6 +15,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import { createTaskRecurrenceSetRouteHandler } from "../tasks/taskRecurrenceRoutes.js";
+import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const WAIT_MS = 10_000;
@@ -292,6 +293,111 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         )
       ).rows,
     ).toEqual(occurrences.rows);
+  });
+
+  it("rolls back the current recurring batch when the existing latest occurrence is reserved", async () => {
+    const old = await task({ date: day(-1) });
+    const series = await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: old },
+        body: { preset: "daily" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    const seriesId = series.item.properties.seriesId;
+    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    // A pre-materialized latest occurrence is a historical fixture; this path does not make it current.
+    const latest = await inTenant(() =>
+      createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
+    );
+    const beforeOld = await row(old);
+    const beforeLatest = await row(latest);
+    const beforeSeries = await inTenant(() =>
+      pool.query<{ item_id: string; active: boolean }>(
+        "SELECT item_id, active FROM task_recurrence WHERE series_id = $1",
+        [seriesId],
+      ),
+    );
+    const beforeJobs = await admin.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    let release = () => {};
+    let signalReady: (identity: { pid: number; started: string }) => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<{ pid: number; started: string }>((resolve) => {
+      signalReady = resolve;
+    });
+    const holder = inTenant(() =>
+      withTransaction(pool, async (client) => {
+        await client.query("SET LOCAL lock_timeout = '5s'");
+        const identity = await client.query<{ pid: number; started: string }>(
+          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+        );
+        if (!identity.rows[0]) throw new Error("Missing holder identity");
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, latest]);
+        signalReady(identity.rows[0]);
+        await gate;
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const identity = await Promise.race([
+        ready,
+        holder.then((outcome) => {
+          throw outcome.ok ? new Error("Holder ended early") : outcome.error;
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Latest reservation timed out")), WAIT_MS);
+        }),
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+      expect(
+        (
+          await admin.query<{ present: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+            [identity.pid, identity.started],
+          )
+        ).rows,
+      ).toEqual([{ present: true }]);
+      await expect(run()).rejects.toMatchObject({ code: "55P03" });
+      expect(await row(old)).toEqual(beforeOld);
+      expect(await row(latest)).toEqual(beforeLatest);
+      expect(
+        (
+          await inTenant(() =>
+            pool.query<{ item_id: string; active: boolean }>(
+              "SELECT item_id, active FROM task_recurrence WHERE series_id = $1",
+              [seriesId],
+            ),
+          )
+        ).rows,
+      ).toEqual(beforeSeries.rows);
+      expect(
+        (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+          .rows,
+      ).toEqual(beforeJobs.rows);
+      expect(events).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const outcome = await holder;
+    setInvalidationHook(() => {});
+    if (!outcome.ok && failure)
+      throw new AggregateError([failure.error, outcome.error], "Rollover test and holder failed", {
+        cause: failure.error,
+      });
+    if (!outcome.ok) throw outcome.error;
+    if (failure) throw failure.error;
   });
 
   it("moves a task whose event ended yesterday, with since yesterday", async () => {
