@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { DateTime, Settings } from "luxon";
+import { Settings } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
@@ -178,7 +178,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     const id = await task({ date: "2026-10-22" });
     const first = await put(id, { preset: "yearly" });
     const previousNow = Settings.now;
-    Settings.now = () => DateTime.fromISO("2026-10-22T12:00:00Z").toMillis();
+    Settings.now = () => Date.parse("2026-10-22T12:00:00Z");
     try {
       await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status: "done" } }));
     } finally {
