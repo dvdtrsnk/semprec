@@ -101,6 +101,11 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the call to be rejected");
 }
 
+/** The `resource` field of a not-found error's details, read without assuming the details' shape. */
+function detailsResource(details: unknown): unknown {
+  return typeof details === "object" && details !== null && "resource" in details ? details.resource : undefined;
+}
+
 describe("page.createSubpage (issue #1676)", () => {
   it("creates the Pages item, its document and a page block after the requested block, authored by the caller", async () => {
     const project = await runInTenant(tenant, () => createTestProjectItem(runtime));
@@ -318,7 +323,7 @@ describe("page.createSubpage (issue #1676)", () => {
               status: error.status,
               code: error.code,
               message: error.message,
-              resource: (error.details as { resource?: string }).resource,
+              resource: detailsResource(error.details),
             }
           : error;
       expect(shape(foreignError)).toEqual(shape(unknownError));

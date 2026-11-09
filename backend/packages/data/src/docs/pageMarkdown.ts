@@ -216,7 +216,7 @@ export async function insertPlannedBlocks(
 /**
  * Inserts the blocks parsed from `input.markdown` into the page of `itemId` (issue #1679), at the start, at the end or
  * directly after `placement.afterBlockId`, as one document update authored `input.origin`. Page links are refused: a
- * link to a subpage is validated against the host's subpages, which only the replace operation (#1765) does.
+ * link to a subpage is validated against the host's subpages, which the replace operation (#1765) will do.
  * Everything that can refuse the Markdown runs before the document is created or written: the item is resolved live
  * and locked, then the blocks are prepared (`prepareMarkdownBlocks`). An unknown `afterBlockId` or an id already in the
  * document is refused inside the write. Markdown with no block writes nothing and creates no document. The flat block

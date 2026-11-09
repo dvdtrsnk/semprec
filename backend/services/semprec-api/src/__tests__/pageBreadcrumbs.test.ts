@@ -183,7 +183,12 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
     const original: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
     vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (this: pg.Client, ...args: unknown[]) {
       const first = args[0];
-      const text = typeof first === "string" ? first : (first as { text?: string } | undefined)?.text;
+      const text =
+        typeof first === "string"
+          ? first
+          : typeof first === "object" && first !== null && "text" in first
+            ? first.text
+            : undefined;
       const params = Array.isArray(args[1]) ? JSON.stringify(args[1]) : "";
       if (typeof text === "string" && /\b(docs|doc_snapshots|doc_updates)\b/.test(text))
         statements.push(`${text} ${params}`);

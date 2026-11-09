@@ -334,19 +334,20 @@ export function convertBlocksToPages(
   if (selected.size === 0) {
     return;
   }
-  const already = current.find((block) => selected.has(block.id as string) && block.type === "page");
+  const selectedBlocks = current.flatMap((block) =>
+    block.id !== null && selected.has(block.id) ? [{ block, id: block.id }] : [],
+  );
+  const already = selectedBlocks.find(({ block }) => block.type === "page");
   if (already) {
-    throw new BlockOperationError("block_already_page", `Block ${already.id as string} is already a page block`);
+    throw new BlockOperationError("block_already_page", `Block ${already.id} is already a page block`);
   }
-  const conversions: BlockInput[] = current
-    .filter((block) => selected.has(block.id as string))
-    .map((block) => ({
-      id: block.id as string,
-      type: "page",
-      indent: block.indent,
-      pageId: pageIdFor(block.id as string),
-      text: block.text.map((run) => run.insert).join(""),
-    }));
+  const conversions: BlockInput[] = selectedBlocks.map(({ block, id }) => ({
+    id,
+    type: "page",
+    indent: block.indent,
+    pageId: pageIdFor(id),
+    text: block.text.map((run) => run.insert).join(""),
+  }));
   const issues = conversions.flatMap((input) => validateBlockInput(input));
   if (issues.length > 0) {
     throw new BlockInputError(issues);
