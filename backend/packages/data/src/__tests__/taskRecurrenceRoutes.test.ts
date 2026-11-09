@@ -161,6 +161,19 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     expect((await seriesRows())[0]?.active).toBe(false);
   });
 
+  it("refuses a generic recurrence command without a task date without changing the item or series", async () => {
+    const id = await task({});
+    const before = await runInTenant(tenant, () => cp.getItem(tasksId, id));
+    const seriesBefore = await seriesRows();
+    await expect(
+      runInTenant(tenant, () =>
+        cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
+      ),
+    ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
+    expect(await runInTenant(tenant, () => cp.getItem(tasksId, id))).toEqual(before);
+    expect(await seriesRows()).toEqual(seriesBefore);
+  });
+
   it("prepares typed recurrence intent with copied item preconditions and no effects", async () => {
     const id = await task({ date: "2026-10-22" });
     await put(id, { preset: "weekly" });

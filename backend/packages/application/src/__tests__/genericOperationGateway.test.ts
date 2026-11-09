@@ -1211,11 +1211,13 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }),
         ).rejects.toMatchObject({ status: 404, code: "not_found" });
         expect(await cp.findItem(item.id)).toEqual(initial);
-        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+        const created = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
           properties: { recurrence: { preset: "weekly" } },
           ifVersion: item.updatedAt,
         });
+        expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
+        expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
         const weekly = await cp.findItem(item.id);
         if (!weekly) throw new Error("Task missing");
         expect(weekly.properties.recurrence).toMatchObject({ preset: "weekly" });

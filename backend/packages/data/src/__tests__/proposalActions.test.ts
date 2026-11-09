@@ -923,7 +923,17 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(blocks).toHaveLength(1);
     const block = blocks[0];
     if (!block) throw new Error("Missing origin block");
-    await docStore.deleteBlock(itemId, z.string().parse(block["sys:id"]), "user");
+    const blockId = z.string().parse(block["sys:id"]);
+    if (!first.docId) throw new Error("Missing origin document");
+    await mutateDoc(pool, first.docId, "user", (doc) =>
+      writeBlock(doc, { id: blockId, type: "text", text: "Edited by user" }),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("Edited by user");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("Edited by user");
+    await docStore.deleteBlock(itemId, blockId, "user");
     expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
     await withTransaction(pool, (client) =>
       confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
