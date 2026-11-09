@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../../auth/usersStore.js";
@@ -54,6 +55,64 @@ describe("guidance drift decisions", () => {
   afterAll(async () => {
     await pool.end();
     await admin.end();
+  });
+  it("adds decision columns to populated historical rows in two tenants", async () => {
+    const other = await createTestTenant(admin);
+    await createUser(admin, { email: "other@example.test", passwordHash: "hash", tenantId: other });
+    await runInTenant(other, () => seedSystem(pool));
+    const otherProject = await runInTenant(other, async () => {
+      const db = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+      if (!db.rows[0]) throw new Error("Missing projects");
+      return (await createChokePoint(pool).createItem({ databaseId: db.rows[0].id, properties: { name: "Other" } })).id;
+    });
+    const ids: string[] = [];
+    for (const [scope, projectId] of [
+      [tenant, project],
+      [other, otherProject],
+    ] as const) {
+      const finding = await runInTenant(scope, () =>
+        withTransaction(pool, (tx) =>
+          agentGuidanceDriftFindingsStore.upsertActive(tx, {
+            projectItemId: projectId,
+            fingerprint: "c".repeat(64),
+            payload,
+            seenAt: new Date("2026-01-01T00:00:00Z"),
+          }),
+        ),
+      );
+      ids.push(finding.finding.id);
+    }
+    const sql = await readFile(
+      new URL("../../db/migrations/0145_guidance_drift_finding_decisions.sql", import.meta.url),
+      "utf8",
+    );
+    // Synthetic historical schema: global setup already applied the migration to this test database.
+    await runAsSystem("test:historical-guidance-schema", () =>
+      withTransaction(admin, async (client) => {
+        await client.query(
+          "ALTER TABLE agent_guidance_drift_findings DROP CONSTRAINT agent_guidance_drift_findings_status_check",
+        );
+        await client.query(
+          "ALTER TABLE agent_guidance_drift_findings DROP COLUMN resolution_choice, DROP COLUMN resolved_by",
+        );
+        await client.query(
+          "ALTER TABLE agent_guidance_drift_findings ADD CONSTRAINT agent_guidance_drift_findings_status_check CHECK (status IN ('active', 'resolved'))",
+        );
+        await client.query(sql);
+      }),
+    );
+    for (const [scope, id] of [
+      [tenant, ids[0]],
+      [other, ids[1]],
+    ] as const) {
+      const result = await runInTenant(scope, () =>
+        pool.query<{ id: string; status: string; resolved_by: string | null; resolution_choice: string | null }>(
+          "SELECT id, status, resolved_by, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
+          [id],
+        ),
+      );
+      expect(result.rows).toEqual([{ id, status: "active", resolved_by: null, resolution_choice: null }]);
+    }
   });
   it.each(["allow", "forbid", "dismiss"] as const)("decides %s once and never reopens it", async (choice) =>
     runInTenant(tenant, async () => {
