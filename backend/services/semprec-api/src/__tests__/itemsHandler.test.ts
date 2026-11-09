@@ -3749,14 +3749,23 @@ describe("item routes (issue #241)", () => {
       return { id: created.id, updatedAt: created.updatedAt };
     }
 
-    async function storedProperties(id: string): Promise<Record<string, unknown>> {
+    async function storedItem(id: string): Promise<{ properties: Record<string, unknown>; updatedAt: string }> {
       const item = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(tasksDb, id));
       if (!item) throw new Error(`Item ${id} missing`);
-      return item.properties;
+      return { properties: item.properties, updatedAt: item.updatedAt };
     }
 
-    function patch(id: string, properties: Record<string, unknown>) {
-      return fetch(`${baseUrl}/api/items/${id}`, { method: "PATCH", headers, body: JSON.stringify({ properties }) });
+    async function storedProperties(id: string): Promise<Record<string, unknown>> {
+      return (await storedItem(id)).properties;
+    }
+
+    /** A REST PATCH carrying the item's current version, as the generic item.patch requires. */
+    function patch(id: string, properties: Record<string, unknown>, ifVersion: string) {
+      return fetch(`${baseUrl}/api/items/${id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
     }
 
     function recurrence(method: "PUT" | "DELETE", id: string, body?: unknown) {
@@ -3807,8 +3816,9 @@ describe("item routes (issue #241)", () => {
       async (_label, date) => {
         const recurring = await createTask({ date: "2026-10-22" });
         expect((await recurrence("PUT", recurring.id, { preset: "weekly" })).status).toBe(200);
-        const before = await storedProperties(recurring.id);
-        const response = await patch(recurring.id, { date });
+        // The PUT wrote the task, so the PATCH carries the version read after it.
+        const { properties: before, updatedAt } = await storedItem(recurring.id);
+        const response = await patch(recurring.id, { date }, updatedAt);
         expect(response.status).toBe(400);
         expect(httpError.parse(await response.json()).error).toEqual({
           code: "validation_failed",
@@ -3820,7 +3830,7 @@ describe("item routes (issue #241)", () => {
 
     it("clears the date of a task without a series over REST", async () => {
       const once = await createTask({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
-      const response = await patch(once.id, { date: null });
+      const response = await patch(once.id, { date: null }, once.updatedAt);
       expect(response.status).toBe(200);
       expect(await storedProperties(once.id)).toMatchObject({ date: null, timeFrom: null, timeTo: null });
     });
@@ -3828,7 +3838,7 @@ describe("item routes (issue #241)", () => {
     it("refuses a client PATCH of status missed with 400 on status, and accepts missed to done (gh-1668)", async () => {
       const task = await createTask({ date: "2026-10-22" });
       const before = await storedProperties(task.id);
-      const refused = await patch(task.id, { status: "missed" });
+      const refused = await patch(task.id, { status: "missed" }, task.updatedAt);
       expect(refused.status).toBe(400);
       expect(httpError.parse(await refused.json()).error).toEqual({
         code: "validation_failed",
@@ -3840,7 +3850,8 @@ describe("item routes (issue #241)", () => {
       await runInTenant(getTenantZeroId(), () =>
         chokePoint.updateItem({ databaseId: tasksDb, itemId: task.id, propertiesPatch: { status: "missed" } }),
       );
-      const done = await patch(task.id, { status: "done" });
+      // The system write changed the version; the PATCH carries the one read after it.
+      const done = await patch(task.id, { status: "done" }, (await storedItem(task.id)).updatedAt);
       expect(done.status).toBe(200);
       expect(await storedProperties(task.id)).toMatchObject({ status: "done", completedOn: expect.any(String) });
     });
