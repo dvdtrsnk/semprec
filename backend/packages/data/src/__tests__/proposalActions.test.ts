@@ -907,6 +907,20 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(createdTask!.properties.name).toBe("Buy milk");
   });
 
+  it("writes one editable Inbox origin paragraph on a created item", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    const confirmed = await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    const itemId = z.string().parse(confirmed.properties.resultItemId);
+    const first = await docStore.readPageMarkdown(itemId);
+    expect(first.markdown).toBe("Vytvořeno ze schránky: Buy milk");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe(first.markdown);
+  });
+
   it("confirm is idempotent under retry: a second confirm does not create a second target item", async () => {
     const proposal = await createDatabaseProposal("Buy milk");
 
