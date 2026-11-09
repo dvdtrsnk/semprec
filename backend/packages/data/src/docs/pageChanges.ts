@@ -100,8 +100,8 @@ function historyWindowTooLarge(): ValidationError {
  * in `update_id` order. An update stored at or before `since` (by `created_at`) is applied without being reported;
  * each later update with the requested author is reported from the difference of the block maps before and after it:
  * a new id is an `insert`, a removed id a `delete`, a block whose fields or text changed an `update`. Timestamps only
- * decide what is reported, never the replay order, so an update is never applied before the updates it was written
- * on top of. Changes of different updates are never merged; one update that does more than one of these yields one
+ * decide what is reported, not the replay order, so an update is applied after the updates stored before it, including
+ * the ones it was written on top of. Changes of different updates are never merged; one update that does more than one of these yields one
  * entry per kind, with the same `at` and that kind's block ids. Only the update's author decides which are listed: a
  * block written by a user-confirmed proposal is stored with author `user` and so is not an `ai_agent` change. Moving a
  * block changes the order, not the block, and is not reported.
@@ -111,7 +111,7 @@ function historyWindowTooLarge(): ValidationError {
  * relies on. Work is bounded by a fixed budget of `PAGE_CHANGES_MAX_UPDATES` updates and `PAGE_CHANGES_MAX_BYTES`
  * serialized bytes (the checkpoint state counts; its size is read before the state is fetched). Sizes are read in
  * pages of at most `METADATA_ROWS` rows and update bytes are fetched in groups of at most `FETCH_BYTES`. The replay
- * stops as soon as `limit` entries exist, so a satisfied request never reads the rest of the history; a replay that
+ * stops after the group that fills `limit`, so the rest of the history is not read; a replay that
  * needs more than the budget before that is a `ValidationError` on `since` with reason `history_window_too_large`.
  * The byte budget bounds what is read, not the memory a decoded Yjs state takes.
  *

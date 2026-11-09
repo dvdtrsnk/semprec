@@ -33,7 +33,7 @@ export async function handlePageTitleMirrorTask(pool: Pool, payload: unknown): P
     // The host row is reserved (blocking `FOR UPDATE`, the lock a trash of the host takes first) and rechecked live
     // before its document is loaded or any child is written: a trash committed earlier makes this a no-op, and a
     // trash that starts later waits until this transaction has written the titles. Lock order: host, document, then
-    // the Pages items in id order; the trash cascade never locks a Pages item of this host.
+    // the Pages items in id order; the trash cascade walks inline databases and does not lock the Pages items of this host.
     const [visible] = await getItemsByIds(client, [itemId]);
     const host = visible ? await lockItemById(client, visible.databaseId, itemId) : null;
     if (!host || host.deletedAt !== null) return;

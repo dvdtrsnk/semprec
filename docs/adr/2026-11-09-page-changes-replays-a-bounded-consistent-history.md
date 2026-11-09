@@ -28,7 +28,7 @@ order can differ.
   and silent updates counted. The size of the checkpoint is read before its state is fetched, and sizes of the next
   rows (up to 200) are read before their bytes, which are fetched in groups of at most 4 MiB (one larger update is
   fetched alone, within the budget). There are no tuning options.
-- **Early stop.** The replay ends as soon as `limit` entries exist, so a satisfied request never reads the rest.
+- **Early stop.** The replay ends after the group of updates that fills `limit`, so the rest of the history is not read.
 - **Refusal.** A replay that needs more than the budget before the limit is reached is a `ValidationError` on `since`
   with reason `history_window_too_large` (400, flat details); the remedy is a later `since`. A decode error of a stored
   update propagates as it is.
