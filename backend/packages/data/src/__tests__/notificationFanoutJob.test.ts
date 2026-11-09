@@ -18,6 +18,9 @@ import {
 } from "../notifications/notificationPreferencesStore.js";
 import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import type { PushSenders } from "../push/pushSenders.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 
 let pool: Pool;
 
@@ -519,12 +522,18 @@ describe("notificationFanout job (issue #151)", () => {
       const userId = await createTestUser();
       await addWebPushRegistration(userId, "info-kind");
       await setPreferences(userId, { problemsLevel: "all" });
+      await seedSystem(pool);
+      const projectItemId = await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "projects");
+        if (!database) throw new Error("Missing projects database");
+        return (await createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } })).id;
+      });
       const notificationId = await writeTestNotification(
         userId,
         "info-resolved",
         "agent_guidance_drift_resolved",
         "agent_guidance_drift_findings",
-        {},
+        { projectItemId },
       );
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
