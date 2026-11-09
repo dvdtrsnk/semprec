@@ -375,10 +375,20 @@ describe("subpage title mirror (issue #1715)", () => {
       return { restore: () => spy.mockRestore(), fired: (index) => armed[index] === false };
     }
 
-    /** A pool of one connection whose backend identity is read before any actor uses it. */
-    async function ownedPool(observer: PoolClient): Promise<{ pool: Pool; session: Session }> {
+    /**
+     * A pool of one connection whose backend identity is read before any actor uses it. A connection error of its client
+     * (a checked-out client has no other listener, so it would be an uncaught exception) is collected in `connectionErrors`.
+     */
+    async function ownedPool(
+      observer: PoolClient,
+      connectionErrors: unknown[],
+    ): Promise<{ pool: Pool; session: Session }> {
       const owned = await createRuntimeRolePool(admin, "semprec_data");
       try {
+        owned.on("connect", (client) => {
+          client.on("error", (error: unknown) => connectionErrors.push(error));
+        });
+        owned.on("error", (error: unknown) => connectionErrors.push(error));
         owned.options.max = 1;
         expect(owned.options.max).toBe(1);
         const { rows } = await owned.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
@@ -498,6 +508,8 @@ describe("subpage title mirror (issue #1715)", () => {
       /** The actors whose own rejection is the run's failure. */
       jobs: Actor[];
       cleanups: Array<() => Promise<void>>;
+      /** Connection errors of the owned pools' clients. */
+      connectionErrors: unknown[];
       hook: { restore: () => void } | undefined;
       timer: NodeJS.Timeout | undefined;
       /** Lets every actor the test itself holds back go on; called before settlement when the run failed. */
@@ -510,6 +522,7 @@ describe("subpage title mirror (issue #1715)", () => {
         actors: [],
         jobs: [],
         cleanups: [],
+        connectionErrors: [],
         hook: undefined,
         timer: undefined,
         releaseGates: () => undefined,
@@ -563,6 +576,8 @@ describe("subpage title mirror (issue #1715)", () => {
       };
       if (unsettled.length === 0) {
         failures.push(...(await teardown()));
+        // Terminating an owned backend ends its client's connection by design; any other loss of one is a failure.
+        if (faults.attempted.length === 0) failures.push(...run.connectionErrors);
       } else {
         failures.push(new Error(`Owned actors not settled: ${unsettled.join(", ")}`));
         abandoned = {
@@ -638,9 +653,9 @@ describe("subpage title mirror (issue #1715)", () => {
         run.observer = watching;
         run.cleanups.push(async () => watching.release());
         if (faults.failCleanup) run.cleanups.push(failingCleanup);
-        const jobOwned = await ownedPool(watching);
+        const jobOwned = await ownedPool(watching, run.connectionErrors);
         run.cleanups.push(() => jobOwned.pool.end());
-        const trashOwned = await ownedPool(watching);
+        const trashOwned = await ownedPool(watching, run.connectionErrors);
         run.cleanups.push(() => trashOwned.pool.end());
         faults.sessions.push(jobOwned.session, trashOwned.session);
         run.hook = onStatements([
@@ -708,9 +723,9 @@ describe("subpage title mirror (issue #1715)", () => {
         run.observer = watching;
         run.cleanups.push(async () => watching.release());
         if (faults.failCleanup) run.cleanups.push(failingCleanup);
-        const ownedA = await ownedPool(watching);
+        const ownedA = await ownedPool(watching, run.connectionErrors);
         run.cleanups.push(() => ownedA.pool.end());
-        const ownedB = await ownedPool(watching);
+        const ownedB = await ownedPool(watching, run.connectionErrors);
         run.cleanups.push(() => ownedB.pool.end());
         faults.sessions.push(ownedA.session, ownedB.session);
         let arrived = 0;
