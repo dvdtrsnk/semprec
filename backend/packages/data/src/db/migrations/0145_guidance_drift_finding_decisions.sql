@@ -1,3 +1,5 @@
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE agent_guidance_drift_findings
   ADD COLUMN resolved_by uuid REFERENCES users(id),
   ADD COLUMN resolution_choice text CHECK (resolution_choice IN ('allow', 'forbid', 'dismiss'));

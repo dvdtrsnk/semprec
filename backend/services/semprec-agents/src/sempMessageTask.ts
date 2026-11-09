@@ -29,7 +29,7 @@ import { logger } from "./logger.js";
 import { expandSempRefs } from "./refExpansion.js";
 
 function outcomeExcerpt(value: unknown): string {
-  const serialized = JSON.stringify(value) ?? "null";
+  const serialized = (JSON.stringify(value) ?? "null").replaceAll("<", "\\u003c");
   const limit = 32 * 1024;
   if (Buffer.byteLength(serialized, "utf8") <= limit) return serialized;
   const notice = "\n[Outcome truncated]";
