@@ -224,8 +224,15 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
             prepareUserItemPatch(properties, { recurrence: { preset: "unknown" } }, database, item, "Europe/Prague"),
           ).rejects.toMatchObject({ status: 400 });
           for (const rule of [null, "bad", 7]) {
-            await expect(prepareUserItemPatch(properties, { recurrence: { mode: "fixed", rule } }, database, item, "Europe/Prague"))
-              .rejects.toMatchObject({ status: 400, details: { field: "rule" } });
+            await expect(
+              prepareUserItemPatch(
+                properties,
+                { recurrence: { mode: "fixed", rule } },
+                database,
+                item,
+                "Europe/Prague",
+              ),
+            ).rejects.toMatchObject({ status: 400, details: { field: "rule" } });
           }
           await expect(
             prepareUserItemPatch(

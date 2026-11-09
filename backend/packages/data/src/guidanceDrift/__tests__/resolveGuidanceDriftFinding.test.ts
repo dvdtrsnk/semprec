@@ -14,14 +14,24 @@ import { createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDriftF
 const pendingGuidanceActors = new Set<Promise<unknown>>();
 function trackGuidanceActor<T>(actor: Promise<T>): Promise<T> {
   pendingGuidanceActors.add(actor);
-  void actor.then(() => pendingGuidanceActors.delete(actor), () => pendingGuidanceActors.delete(actor));
+  void actor.then(
+    () => pendingGuidanceActors.delete(actor),
+    () => pendingGuidanceActors.delete(actor),
+  );
   return actor;
 }
 async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([actor, new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Guidance actor did not settle")), 5000);
-  })]); } finally { if (timer) clearTimeout(timer); }
+  try {
+    return await Promise.race([
+      actor,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Guidance actor did not settle")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 let admin: Pool;
@@ -102,7 +112,8 @@ describe("guidance drift decisions", () => {
       "utf8",
     );
     const tenantFk = await readFile(
-      new URL("../../db/migrations/0146_guidance_drift_resolved_by_tenant_fk.sql", import.meta.url), "utf8",
+      new URL("../../db/migrations/0146_guidance_drift_resolved_by_tenant_fk.sql", import.meta.url),
+      "utf8",
     );
     // Synthetic historical schema: global setup already applied the migration to this test database.
     await runAsSystem("test:historical-guidance-schema", () =>
@@ -135,19 +146,88 @@ describe("guidance drift decisions", () => {
   });
   it("refuses a foreign resolved_by through the runtime role", async () => {
     const other = await createTestTenant(admin);
-    const foreign = await createUser(admin, { email: "foreign@example.test", passwordHash: "hash", tenantId: other, locale: "en" });
-    const first = await runInTenant(tenant, () => withTransaction(pool, (tx) =>
-      agentGuidanceDriftFindingsStore.upsertActive(tx, {
-        projectItemId: project, fingerprint: "f".repeat(64), payload, seenAt: new Date("2026-01-01T00:00:00Z"),
-      }),
-    ));
-    await expect(runInTenant(tenant, () => pool.query(
-      "UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [first.finding.id, foreign.id],
-    ))).rejects.toMatchObject({ code: "23503" });
-    const after = await runInTenant(tenant, () => pool.query<{ resolved_by: string | null }>(
-      "SELECT resolved_by FROM agent_guidance_drift_findings WHERE id = $1", [first.finding.id],
-    ));
+    const foreign = await createUser(admin, {
+      email: "foreign@example.test",
+      passwordHash: "hash",
+      tenantId: other,
+      locale: "en",
+    });
+    const first = await runInTenant(tenant, () =>
+      withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "f".repeat(64),
+          payload,
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      ),
+    );
+    await expect(
+      runInTenant(tenant, () =>
+        pool.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [
+          first.finding.id,
+          foreign.id,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+    const after = await runInTenant(tenant, () =>
+      pool.query<{ resolved_by: string | null }>(
+        "SELECT resolved_by FROM agent_guidance_drift_findings WHERE id = $1",
+        [first.finding.id],
+      ),
+    );
     expect(after.rows).toEqual([{ resolved_by: null }]);
+  });
+  it.each(["allow", "forbid"] as const)("rejects multiline %s suggestions without deciding", async (choice) => {
+    await runInTenant(tenant, async () => {
+      const saved = await withTransaction(pool, (tx) =>
+        saveGuidanceSections(tx, {
+          actorUserId: user,
+          projectItemId: project,
+          sections,
+          expectedUpdatedAt: null,
+        }),
+      );
+      const finding = await withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "7".repeat(64),
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+          payload: {
+            ...payload,
+            suggestedAllowedLine: "Visible\n- extra",
+            suggestedNotAllowedLine: "Visible\n- extra",
+          },
+        }),
+      );
+      const before = await pool.query<{ markdown: string; updated_at: Date }>(
+        "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
+      await expect(
+        createResolveGuidanceDriftFindingRouteHandler(pool)({
+          params: { id: finding.finding.id },
+          identity: { user: { id: user } },
+          body: { choice, expectedGuidanceUpdatedAt: saved.updatedAt },
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      const after = await pool.query<{ markdown: string; updated_at: Date }>(
+        "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
+      expect(after.rows).toEqual(before.rows);
+      expect(
+        (
+          await pool.query<{ status: string; resolution_choice: string | null }>(
+            "SELECT status, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
+            [finding.finding.id],
+          )
+        ).rows,
+      ).toEqual([{ status: "active", resolution_choice: null }]);
+      expect(
+        (await pool.query("SELECT id FROM notifications WHERE source_id = $1", [finding.finding.id])).rows,
+      ).toEqual([]);
+    });
   });
   it.each(["allow", "forbid", "dismiss"] as const)("decides %s once and never reopens it", async (choice) =>
     runInTenant(tenant, async () => {
@@ -342,24 +422,26 @@ describe("guidance drift decisions", () => {
       const acquired = new Promise<number>((resolve) => {
         waiterReady = resolve;
       });
-      const holder = trackGuidanceActor(withTransaction(pool, async (client) => {
-        const identity = await client.query<Identity>(
-          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-        );
-        if (!identity.rows[0]) throw new Error("Missing holder identity");
-        const value = await saveGuidanceSections(client, {
-          actorUserId: user,
-          projectItemId: project,
-          sections: { ...sections, purpose: "Concurrent save" },
-          expectedUpdatedAt: saved.updatedAt,
-        });
-        holderReady(identity.rows[0]);
-        await gate;
-        return value;
-      }).then(
-        (value) => ({ ok: true as const, value }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ));
+      const holder = trackGuidanceActor(
+        withTransaction(pool, async (client) => {
+          const identity = await client.query<Identity>(
+            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+          );
+          if (!identity.rows[0]) throw new Error("Missing holder identity");
+          const value = await saveGuidanceSections(client, {
+            actorUserId: user,
+            projectItemId: project,
+            sections: { ...sections, purpose: "Concurrent save" },
+            expectedUpdatedAt: saved.updatedAt,
+          });
+          holderReady(identity.rows[0]);
+          await gate;
+          return value;
+        }).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+      );
       let contender:
         | Promise<
             | { ok: true; value: Awaited<ReturnType<ReturnType<typeof createResolveGuidanceDriftFindingRouteHandler>>> }
@@ -387,14 +469,16 @@ describe("guidance drift decisions", () => {
         });
         pool.on("acquire", onAcquire);
         const route = createResolveGuidanceDriftFindingRouteHandler(pool);
-        contender = trackGuidanceActor(route({
-          params: { id: first.finding.id },
-          identity: { user: { id: user } },
-          body: { choice: "allow", expectedGuidanceUpdatedAt: saved.updatedAt },
-        }).then(
-          (value) => ({ ok: true as const, value }),
-          (error: unknown) => ({ ok: false as const, error }),
-        ));
+        contender = trackGuidanceActor(
+          route({
+            params: { id: first.finding.id },
+            identity: { user: { id: user } },
+            body: { choice: "allow", expectedGuidanceUpdatedAt: saved.updatedAt },
+          }).then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          ),
+        );
         let waitTimer: ReturnType<typeof setTimeout> | undefined;
         const waiterPid = await Promise.race([
           acquired,
@@ -433,7 +517,8 @@ describe("guidance drift decisions", () => {
       pool.off("acquire", onAcquire);
       release();
       const [ownerSettled, contenderSettled] = await Promise.allSettled([
-        settleGuidanceActor(holder), contender ? settleGuidanceActor(contender) : Promise.resolve(undefined),
+        settleGuidanceActor(holder),
+        contender ? settleGuidanceActor(contender) : Promise.resolve(undefined),
       ]);
       const actorErrors: unknown[] = [];
       const ownerResult = ownerSettled.status === "fulfilled" ? ownerSettled.value : undefined;

@@ -9,17 +9,24 @@ export type LoadProjectNotesPort = (projectItemId: string) => Promise<{
   subpages: { id: string; title: string }[];
 } | null>;
 
-function boundedNotes(markdown: string, subpages: { id: string; title: string }[]): { markdown: string; truncated: boolean } {
+function boundedNotes(
+  markdown: string,
+  subpages: { id: string; title: string }[],
+): { markdown: string; truncated: boolean } {
   if (Buffer.byteLength(markdown, "utf8") <= MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES) {
     return { markdown, truncated: false };
   }
   const blocks = parseMarkdown(markdown);
   let pageIndex = 0;
   const titles = new Map(
-    blocks.flatMap((block) => block.type === "page" && block.pageId ? [[block.id, subpages[pageIndex++]?.title ?? ""] as const] : []),
+    blocks.flatMap((block) =>
+      block.type === "page" && block.pageId ? [[block.id, subpages[pageIndex++]?.title ?? ""] as const] : [],
+    ),
   );
   const render = (count: number) =>
-    serializeBlocks(blocks.slice(0, count), { resolvePageTitle: (_id, block) => block.id === null ? "" : titles.get(block.id) ?? "" });
+    serializeBlocks(blocks.slice(0, count), {
+      resolvePageTitle: (_id, block) => (block.id === null ? "" : (titles.get(block.id) ?? "")),
+    });
   let low = 0;
   let high = blocks.length;
   while (low < high) {

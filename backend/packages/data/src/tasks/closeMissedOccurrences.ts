@@ -61,11 +61,21 @@ export async function closeMissedOccurrence(
   const template = series.template;
   const previous: unknown = properties.recurrence;
   const preset =
-    series.itemId === itemId && typeof previous === "object" && previous !== null &&
-    "mode" in previous && previous.mode === series.mode && "rule" in previous &&
-    isDeepStrictEqual(previous.rule, series.rule) && "preset" in previous &&
-    (previous.preset === "daily" || previous.preset === "weekdays" || previous.preset === "weekly" ||
-      previous.preset === "monthly" || previous.preset === "yearly") ? previous.preset : null;
+    series.itemId === itemId &&
+    typeof previous === "object" &&
+    previous !== null &&
+    "mode" in previous &&
+    previous.mode === series.mode &&
+    "rule" in previous &&
+    isDeepStrictEqual(previous.rule, series.rule) &&
+    "preset" in previous &&
+    (previous.preset === "daily" ||
+      previous.preset === "weekdays" ||
+      previous.preset === "weekly" ||
+      previous.preset === "monthly" ||
+      previous.preset === "yearly")
+      ? previous.preset
+      : null;
   const created = await createItemWithClient(
     client,
     {

@@ -2322,68 +2322,82 @@ describe("queued Semp messages", () => {
       );
     let failure: { error: unknown } | undefined;
     try {
-    const first = await send("before");
-    await runInTenant(tenant, () =>
-      task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }),
-    );
-    await runInTenant(tenant, () =>
-      withTransaction(pool, async (client) => {
-        const request = await createPendingApprovalRequest(client, {
-          agentRunId: fixture.runId,
-          toolName: "test",
-          riskClass: "unclassified",
-          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
-          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
-        });
-        expect(
-          (
-            await decideAndEnqueueApprovalRequest(client, {
-              approvalRequestId: request.id,
-              decision: "rejected",
-              decidedByUserId: userId,
-            })
-          )?.outcome,
-        ).toBe("decided");
-      }),
-    );
-    const queued = await runInTenant(tenant, () =>
-      pool.query<{ id: string }>(
-        "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.id = reply.reply_to_message_id AND source.tenant_id = reply.tenant_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND reply.status = 'queued'",
-        [fixture.threadId],
-      ),
-    );
-    const assistantMessageId = queued.rows[0]?.id;
-    if (!assistantMessageId) throw new Error("Missing queued acknowledgment");
-    await runInTenant(tenant, () =>
-      task({ threadId: fixture.threadId, assistantMessageId }, { job: { id: "rejected" } }),
-    );
-    const later = await send("after");
-    await runInTenant(tenant, () =>
-      task({ threadId: fixture.threadId, assistantMessageId: later.assistantMessageId }, { job: { id: "after" } }),
-    );
-    expect(observed[0]?.tools.length).toBeGreaterThan(0);
-    expect(observed[1]?.tools).toEqual([]);
-    expect(observed[1]?.messages).toContain("The action did not happen");
-    expect(observed[2]?.tools.length).toBeGreaterThan(0);
-    const reply = await runInTenant(tenant, () =>
-      pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [
-        assistantMessageId,
-      ]),
-    );
-    expect(reply.rows).toEqual([{ status: "done", text: "\nacknowledged" }]);
-    const jobs = await runInTenant(tenant, () =>
-      pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
-        `heartbeat-fire:manual:${fixture.heartbeatId}`,
-      ]),
-    );
-    expect(jobs.rows).toEqual([]);
+      const first = await send("before");
+      await runInTenant(tenant, () =>
+        task({ threadId: fixture.threadId, assistantMessageId: first.assistantMessageId }, { job: { id: "before" } }),
+      );
+      const sessionRun = await runInTenant(tenant, () =>
+        pool.query<{ id: string; unit: string; triggered_by: string; heartbeat_id: string | null }>(
+          "SELECT r.id, r.unit, r.triggered_by, r.heartbeat_id FROM agent_runs r JOIN semp_messages m ON m.tenant_id = r.tenant_id AND m.agent_run_id = r.id WHERE m.id = $1",
+          [first.assistantMessageId],
+        ),
+      );
+      expect(sessionRun.rows).toEqual([
+        { id: expect.any(String), unit: "session", triggered_by: "user", heartbeat_id: null },
+      ]);
+      const sessionRunId = sessionRun.rows[0]?.id;
+      if (!sessionRunId) throw new Error("Missing session run");
+      await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const request = await createPendingApprovalRequest(client, {
+            agentRunId: sessionRunId,
+            toolName: "test",
+            riskClass: "unclassified",
+            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+            resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+          });
+          expect(
+            (
+              await decideAndEnqueueApprovalRequest(client, {
+                approvalRequestId: request.id,
+                decision: "rejected",
+                decidedByUserId: userId,
+              })
+            )?.outcome,
+          ).toBe("decided");
+        }),
+      );
+      const queued = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>(
+          "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.id = reply.reply_to_message_id AND source.tenant_id = reply.tenant_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND reply.status = 'queued'",
+          [fixture.threadId],
+        ),
+      );
+      const assistantMessageId = queued.rows[0]?.id;
+      if (!assistantMessageId) throw new Error("Missing queued acknowledgment");
+      await runInTenant(tenant, () =>
+        task({ threadId: fixture.threadId, assistantMessageId }, { job: { id: "rejected" } }),
+      );
+      const later = await send("after");
+      await runInTenant(tenant, () =>
+        task({ threadId: fixture.threadId, assistantMessageId: later.assistantMessageId }, { job: { id: "after" } }),
+      );
+      expect(observed[0]?.tools.length).toBeGreaterThan(0);
+      expect(observed[1]?.tools).toEqual([]);
+      expect(observed[1]?.messages).toContain("The action did not happen");
+      expect(observed[2]?.tools.length).toBeGreaterThan(0);
+      const reply = await runInTenant(tenant, () =>
+        pool.query<{ status: string; text: string }>("SELECT status, text FROM semp_messages WHERE id = $1", [
+          assistantMessageId,
+        ]),
+      );
+      expect(reply.rows).toEqual([{ status: "done", text: "\nacknowledged" }]);
+      const jobs = await runInTenant(tenant, () =>
+        pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `heartbeat-fire:manual:${fixture.heartbeatId}`,
+        ]),
+      );
+      expect(jobs.rows).toEqual([]);
     } catch (error) {
       failure = { error };
     }
     try {
       await closeIdleThreadSessions(pool);
     } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure.error, cleanupError], "Rejection test cleanup failed", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Rejection test cleanup failed", {
+          cause: failure.error,
+        });
       throw cleanupError;
     }
     if (failure) throw failure.error;

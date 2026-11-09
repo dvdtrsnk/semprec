@@ -17,13 +17,21 @@ export async function resolveInboxTypeCardConfiguration(client: PoolClient, expe
   const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
   const config: unknown = property.config;
   if (
-    !inbox || !definition || property.type !== "relation" ||
-    typeof config !== "object" || config === null || Array.isArray(config) ||
-    !("relationDefinitionId" in config) || config.relationDefinitionId !== definition.id ||
-    !("targetDatabaseId" in config) || config.targetDatabaseId !== inbox.id ||
-    definition.propertyIdA !== property.id || definition.propertyIdB !== null ||
+    !inbox ||
+    !definition ||
+    property.type !== "relation" ||
+    typeof config !== "object" ||
+    config === null ||
+    Array.isArray(config) ||
+    !("relationDefinitionId" in config) ||
+    config.relationDefinitionId !== definition.id ||
+    !("targetDatabaseId" in config) ||
+    config.targetDatabaseId !== inbox.id ||
+    definition.propertyIdA !== property.id ||
+    definition.propertyIdB !== null ||
     definition.cardinality !== "many_to_many"
-  ) throw new NotFoundError("Processing proposals sourceInbox relation not found");
+  )
+    throw new NotFoundError("Processing proposals sourceInbox relation not found");
   return { databaseId: database.id, definitionId: definition.id };
 }
 

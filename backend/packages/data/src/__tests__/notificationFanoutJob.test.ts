@@ -99,33 +99,65 @@ describe("notificationFanout job (issue #151)", () => {
   it("keeps the existing resolved notification on replay after its project is trashed", async () => {
     const userId = await createTestUser();
     await runInTenant(getTenantZeroId(), () => seedSystem(pool));
-    const database = await runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects")));
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects")),
+    );
     if (!database) throw new Error("Missing Projects database");
-    const project = await runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } }),
-    ));
-    const input = { userId, kind: "agent_guidance_drift_resolved" as const, linkHref: null,
-      sourceTable: "agent_guidance_drift_findings", sourceId: "finding", transitionInstance: "decision",
-      payload: { projectItemId: project.id, kind: "behavior" } };
-    const write = () => runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => writeNotification(client, input)));
+    const project = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } }),
+      ),
+    );
+    const input = {
+      userId,
+      kind: "agent_guidance_drift_resolved" as const,
+      linkHref: null,
+      sourceTable: "agent_guidance_drift_findings",
+      sourceId: "finding",
+      transitionInstance: "decision",
+      payload: { projectItemId: project.id, kind: "behavior" },
+    };
+    const write = () =>
+      runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => writeNotification(client, input)));
     const first = await write();
-    const jobsBefore = await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs WHERE key = $1", [notificationFanoutJobKey(first)]);
+    const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+      [notificationFanoutJobKey(first)],
+    );
     await runInTenant(getTenantZeroId(), () => createChokePoint(pool).softDeleteItem(database.id, project.id));
     const second = await write();
     expect(second).toBe(first);
-    expect((await pool.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [input.sourceId])).rows).toEqual([{ id: first }]);
-    expect((await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs WHERE key = $1", [notificationFanoutJobKey(first)])).rows).toEqual(jobsBefore.rows);
+    expect(
+      (await pool.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [input.sourceId])).rows,
+    ).toEqual([{ id: first }]);
+    expect(
+      (
+        await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+          [notificationFanoutJobKey(first)],
+        )
+      ).rows,
+    ).toEqual(jobsBefore.rows);
   });
 
   it("rolls back a failed first enrichment even when a caller catches it", async () => {
     const userId = await createTestUser();
     const sourceId = "missing-project";
-    await runInTenant(getTenantZeroId(), () => withTransaction(pool, async (client) => {
-      await expect(writeNotification(client, { userId, kind: "agent_guidance_drift_resolved", linkHref: null,
-        sourceTable: "agent_guidance_drift_findings", sourceId, transitionInstance: "decision",
-        payload: { projectItemId: "00000000-0000-4000-8000-000000000000", kind: "behavior" },
-      })).rejects.toThrow("Guidance drift project not found");
-    }));
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        await expect(
+          writeNotification(client, {
+            userId,
+            kind: "agent_guidance_drift_resolved",
+            linkHref: null,
+            sourceTable: "agent_guidance_drift_findings",
+            sourceId,
+            transitionInstance: "decision",
+            payload: { projectItemId: "00000000-0000-4000-8000-000000000000", kind: "behavior" },
+          }),
+        ).rejects.toThrow("Guidance drift project not found");
+      }),
+    );
     expect((await pool.query("SELECT id FROM notifications WHERE source_id = $1", [sourceId])).rows).toEqual([]);
   });
 

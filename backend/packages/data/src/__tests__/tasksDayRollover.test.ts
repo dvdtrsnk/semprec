@@ -23,18 +23,25 @@ const WAIT_MS = 10_000;
 const pendingRolloverActors = new Set<Promise<unknown>>();
 function trackRolloverActor<T>(actor: Promise<T>): Promise<T> {
   pendingRolloverActors.add(actor);
-  void actor.then(() => pendingRolloverActors.delete(actor), () => pendingRolloverActors.delete(actor));
+  void actor.then(
+    () => pendingRolloverActors.delete(actor),
+    () => pendingRolloverActors.delete(actor),
+  );
   return actor;
 }
 async function settleRolloverActor<T>(actor: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([actor, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("Rollover actor did not settle")), WAIT_MS);
-    })]);
-  } finally { if (timer) clearTimeout(timer); }
+    return await Promise.race([
+      actor,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Rollover actor did not settle")), WAIT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
-
 
 let admin: Pool;
 let pool: Pool;
@@ -314,15 +321,29 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   });
 
   it("processes a higher-id due series behind lower-id nondue series within the selection limit", async () => {
-    const ids = (await Promise.all([task({ date: day(-1) }), task({ date: day(-1) }), task({ date: day(-1) }), task({ date: day(-1) })])).sort();
+    const ids = (
+      await Promise.all([
+        task({ date: day(-1) }),
+        task({ date: day(-1) }),
+        task({ date: day(-1) }),
+        task({ date: day(-1) }),
+      ])
+    ).sort();
     const due = ids[3];
     if (!due) throw new Error("Missing due task");
-    for (const id of ids) await inTenant(() => createTaskRecurrenceSetRouteHandler(pool)({
-      params: { id }, body: { preset: id === due ? "daily" : "yearly" }, identity: { user: { id: randomUUID() } },
-    }));
+    for (const id of ids)
+      await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id },
+          body: { preset: id === due ? "daily" : "yearly" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
     const before = await Promise.all(ids.slice(0, 3).map(row));
     const action = createTasksDayRolloverAction(pool, { recurringLimit: 2 });
-    await inTenant(() => action(heartbeat.config, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId }));
+    await inTenant(() =>
+      action(heartbeat.config, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId }),
+    );
     expect((await row(due)).properties.status).toBe("missed");
     expect(await Promise.all(ids.slice(0, 3).map(row))).toEqual(before);
   });
@@ -363,21 +384,23 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     const ready = new Promise<{ pid: number; started: string }>((resolve) => {
       signalReady = resolve;
     });
-    const holder = trackRolloverActor(inTenant(() =>
-      withTransaction(pool, async (client) => {
-        await client.query("SET LOCAL lock_timeout = '5s'");
-        const identity = await client.query<{ pid: number; started: string }>(
-          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-        );
-        if (!identity.rows[0]) throw new Error("Missing holder identity");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, latest]);
-        signalReady(identity.rows[0]);
-        await gate;
-      }),
-    ).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error }),
-    ));
+    const holder = trackRolloverActor(
+      inTenant(() =>
+        withTransaction(pool, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '5s'");
+          const identity = await client.query<{ pid: number; started: string }>(
+            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+          );
+          if (!identity.rows[0]) throw new Error("Missing holder identity");
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, latest]);
+          signalReady(identity.rows[0]);
+          await gate;
+        }),
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
+    );
     let failure: { error: unknown } | undefined;
     try {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -423,9 +446,12 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     }
     release();
     let outcome: Awaited<typeof holder> | undefined;
-    try { outcome = await settleRolloverActor(holder); } catch (error) {
+    try {
+      outcome = await settleRolloverActor(holder);
+    } catch (error) {
       setInvalidationHook(() => {});
-      if (failure) throw new AggregateError([failure.error, error], "Rollover actor did not settle", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, error], "Rollover actor did not settle", { cause: failure.error });
       throw error;
     }
     setInvalidationHook(() => {});
@@ -533,21 +559,23 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       if (!result.rows[0]) throw new Error("Missing actor identity");
       return result.rows[0];
     };
-    const holder = trackRolloverActor(inTenant(() =>
-      withTransaction(pool, async (client) => {
-        const actor = await identity(client);
-        await updateItemWithClient(
-          client,
-          { databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } },
-          { writer: { writerKind: "user" } },
-        );
-        holderReady(actor);
-        await gate;
-      }),
-    ).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error }),
-    ));
+    const holder = trackRolloverActor(
+      inTenant(() =>
+        withTransaction(pool, async (client) => {
+          const actor = await identity(client);
+          await updateItemWithClient(
+            client,
+            { databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } },
+            { writer: { writerKind: "user" } },
+          );
+          holderReady(actor);
+          await gate;
+        }),
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
+    );
     let contender: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
     try {
@@ -573,15 +601,17 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         }
       };
       const owner = await bounded(held, [holder]);
-      contender = trackRolloverActor(inTenant(() =>
-        withTransaction(pool, async (client) => {
-          contenderReady(await identity(client));
-          await closeMissedOccurrence(client, tasksId, old, day(0));
-        }),
-      ).then(
-        () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ));
+      contender = trackRolloverActor(
+        inTenant(() =>
+          withTransaction(pool, async (client) => {
+            contenderReady(await identity(client));
+            await closeMissedOccurrence(client, tasksId, old, day(0));
+          }),
+        ).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+      );
       const waiter = await bounded(competing, [holder, contender]);
       await expect
         .poll(
@@ -601,8 +631,13 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       failure = { error };
     }
     release();
-    const settled = await Promise.allSettled([settleRolloverActor(holder), ...(contender ? [settleRolloverActor(contender)] : [])]);
-    const failures = settled.flatMap((result) => result.status === "rejected" ? [result.reason] : result.value.ok ? [] : [result.value.error]);
+    const settled = await Promise.allSettled([
+      settleRolloverActor(holder),
+      ...(contender ? [settleRolloverActor(contender)] : []),
+    ]);
+    const failures = settled.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : result.value.ok ? [] : [result.value.error],
+    );
     if (failure && failures.length)
       throw new AggregateError([failure.error, ...failures], "Completion overlap failed", { cause: failure.error });
     if (failure) throw failure.error;

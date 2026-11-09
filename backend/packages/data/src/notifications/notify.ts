@@ -158,8 +158,17 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
        ON CONFLICT (tenant_id, user_id, source_table, source_id, kind, transition_instance)
          DO UPDATE SET source_table = notifications.source_table
        RETURNING id, created_at, (xmax = 0) AS inserted`,
-      [input.userId, input.kind, title, body, input.linkHref, input.sourceTable, input.sourceId,
-        input.transitionInstance, JSON.stringify(payload)],
+      [
+        input.userId,
+        input.kind,
+        title,
+        body,
+        input.linkHref,
+        input.sourceTable,
+        input.sourceId,
+        input.transitionInstance,
+        JSON.stringify(payload),
+      ],
     );
     const row = rows[0];
     if (!row) throw new Error("writeNotification: upsert returned no row");
@@ -170,7 +179,12 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       if (!project) throw new Error("Guidance drift project not found");
       const projectName = project.properties.name;
       if (typeof projectName !== "string") throw new Error("Guidance drift project has no name");
-      const template = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.guidanceResolved.${driftKind}`);
+      const template = resolveCatalogLabel(
+        null,
+        localeCatalog,
+        catalogs.en,
+        `notification.guidanceResolved.${driftKind}`,
+      );
       payload = { ...payload, kind: driftKind, resolutionTitle: interpolate(template, { project: projectName }) };
       const updated = await client.query(
         "UPDATE notifications SET payload = $2::jsonb WHERE id = $1 AND user_id = $3",
@@ -183,7 +197,8 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       await client.query("RELEASE SAVEPOINT guidance_notification_write");
       savepointOpen = false;
     }
-    if (row.inserted) runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
+    if (row.inserted)
+      runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
     return row.id;
   } catch (error) {
     if (!resolvedKind) throw error;
@@ -198,11 +213,21 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       if (cleanupErrors.length === 0) throw error;
     }
     if (managed) {
-      try { markManagedTransactionRollbackOnly(client, error); } catch (markError) { cleanupErrors.push(markError); }
+      try {
+        markManagedTransactionRollbackOnly(client, error);
+      } catch (markError) {
+        cleanupErrors.push(markError);
+      }
     }
-    try { await client.query("ROLLBACK"); } catch (rollbackError) { cleanupErrors.push(rollbackError); }
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      cleanupErrors.push(rollbackError);
+    }
     if (cleanupErrors.length) {
-      throw new AggregateError([error, ...cleanupErrors], "Notification cleanup failed; connection may be unsafe", { cause: error });
+      throw new AggregateError([error, ...cleanupErrors], "Notification cleanup failed; connection may be unsafe", {
+        cause: error,
+      });
     }
     throw error;
   }

@@ -541,7 +541,13 @@ export class SempConversation {
       entry.busy = false;
       // A tenant dropped while this pause held the entry closes its run as `error` instead.
       if (state.dropped) {
-        await this.closeDropped(state, entry);
+        try {
+          await this.closeDropped(state, entry);
+        } catch (cleanupError) {
+          if (strict)
+            throw new AggregateError([err, cleanupError], "Semp pause and drop cleanup failed", { cause: err });
+          throw cleanupError;
+        }
         if (strict) throw err;
         return;
       }

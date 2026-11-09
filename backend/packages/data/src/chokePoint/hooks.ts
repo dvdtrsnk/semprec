@@ -239,8 +239,10 @@ export function getItemUpdateCommand(moduleId: string): ItemUpdateCommand | unde
   return itemUpdateCommands.get(moduleId);
 }
 export function isItemUpdateCommandPaired(moduleId: string, command: ItemUpdateCommand): boolean {
-  return (itemPreWriteTransforms.get(moduleId)?.includes(command.transform) ?? false) &&
-    (itemPreWritePreparations.get(moduleId)?.has(command.transform) ?? false);
+  return (
+    (itemPreWriteTransforms.get(moduleId)?.includes(command.transform) ?? false) &&
+    (itemPreWritePreparations.get(moduleId)?.has(command.transform) ?? false)
+  );
 }
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {

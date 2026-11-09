@@ -247,10 +247,7 @@ describe("batch 34 entry-point contracts", () => {
       },
     ]);
     invalidations = [];
-    for (const patch of [
-      { seriesId: randomUUID() },
-      { occurrenceDate: "2026-10-19" },
-    ]) {
+    for (const patch of [{ seriesId: randomUUID() }, { occurrenceDate: "2026-10-19" }]) {
       const refused = await call("PATCH", `/api/items/${task.id}`, own.headers, {
         properties: patch,
         ifVersion: before.updatedAt,
@@ -262,7 +259,8 @@ describe("batch 34 entry-point contracts", () => {
       });
     }
     const malformed = await call("PATCH", `/api/items/${task.id}`, own.headers, {
-      properties: { recurrence: { preset: null, mode: "fixed", rule } }, ifVersion: before.updatedAt,
+      properties: { recurrence: { preset: null, mode: "fixed", rule } },
+      ifVersion: before.updatedAt,
     });
     expect(malformed.status).toBe(400);
     const after = await call("GET", `/api/items/${task.id}`, own.headers);
@@ -270,7 +268,8 @@ describe("batch 34 entry-point contracts", () => {
     expect(await recurrenceRows()).toEqual(rowsBefore);
     expect(invalidations).toEqual([]);
     const permitted = await call("PATCH", `/api/items/${task.id}`, own.headers, {
-      properties: { recurrence: { mode: "fixed", rule } }, ifVersion: before.updatedAt,
+      properties: { recurrence: { mode: "fixed", rule } },
+      ifVersion: before.updatedAt,
     });
     expect(permitted.status).toBe(200);
 

@@ -14,7 +14,9 @@ export async function readProjectNotes(
   try {
     const blocks = readPageBlocks(doc);
     const title = (block: (typeof blocks)[number]) => (block.text ?? []).map((run) => run.insert).join("");
-    const markdown = serializeBlocks(blocks, { resolvePageTitle: (_id, block) => (block.text ?? []).map((run) => run.insert).join("") });
+    const markdown = serializeBlocks(blocks, {
+      resolvePageTitle: (_id, block) => (block.text ?? []).map((run) => run.insert).join(""),
+    });
     if (markdown === "") return null;
     const subpages = blocks.flatMap((block) =>
       block.id !== null && block.type === "page" && block.pageId ? [{ id: block.pageId, title: title(block) }] : [],

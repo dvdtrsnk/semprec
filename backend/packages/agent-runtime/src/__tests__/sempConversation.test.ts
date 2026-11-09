@@ -1632,6 +1632,26 @@ describe("SempConversation across tenants", () => {
         return pauseTenant(conversation, tenantId);
       }
 
+      it("preserves the actual pause failure for strict freshness and succeeds after recovery", async () => {
+        const { createAgentSession } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, 60_000);
+        try {
+          await sendAs(tenantB, conversation, "before");
+          await failRunCloses(tenantB, ["done"]);
+          const thread = threadByTenant.get(tenantB);
+          if (!thread) throw new Error("Missing thread");
+          await expect(runInTenant(tenantB, () => conversation.ensureFresh(thread.threadId, null))).rejects.toThrow(
+            "injected run close failure",
+          );
+          expect((await runRowsOf(tenantB)).map((run) => run.status)).toEqual(["running"]);
+          await healRunCloses();
+          await runInTenant(tenantB, () => conversation.ensureFresh(thread.threadId, null));
+          expect((await runRowsOf(tenantB)).map((run) => run.status)).toEqual(["done"]);
+        } finally {
+          conversation.clear();
+        }
+      });
+
       it("keeps an idle dropped entry when its close fails, rejects sends meanwhile, and retries the close", async () => {
         const { createAgentSession, sessions } = recordingSessions();
         const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);

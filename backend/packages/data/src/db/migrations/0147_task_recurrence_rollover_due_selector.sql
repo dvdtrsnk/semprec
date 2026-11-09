@@ -48,7 +48,7 @@ BEGIN
         next_day := (anchor + make_interval(months => (k*n)::integer))::date;
       END IF;
     END IF;
-    RETURN next_day <= today AND anchor <= today;
+    RETURN (next_day <= today OR next_day >= DATE '10000-01-01') AND anchor <= today;
   END IF;
 
   kind := rule->>'kind';
@@ -125,7 +125,7 @@ BEGIN
     END LOOP;
     IF pass = 1 AND next_day IS NULL THEN RAISE EXCEPTION 'Fixed recurrence matched no date within horizon'; END IF;
   END LOOP;
-  RETURN next_day <= today AND latest_found;
+  RETURN (next_day <= today OR next_day >= DATE '10000-01-01') AND latest_found;
 END;
 $$;
 REVOKE ALL ON FUNCTION task_recurrence_due_for_rollover(text,jsonb,date,date,date) FROM PUBLIC;

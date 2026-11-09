@@ -457,120 +457,133 @@ describe("Inbox type lock", () => {
     expect(pendingRaceActors.size).toBe(0);
   });
 
-  it.each(["missing", "foreign", "module", "property", "definition", "no-edges", "property-type", "target", "config-definition"] as const)(
-    "fails closed on %s Processing proposals configuration without effects",
-    async (scenario) => {
-      let foreignId: string | undefined;
+  it.each([
+    "missing",
+    "foreign",
+    "module",
+    "property",
+    "definition",
+    "no-edges",
+    "property-type",
+    "target",
+    "config-definition",
+  ] as const)("fails closed on %s Processing proposals configuration without effects", async (scenario) => {
+    let foreignId: string | undefined;
+    if (scenario === "foreign") {
+      const other = await createTestTenant(admin);
+      await runInTenant(other, () => seedSystem(pool, createViewTypeRegistry()));
+      const result = await admin.query<{ id: string }>(
+        "SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2",
+        [other, PROCESSING_PROPOSALS_MODULE_ID],
+      );
+      foreignId = result.rows[0]?.id;
+      if (!foreignId) throw new Error("Missing foreign proposals database");
+    }
+    await runInTenant(tenant, async () => {
+      const { cp, edge, targets, inbox, types, proposals } = await fixture();
+      if (scenario === "no-edges") await cp.deleteRelation(edge);
+      const originalTargets = await targets();
+      const originalType = await withTransaction(pool, (client) => getItemById(client, types, edge.targetItemId));
+      const originalSource = await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId));
+      const sourceProperty = (await cp.listProperties(proposals)).find((p) => p.key === "sourceInbox");
+      if (!sourceProperty) throw new Error("Missing sourceInbox property");
+      const definition = await withTransaction(pool, (client) =>
+        getRelationDefinitionByPropertyId(client, sourceProperty.id),
+      );
+      if (!definition) throw new Error("Missing sourceInbox definition");
+      let supplied = proposals;
+      if (scenario === "missing" || scenario === "no-edges") supplied = randomUUID();
       if (scenario === "foreign") {
-        const other = await createTestTenant(admin);
-        await runInTenant(other, () => seedSystem(pool, createViewTypeRegistry()));
-        const result = await admin.query<{ id: string }>(
-          "SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2",
-          [other, PROCESSING_PROPOSALS_MODULE_ID],
-        );
-        foreignId = result.rows[0]?.id;
         if (!foreignId) throw new Error("Missing foreign proposals database");
+        supplied = foreignId;
       }
-      await runInTenant(tenant, async () => {
-        const { cp, edge, targets, inbox, types, proposals } = await fixture();
-        if (scenario === "no-edges") await cp.deleteRelation(edge);
-        const originalTargets = await targets();
-        const originalType = await withTransaction(pool, (client) => getItemById(client, types, edge.targetItemId));
-        const originalSource = await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId));
-        const sourceProperty = (await cp.listProperties(proposals)).find((p) => p.key === "sourceInbox");
-        if (!sourceProperty) throw new Error("Missing sourceInbox property");
-        const definition = await withTransaction(pool, (client) =>
-          getRelationDefinitionByPropertyId(client, sourceProperty.id),
+      // Synthetic malformed schema: production APIs do not permit these catalog mutations.
+      if (scenario === "module") {
+        const changed = await admin.query(
+          "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [tenant, proposals, "brokenProcessingProposals"],
         );
-        if (!definition) throw new Error("Missing sourceInbox definition");
-        let supplied = proposals;
-        if (scenario === "missing" || scenario === "no-edges") supplied = randomUUID();
-        if (scenario === "foreign") {
-          if (!foreignId) throw new Error("Missing foreign proposals database");
-          supplied = foreignId;
-        }
-        // Synthetic malformed schema: production APIs do not permit these catalog mutations.
-        if (scenario === "module") {
-          const changed = await admin.query(
-            "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND id = $2",
-            [tenant, proposals, "brokenProcessingProposals"],
-          );
-          expect(changed.rowCount).toBe(1);
-        }
-        if (scenario === "property") {
-          const changed = await admin.query("UPDATE properties SET key = $3 WHERE tenant_id = $1 AND id = $2", [
-            tenant,
-            sourceProperty.id,
-            "brokenSourceInbox",
-          ]);
-          expect(changed.rowCount).toBe(1);
-        }
-        if (scenario === "property-type") {
-          const changed = await admin.query("UPDATE properties SET type = 'text' WHERE tenant_id = $1 AND id = $2", [tenant, sourceProperty.id]);
-          expect(changed.rowCount).toBe(1);
-        }
-        if (scenario === "target" || scenario === "config-definition") {
-          const key = scenario === "target" ? "targetDatabaseId" : "relationDefinitionId";
-          const changed = await admin.query("UPDATE properties SET config = jsonb_set(config, ARRAY[$3]::text[], to_jsonb($4::text)) WHERE tenant_id = $1 AND id = $2", [tenant, sourceProperty.id, key, randomUUID()]);
-          expect(changed.rowCount).toBe(1);
-        }
-        if (scenario === "definition") {
-          const changed = await admin.query("DELETE FROM relation_definitions WHERE tenant_id = $1 AND id = $2", [
-            tenant,
-            definition.id,
-          ]);
-          expect(changed.rowCount).toBe(1);
-        }
-        const jobs = await admin.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        expect(changed.rowCount).toBe(1);
+      }
+      if (scenario === "property") {
+        const changed = await admin.query("UPDATE properties SET key = $3 WHERE tenant_id = $1 AND id = $2", [
+          tenant,
+          sourceProperty.id,
+          "brokenSourceInbox",
+        ]);
+        expect(changed.rowCount).toBe(1);
+      }
+      if (scenario === "property-type") {
+        const changed = await admin.query("UPDATE properties SET type = 'text' WHERE tenant_id = $1 AND id = $2", [
+          tenant,
+          sourceProperty.id,
+        ]);
+        expect(changed.rowCount).toBe(1);
+      }
+      if (scenario === "target" || scenario === "config-definition") {
+        const key = scenario === "target" ? "targetDatabaseId" : "relationDefinitionId";
+        const changed = await admin.query(
+          "UPDATE properties SET config = jsonb_set(config, ARRAY[$3]::text[], to_jsonb($4::text)) WHERE tenant_id = $1 AND id = $2",
+          [tenant, sourceProperty.id, key, randomUUID()],
         );
-        const events: InvalidationEvent[] = [];
-        const message =
-          scenario === "property"
-            ? "Processing proposals sourceInbox property not found"
-            : ["definition", "property-type", "target", "config-definition"].includes(scenario)
-              ? "Processing proposals sourceInbox relation not found"
-              : "Processing proposals configuration not found";
-        const expected = { status: 404, code: "not_found", message };
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expect(
-            withTransaction(pool, async (client) => {
-              try {
-                await deleteInboxTypeWithClient(client, {
-                  inboxDatabaseId: inbox,
-                  inboxItemTypesDatabaseId: types,
-                  processingProposalsDatabaseId: supplied,
-                  typeItemId: edge.targetItemId,
-                });
-              } catch (error) {
-                expect(error).toMatchObject(expected);
-              }
-            }),
-          ).rejects.toMatchObject(expected);
-          if (scenario === "module" || scenario === "property" || scenario === "definition")
-            await expect(cp.deleteRelation(edge)).rejects.toMatchObject(expected);
-          expect(await targets()).toEqual(originalTargets);
-          expect(await withTransaction(pool, (client) => getItemById(client, types, edge.targetItemId))).toEqual(
-            originalType,
-          );
-          expect(await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId))).toEqual(
-            originalSource,
-          );
-          expect(
-            (
-              await admin.query<{ id: string; key: string | null }>(
-                "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-              )
-            ).rows,
-          ).toEqual(jobs.rows);
-          expect(events).toEqual([]);
-        } finally {
-          setInvalidationHook(() => {});
-        }
-      });
-    },
-  );
+        expect(changed.rowCount).toBe(1);
+      }
+      if (scenario === "definition") {
+        const changed = await admin.query("DELETE FROM relation_definitions WHERE tenant_id = $1 AND id = $2", [
+          tenant,
+          definition.id,
+        ]);
+        expect(changed.rowCount).toBe(1);
+      }
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
+      const events: InvalidationEvent[] = [];
+      const message =
+        scenario === "property"
+          ? "Processing proposals sourceInbox property not found"
+          : ["definition", "property-type", "target", "config-definition"].includes(scenario)
+            ? "Processing proposals sourceInbox relation not found"
+            : "Processing proposals configuration not found";
+      const expected = { status: 404, code: "not_found", message };
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          withTransaction(pool, async (client) => {
+            try {
+              await deleteInboxTypeWithClient(client, {
+                inboxDatabaseId: inbox,
+                inboxItemTypesDatabaseId: types,
+                processingProposalsDatabaseId: supplied,
+                typeItemId: edge.targetItemId,
+              });
+            } catch (error) {
+              expect(error).toMatchObject(expected);
+            }
+          }),
+        ).rejects.toMatchObject(expected);
+        if (scenario === "module" || scenario === "property" || scenario === "definition")
+          await expect(cp.deleteRelation(edge)).rejects.toMatchObject(expected);
+        expect(await targets()).toEqual(originalTargets);
+        expect(await withTransaction(pool, (client) => getItemById(client, types, edge.targetItemId))).toEqual(
+          originalType,
+        );
+        expect(await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId))).toEqual(
+          originalSource,
+        );
+        expect(
+          (
+            await admin.query<{ id: string; key: string | null }>(
+              "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+            )
+          ).rows,
+        ).toEqual(jobs.rows);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+  });
 
   it("does not let another tenant delete an Inbox type edge", async () => {
     const own = await runInTenant(tenant, () => fixture("proposed"));

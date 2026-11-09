@@ -13,6 +13,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { randomUUID } from "node:crypto";
 import { inTenantZero } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { decideAndEnqueueApprovalRequest } from "../mcp/approvalDecisionAction.js";
@@ -71,6 +72,42 @@ describe("notificationsStore (issue #152)", () => {
       }),
     );
   }
+
+  it("does not commit a failed provisional resolved notification in a manual transaction", async () => {
+    const user = await createTestUser();
+    const tenant = tenantOfUser.get(user);
+    if (!tenant) throw new Error("Missing tenant");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(tenant, async () => {
+        const client = await runtime.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
+          await expect(
+            writeNotification(client, {
+              userId: user,
+              kind: "agent_guidance_drift_resolved",
+              linkHref: null,
+              sourceTable: "agent_guidance_drift_findings",
+              sourceId: "missing",
+              transitionInstance: "manual",
+              payload: { projectItemId: "00000000-0000-4000-8000-000000000000", kind: "behavior" },
+            }),
+          ).rejects.toThrow("Guidance drift project not found");
+          await client.query("COMMIT");
+        } finally {
+          client.release();
+        }
+        const rows = await runtime.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [
+          "missing",
+        ]);
+        expect(rows.rows).toEqual([]);
+      });
+    } finally {
+      await runtime.end();
+    }
+  });
 
   it("drains tied resolved rows with full microsecond boundaries under the runtime tenant role", async () => {
     const user = await createTestUser();
