@@ -356,11 +356,10 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
 
     it("keeps authenticating a session by cookie or bearer as a person, and refuses an unknown bearer token", async () => {
       const host = await harness.createHost(harness.tenantA);
-      const sessionToken = harness.headersA.Authorization.replace("Bearer ", "");
+      // A web-platform session is delivered by cookie, the native session of `headersA` by bearer.
+      const cookie = await harness.webSessionCookie(harness.tenantA);
 
-      idsOf(
-        await insert({ Cookie: `semprec_session=${sessionToken}` }, host, { placement: "end", markdown: "Cookie" }),
-      );
+      idsOf(await insert({ Cookie: cookie }, host, { placement: "end", markdown: "Cookie" }));
       expect(await lastUpdateAuthor(host)).toBe("user");
       idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "Bearer" }));
       expect(await lastUpdateAuthor(host)).toBe("user");

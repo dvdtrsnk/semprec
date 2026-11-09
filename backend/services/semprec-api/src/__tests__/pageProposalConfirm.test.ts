@@ -111,6 +111,14 @@ async function cardStatus(cardId: string): Promise<string | undefined> {
   return rows[0]?.status;
 }
 
+/** The stored properties of a card, shown when a precondition about it fails. */
+async function cardProperties(cardId: string): Promise<string> {
+  const { rows } = await runInTenant(harness.tenantA, () =>
+    harness.runtime.query<{ properties: unknown }>(`SELECT properties FROM items WHERE id = $1`, [cardId]),
+  );
+  return JSON.stringify(rows[0]?.properties);
+}
+
 async function updateCount(host: string): Promise<number> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<{ n: number }>(
@@ -147,6 +155,7 @@ describe("POST /api/proposals/:id/confirm for page content (issue #1681)", () =>
         order.delete(order.toArray().indexOf(headingId), 1);
       }),
     );
+    expect(await cardStatus(card), await cardProperties(card)).toBe("proposed");
     const before = { texts: await pageTexts(host), updates: await updateCount(host) };
 
     const refused = await confirm(card);
@@ -167,6 +176,7 @@ describe("POST /api/proposals/:id/confirm for page content (issue #1681)", () =>
       placement: { afterHeading: headingId },
     });
 
+    expect(await cardStatus(card), await cardProperties(card)).toBe("proposed");
     const first = await confirm(card);
     expect(first.status, first.text).toBe(200);
     const confirmedTexts = await pageTexts(host);
