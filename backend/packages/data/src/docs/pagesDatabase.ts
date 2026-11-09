@@ -2,10 +2,10 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { requireAffectedRows } from "../db/pool.js";
+import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import type { DatabaseRow } from "../types.js";
 
-/** Owner module id of the hidden Pages database, and the owner process of its system-owned properties. */
-export const PAGES_MODULE_ID = "pages";
+export { PAGES_MODULE_ID };
 
 /** Property keys of a Pages item: the mirrored title and the id of the host item or parent page. */
 const TITLE_KEY = "title";
