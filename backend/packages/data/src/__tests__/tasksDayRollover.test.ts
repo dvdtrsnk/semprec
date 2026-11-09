@@ -6,7 +6,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
@@ -15,6 +15,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import { createTaskRecurrenceSetRouteHandler } from "../tasks/taskRecurrenceRoutes.js";
+import { closeMissedOccurrence } from "../tasks/closeMissedOccurrences.js";
 import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -459,6 +460,126 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     );
     expect(live.rows).toHaveLength(2);
     expect(live.rows.find((entry) => entry.id !== old)?.properties).toMatchObject({
+      status: "notDone",
+      date: day(0),
+      occurrenceDate: day(0),
+    });
+  });
+
+  it("observes a concurrent completion before attempting a missed transition", async () => {
+    const old = await task({ date: day(-1) });
+    const series = await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: old },
+        body: { preset: "daily" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    const seriesId = series.item.properties.seriesId;
+    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    type Identity = { pid: number; started: string };
+    let release = () => {};
+    let holderReady: (identity: Identity) => void = () => {};
+    let contenderReady: (identity: Identity) => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = new Promise<Identity>((resolve) => {
+      holderReady = resolve;
+    });
+    const competing = new Promise<Identity>((resolve) => {
+      contenderReady = resolve;
+    });
+    const identity = async (client: PoolClient): Promise<Identity> => {
+      const result = await client.query<Identity>(
+        "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+      );
+      if (!result.rows[0]) throw new Error("Missing actor identity");
+      return result.rows[0];
+    };
+    const holder = inTenant(() =>
+      withTransaction(pool, async (client) => {
+        const actor = await identity(client);
+        await updateItemWithClient(
+          client,
+          { databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } },
+          { writer: { writerKind: "user" } },
+        );
+        holderReady(actor);
+        await gate;
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let contender: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const bounded = async (
+        value: Promise<Identity>,
+        actors: Array<Promise<{ ok: true } | { ok: false; error: unknown }>>,
+      ) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            value,
+            ...actors.map((actor) =>
+              actor.then((result) => {
+                throw result.ok ? new Error("Actor ended early") : result.error;
+              }),
+            ),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Actor readiness timed out")), WAIT_MS);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      const owner = await bounded(held, [holder]);
+      contender = inTenant(() =>
+        withTransaction(pool, async (client) => {
+          contenderReady(await identity(client));
+          await closeMissedOccurrence(client, tasksId, old, day(0));
+        }),
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const waiter = await bounded(competing, [holder, contender]);
+      await expect
+        .poll(
+          async () => {
+            const result = await admin.query<{ blocked: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM pg_stat_activity h JOIN pg_stat_activity w ON w.pid = $3
+           WHERE h.pid = $1 AND h.backend_start = $2::timestamptz AND w.backend_start = $4::timestamptz
+             AND $1::int = ANY(pg_blocking_pids(w.pid))) AS blocked`,
+              [owner.pid, owner.started, waiter.pid, waiter.started],
+            );
+            return result.rows[0]?.blocked;
+          },
+          { timeout: WAIT_MS },
+        )
+        .toBe(true);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const outcomes = await Promise.all([holder, ...(contender ? [contender] : [])]);
+    const failures = outcomes.flatMap((result) => (result.ok ? [] : [result.error]));
+    if (failure && failures.length)
+      throw new AggregateError([failure.error, ...failures], "Completion overlap failed", { cause: failure.error });
+    if (failure) throw failure.error;
+    if (failures.length) throw new AggregateError(failures, "Completion overlap actors failed");
+    expect((await row(old)).properties.status).toBe("done");
+    const occurrences = await inTenant(() =>
+      pool.query<{ id: string; properties: Record<string, unknown> }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL",
+        [tasksId, seriesId],
+      ),
+    );
+    expect(occurrences.rows).toHaveLength(2);
+    expect(occurrences.rows.find((entry) => entry.id !== old)?.properties).toMatchObject({
       status: "notDone",
       date: day(0),
       occurrenceDate: day(0),
