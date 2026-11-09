@@ -198,13 +198,30 @@ export async function prepareUserItemPatch(
   database: DatabaseRow,
   stored: ItemRow,
   timezone: string,
-): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
+): Promise<{
+  patch: Record<string, unknown>;
+  deferredKeys: string[];
+  command?: { key: string; intent: unknown; preconditions: Record<string, unknown> };
+}> {
   const callerKeys = Object.keys(values);
-  assertUserItemPatchValid(properties, values, database.ownerModuleId);
+  const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
+  const hasCommand = command !== undefined && Object.hasOwn(values, command.key);
+  const ordinary = { ...values };
+  let preparedCommand: { key: string; intent: unknown; preconditions: Record<string, unknown> } | undefined;
+  if (hasCommand && command) {
+    const property = properties.find((candidate) => candidate.key === command.key);
+    if (!property || property.owner !== "system" || property.ownerProcess !== database.ownerModuleId)
+      throw new ForbiddenError("Item command owner does not match", { field: command.key }, "owner_violation");
+    assertWritableProperties(properties, [command.key], { allowedSystemKeys: [command.key] });
+    delete ordinary[command.key];
+    const prepared = command.prepare(values[command.key], stored, ordinary);
+    preparedCommand = { key: command.key, ...prepared };
+  }
+  assertUserItemPatchValid(properties, ordinary, database.ownerModuleId);
   if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
   const result = await prepareItemPreWriteTransforms(database.ownerModuleId, {
     stored,
-    patch: { ...values },
+    patch: ordinary,
     timezone,
   });
   if (!result)
@@ -219,7 +236,7 @@ export async function prepareUserItemPatch(
       throw new ValidationError("The item's write transform declared an invalid deferred key", { field: key });
     }
   }
-  return result;
+  return preparedCommand ? { ...result, command: preparedCommand } : result;
 }
 
 /**
@@ -542,7 +559,7 @@ export async function updateItemWithClient(
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
   if (hasCommand && command && moduleId && stored) {
-    command.prepare(input.propertiesPatch[command.key]);
+    command.validate(input.propertiesPatch[command.key]);
     const generated = await command.consume(
       { client, database, stored, patch: propertiesPatch, writer, humanWriterUserId: options.humanWriterUserId },
       input.propertiesPatch[command.key],

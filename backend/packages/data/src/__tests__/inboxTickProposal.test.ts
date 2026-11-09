@@ -5518,6 +5518,22 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       expect(error.details).toEqual({ ref: "move", field: "time" });
     });
 
+    it("keeps recurrence commands unavailable to Inbox proposal envelopes", async () => {
+      const task = await createItem("tasks", { name: "Task", date: "2026-10-22" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { recurrence: { preset: "weekly" } },
+            before: { properties: { recurrence: null } },
+            after: { properties: { recurrence: { preset: "weekly" } } },
+          },
+          task,
+          "tasks",
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "recurrence" });
+    });
+
     it("rejects a changed key that is missing from before", async () => {
       const project = await createItem("projects", { name: "Home", status: "inProgress" });
 

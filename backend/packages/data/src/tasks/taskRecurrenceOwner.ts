@@ -121,6 +121,27 @@ export function validateRecurrenceCommand(value: unknown): void {
   }
 }
 
+export function prepareRecurrenceCommand(value: unknown, stored: ItemRow, patch: Record<string, unknown>) {
+  validateRecurrenceCommand(value);
+  const previousDate: unknown = structuredClone(stored.properties.date ?? null);
+  const previousRecurrence: unknown = structuredClone(stored.properties.recurrence ?? null);
+  if (value === null) return { intent: null, preconditions: { date: previousDate, recurrence: previousRecurrence } };
+  const request = parseRequest(value);
+  const effectiveDate = Object.hasOwn(patch, "date") ? patch.date : stored.properties.date;
+  if (!isCalendarDate(effectiveDate)) throw new ValidationError("A recurring task needs a date", { field: "date" });
+  const intent =
+    request.preset === null
+      ? {
+          mode: request.mode,
+          rule: {
+            ...structuredClone(z.record(z.string(), z.unknown()).parse(request.rule)),
+            ...resolveRule(request, effectiveDate),
+          },
+        }
+      : { preset: request.preset };
+  return { intent, preconditions: { date: previousDate, recurrence: previousRecurrence } };
+}
+
 export async function applyRecurrenceCommand(
   client: PoolClient,
   task: ItemRow,

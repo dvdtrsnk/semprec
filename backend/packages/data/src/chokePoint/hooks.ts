@@ -200,7 +200,15 @@ const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, Item
 export interface ItemUpdateCommand {
   key: string;
   consume: (context: ItemPreWriteTransformContext, value: unknown) => Promise<Record<string, unknown>>;
-  prepare: (value: unknown) => void;
+  validate: (value: unknown) => void;
+  prepare: (
+    value: unknown,
+    stored: ItemRow,
+    patch: Record<string, unknown>,
+  ) => {
+    intent: unknown;
+    preconditions: Record<string, unknown>;
+  };
 }
 export type ItemPatchApprovalContribution = (
   client: PoolClient,

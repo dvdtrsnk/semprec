@@ -1,6 +1,7 @@
 import {
   applyRecurrenceCommand,
   validateRecurrenceCommand,
+  prepareRecurrenceCommand,
   projectRecurrenceApproval,
 } from "./tasks/taskRecurrenceOwner.js";
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
@@ -88,7 +89,8 @@ registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTas
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
 registerItemUpdateCommand(TASKS_MODULE_ID, {
   key: "recurrence",
-  prepare: validateRecurrenceCommand,
+  validate: validateRecurrenceCommand,
+  prepare: prepareRecurrenceCommand,
   consume: ({ client, stored, patch, writer }, value) => {
     if (!stored) throw new Error("Task command requires an existing item");
     return applyRecurrenceCommand(client, stored, patch, value, writer);

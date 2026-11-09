@@ -6,7 +6,11 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { getDatabase } from "../chokePoint/databasesStore.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
+import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
@@ -155,6 +159,99 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     );
     expect(ended.properties.recurrence).toBeNull();
     expect((await seriesRows())[0]?.active).toBe(false);
+  });
+
+  it("prepares typed recurrence intent with copied item preconditions and no effects", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const initialSeries = await seriesRows();
+    const beforeJobs = await admin.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabase(client, tasksId);
+          const item = await getItemById(client, tasksId, id);
+          const properties = await listPropertiesByDatabase(client, tasksId);
+          if (!database || !item) throw new Error("Missing task fixture");
+          const before = structuredClone(item);
+          const input = { recurrence: { mode: "fixed", rule: { kind: "monthDates", dates: [5] } } };
+          const inputBefore = structuredClone(input);
+          const explicit = await prepareUserItemPatch(properties, input, database, item, "Europe/Prague");
+          expect(explicit).toMatchObject({
+            patch: {},
+            command: {
+              key: "recurrence",
+              intent: input.recurrence,
+              preconditions: { date: "2026-10-22", recurrence: item.properties.recurrence },
+            },
+          });
+          expect(explicit.command?.preconditions.recurrence).not.toBe(item.properties.recurrence);
+          expect(input).toEqual(inputBefore);
+          expect(item).toEqual(before);
+          expect(
+            (
+              await prepareUserItemPatch(
+                properties,
+                { recurrence: { preset: "daily" } },
+                database,
+                item,
+                "Europe/Prague",
+              )
+            ).command?.intent,
+          ).toEqual({ preset: "daily" });
+          expect(
+            (await prepareUserItemPatch(properties, { recurrence: null }, database, item, "Europe/Prague")).command
+              ?.intent,
+          ).toBeNull();
+          await expect(
+            prepareUserItemPatch(properties, { recurrence: { preset: "unknown" } }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 400 });
+          await expect(
+            prepareUserItemPatch(
+              properties,
+              { recurrence: { preset: "daily" }, date: null },
+              database,
+              item,
+              "Europe/Prague",
+            ),
+          ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
+          await expect(
+            prepareUserItemPatch(properties, { seriesId: "foreign" }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 403 });
+          const mismatched = properties.map((property) =>
+            property.key === "recurrence" ? { ...property, ownerProcess: "other" } : property,
+          );
+          await expect(
+            prepareUserItemPatch(mismatched, { recurrence: null }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 403 });
+          await expect(
+            prepareUserItemPatch(
+              properties,
+              { recurrence: null },
+              { ...database, ownerModuleId: null },
+              item,
+              "Europe/Prague",
+            ),
+          ).rejects.toMatchObject({ status: 403 });
+        }),
+      );
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(await seriesRows()).toEqual(initialSeries);
+    expect(
+      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+    ).toEqual(beforeJobs.rows);
+    expect(events).toEqual([]);
+    await expect(
+      runInTenant(tenant, () =>
+        cp.createItem({ databaseId: tasksId, properties: { name: "Forbidden", recurrence: { preset: "daily" } } }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("defers an agent's change of an active series without modifying it", async () => {
