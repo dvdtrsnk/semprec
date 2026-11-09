@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry, type ModuleCatalogs } from "@semprec/module-registry";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { withTransaction } from "../db/pool.js";
+import { ensurePagesDatabase } from "../docs/pagesDatabase.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -81,6 +84,9 @@ describe("system i18n catalog coverage (issue #146)", () => {
     viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
+    // The hidden Pages database the docs module declares is created on first use, not by the seed; create it the way
+    // production does so its properties are covered like every other declared database's.
+    await runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => ensurePagesDatabase(client)));
 
     registry = new ModuleRegistry(() => new Set(ALL_MODULE_IDS));
     for (const path of MANIFEST_PATHS) {

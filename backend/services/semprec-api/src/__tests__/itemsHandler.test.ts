@@ -811,8 +811,11 @@ describe("item routes (issue #241)", () => {
       blocks: [{ pageId: "page-0" }, { pageId: "page-1" }, {}, {}, {}],
     });
     const markdown = await fetch(`${path}?format=markdown`, { headers });
-    expect(markdown.status).toBe(400);
-    expect(await markdown.json()).toMatchObject({ error: { details: { field: "format" } } });
+    expect(markdown.status).toBe(200);
+    expect(await markdown.json()).toMatchObject({ docId: row.id, kind: "page", markdown: expect.any(String) });
+    const unknownFormat = await fetch(`${path}?format=html`, { headers });
+    expect(unknownFormat.status).toBe(400);
+    expect(await unknownFormat.json()).toMatchObject({ error: { details: { field: "format" } } });
     expect((await fetch(path)).status).toBe(401);
   });
 

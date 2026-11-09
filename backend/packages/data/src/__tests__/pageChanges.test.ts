@@ -176,8 +176,9 @@ describe("listPageChanges (issue #1680)", () => {
     await write(docId, "ai_agent", (doc) => insertBlocks(doc, "c", [{ id: "d", type: "text", text: "D" }]));
 
     expect((await changes(docId, since, "ai_agent", 2)).map((change) => change.blockIds)).toEqual([["a", "b"], ["c"]]);
+    // The move of `b` is not an entry, and the ids of the first insert keep the order they had when it was stored.
     expect((await changes(docId, since, "ai_agent")).map((change) => change.blockIds)).toEqual([
-      ["b", "a"],
+      ["a", "b"],
       ["c"],
       ["d"],
     ]);

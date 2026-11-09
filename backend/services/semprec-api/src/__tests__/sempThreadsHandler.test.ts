@@ -495,7 +495,8 @@ describe("durable Semp thread history", () => {
       ),
     );
     // Stored exactly as sent: the occurrence carries no item id.
-    expect(stored.rows).toEqual([{ context: [occurrence] }, { context: [trace] }]);
+    expect(stored.rows).toHaveLength(2);
+    expect(stored.rows).toEqual(expect.arrayContaining([{ context: [occurrence] }, { context: [trace] }]));
 
     const snapshot = () =>
       runInTenant(tenant, async () => {

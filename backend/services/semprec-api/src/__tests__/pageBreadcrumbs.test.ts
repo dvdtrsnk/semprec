@@ -152,10 +152,10 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
     const chain = await harness.admin.query<{ id: string; label: string }>(
       `WITH chain AS (SELECT n, gen_random_uuid() AS id FROM generate_series(1, 1200) AS n),
             linked AS (SELECT c.n, c.id, COALESCE(p.id::text, $2::text) AS parent FROM chain c LEFT JOIN chain p ON p.n = c.n - 1)
-       INSERT INTO items (id, database_id, properties)
-       SELECT id, $1, jsonb_build_object('title', 'p' || n, 'parentItemId', parent) FROM linked
+       INSERT INTO items (id, database_id, tenant_id, properties)
+       SELECT id, $1, $3, jsonb_build_object('title', 'p' || n, 'parentItemId', parent) FROM linked
        RETURNING id, properties->>'title' AS label`,
-      [databaseId, head.pageItemId],
+      [databaseId, head.pageItemId, harness.tenantA],
     );
     const tail = chain.rows.find((row) => row.label === "p1200")?.id;
     if (!tail) throw new Error("Missing chain tail");
@@ -215,10 +215,23 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
 });
 
 describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => {
-  beforeAll(() => harness.start());
+  // `createApiActionRegistry` reads the internal AI gateway token to build the guidance action; the value is a placeholder
+  // and no gateway is called (the same setup `actionRegistryComposition.test.ts` uses).
+  const originalToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
+  beforeAll(async () => {
+    process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-internal-token";
+    await harness.start();
+  });
   beforeEach(() => harness.reset());
   afterEach(() => vi.useRealTimers());
-  afterAll(() => harness.stop());
+  afterAll(async () => {
+    try {
+      await harness.stop();
+    } finally {
+      if (originalToken === undefined) delete process.env.AI_GATEWAY_INTERNAL_TOKEN;
+      else process.env.AI_GATEWAY_INTERNAL_TOKEN = originalToken;
+    }
+  });
 
   it("reads the retitled page in its breadcrumbs and in the trash list once the mirror job has run", async () => {
     // Edits are written 60 seconds in the past, so their 10-second debounce has elapsed when the queue is drained.

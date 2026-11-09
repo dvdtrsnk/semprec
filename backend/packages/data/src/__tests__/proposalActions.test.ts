@@ -922,7 +922,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(rows[0].n).toBe(1);
   });
 
-  it("revises a Markdown proposal and refuses confirmation without changing its card or page", async () => {
+  it("revises a Markdown proposal and then confirms it into the page as the user, through the runtime role", async () => {
     const proposal = await createDatabaseProposal("Page proposal");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
@@ -958,31 +958,24 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         status: 400,
         details: { field: "properties" },
       });
-      const readCard = () =>
-        runInTenant(tenant, () =>
-          withTransaction(runtime, (client) => itemsStore.getItemById(client, proposalsId, proposal.id)),
-        );
-      const before = await readCard();
       const docsBefore = await runInTenant(tenant, () =>
         runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [project.id]),
       );
-      await expect(
-        runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
-          ),
+      expect(docsBefore.rows).toEqual([{ count: 0 }]);
+      // Issue #1681 replaced the earlier 409: the revised card now confirms and writes its content.
+      const confirmed = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
         ),
-      ).rejects.toMatchObject({ status: 409 });
-      expect(await readCard()).toEqual(before);
-      expect(
-        (
-          await runInTenant(tenant, () =>
-            runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [
-              project.id,
-            ]),
-          )
-        ).rows,
-      ).toEqual(docsBefore.rows);
+      );
+      expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: project.id });
+      const written = await runInTenant(tenant, () =>
+        runtime.query<{ created_by: string }>(
+          `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1`,
+          [project.id],
+        ),
+      );
+      expect(written.rows).toEqual([{ created_by: "user" }]);
     } finally {
       await runtime.end();
     }
