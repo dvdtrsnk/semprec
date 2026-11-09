@@ -18,8 +18,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * The `pageTitleMirror` task (issue #1715): copies the plain text of the `page` blocks of one item's document onto
  * the `title` of the Pages items they name, in one transaction. The block text is the source and the item title a
  * mirror (`docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md`), so the job only ever writes items
- * and never the document. A completed no-op when the item is missing or trashed, has no page document, or the tenant
- * has no Pages database yet.
+ * and never the document. A completed no-op when the item is missing or trashed (checked under a lock on its row),
+ * has no page document, or the tenant has no Pages database yet.
  *
  * A block is mirrored only when it names a live Pages item whose `parentItemId` is this document's item: a block that
  * points to a trashed page, to a page of another parent, to an item of another database or to an unknown id is left
@@ -30,9 +30,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function handlePageTitleMirrorTask(pool: Pool, payload: unknown): Promise<void> {
   const { itemId } = payloadSchema.parse(payload);
   await withTransaction(pool, async (client) => {
-    const [host] = await getItemsByIds(client, [itemId]);
-    const docRow = host ? await getDocByItemId(client, itemId) : null;
-    if (!host || docRow?.kind !== "page") return;
+    // The host row is reserved (blocking `FOR UPDATE`, the lock a trash of the host takes first) and rechecked live
+    // before its document is loaded or any child is written: a trash committed earlier makes this a no-op, and a
+    // trash that starts later waits until this transaction has written the titles. Lock order: host, document, then
+    // the Pages items in id order; the trash cascade never locks a Pages item of this host.
+    const [visible] = await getItemsByIds(client, [itemId]);
+    const host = visible ? await lockItemById(client, visible.databaseId, itemId) : null;
+    if (!host || host.deletedAt !== null) return;
+    const docRow = await getDocByItemId(client, itemId);
+    if (docRow?.kind !== "page") return;
     const pagesDatabase = await databasesStore.getDatabaseByModuleId(client, PAGES_MODULE_ID);
     if (!pagesDatabase) return;
 

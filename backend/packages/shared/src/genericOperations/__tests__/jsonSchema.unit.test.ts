@@ -125,7 +125,7 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 
 // Recorded from the unchanged compiled shared generator at the repair base. `page.get` was re-recorded when issue #1678
 // added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676) and
-// `page.insert` (#1679) were recorded when they joined the catalog.
+// `page.insert` (#1679) and `page.changes` (#1680) were recorded when they joined the catalog.
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -165,6 +165,7 @@ const defaultHashes: Record<string, string> = {
   "page.ensure": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
   "page.createSubpage": "cc97079ec654aec1f2804c23835b13a78a08edaed8ed7c94813ff2ad0587b9ab",
   "page.insert": "d284651aff522abffd1f21dabefe7ff196fca8e5c028ef37316f3c5d51ea0ac8",
+  "page.changes": "f0ff5e6ad26a100a3ab35d676dcf5541d2a7906700cd94b225623e8f7865a384",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {

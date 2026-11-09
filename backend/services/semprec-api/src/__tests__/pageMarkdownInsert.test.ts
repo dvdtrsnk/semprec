@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { writePageTextBlocks } from "@semprec/data/testSupport";
-import { createChokePoint, mintMcpRunCredential, seedSystem, withTransaction } from "@semprec/data";
+import { loadYDoc } from "@semprec/data";
 import { PageHttpHarness } from "./pageHttpHarness.js";
 
 const harness = new PageHttpHarness();
@@ -211,29 +212,15 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
     expect(await stateOf(host)).toEqual(before);
   });
 
-  it("attributes the stored update to the session user, and to ai_agent for a run credential", async () => {
+  it("attributes the stored update to the session user, and to ai_agent for a run credential over /mcp", async () => {
     const host = await harness.createHost(harness.tenantA);
     idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "By the user" }));
     expect(await lastUpdateAuthor(host)).toBe("user");
 
-    await runInTenant(harness.tenantA, () => seedSystem(harness.runtime));
-    const credential = await runInTenant(harness.tenantA, async () => {
-      const chokePoint = createChokePoint(harness.runtime);
-      const projects = (await chokePoint.listDatabases()).find((database) => database.ownerModuleId === "projects");
-      if (!projects) throw new Error("Projects database was not seeded");
-      const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
-      const { rows } = await harness.runtime.query<{ id: string }>(`SELECT id FROM users WHERE tenant_id = $1`, [
-        harness.tenantA,
-      ]);
-      const userId = rows[0]?.id;
-      if (!userId) throw new Error("Missing tenant user");
-      return withTransaction(harness.runtime, (client) =>
-        mintMcpRunCredential(client, { projectItemId: project.id, capabilities: ["core.page.write"], userId }),
-      );
-    });
+    const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
     const response = await fetch(`${harness.baseUrl}/mcp`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
@@ -327,6 +314,191 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       expect(refused.status).toBe(400);
       expect(await stateOf(host)).toEqual(before);
       expect(before.docs).toBe(0);
+    });
+  });
+
+  describe("callers of the HTTP route", () => {
+    const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+    it("authors an agent run credential's insert as ai_agent when it holds core.page.write", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+
+      const ids = idsOf(await insert(bearer(token), host, { placement: "end", markdown: "By the run" }));
+
+      expect(ids).toHaveLength(1);
+      expect(await lastUpdateAuthor(host)).toBe("ai_agent");
+      expect((await blocksOf(host)).map((block) => block.text)).toEqual(["By the run"]);
+    });
+
+    it("answers a credential without core.page.write like an unknown operation, writing nothing", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.read"]);
+      const before = await stateOf(host);
+
+      const refused = await insert(bearer(token), host, { placement: "end", markdown: "Not granted" });
+
+      expect(refused.status).toBe(404);
+      expect(errorBody.parse(JSON.parse(refused.text)).error.code).toBe("not_found");
+      expect(await stateOf(host)).toEqual(before);
+    });
+
+    it("answers a credential of another tenant exactly like an unknown item", async () => {
+      const hostB = await harness.createHost(harness.tenantB);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+      const foreign = await insert(bearer(token), hostB, { placement: "end", markdown: "Foreign" });
+      const unknown = await insert(bearer(token), randomUUID(), { placement: "end", markdown: "Unknown" });
+
+      expect(foreign.status).toBe(404);
+      expect(unknown.status).toBe(404);
+      expect(foreign.text.replaceAll(hostB, "<id>")).toBe(unknown.text.replace(/[0-9a-f-]{36}/, "<id>"));
+    });
+
+    it("keeps authenticating a session by cookie or bearer as a person, and refuses an unknown bearer token", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const sessionToken = harness.headersA.Authorization.replace("Bearer ", "");
+
+      idsOf(
+        await insert({ Cookie: `semprec_session=${sessionToken}` }, host, { placement: "end", markdown: "Cookie" }),
+      );
+      expect(await lastUpdateAuthor(host)).toBe("user");
+      idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "Bearer" }));
+      expect(await lastUpdateAuthor(host)).toBe("user");
+
+      const before = await stateOf(host);
+      expect((await insert(bearer("not-a-token"), host, { placement: "end", markdown: "x" })).status).toBe(401);
+      expect(await stateOf(host)).toEqual(before);
+    });
+  });
+
+  describe("placement and ids (issue #1679 repair)", () => {
+    async function indentsOf(itemId: string): Promise<Array<[string, number]>> {
+      const { rows } = await runInTenant(harness.tenantA, () =>
+        harness.runtime.query<{ id: string }>(`SELECT id FROM docs WHERE item_id = $1`, [itemId]),
+      );
+      const docId = rows[0]?.id;
+      if (!docId) throw new Error("Missing document");
+      return runInTenant(harness.tenantA, async () => {
+        const doc = await loadYDoc(harness.runtime, docId);
+        try {
+          // Read through the document's own maps: this package does not import the block model.
+          const blocks = doc.getMap<Y.Map<unknown>>("blocks");
+          return doc
+            .getArray<string>("order")
+            .toArray()
+            .flatMap((id): Array<[string, number]> => {
+              const block = blocks.get(id);
+              if (!(block instanceof Y.Map)) return [];
+              const text = block.get("text");
+              const indent = block.get("indent");
+              return [[text instanceof Y.Text ? String(text.toJSON()) : "", typeof indent === "number" ? indent : 0]];
+            });
+        } finally {
+          doc.destroy();
+        }
+      });
+    }
+
+    /** A page whose block "Deep" is at indent 2, made through the route with a nested list. */
+    async function hostWithDeepBlock(): Promise<{ host: string; deepId: string }> {
+      const host = await harness.createHost(harness.tenantA);
+      const ids = idsOf(
+        await insert(harness.headersA, host, { placement: "end", markdown: "- Top\n  - Mid\n    - Deep\n\nTail" }),
+      );
+      expect(await indentsOf(host)).toEqual([
+        ["Top", 0],
+        ["Mid", 1],
+        ["Deep", 2],
+        ["Tail", 0],
+      ]);
+      const deepId = ids[2];
+      if (!deepId) throw new Error("Missing the nested block id");
+      return { host, deepId };
+    }
+
+    it("anchors plain and nested input at the level of the block it follows", async () => {
+      const { host, deepId } = await hostWithDeepBlock();
+      idsOf(await insert(harness.headersA, host, { placement: { afterBlockId: deepId }, markdown: "Plain" }));
+      idsOf(await insert(harness.headersA, host, { placement: { afterBlockId: deepId }, markdown: "- Up\n  - Down" }));
+
+      expect(await indentsOf(host)).toEqual([
+        ["Top", 0],
+        ["Mid", 1],
+        ["Deep", 2],
+        ["Up", 2],
+        ["Down", 3],
+        ["Plain", 2],
+        ["Tail", 0],
+      ]);
+    });
+
+    it("keeps the parsed indentation at the start and at the end", async () => {
+      const { host } = await hostWithDeepBlock();
+      idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "- Last\n  - Child" }));
+      idsOf(await insert(harness.headersA, host, { placement: "start", markdown: "First" }));
+
+      expect((await indentsOf(host)).filter(([text]) => ["First", "Last", "Child"].includes(text))).toEqual([
+        ["First", 0],
+        ["Last", 0],
+        ["Child", 1],
+      ]);
+    });
+
+    it("refuses nested input that would pass the maximum indentation, writing nothing", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const markdown = "- L0\n  - L1\n    - L2\n      - L3\n        - L4\n          - L5";
+      const ids = idsOf(await insert(harness.headersA, host, { placement: "end", markdown }));
+      const lastId = ids[5];
+      if (!lastId) throw new Error("Missing the deepest block id");
+      const before = { state: await stateOf(host), blocks: await indentsOf(host) };
+
+      const refused = await insert(harness.headersA, host, {
+        placement: { afterBlockId: lastId },
+        markdown: "- A\n  - B",
+      });
+
+      expect(refused.status).toBe(400);
+      expect(errorBody.parse(JSON.parse(refused.text)).error.details).toMatchObject({
+        field: "markdown",
+        path: "block 1: indent",
+        reason: "invalid_indent",
+      });
+      expect({ state: await stateOf(host), blocks: await indentsOf(host) }).toEqual(before);
+    });
+
+    it("counts one supplied id for every parsed block, indented ones included", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const markdown = "- a\n  - b";
+
+      const short = await insert(harness.headersA, host, { placement: "end", markdown, blockIds: ["only-one"] });
+      expect(short.status).toBe(400);
+      expect(errorBody.parse(JSON.parse(short.text)).error.details).toMatchObject({ field: "blockIds" });
+      expect((await stateOf(host)).docs).toBe(0);
+
+      expect(
+        idsOf(await insert(harness.headersA, host, { placement: "end", markdown, blockIds: ["x1", "x2"] })),
+      ).toEqual(["x1", "x2"]);
+    });
+
+    it("validates the placement of empty Markdown without creating or changing anything", async () => {
+      const host = await harness.createHost(harness.tenantA);
+      const noPage = await insert(harness.headersA, host, { placement: { afterBlockId: "ghost" }, markdown: "" });
+      expect(noPage.status).toBe(400);
+      expect(errorBody.parse(JSON.parse(noPage.text)).error.details).toMatchObject({
+        field: "placement.afterBlockId",
+      });
+      expect((await stateOf(host)).docs).toBe(0);
+
+      const [known] = idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "Real" }));
+      if (!known) throw new Error("Missing the block id");
+      const before = await stateOf(host);
+      const unknown = await insert(harness.headersA, host, { placement: { afterBlockId: "ghost" }, markdown: " \n " });
+      expect(unknown.status).toBe(400);
+      expect(idsOf(await insert(harness.headersA, host, { placement: { afterBlockId: known }, markdown: "" }))).toEqual(
+        [],
+      );
+      expect(idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "" }))).toEqual([]);
+      expect(await stateOf(host)).toEqual(before);
     });
   });
 });

@@ -3,7 +3,8 @@ import type { Pool } from "pg";
 import { getBlocksMap, getOrderArray } from "@semprec/block-model";
 import { withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
-import { assertDocVersionReadable, readCheckpointAtOrBefore } from "./docHistory.js";
+import { ValidationError } from "../errors.js";
+import { assertDocVersionReadable, readCheckpointHeadAtOrBefore, readCheckpointState } from "./docHistory.js";
 
 export type PageChangeKind = "insert" | "update" | "delete";
 
@@ -77,52 +78,113 @@ function diffSnapshots(before: BlockSnapshot, after: BlockSnapshot, at: string):
   return changes;
 }
 
+/** The most history updates one request replays, silent ones included. */
+export const PAGE_CHANGES_MAX_UPDATES = 5_000;
+/** The most serialized bytes one request replays: the checkpoint state plus every replayed update. */
+export const PAGE_CHANGES_MAX_BYTES = 16 * 1024 * 1024;
+/** Rows whose sizes one metadata query reads. */
+const METADATA_ROWS = 200;
+/** The most update bytes one fetch reads (a single update larger than this is still fetched alone, within the budget). */
+const FETCH_BYTES = 4 * 1024 * 1024;
+
+function historyWindowTooLarge(): ValidationError {
+  return new ValidationError("The page history since this time is too large to list; use a later 'since'", {
+    field: "since",
+    reason: "history_window_too_large",
+  });
+}
+
 /**
  * The block changes stored updates made to the page document `docId` since `since` (issue #1680), computed by
- * replaying its history: the nearest checkpoint at or before `since`, then the retained `doc_history_updates` in id
- * order, the ones stored by `since` silently and the later ones one by one. For each later update with the requested
- * author the block maps before and after it are compared: a new id is an `insert`, a removed id a `delete`, a block
- * whose fields or text changed an `update`. Changes of different updates are never merged; one update that does more
- * than one of these yields one entry per kind, with the same `at`. Only the update's author decides which are listed:
- * a block written by a user-confirmed proposal is stored with author `user` and so is not an `ai_agent` change.
- * Moving a block changes the order, not the block, and is not reported.
+ * replaying its history: the nearest checkpoint at or before `since`, then the retained `doc_history_updates` strictly
+ * in `update_id` order. An update stored at or before `since` (by `created_at`) is applied without being reported;
+ * each later update with the requested author is reported from the difference of the block maps before and after it:
+ * a new id is an `insert`, a removed id a `delete`, a block whose fields or text changed an `update`. Timestamps only
+ * decide what is reported, never the replay order, so an update is never applied before the updates it was written
+ * on top of. Changes of different updates are never merged; one update that does more than one of these yields one
+ * entry per kind, with the same `at` and that kind's block ids. Only the update's author decides which are listed: a
+ * block written by a user-confirmed proposal is stored with author `user` and so is not an `ai_agent` change. Moving a
+ * block changes the order, not the block, and is not reported.
+ *
+ * The whole read is one `REPEATABLE READ` transaction that takes no lock: the checkpoint, the document row and every
+ * history page come from one snapshot, so a retention sweep that commits meanwhile cannot remove rows the checkpoint
+ * relies on. Work is bounded by a fixed budget of `PAGE_CHANGES_MAX_UPDATES` updates and `PAGE_CHANGES_MAX_BYTES`
+ * serialized bytes (the checkpoint state counts; its size is read before the state is fetched). Sizes are read in
+ * pages of at most `METADATA_ROWS` rows and update bytes are fetched in groups of at most `FETCH_BYTES`. The replay
+ * stops as soon as `limit` entries exist, so a satisfied request never reads the rest of the history; a replay that
+ * needs more than the budget before that is a `ValidationError` on `since` with reason `history_window_too_large`.
+ * The byte budget bounds what is read, not the memory a decoded Yjs state takes.
  *
  * `since` in the future is a `ValidationError`, one before the retained history a `HistoryNotRetainedError`
- * (`history_not_retained`), an unknown doc a `NotFoundError`; the whole read runs in one transaction.
+ * (`history_not_retained`), an unknown doc a `NotFoundError`.
  */
 export async function listPageChanges(
   pool: Pool,
   docId: string,
   options: ListPageChangesOptions,
 ): Promise<PageChange[]> {
-  return withTransaction(pool, async (client) => {
-    await assertDocVersionReadable(client, docId, options.since);
-    const checkpoint = await readCheckpointAtOrBefore(client, docId, options.since);
-    const doc = new Y.Doc();
-    doc.gc = false;
-    try {
-      Y.applyUpdate(doc, checkpoint.state);
-      const { rows } = await client.query<{ update: Buffer; created_by: CreatedBy; created_at: Date }>(
-        `SELECT update, created_by, created_at FROM doc_history_updates
-         WHERE doc_id = $1 AND update_id > $2 ORDER BY update_id ASC`,
-        [docId, checkpoint.throughUpdateId],
-      );
-      // The state at `since` first: every update stored by then, whoever wrote it.
-      for (const row of rows) {
-        if (row.created_at.getTime() <= options.since.getTime()) Y.applyUpdate(doc, row.update);
+  return withTransaction(
+    pool,
+    async (client) => {
+      await assertDocVersionReadable(client, docId, options.since);
+      const head = await readCheckpointHeadAtOrBefore(client, docId, options.since);
+      if (head.stateBytes > PAGE_CHANGES_MAX_BYTES) throw historyWindowTooLarge();
+      let usedUpdates = 0;
+      let usedBytes = head.stateBytes;
+      const doc = new Y.Doc();
+      doc.gc = false;
+      try {
+        Y.applyUpdate(doc, await readCheckpointState(client, head.id));
+        const changes: PageChange[] = [];
+        let cursor = head.throughUpdateId;
+        for (;;) {
+          const { rows: sizes } = await client.query<{ update_id: string; size: number }>(
+            `SELECT update_id, octet_length(update)::int AS size FROM doc_history_updates
+             WHERE doc_id = $1 AND update_id > $2 ORDER BY update_id ASC LIMIT $3`,
+            [docId, cursor, METADATA_ROWS],
+          );
+          if (sizes.length === 0) return changes;
+          const ids: string[] = [];
+          let groupBytes = 0;
+          for (const row of sizes) {
+            const fitsBudget =
+              usedUpdates + ids.length < PAGE_CHANGES_MAX_UPDATES &&
+              usedBytes + groupBytes + row.size <= PAGE_CHANGES_MAX_BYTES;
+            if (!fitsBudget) {
+              if (ids.length === 0) throw historyWindowTooLarge();
+              break;
+            }
+            if (ids.length > 0 && groupBytes + row.size > FETCH_BYTES) break;
+            ids.push(row.update_id);
+            groupBytes += row.size;
+          }
+          const { rows } = await client.query<{
+            update_id: string;
+            update: Buffer;
+            created_by: CreatedBy;
+            created_at: Date;
+          }>(
+            `SELECT update_id, update, created_by, created_at FROM doc_history_updates
+             WHERE doc_id = $1 AND update_id = ANY($2::bigint[]) ORDER BY update_id ASC`,
+            [docId, ids],
+          );
+          if (rows.length !== ids.length) throw new Error("History rows disappeared inside their own snapshot");
+          usedUpdates += rows.length;
+          usedBytes += groupBytes;
+          for (const row of rows) {
+            const reported = row.created_at.getTime() > options.since.getTime() && row.created_by === options.by;
+            const before = reported ? snapshotOf(doc) : undefined;
+            Y.applyUpdate(doc, row.update);
+            cursor = row.update_id;
+            if (before === undefined) continue;
+            changes.push(...diffSnapshots(before, snapshotOf(doc), row.created_at.toISOString()));
+            if (changes.length >= options.limit) return changes.slice(0, options.limit);
+          }
+        }
+      } finally {
+        doc.destroy();
       }
-      const changes: PageChange[] = [];
-      for (const row of rows) {
-        if (row.created_at.getTime() <= options.since.getTime()) continue;
-        const before = row.created_by === options.by ? snapshotOf(doc) : undefined;
-        Y.applyUpdate(doc, row.update);
-        if (before === undefined) continue;
-        changes.push(...diffSnapshots(before, snapshotOf(doc), row.created_at.toISOString()));
-        if (changes.length >= options.limit) return changes.slice(0, options.limit);
-      }
-      return changes;
-    } finally {
-      doc.destroy();
-    }
-  });
+    },
+    { isolation: "repeatable_read" },
+  );
 }

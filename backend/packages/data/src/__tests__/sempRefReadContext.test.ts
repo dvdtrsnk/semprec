@@ -51,18 +51,19 @@ describe("Semp reference turn reads", () => {
     await admin.end();
   });
 
+  // A Projects item: a deleted Tasks item ref expands as unavailable (issue #1771), other trashed items keep the marker.
   it("reads a real page and sibling blocks while refusing foreign, mismatched and random refs without effects", async () => {
     const tenant = await createTestTenant(admin);
     const foreign = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));
     await runInTenant(foreign, () => seedSystem(runtime));
     const database = await runInTenant(tenant, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
     const foreignDatabase = await runInTenant(foreign, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
-    if (!database || !foreignDatabase) throw new Error("Missing tasks database");
+    if (!database || !foreignDatabase) throw new Error("Missing projects database");
     const cp = createChokePoint(runtime);
     const item = await runInTenant(tenant, () =>
       cp.createItem({ databaseId: database.id, properties: { name: "Page" } }),

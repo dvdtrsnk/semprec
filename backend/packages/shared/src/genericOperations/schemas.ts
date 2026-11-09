@@ -464,6 +464,26 @@ export const PageInsertInputSchema = z
   .strict();
 export type PageInsertInput = z.infer<typeof PageInsertInputSchema>;
 
+/** The most entries one `page.changes` call returns, and what it returns without a `limit`. */
+const PAGE_CHANGES_MAX_LIMIT = 500;
+const PAGE_CHANGES_DEFAULT_LIMIT = 100;
+
+/**
+ * What was written to the page of `itemId` since an instant, by one author (issue #1680): `since` is an ISO 8601
+ * timestamp with an offset, `by` the stored author of the updates to list (the assistant by default) and `limit` the
+ * most entries returned, oldest first. A `since` in the future or before the retained history is refused by the
+ * operation, not by this schema.
+ */
+export const PageChangesInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    since: z.iso.datetime({ offset: true }),
+    by: z.enum(["user", "ai_agent", "system"]).default("ai_agent"),
+    limit: z.number().int().min(1).max(PAGE_CHANGES_MAX_LIMIT).default(PAGE_CHANGES_DEFAULT_LIMIT),
+  })
+  .strict();
+export type PageChangesInput = z.infer<typeof PageChangesInputSchema>;
+
 export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
@@ -516,6 +536,7 @@ export interface InputByOperation {
   "page.ensure": PageEnsureInput;
   "page.createSubpage": PageCreateSubpageInput;
   "page.insert": PageInsertInput;
+  "page.changes": PageChangesInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

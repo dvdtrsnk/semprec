@@ -24,6 +24,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import { createMarkdownPageContentProposal } from "../testSupport/pageProposalFixtures.js";
 import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
@@ -46,6 +47,7 @@ import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
 import { createSubpageWithClient } from "../docs/pageOperations.js";
 import { proposalBlockId } from "../inbox/proposalPageContent.js";
+import { listPageChanges } from "../docs/pageChanges.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
@@ -1108,25 +1110,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     }
 
     async function createV2Proposal(target: string, properties: Record<string, unknown>) {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: `Page note ${randomUUID()}`,
-          emoji: "📝",
-          processingMethod: "pageContent",
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text: "Add to the page",
-          type: type.id,
-        }),
-      );
-      await runTick(item.id, async () => ({ target, properties }));
-      return (await findProposalForItem(item.id))!;
+      return createMarkdownPageContentProposal(pool, { inboxId, typesId, proposalsId }, target, properties);
     }
 
     const confirm = (proposalId: string) =>
@@ -1315,6 +1299,25 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           ["text", "Body"],
         ]);
       }
+    });
+
+    it("lists a confirmed card's blocks as the user's changes and not as the assistant's", async () => {
+      const target = await projectWithPage(sectioned);
+      const proposal = await createV2Proposal(target, {
+        markdown: "- first\n- second",
+        placement: { afterHeading: HEADING_ID },
+        heading: "New tiles",
+      });
+      await confirm(proposal.id);
+      const ids = [0, 1, 2].map((index) => proposalBlockId(proposal.id, index));
+      const doc = await docStore.getDoc(target);
+      if (!doc) throw new Error("Missing page document");
+      const since = new Date(Date.now() - 60 * 60 * 1000);
+
+      expect(await listPageChanges(pool, doc.id, { since, by: "user", limit: 100 })).toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "insert", blockIds: ids })]),
+      );
+      expect(await listPageChanges(pool, doc.id, { since, by: "ai_agent", limit: 100 })).toEqual([]);
     });
 
     it("writes into the page of a real subpage, the Pages host", async () => {

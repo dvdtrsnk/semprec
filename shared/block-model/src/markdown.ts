@@ -30,8 +30,11 @@ export interface SerializableBlock {
 }
 
 export interface SerializeOptions {
-  /** Title written inside a page block link; an empty title is written when absent. */
-  resolvePageTitle?: (pageId: string) => string;
+  /**
+   * Title written inside a page block link; an empty title is written when absent. The resolver also receives the
+   * block itself, so two page blocks that share one page id can keep their own captions.
+   */
+  resolvePageTitle?: (pageId: string, block: SerializableBlock) => string;
   /** Write the `semprec:block` id comment before every block. */
   withIds?: boolean;
 }
@@ -343,7 +346,7 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
     let line: string;
     switch (type) {
       case "page": {
-        const title = options.resolvePageTitle?.(block.pageId as string) ?? "";
+        const title = options.resolvePageTitle?.(block.pageId as string, block) ?? "";
         const caption = serializeInline([{ insert: title }]);
         line = `[${caption}](${PAGE_LINK_PREFIX}${encodePageId(block.pageId as string)})`;
         break;

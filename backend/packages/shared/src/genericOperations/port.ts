@@ -60,6 +60,16 @@ export interface OutputByOperation {
   "page.ensure": { docId: string };
   "page.createSubpage": PageCreateSubpageOutput;
   "page.insert": { blockIds: string[] };
+  "page.changes": PageChangeEntry[];
+}
+
+/** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
+export interface PageChangeEntry {
+  /** When the update was stored (ISO 8601). */
+  at: string;
+  /** The blocks the change touched, in document order (a deleted block in the order it had before the update). */
+  blockIds: string[];
+  kind: "insert" | "update" | "delete";
 }
 
 /** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
@@ -254,6 +264,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.insert"],
   ): Promise<OutputByOperation["page.insert"]>;
+  listPageChanges(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.changes"],
+  ): Promise<OutputByOperation["page.changes"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

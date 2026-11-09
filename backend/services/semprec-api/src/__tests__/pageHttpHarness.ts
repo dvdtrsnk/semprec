@@ -12,6 +12,9 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  mintMcpRunCredential,
+  seedSystem,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -91,6 +94,32 @@ export class PageHttpHarness {
       const database = await chokePoint.createDatabase({ name: `Pages of ${randomUUID()}` });
       return (await chokePoint.createItem({ databaseId: database.id, properties: {} })).id;
     });
+  }
+
+  /**
+   * A restricted MCP run credential of a project agent of `tenantId` with exactly `capabilities`, acting for the
+   * tenant's user; returns the bearer token a caller presents.
+   */
+  async mintRunCredential(
+    tenantId: string,
+    capabilities: Array<"core.page.read" | "core.page.write">,
+  ): Promise<string> {
+    await runInTenant(tenantId, () => seedSystem(this.runtime));
+    const minted = await runInTenant(tenantId, async () => {
+      const chokePoint = createChokePoint(this.runtime);
+      const projects = (await chokePoint.listDatabases()).find((database) => database.ownerModuleId === "projects");
+      if (!projects) throw new Error("Projects database was not seeded");
+      const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+      const { rows } = await this.runtime.query<{ id: string }>(`SELECT id FROM users WHERE tenant_id = $1`, [
+        tenantId,
+      ]);
+      const userId = rows[0]?.id;
+      if (!userId) throw new Error("Missing tenant user");
+      return withTransaction(this.runtime, (client) =>
+        mintMcpRunCredential(client, { projectItemId: project.id, capabilities, userId }),
+      );
+    });
+    return minted.token;
   }
 
   /** The id of the page document of `itemId`; throws when there is none. */

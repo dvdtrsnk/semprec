@@ -162,6 +162,26 @@ describe("Semp task references (issue #1771)", () => {
       }
     });
 
+    it("refuses an occurrence of a series whose owner item was soft-deleted, exactly like an unknown series", async () => {
+      const c = await fixture();
+      const inC = <T>(fn: (client: Parameters<Parameters<typeof withTransaction>[1]>[0]) => Promise<T>) =>
+        runInTenant(c.tenant, () => withTransaction(runtime, fn));
+      const error = (ref: SempMessageRef) =>
+        inC((client) => validateSempMessageRefs(client, [ref])).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(await inC((client) => validateSempMessageRefs(client, [occurrence(c.seriesId)]))).toEqual([
+        occurrence(c.seriesId),
+      ]);
+
+      await runInTenant(c.tenant, () => cp.softDeleteItem(c.tasksId, c.task.id));
+
+      const refused = await error(occurrence(c.seriesId));
+      expect(refused).toMatchObject({ code: "validation_failed", details: { field: "context[0]" } });
+      expect(JSON.stringify(refused)).toBe(JSON.stringify(await error(occurrence(randomUUID()))));
+    });
+
     it("stores first-occurrence deduplicated refs, distinguishing days and trace days", async () => {
       const refs = [
         occurrence(a.seriesId, "2026-11-16"),
@@ -217,7 +237,20 @@ describe("Semp task references (issue #1771)", () => {
 
     it("gives a materialized occurrence's day the same series context", async () => {
       const context = await read(occurrence(a.seriesId, "2026-11-09"));
-      expect(context).toMatchObject({ label: "Weekly review", details: { occurrenceDate: "2026-11-09" } });
+      expect(context).toMatchObject({
+        label: "Weekly review",
+        state: "active",
+        details: {
+          series: { seriesId: a.seriesId, mode: "fixed", rule: { kind: "weekdays", days: ["mon"] } },
+          template: { name: "Weekly review", timeFrom: "09:00", timeTo: "09:30", description: "Check the plan" },
+          occurrenceDate: "2026-11-09",
+          relations: {
+            project: { names: ["Apollo"] },
+            people: { names: ["Marie"] },
+            files: { names: ["agenda.pdf"] },
+          },
+        },
+      });
       expect(a.materialized.id).toEqual(expect.any(String));
     });
 
@@ -227,7 +260,13 @@ describe("Semp task references (issue #1771)", () => {
         label: "Weekly review",
         state: "active",
         details: {
-          properties: { name: "Weekly review", date: "2026-11-02", timeFrom: "09:00", description: "Check the plan" },
+          properties: {
+            name: "Weekly review",
+            date: "2026-11-02",
+            timeFrom: "09:00",
+            timeTo: "09:30",
+            description: "Check the plan",
+          },
           relations: { project: { names: ["Apollo"] }, people: { names: ["Marie"] }, files: { names: ["agenda.pdf"] } },
           traceDay: "2026-11-02",
         },
@@ -237,10 +276,36 @@ describe("Semp task references (issue #1771)", () => {
     it("includes a task item ref's attachments by name, and keeps other databases to the common relations", async () => {
       const context = await read({ kind: "item", itemId: a.task.id, databaseId: a.tasksId });
       expect(context).toMatchObject({
+        label: "Weekly review",
+        state: "active",
         details: {
+          properties: {
+            name: "Weekly review",
+            date: "2026-11-02",
+            timeFrom: "09:00",
+            timeTo: "09:30",
+            description: "Check the plan",
+          },
           relations: { project: { names: ["Apollo"] }, people: { names: ["Marie"] }, files: { names: ["agenda.pdf"] } },
         },
       });
+    });
+
+    it("is unavailable once the series owner or a Tasks item is soft-deleted, while a trashed non-Task item keeps its marker", async () => {
+      const c = await fixture();
+      const readInC = (ref: SempMessageRef) =>
+        runInTenant(c.tenant, () => withTransaction(runtime, (client) => readSempRefContext(client, ref)));
+      const taskRef: SempMessageRef = { kind: "item", itemId: c.task.id, databaseId: c.tasksId };
+      const plainRef: SempMessageRef = { kind: "item", itemId: c.plain.id, databaseId: c.plain.databaseId };
+      expect(await readInC(occurrence(c.seriesId))).toMatchObject({ state: "active" });
+      expect(await readInC(taskRef)).toMatchObject({ state: "active" });
+
+      await runInTenant(c.tenant, () => cp.softDeleteItem(c.tasksId, c.task.id));
+      await runInTenant(c.tenant, () => cp.softDeleteItem(c.plain.databaseId, c.plain.id));
+
+      expect(await readInC(occurrence(c.seriesId))).toBeNull();
+      expect(await readInC(taskRef)).toBeNull();
+      expect(await readInC(plainRef)).toMatchObject({ state: "trashed" });
     });
 
     it("is unavailable for a series or a task that is gone, another tenant's, or not a task", async () => {

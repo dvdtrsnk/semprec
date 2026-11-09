@@ -532,6 +532,12 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       ],
     });
   },
+  "page.changes": async (fx, headers, baseUrl) => {
+    const since = encodeURIComponent(new Date(Date.now() - 60 * 1000).toISOString());
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/changes?since=${since}`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([]);
+  },
   "page.get": async (fx, headers, baseUrl) => {
     const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
     expect(response.status).toBe(200);

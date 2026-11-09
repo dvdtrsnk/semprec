@@ -151,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 37-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 39-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -265,6 +265,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
   "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
+  "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
@@ -325,7 +326,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
     const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
     const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
-    for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert"] as const) {
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"] as const) {
       expect(discovered).not.toContain(name);
       const args =
         name === "page.restoreVersion"
@@ -659,7 +660,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         operation === "page.get" ||
         operation === "page.ensure" ||
         operation === "page.restoreVersion" ||
-        operation === "page.insert"
+        operation === "page.insert" ||
+        operation === "page.changes"
       ) {
         expect(outcome.error).toBe(true);
         expect(outcome.approvalRequestId).toBeUndefined();

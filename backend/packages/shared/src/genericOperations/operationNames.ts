@@ -45,6 +45,7 @@ export const GENERIC_OPERATION_NAMES = [
   "page.ensure",
   "page.createSubpage",
   "page.insert",
+  "page.changes",
 ] as const;
 
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];

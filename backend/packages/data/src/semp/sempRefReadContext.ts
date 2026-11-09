@@ -152,7 +152,8 @@ const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 /**
  * A future occurrence of a repeating task (issue #1771): the series template, the day and the relations of the series'
  * current instance, which carries the series' project, people and attachments. A series the tenant does not hold
- * (deleted since the message was sent, or never there) is unavailable, as is one whose row has no template.
+ * (deleted since the message was sent, or never there), one whose owner item is deleted, and one whose row has no template
+ * are unavailable.
  */
 async function readTaskOccurrenceContext(
   client: PoolClient,
@@ -163,7 +164,9 @@ async function readTaskOccurrenceContext(
   if (!SERIES_ID_SHAPE.test(seriesId)) return null;
   const series = await getTaskRecurrenceBySeriesId(client, seriesId.toLowerCase());
   if (!series?.template) return null;
+  // Soft deletion keeps the recurrence row until the purge: a series whose current owner item is gone is unavailable.
   const [instance] = await getItemsByIds(client, [series.itemId]);
+  if (!instance) return null;
   const template = publicTaskRecurrenceTemplate(series.template);
   return {
     label: Array.from(template.name ?? "")
@@ -174,7 +177,7 @@ async function readTaskOccurrenceContext(
       series: { seriesId: seriesId.toLowerCase(), mode: series.mode, rule: series.rule, anchorDate: series.anchorDate },
       template,
       occurrenceDate,
-      relations: instance ? await relatedNames(client, instance, TASK_RELATED_KEYS) : {},
+      relations: await relatedNames(client, instance, TASK_RELATED_KEYS),
     },
     blob: null,
   };
@@ -233,6 +236,8 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
   if (!item) return null;
   const database = await getDatabase(client, item.databaseId);
   if (!database) return null;
+  // A deleted task is unavailable, like a deleted trace; other trashed items keep the trashed marker.
+  if (ref.kind === "item" && item.deletedAt && database.ownerModuleId === "tasks") return null;
   const label = await itemTitle(client, item);
   const state = item.deletedAt ? "trashed" : "active";
   if (ref.kind === "taskTrace") {

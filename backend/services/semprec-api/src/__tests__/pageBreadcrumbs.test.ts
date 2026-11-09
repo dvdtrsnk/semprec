@@ -283,4 +283,40 @@ describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => 
       .parse(await trash.json());
     expect(listed.items.map((item) => [item.id, item.properties.title])).toEqual([[page.pageItemId, "After"]]);
   });
+
+  it("keeps the one-element trail of a page whose parent is trashed or missing", async () => {
+    const project = await titledHost("Orphan host");
+    const trashedParent = await subpage(project, "Under a trashed parent");
+    const missingParent = await subpage(project, "Under a missing parent");
+    // The API never reparents a page; this superuser write stands in for a parent that is gone.
+    await harness.admin.query(
+      `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
+      [missingParent.pageItemId, randomUUID()],
+    );
+    const trashed = await fetch(`${harness.baseUrl}/api/items/${project}`, {
+      method: "DELETE",
+      headers: harness.headersA,
+    });
+    expect(trashed.status).toBe(200);
+
+    for (const [page, title] of [
+      [trashedParent, "Under a trashed parent"],
+      [missingParent, "Under a missing parent"],
+    ] as const) {
+      expect(await breadcrumbsOf(page.pageItemId), title).toEqual([
+        { itemId: page.pageItemId, title, databaseKey: "pages" },
+      ]);
+    }
+  });
+
+  it("reports subpageCount 2 for a project with two subpages through GET /page", async () => {
+    const project = await titledHost("Counted host");
+    await subpage(project, "One");
+    await subpage(project, "Two");
+
+    const response = await get(`/api/items/${project}/page`);
+
+    expect(response.status).toBe(200);
+    expect(z.object({ subpageCount: z.number() }).parse(await response.json()).subpageCount).toBe(2);
+  });
 });

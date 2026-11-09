@@ -15,6 +15,7 @@ import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
 import { createSubpageWithClient } from "./pageOperations.js";
 import { insertPageMarkdown, readPageMarkdown, type InsertPageMarkdownInput } from "./pageMarkdown.js";
+import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -91,6 +92,26 @@ export function createDocStore(pool: Pool) {
     /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
     async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput) {
       return withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+    },
+
+    /**
+     * What was written to the page of `itemId` since `options.since` by `options.by` (issue #1680). The item is read in
+     * the caller's tenant like any item read, so a foreign or unknown id is one `NotFoundError`; an item without a page
+     * document has no changes (`[]`), and then only the future check applies since there is no history to bound `since`.
+     */
+    async listPageChanges(itemId: string, options: ListPageChangesOptions): Promise<PageChange[]> {
+      const doc = await withTransaction(pool, async (client) => {
+        const [item] = await getItemsByIds(client, [itemId]);
+        if (!item) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        return docsStore.getDocByItemId(client, itemId);
+      });
+      if (!doc) {
+        if (options.since.getTime() > Date.now()) {
+          throw new ValidationError("'since' must not be in the future", { field: "since" });
+        }
+        return [];
+      }
+      return listPageChanges(pool, doc.id, options);
     },
 
     async ensurePage(itemId: string): Promise<{ docId: string }> {

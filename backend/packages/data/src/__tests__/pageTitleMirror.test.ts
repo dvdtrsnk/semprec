@@ -281,6 +281,96 @@ describe("subpage title mirror (issue #1715)", () => {
     await runInTenant(otherTenant, () => handlePageTitleMirrorTask(pool, { itemId: otherItem }));
   });
 
+  describe("host trash racing the mirror (issue #1715 repair)", () => {
+    /**
+     * A dedicated runtime pool (never the shared one, so no pooled client is left patched) whose clients call
+     * `afterStatement(text, values)` once each statement has finished, before the job sees its result. The job runs
+     * on it; the interfering trash runs on the shared pool, a different connection.
+     */
+    async function observedPool(
+      afterStatement: (text: string, values: readonly unknown[]) => Promise<void>,
+    ): Promise<Pool> {
+      const observed = await createRuntimeRolePool(admin, "semprec_data");
+      const connect = observed.connect.bind(observed) as unknown as () => Promise<PoolClient>;
+      vi.spyOn(observed as unknown as { connect: () => Promise<PoolClient> }, "connect").mockImplementation(
+        async () => {
+          const client = await connect();
+          const query = client.query.bind(client) as unknown as (...args: unknown[]) => Promise<unknown>;
+          (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (
+            ...args: unknown[]
+          ) => {
+            const result = await query(...args);
+            const [text, values] = args;
+            if (typeof text === "string") await afterStatement(text, Array.isArray(values) ? values : []);
+            return result;
+          };
+          return client;
+        },
+      );
+      return observed;
+    }
+
+    async function hostDeletedAt(itemId: string): Promise<Date | null> {
+      const { rows } = await admin.query<{ deleted_at: Date | null }>(`SELECT deleted_at FROM items WHERE id = $1`, [
+        itemId,
+      ]);
+      return rows[0]?.deleted_at ?? null;
+    }
+
+    it("writes nothing when the host is trashed between the job's first read and its host reservation", async () => {
+      const parent = await host("Racing parent");
+      const page = await subpage(parent, "Kept");
+      await typeTitle(parent, page.blockId, "Changed");
+      let trashed = false;
+      const observed = await observedPool(async (text) => {
+        if (!trashed && /FROM items WHERE id = ANY/.test(text)) {
+          trashed = true;
+          await trash(parent);
+        }
+      });
+      try {
+        await inTenant(() => handlePageTitleMirrorTask(observed, { itemId: parent }));
+      } finally {
+        vi.restoreAllMocks();
+        await observed.end();
+      }
+
+      expect(trashed).toBe(true);
+      expect(await hostDeletedAt(parent)).not.toBeNull();
+      expect(await titleOf(page.pageItemId)).toBe("Kept");
+    });
+
+    it("holds the host reservation while it writes: a trash that starts then waits and lands after the mirrored title", async () => {
+      const parent = await host("Reserved parent");
+      const page = await subpage(parent, "Kept");
+      await typeTitle(parent, page.blockId, "Changed");
+      let trashAttempt: Promise<void> | undefined;
+      const observed = await observedPool(async (text, values) => {
+        if (trashAttempt === undefined && /FOR UPDATE/.test(text) && values.includes(parent)) {
+          trashAttempt = trash(parent);
+          // The trash is blocked on the reservation: it shows up as a waiting lock request on another connection.
+          await vi.waitFor(async () => {
+            const { rows } = await admin.query<{ n: number }>(
+              `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%'`,
+            );
+            expect(rows[0]?.n).toBeGreaterThan(0);
+          });
+          expect(await hostDeletedAt(parent)).toBeNull();
+        }
+      });
+      try {
+        await inTenant(() => handlePageTitleMirrorTask(observed, { itemId: parent }));
+      } finally {
+        vi.restoreAllMocks();
+        await observed.end();
+      }
+      await trashAttempt;
+
+      expect(await titleOf(page.pageItemId)).toBe("Changed");
+      expect(await hostDeletedAt(parent)).not.toBeNull();
+    });
+  });
+
   it("refuses a payload with an extra key or a non-UUID item id", async () => {
     await expect(handlePageTitleMirrorTask(pool, { itemId: "nope" })).rejects.toThrow();
     await expect(handlePageTitleMirrorTask(pool, { itemId: randomUUID(), extra: true })).rejects.toThrow();

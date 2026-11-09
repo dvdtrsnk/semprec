@@ -159,4 +159,61 @@ describe("GET /api/items/:id/page/changes (issue #1680)", () => {
     expect(foreign.text.replaceAll(host, "<id>")).toBe(missing.text.replaceAll(unknown, "<id>"));
     expect((await get(undefined, host, query)).status).toBe(401);
   });
+
+  it("answers a window larger than the replay budget with 400 history_window_too_large", async () => {
+    const { host, docId, since } = await hostWithPage();
+    // Not a Yjs update: the size is checked before the bytes are fetched, so it is never decoded.
+    await harness.admin.query(
+      `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at, tenant_id)
+       SELECT 1, $1, convert_to(repeat('a', 16 * 1024 * 1024 + 1), 'UTF8'), 'user', now(), now() + interval '90 days',
+              (SELECT tenant_id FROM docs WHERE id = $1)`,
+      [docId],
+    );
+
+    const refused = await get(harness.headersA, host, `since=${encodeURIComponent(since)}`);
+
+    expect(refused.status).toBe(400);
+    expect(JSON.parse(refused.text)).toMatchObject({
+      error: { code: "validation_failed", details: { field: "since", reason: "history_window_too_large" } },
+    });
+  });
+
+  describe("through the catalog operation over /mcp", () => {
+    async function callChanges(token: string, itemId: string, since: string): Promise<Response> {
+      return fetch(`${harness.baseUrl}/mcp`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "semprec.page.changes", arguments: { itemId, since } },
+        }),
+      });
+    }
+
+    it("lists the changes for a credential granted core.page.read and hides the operation from one that is not", async () => {
+      const { host, docId, since } = await hostWithPage();
+      await writeAs(docId, "ai_agent", (doc) => {
+        const block = new Y.Map<unknown>();
+        block.set("sys:id", "m");
+        block.set("sys:flavour", "text");
+        block.set("text", new Y.Text("by an agent"));
+        doc.getMap<Y.Map<unknown>>("blocks").set("m", block);
+        doc.getArray<string>("order").push(["m"]);
+      });
+      const granted = await harness.mintRunCredential(harness.tenantA, ["core.page.read"]);
+      const withheld = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+
+      const allowed = await callChanges(granted, host, since);
+      expect(allowed.status).toBe(200);
+      const allowedBody = JSON.stringify(await allowed.json());
+      expect(allowedBody).not.toContain('"error"');
+      expect(allowedBody).toContain('\\"kind\\":\\"insert\\"');
+
+      const refused = await callChanges(withheld, host, since);
+      expect(refused.status).toBe(200);
+      expect(await refused.json()).toMatchObject({ error: { code: -32601 } });
+    });
+  });
 });

@@ -2827,6 +2827,11 @@ const MCP_CASES = {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, placement: "end", markdown: "Foreign insert" }));
     await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
   },
+  "page.changes": async (p) => {
+    const since = new Date(Date.now() - 60 * 1000).toISOString();
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, since }));
+    await p.excludesA({ itemId: b.itemId, since }, []);
+  },
   "page.get": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));
     await p.excludesA({ itemId: b.itemId, format: "summary" }, []);

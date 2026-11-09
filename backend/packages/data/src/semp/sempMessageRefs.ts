@@ -44,7 +44,8 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
-  // An occurrence names a series of this tenant. The id is any string on the wire, but `series_id` is a uuid column, so
+  // An occurrence names a series of this tenant whose current owner item is live: soft deletion keeps the recurrence
+  // row until the purge, so the owner is checked. The id is any string on the wire, but `series_id` is a uuid column, so
   // a string of another shape names no series and is never sent to the cast; a foreign series is simply not visible.
   const occurrences = refs.flatMap((ref, index) =>
     ref.kind === "taskOccurrence" && SERIES_ID_SHAPE.test(ref.seriesId) ? [{ id: ref.seriesId, index }] : [],
@@ -52,7 +53,8 @@ export async function validateSempMessageRefs(
   if (occurrences.length) {
     const { rows } = await client.query<{ ordinal: number }>(
       `SELECT r.ordinal::int FROM unnest($1::uuid[]) WITH ORDINALITY AS r(series_id, ordinal)
-       JOIN task_recurrence t ON t.series_id = r.series_id`,
+       JOIN task_recurrence t ON t.series_id = r.series_id
+       JOIN items owner ON owner.id = t.item_id AND owner.deleted_at IS NULL`,
       [occurrences.map((entry) => entry.id)],
     );
     for (const row of rows) {

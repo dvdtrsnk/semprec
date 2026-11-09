@@ -1,13 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { ChokePointError, ValidationError } from "@semprec/data";
-import { runInTenant, type GenericApplicationPort } from "@semprec/shared";
+import type { GenericOperationGateway } from "@semprec/application";
+import { runInTenant, type CapabilityId, type GenericApplicationPort } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
-import { NO_STORE, sendJson } from "./adapter/http.js";
-import { assertUuid, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
-import type { RouteDefinition } from "./adapter/routeTable.js";
+import { extractBearerToken, NO_STORE, PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
+import { assertUuid, requireJsonObjectBody } from "./adapter/requestValidation.js";
+import { resolveRunCredentialCaller } from "./mcp/callerActor.js";
 import { logger } from "./logger.js";
 
 const PAGE_MARKDOWN_PATH = /^\/api\/items\/([^/]+)\/page\.md$/;
@@ -69,29 +70,81 @@ export function createPageMarkdownRequestListener(pool: Pool, service: GenericAp
   };
 }
 
+const PAGE_INSERT_PATH = /^\/api\/items\/([^/]+)\/page\/insert$/;
+
+/** The request body cap, the same as the JSON adapter's. */
+const MAX_INSERT_BODY_BYTES = 1 * 1024 * 1024;
+
+/** Whether `pathname` is `/api/items/:id/page/insert`; `app.ts` routes only a `POST` of it here. */
+export function isPageInsertPath(pathname: string): boolean {
+  return PAGE_INSERT_PATH.test(pathname);
+}
+
 /**
- * `POST /api/items/:id/page/insert` (issue #1679): inserts Markdown into the page at a placement. A JSON route, so it
- * goes through the adapter (authentication, body cap, tenant scope and error mapping) and dispatches the `page.insert`
- * catalog operation, whose origin follows the caller: a person's session writes `user`, an agent run credential
- * `ai_agent`. The path (not ADR 2026-10-28-page-operation-family's `/page/blocks`) is the one this issue's Task names.
+ * `POST /api/items/:id/page/insert` (issue #1679): inserts Markdown into the page at a placement, dispatching the
+ * `page.insert` catalog operation. The path is the one the issue's Task names (accepted ADR
+ * 2026-10-28-page-operation-family says `/page/blocks`; see 2026-11-09-page-http-routes-and-subpage-paths-follow-delivery-contracts).
+ * It is a bespoke listener because it accepts two kinds of caller (docs/adr/2026-11-09-page-insert-authentication-reuses-scoped-run-callers.md):
+ *  - an MCP run credential presented as a bearer token, resolved by the same `resolveRunCredentialCaller` as `/mcp`:
+ *    the write goes through `GenericOperationGateway.invoke` with the credential's capability set, so an operation
+ *    the credential was not granted answers like an unknown one (404) and the stored update is authored `ai_agent`;
+ *  - anything else is authenticated exactly as every adapter route is (`authenticateRequest`: the session cookie or a
+ *    session bearer) and dispatched as a person, authored `user`.
+ * The tenant comes from the credential or the session only, the body is capped and strictly checked, and errors use
+ * the adapter's closed error contract.
  */
-export function createPageMarkdownRoutes(service: GenericApplicationPort): RouteDefinition[] {
-  return [
-    {
-      method: "POST",
-      path: "/api/items/:id/page/insert",
-      handler: async (ctx) => {
-        const body = requireJsonObjectBody(ctx.body);
+export function createPageInsertRequestListener(
+  pool: Pool,
+  service: GenericApplicationPort,
+  gateway: GenericOperationGateway,
+  grantedCapabilities: ReadonlySet<CapabilityId>,
+) {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    try {
+      const bearerToken = extractBearerToken(req);
+      const credentialCaller =
+        bearerToken === null ? null : await resolveRunCredentialCaller(pool, bearerToken, grantedCapabilities);
+      const identity = credentialCaller === null ? await authenticateRequest(pool, req) : null;
+      const tenantId = credentialCaller?.tenantId ?? identity?.tenantId;
+      if (tenantId === undefined) throw new Error("A caller resolved without a tenant");
+      const inserted = await runInTenant(tenantId, async () => {
+        const body = requireJsonObjectBody(await readJsonBody(req, { maxBytes: MAX_INSERT_BODY_BYTES }));
         const unexpected = Object.keys(body).find((key) => !["placement", "markdown", "blockIds"].includes(key));
         if (unexpected !== undefined) throw new ValidationError("Unexpected insert field", { field: unexpected });
-        const inserted = await dispatchGenericOperation(service, "page.insert", restActor(ctx.identity.user.id), {
-          itemId: requireUuidParam(ctx.params, "id"),
-          placement: body.placement,
-          markdown: body.markdown,
-          blockIds: body.blockIds,
-        });
-        return { status: 200, body: inserted };
-      },
-    },
-  ];
+        // Group 1 of PAGE_INSERT_PATH is not optional, so a successful match always captured it.
+        const itemId = assertUuid(PAGE_INSERT_PATH.exec(url.pathname)?.[1] ?? "", "id");
+        const input = { itemId, placement: body.placement, markdown: body.markdown, blockIds: body.blockIds };
+        if (credentialCaller !== null) {
+          return gateway.invoke("page.insert", credentialCaller.actor, credentialCaller.capabilities, input);
+        }
+        const userId = identity?.user.id;
+        if (userId === undefined) throw new Error("A session caller resolved without a user");
+        return dispatchGenericOperation(service, "page.insert", restActor(userId), input);
+      });
+      sendJson(res, 200, inserted);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        sendJson(res, 413, { error: { code: "payload_too_large" } });
+        return;
+      }
+      if (err instanceof ChokePointError) {
+        sendJson(res, statusForError(err), toErrorResponseBody(err));
+        return;
+      }
+      logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
+      sendJson(res, 500, { error: { code: "internal_error" } });
+    }
+  }
+
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      logger.error({ err }, "Unhandled error in the request listener");
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 500, { error: { code: "internal_error" } });
+    });
+  };
 }

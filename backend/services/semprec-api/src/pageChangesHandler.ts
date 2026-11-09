@@ -1,6 +1,7 @@
-import type { Pool } from "pg";
 import { z } from "zod";
-import { createChokePoint, createDocStore, listPageChanges, NotFoundError, ValidationError } from "@semprec/data";
+import { ValidationError } from "@semprec/data";
+import type { GenericApplicationPort } from "@semprec/shared";
+import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { requireUuidParam } from "./adapter/requestValidation.js";
 
@@ -37,14 +38,13 @@ function parseLimit(raw: string | null): number {
 /**
  * `GET /api/items/:id/page/changes?since=&by=&limit=` (issue #1680): what was written to a page since an instant, by
  * one author, as `[{ at, blockIds, kind }]`, oldest first (see `listPageChanges`). The query is checked first, with the
- * same answer for every caller; then the item is read in the caller's tenant like any item read, so a foreign item
- * answers exactly like an unknown one (404). An item with no page document has no changes (`[]`), a `since` in the
- * future is 400 and one before the retained history is 410 `history_not_retained`. The adapter supplies
- * authentication, the tenant scope and the error mapping.
+ * same answer for every caller; the `page.changes` catalog operation then reads the item in the caller's tenant like
+ * any item read, so a foreign item answers exactly like an unknown one (404). An item with no page document has no
+ * changes (`[]`), a `since` in the future is 400, one before the retained history is 410 `history_not_retained` and a
+ * window larger than the fixed replay budget is 400 `history_window_too_large`. The adapter supplies authentication,
+ * the tenant scope and the error mapping.
  */
-export function createPageChangesRoutes(pool: Pool): RouteDefinition[] {
-  const chokePoint = createChokePoint(pool);
-  const docStore = createDocStore(pool);
+export function createPageChangesRoutes(service: GenericApplicationPort): RouteDefinition[] {
   return [
     {
       method: "GET",
@@ -52,19 +52,13 @@ export function createPageChangesRoutes(pool: Pool): RouteDefinition[] {
       handler: async (ctx) => {
         const itemId = requireUuidParam(ctx.params, "id");
         const query = new URL(ctx.req.url ?? "/", "http://localhost").searchParams;
-        const since = parseSince(query.get("since"));
-        const by = parseBy(query.get("by"));
-        const limit = parseLimit(query.get("limit"));
-        if (!(await chokePoint.findItem(itemId))) throw new NotFoundError(`Item ${itemId} not found`);
-        const doc = await docStore.getDoc(itemId);
-        if (!doc) {
-          // Without a document there is no retained history to bound `since` by, so the future check is made here.
-          if (since.getTime() > Date.now()) {
-            throw new ValidationError("'since' must not be in the future", { field: "since" });
-          }
-          return { status: 200, body: [] };
-        }
-        return { status: 200, body: await listPageChanges(pool, doc.id, { since, by, limit }) };
+        const changes = await dispatchGenericOperation(service, "page.changes", restActor(ctx.identity.user.id), {
+          itemId,
+          since: parseSince(query.get("since")).toISOString(),
+          by: parseBy(query.get("by")),
+          limit: parseLimit(query.get("limit")),
+        });
+        return { status: 200, body: changes };
       },
     },
   ];

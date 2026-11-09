@@ -553,3 +553,23 @@ describe("canonical inline export", () => {
     );
   });
 });
+
+describe("page link captions", () => {
+  it("passes each page block to the resolver so repeated page ids keep their own captions", () => {
+    const blocks = [
+      { id: "a", type: "page", indent: 0, pageId: "p1", text: [{ insert: "First caption" }] },
+      { id: "b", type: "page", indent: 0, pageId: "p1", text: [{ insert: "Second caption" }] },
+    ];
+    const markdown = serializeBlocks(blocks, {
+      resolvePageTitle: (_pageId, block) => (block.text ?? []).map((run) => run.insert).join(""),
+    });
+    expect(markdown).toBe("[First caption](semprec://page/p1)\n\n[Second caption](semprec://page/p1)");
+  });
+
+  it("keeps a one-argument resolver working", () => {
+    const blocks = [{ id: "a", type: "page", indent: 0, pageId: "p1" }];
+    expect(serializeBlocks(blocks, { resolvePageTitle: (pageId) => `Page ${pageId}` })).toBe(
+      "[Page p1](semprec://page/p1)",
+    );
+  });
+});

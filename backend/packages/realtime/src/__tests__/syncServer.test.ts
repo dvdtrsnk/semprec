@@ -1162,6 +1162,8 @@ describe("createSyncServer doc sync (issue #162)", () => {
     const created = await docStore.createSubpage({ parent: { itemId: project } }, "user");
     const page = created.pages[0];
     if (!page) throw new Error("Missing created page");
+    // `semprec://page/<pageItemId>` resolves to the document the socket opens: the page summary names that docId.
+    expect((await docStore.getPageSummary(page.pageItemId, "en")).docId).toBe(page.docId);
 
     const wsA = await connect("a");
     const wsB = await connect("b");

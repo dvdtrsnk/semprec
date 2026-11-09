@@ -6,6 +6,7 @@ import {
   BlockOperationError,
   insertBlocks,
   isBlockType,
+  MAX_INDENT,
   parseMarkdown,
   readPageBlocks,
   serializeBlocks,
@@ -56,15 +57,12 @@ export async function readPageMarkdown(client: PoolClient, itemId: string): Prom
   const doc = row ? await loadDocWithClient(client, row.id) : new Y.Doc();
   try {
     const blocks = readPageBlocks(doc);
-    const titles = new Map<string, string>();
-    for (const block of blocks) {
-      if (block.type === "page" && block.pageId !== null) {
-        titles.set(block.pageId, block.text.map((run) => run.insert).join(""));
-      }
-    }
     return {
       docId: row?.id ?? null,
-      markdown: serializeBlocks(blocks, { resolvePageTitle: (pageId) => titles.get(pageId) ?? "" }),
+      // Each page block keeps its own caption: two blocks may name one page id with different text.
+      markdown: serializeBlocks(blocks, {
+        resolvePageTitle: (_pageId, block) => (block.text ?? []).map((run) => run.insert).join(""),
+      }),
       etag: docEtag(doc),
     };
   } finally {
@@ -95,7 +93,8 @@ function invalidMarkdown(issues: readonly BlockIssue[]): ValidationError {
 }
 
 /**
- * The ids the new blocks get: the caller's, one per parsed block, or generated ones. The ids a `semprec:block`
+ * The ids the new blocks get: the caller's, one per parsed block (every element of the flat parser output,
+ * indented list items included), or generated ones. The ids a `semprec:block`
  * comment carries are never used, so a body cannot choose an id the caller did not name. A supplied list must match the
  * block count and hold no repeated or empty id (`ValidationError` on `blockIds`); an id already in the document is a
  * `ConflictError`, decided where the document is read.
@@ -181,6 +180,11 @@ export interface PageBlockPlan {
   blocks: IdentifiedBlock[];
 }
 
+/** The refusal of a placement whose `afterBlockId` is not a block of the page. */
+function unknownAfterBlock(): ValidationError {
+  return new ValidationError("afterBlockId does not name a block of the page", { field: "placement.afterBlockId" });
+}
+
 /**
  * Inserts the blocks `plan` returns into the page of the live, locked item `host` as one document update authored
  * `origin`, creating the document when the item has none. `plan` runs inside the write on the loaded document, so the
@@ -200,11 +204,7 @@ export async function insertPlannedBlocks(
     try {
       return insertBlocks(ydoc, afterId, blocks);
     } catch (error) {
-      if (error instanceof BlockOperationError && error.code === "invalid_after_id") {
-        throw new ValidationError("afterBlockId does not name a block of the page", {
-          field: "placement.afterBlockId",
-        });
-      }
+      if (error instanceof BlockOperationError && error.code === "invalid_after_id") throw unknownAfterBlock();
       if (error instanceof BlockOperationError && error.code === "duplicate_block_id") {
         throw new ConflictError("A block id in blockIds is already in the page", { field: "blockIds" });
       }
@@ -219,8 +219,10 @@ export async function insertPlannedBlocks(
  * link to a subpage is validated against the host's subpages, which the replace operation (#1765) will do.
  * Everything that can refuse the Markdown runs before the document is created or written: the item is resolved live
  * and locked, then the blocks are prepared (`prepareMarkdownBlocks`). An unknown `afterBlockId` or an id already in the
- * document is refused inside the write. Markdown with no block writes nothing and creates no document. The flat block
- * model has no nesting, so "after a block" means directly after it in document order.
+ * document is refused inside the write. Markdown with no block writes nothing and creates no document, but an
+ * `afterBlockId` it names is still checked against the page as it stands. After a block the new blocks are anchored
+ * at that block's nesting level: each keeps its parsed indentation relative to the anchor, and a result past
+ * `MAX_INDENT` is refused (nothing is clamped or dropped). `start` and `end` keep the parsed indentation.
  */
 export async function insertPageMarkdown(
   client: PoolClient,
@@ -229,18 +231,49 @@ export async function insertPageMarkdown(
 ): Promise<{ blockIds: string[] }> {
   const host = await lockLiveItem(client, itemId);
   const blocks = await prepareMarkdownBlocks(client, input.markdown, input.blockIds);
-  if (blocks.length === 0) return { blockIds: [] };
   const { placement } = input;
-  const blockIds = await insertPlannedBlocks(client, host, input.origin, (ydoc) => ({
-    blocks,
-    afterId:
-      placement === "start"
-        ? null
-        : placement === "end"
-          ? (readPageBlocks(ydoc)
-              .filter((block) => !block.synthetic && block.id !== null)
-              .at(-1)?.id ?? null)
-          : placement.afterBlockId,
-  }));
+  if (blocks.length === 0) {
+    if (typeof placement === "object") await assertAfterBlockExists(client, host.id, placement.afterBlockId);
+    return { blockIds: [] };
+  }
+  const blockIds = await insertPlannedBlocks(client, host, input.origin, (ydoc) => {
+    if (placement === "start") return { blocks, afterId: null };
+    const current = readPageBlocks(ydoc).filter((block) => !block.synthetic && block.id !== null);
+    if (placement === "end") return { blocks, afterId: current.at(-1)?.id ?? null };
+    const target = current.find((block) => block.id === placement.afterBlockId);
+    // An unknown target is refused by the insertion itself, with the same error as the empty-input check.
+    return {
+      afterId: placement.afterBlockId,
+      blocks: target === undefined ? blocks : anchorIndent(blocks, target.indent),
+    };
+  });
   return { blockIds };
+}
+
+/** The blocks with `anchor` added to their indentation; past `MAX_INDENT` is an invalid-Markdown refusal. */
+function anchorIndent(blocks: readonly IdentifiedBlock[], anchor: number): IdentifiedBlock[] {
+  return blocks.map((block, index) => {
+    const indent = anchor + (block.indent ?? 0);
+    if (indent > MAX_INDENT) {
+      throw new ValidationError("Invalid Markdown", {
+        field: "markdown",
+        path: `block ${index + 1}: indent`,
+        reason: "invalid_indent",
+      });
+    }
+    return { ...block, indent };
+  });
+}
+
+/** Refuses an `afterBlockId` that is not a block of the page; reads the document without creating one. */
+async function assertAfterBlockExists(client: PoolClient, itemId: string, afterBlockId: string): Promise<void> {
+  const row = await getDocByItemId(client, itemId);
+  if (row?.kind !== "page") throw unknownAfterBlock();
+  const doc = await loadDocWithClient(client, row.id);
+  try {
+    const known = readPageBlocks(doc).some((block) => !block.synthetic && block.id === afterBlockId);
+    if (!known) throw unknownAfterBlock();
+  } finally {
+    doc.destroy();
+  }
 }

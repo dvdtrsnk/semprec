@@ -10,6 +10,7 @@ import {
   PageEnsureInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
+  PageChangesInputSchema,
   DatabaseCreateInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
@@ -70,6 +71,10 @@ export type GenericOperationBindings = {
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },
   "page.insert": { input: PageInsertInputSchema, invoke: (service, actor, input) => service.insertPage(actor, input) },
+  "page.changes": {
+    input: PageChangesInputSchema,
+    invoke: (service, actor, input) => service.listPageChanges(actor, input),
+  },
   "page.createSubpage": {
     input: PageCreateSubpageInputSchema,
     invoke: (service, actor, input) => service.createSubpage(actor, input),

@@ -482,14 +482,15 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(unavailable.text).not.toContain("Foreign task sentinel");
   });
 
+  // Projects, not Tasks: a deleted Tasks item expands as unavailable (next test), other trashed items keep the marker.
   it("marks only an own trashed item during direct tenant-scoped expansion", async () => {
     const ownDatabase = await runInTenant(tenant, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
     const foreignDatabase = await runInTenant(foreign, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
-    if (!ownDatabase || !foreignDatabase) throw new Error("Missing task databases");
+    if (!ownDatabase || !foreignDatabase) throw new Error("Missing project databases");
     const cp = createChokePoint(runtime);
     const active = await runInTenant(tenant, () =>
       cp.createItem({ databaseId: ownDatabase.id, properties: { name: "Active marker control" } }),
@@ -558,6 +559,43 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(JSON.stringify(result.context)).not.toContain("Trashed marker sentinel");
     expect((await snapshot()).rows).toEqual(before.rows);
     expect((await foreignSnapshot()).rows).toEqual(foreignBefore.rows);
+  });
+
+  it("expands a soft-deleted Tasks item and a series whose owner was soft-deleted as unavailable, not as trashed", async () => {
+    const tasks = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!tasks) throw new Error("Missing Tasks database");
+    const cp = createChokePoint(runtime);
+    const owner = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Owner sentinel", date: "2026-11-02" } }),
+    );
+    const seriesId = await runInTenant(tenant, () =>
+      startTaskSeries(runtime, {
+        databaseId: tasks.id,
+        itemId: owner.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon"] },
+      }),
+    );
+    const plain = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Deleted task sentinel", date: "2026-11-03" } }),
+    );
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks.id, owner.id));
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks.id, plain.id));
+    const refs = [
+      { kind: "taskOccurrence" as const, seriesId, occurrenceDate: "2026-11-16" },
+      { kind: "item" as const, itemId: plain.id, databaseId: tasks.id, label: "Saved task label" },
+    ];
+
+    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+
+    expect(result.text.split("\n\n")).toEqual([
+      "taskOccurrence: no longer exists or is unavailable.",
+      "item: no longer exists or is unavailable.",
+    ]);
+    expect(result.text).not.toContain("[trashed]");
+    expect(result.text).not.toContain("sentinel");
   });
 
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {

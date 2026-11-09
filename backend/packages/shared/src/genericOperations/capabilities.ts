@@ -101,6 +101,7 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "link.relink": nonDestructive("core.item.write", "write"),
   "page.ensure": nonDestructive("core.page.write", "write"),
   "page.get": nonDestructive("core.page.read", "read"),
+  "page.changes": nonDestructive("core.page.read", "read"),
   // Additive and reversible through `item.delete`; the item-write capability is the issue's choice (#1844 refines it).
   "page.createSubpage": nonDestructive("core.item.write", "write"),
   // Additive: it destroys no content and its blocks carry the caller as `created_by` (docs/adr/2026-10-29-agent-page-write-policy.md).
