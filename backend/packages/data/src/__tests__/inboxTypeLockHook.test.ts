@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { listRelationsForItem, getRelationDefinitionByPropertyId, otherSide } from "../chokePoint/relationsStore.js";
-import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -23,13 +23,12 @@ let pool: Pool;
 let tenant: string;
 const pendingRaceActors = new Set<Promise<unknown>>();
 
-function trackRaceActor<T>(actor: Promise<T>): Promise<T> {
+function trackRaceActor<T>(actor: Promise<T>): void {
   pendingRaceActors.add(actor);
   void actor.then(
     () => pendingRaceActors.delete(actor),
     () => pendingRaceActors.delete(actor),
   );
-  return actor;
 }
 
 async function boundRace<T>(actor: Promise<T>): Promise<T> {
