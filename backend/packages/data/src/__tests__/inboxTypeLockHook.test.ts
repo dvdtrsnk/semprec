@@ -2,6 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { listRelationsForItem, getRelationDefinitionByPropertyId, otherSide } from "../chokePoint/relationsStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -45,24 +46,31 @@ describe("Inbox type lock", () => {
       if (trash) await withTransaction(pool, (client) => softDeleteItem(client, proposals, card.id));
     }
     const edge = { relationPropertyId: type.id, callerItemId: item.id, targetItemId: first.id };
-    return { cp, edge, second: second.id };
+    const targets = () => withTransaction(pool, async (client) => {
+      const definition = await getRelationDefinitionByPropertyId(client, type.id);
+      if (!definition) throw new Error("Missing type definition");
+      return (await listRelationsForItem(client, definition.id, item.id)).map((relation) => otherSide(relation, item.id));
+    });
+    return { cp, edge, second: second.id, targets };
   }
 
   it("refuses a second type without changing the first edge", async () => {
-    const { cp, edge, second } = await fixture();
+    const { cp, edge, second, targets } = await fixture();
     await expect(cp.createRelation({ ...edge, targetItemId: second })).rejects.toMatchObject({ status: 409, code: "cardinality_violation" });
-    expect(await cp.deleteRelation(edge)).not.toBeNull();
+    expect(await targets()).toEqual([edge.targetItemId]);
   });
 
   it.each(["confirmed", "rejected"])("preserves the edge for a %s card", async (status) => {
-    const { cp, edge, second } = await fixture(status);
+    const { cp, edge, second, targets } = await fixture(status);
     await expect(cp.deleteRelation(edge)).rejects.toMatchObject({ status: 409, code: "proposal_locked" });
     await expect(cp.createRelation({ ...edge, targetItemId: second })).rejects.toMatchObject({ status: 409, code: "proposal_locked" });
+    expect(await targets()).toEqual([edge.targetItemId]);
   });
 
   it.each([[undefined, false], ["proposed", false], ["confirmed", true]] as const)("allows a type change for status %s trashed=%s", async (status, trash) => {
-    const { cp, edge, second } = await fixture(status, trash);
+    const { cp, edge, second, targets } = await fixture(status, trash);
     expect(await cp.deleteRelation(edge)).not.toBeNull();
     expect((await cp.createRelation({ ...edge, targetItemId: second })).itemB).toBe(second);
+    expect(await targets()).toEqual([second]);
   });
 });
