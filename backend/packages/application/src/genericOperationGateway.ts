@@ -103,9 +103,9 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
     case "view.delete":
       return { operation, input: input as { viewId: string }, actor };
     case "item.delete":
-      return { operation, input: input as InputByOperation["item.patch"] };
-    case "item.patch":
       return { operation, input: input as { itemId: string } };
+    case "item.patch":
+      return { operation, input: input as InputByOperation["item.patch"] };
     case "relation.put":
       return { operation, input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string } };
     case "relation.set":
