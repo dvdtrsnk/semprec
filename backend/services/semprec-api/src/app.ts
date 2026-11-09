@@ -34,7 +34,11 @@ import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
-import { createPageMarkdownRequestListener, isPageMarkdownPath } from "./pageMarkdownHandler.js";
+import {
+  createPageMarkdownRequestListener,
+  createPageMarkdownRoutes,
+  isPageMarkdownPath,
+} from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { isAllowedOrigin } from "./originCheck.js";
@@ -107,6 +111,7 @@ export async function createDispatcher(
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
     ...createViewRoutes(genericApplicationService, pool),
     ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
+    ...createPageMarkdownRoutes(genericApplicationService),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with

@@ -3,13 +3,14 @@ import type { PoolClient } from "pg";
 import type * as Y from "yjs";
 import { BlockOperationError, insertBlocks, readPageBlocks } from "@semprec/block-model";
 import type { PageCreateSubpageInput, PageCreateSubpageOutput } from "@semprec/shared";
-import { getItemsByIds, getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
+import { getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import type { CreatedBy, ItemRow } from "../types.js";
 import { mutateDocWithClient } from "./docPersistence.js";
 import { getOrCreateDoc } from "./docsStore.js";
+import { lockLiveItem } from "./lockLiveItem.js";
 import { normalizePageTitle } from "./pageTitle.js";
 import { ensurePagesDatabase, PAGES_MODULE_ID } from "./pagesDatabase.js";
 
@@ -22,22 +23,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PAGES_ALLOWED_SYSTEM_KEYS = ["title", "parentItemId"] as const;
 
 /**
- * Resolves the parent of a new subpage to a live item whose row this transaction holds locked, so it cannot be
- * trashed between this check and the commit. For a Journal period it first creates the period entry and its page
- * in this same transaction. A missing, trashed or foreign parent is one `NotFoundError`: the read is confined to the
- * caller's tenant by row-level security, so a foreign id is answered like an unknown one.
+ * Resolves the parent of a new subpage to a live item whose row this transaction holds locked. For a Journal period
+ * it first creates the period entry and its page in this same transaction.
  */
 async function lockLiveParent(client: PoolClient, parent: PageCreateSubpageInput["parent"]): Promise<ItemRow> {
   const parentItemId =
     "journal" in parent
       ? (await ensureJournalPeriodDoc(client, parent.journal.type, parent.journal.period)).itemId
       : parent.itemId;
-  const [visible] = await getItemsByIds(client, [parentItemId]);
-  const locked = visible ? await lockItemById(client, visible.databaseId, parentItemId) : null;
-  if (!locked || locked.deletedAt !== null) {
-    throw new NotFoundError("Item not found", { resource: "item", itemId: parentItemId });
-  }
-  return locked;
+  return lockLiveItem(client, parentItemId);
 }
 
 /**

@@ -1,12 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { ChokePointError } from "@semprec/data";
+import { ChokePointError, ValidationError } from "@semprec/data";
 import { runInTenant, type GenericApplicationPort } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
 import { NO_STORE, sendJson } from "./adapter/http.js";
-import { assertUuid } from "./adapter/requestValidation.js";
+import { assertUuid, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
+import type { RouteDefinition } from "./adapter/routeTable.js";
 import { logger } from "./logger.js";
 
 const PAGE_MARKDOWN_PATH = /^\/api\/items\/([^/]+)\/page\.md$/;
@@ -66,4 +67,31 @@ export function createPageMarkdownRequestListener(pool: Pool, service: GenericAp
       sendJson(res, 500, { error: { code: "internal_error" } });
     });
   };
+}
+
+/**
+ * `POST /api/items/:id/page/insert` (issue #1679): inserts Markdown into the page at a placement. A JSON route, so it
+ * goes through the adapter (authentication, body cap, tenant scope and error mapping) and dispatches the `page.insert`
+ * catalog operation, whose origin follows the caller: a person's session writes `user`, an agent run credential
+ * `ai_agent`. The path (not ADR 2026-10-28-page-operation-family's `/page/blocks`) is the one this issue's Task names.
+ */
+export function createPageMarkdownRoutes(service: GenericApplicationPort): RouteDefinition[] {
+  return [
+    {
+      method: "POST",
+      path: "/api/items/:id/page/insert",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => !["placement", "markdown", "blockIds"].includes(key));
+        if (unexpected !== undefined) throw new ValidationError("Unexpected insert field", { field: unexpected });
+        const inserted = await dispatchGenericOperation(service, "page.insert", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+          placement: body.placement,
+          markdown: body.markdown,
+          blockIds: body.blockIds,
+        });
+        return { status: 200, body: inserted };
+      },
+    },
+  ];
 }

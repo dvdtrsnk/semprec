@@ -740,6 +740,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "read page markdown", method: "GET", path: `/api/items/${EXAMPLE_ID}/page.md`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
+  { name: "insert page markdown", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/insert`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
   { name: "create subpage", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/subpages`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "restore page version", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/restore`, surface: "api", public: false, tenancy: "tenant" },

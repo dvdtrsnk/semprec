@@ -25,6 +25,7 @@ import {
   RelationSetInputSchema,
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
+  PageInsertInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -70,6 +71,7 @@ const ALL_SCHEMAS = [
   RelationListInputSchema,
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
+  PageInsertInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -529,6 +531,38 @@ describe("PageCreateSubpageInputSchema (issue #1676)", () => {
       { parent: { itemId }, unexpected: true },
     ]) {
       expect(PageCreateSubpageInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+});
+
+describe("PageInsertInputSchema (issue #1679)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+  it("accepts the three placements, optional caller ids and empty Markdown", () => {
+    for (const placement of ["start", "end", { afterBlockId: "b1" }]) {
+      expect(PageInsertInputSchema.safeParse({ itemId, placement, markdown: "Text" }).success).toBe(true);
+    }
+    expect(
+      PageInsertInputSchema.safeParse({ itemId, placement: "end", markdown: "", blockIds: ["a", "b"] }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a missing or malformed field, an unknown placement and an oversized body or id list", () => {
+    for (const input of [
+      { placement: "end", markdown: "x" },
+      { itemId: "bad", placement: "end", markdown: "x" },
+      { itemId, markdown: "x" },
+      { itemId, placement: "middle", markdown: "x" },
+      { itemId, placement: { afterBlockId: "" }, markdown: "x" },
+      { itemId, placement: { afterBlockId: "b1", extra: true }, markdown: "x" },
+      { itemId, placement: "end" },
+      { itemId, placement: "end", markdown: 7 },
+      { itemId, placement: "end", markdown: "x".repeat(1_000_001) },
+      { itemId, placement: "end", markdown: "x", blockIds: [""] },
+      { itemId, placement: "end", markdown: "x", blockIds: Array.from({ length: 10_001 }, (_, i) => `b${i}`) },
+      { itemId, placement: "end", markdown: "x", extra: true },
+    ]) {
+      expect(PageInsertInputSchema.safeParse(input).success, JSON.stringify(input).slice(0, 80)).toBe(false);
     }
   });
 });

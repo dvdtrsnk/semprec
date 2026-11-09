@@ -264,6 +264,7 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
+  "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
@@ -324,7 +325,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
     const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
     const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
-    for (const name of ["page.get", "page.ensure", "page.restoreVersion"] as const) {
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert"] as const) {
       expect(discovered).not.toContain(name);
       const args =
         name === "page.restoreVersion"
@@ -654,7 +655,12 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
       const outcome = await tools[operation](run.id, testCase.args(fx));
 
-      if (operation === "page.get" || operation === "page.ensure" || operation === "page.restoreVersion") {
+      if (
+        operation === "page.get" ||
+        operation === "page.ensure" ||
+        operation === "page.restoreVersion" ||
+        operation === "page.insert"
+      ) {
         expect(outcome.error).toBe(true);
         expect(outcome.approvalRequestId).toBeUndefined();
         expect(outcome.result).toContain("Unknown operation");

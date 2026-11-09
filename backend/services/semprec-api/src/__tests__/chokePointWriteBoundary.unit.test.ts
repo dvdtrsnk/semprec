@@ -119,6 +119,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "ensure page": "services/semprec-api/src/itemsHandler.ts",
   "get page": "services/semprec-api/src/itemsHandler.ts",
   "read page markdown": "services/semprec-api/src/pageMarkdownHandler.ts",
+  "insert page markdown": "services/semprec-api/src/pageMarkdownHandler.ts",
   "create subpage": "services/semprec-api/src/itemsHandler.ts",
   "restore page version": "services/semprec-api/src/itemsHandler.ts",
   "query view": "services/semprec-api/src/viewsHandler.ts",

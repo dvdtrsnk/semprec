@@ -2171,6 +2171,24 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(own.status, own.text).toBe(200);
     expectNoneOf(own.text, a.ids, "B's own page.md");
   },
+  "insert page markdown": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/insert`,
+        body: { placement: "end", markdown: "Foreign text" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B inserts into its own page.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/insert`,
+        body: { placement: "end", markdown: "Own text" },
+      });
+      expect(own.status, own.text).toBe(200);
+      expectNoneOf(own.text, a.ids, "B's own insert");
+    }),
   "create subpage": () =>
     leavesAUnchanged(async () => {
       // A foreign parent answers exactly as a random one does, and nothing of A's is written.
@@ -2784,6 +2802,10 @@ const MCP_CASES = {
   "page.createSubpage": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ parent: { itemId }, title: "Foreign subpage" }));
     await p.excludesA({ parent: { itemId: b.itemId }, title: "Own subpage" }, []);
+  },
+  "page.insert": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, placement: "end", markdown: "Foreign insert" }));
+    await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
   },
   "page.get": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));

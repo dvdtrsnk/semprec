@@ -14,7 +14,7 @@ import { openDocVersionAt } from "./docHistory.js";
 import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
 import { createSubpageWithClient } from "./pageOperations.js";
-import { readPageMarkdown } from "./pageMarkdown.js";
+import { insertPageMarkdown, readPageMarkdown, type InsertPageMarkdownInput } from "./pageMarkdown.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -86,6 +86,11 @@ export function createDocStore(pool: Pool) {
     /** The page as canonical Markdown plus its version token (issue #1678); never creates a document. */
     async readPageMarkdown(itemId: string) {
       return withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+    },
+
+    /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
+    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput) {
+      return withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
     },
 
     async ensurePage(itemId: string): Promise<{ docId: string }> {

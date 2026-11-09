@@ -15,7 +15,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 37 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 38 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -59,6 +59,7 @@ export interface OutputByOperation {
   "page.get": PageSummary | PageMarkdown;
   "page.ensure": { docId: string };
   "page.createSubpage": PageCreateSubpageOutput;
+  "page.insert": { blockIds: string[] };
 }
 
 /** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
@@ -249,6 +250,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.createSubpage"],
   ): Promise<OutputByOperation["page.createSubpage"]>;
+  insertPage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.insert"],
+  ): Promise<OutputByOperation["page.insert"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

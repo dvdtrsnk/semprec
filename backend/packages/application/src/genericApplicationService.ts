@@ -27,7 +27,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 37-operation catalog's business logic.
+ * path into the 38-operation catalog's business logic.
  */
 
 /**
@@ -518,6 +518,12 @@ export function createGenericApplicationService(
     /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
     async createSubpage(actor, input) {
       return docStore.createSubpage(input, toActor(actor).type);
+    },
+
+    /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */
+    async insertPage(actor, input) {
+      const { itemId, placement, markdown, blockIds } = input;
+      return docStore.insertPageMarkdown(itemId, { placement, markdown, blockIds, origin: toActor(actor).type });
     },
 
     // ---- pages ----

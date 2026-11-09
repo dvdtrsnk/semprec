@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 37-operation catalog (issues #252, #1404, #1676), extracted from #37's
+ * Strict Zod input schemas for the 38-operation catalog (issues #252, #1404, #1676, #1679), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -434,6 +434,26 @@ export const PageCreateSubpageInputSchema = z
   .strict();
 export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;
 
+/** Most blocks one insert may name by id; bounds the array the edge accepts. */
+const PAGE_INSERT_MAX_BLOCK_IDS = 10_000;
+/** Longest Markdown body one insert accepts, in UTF-16 units (the REST adapter's own body cap is tighter in bytes). */
+const PAGE_INSERT_MAX_MARKDOWN_LENGTH = 1_000_000;
+
+/**
+ * Inserts Markdown into the page of `itemId` at a placement (issue #1679): at the `"start"`, at the `"end"`, or right
+ * after the block `afterBlockId`. `blockIds`, when given, names the new blocks, one id per parsed block in order;
+ * otherwise the ids are generated. Whether the ids are well-formed and free is decided by the operation.
+ */
+export const PageInsertInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    placement: z.union([z.enum(["start", "end"]), z.object({ afterBlockId: z.string().min(1) }).strict()]),
+    markdown: z.string().max(PAGE_INSERT_MAX_MARKDOWN_LENGTH),
+    blockIds: z.array(z.string().min(1)).max(PAGE_INSERT_MAX_BLOCK_IDS).optional(),
+  })
+  .strict();
+export type PageInsertInput = z.infer<typeof PageInsertInputSchema>;
+
 export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
@@ -446,7 +466,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 37 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 38 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -485,6 +505,7 @@ export interface InputByOperation {
   "page.get": PageGetInput;
   "page.ensure": PageEnsureInput;
   "page.createSubpage": PageCreateSubpageInput;
+  "page.insert": PageInsertInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

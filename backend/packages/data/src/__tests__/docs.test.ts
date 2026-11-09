@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -26,7 +27,7 @@ import {
 import { getBlock as readBlock, listBlocks as readBlocks } from "../docs/blocks.js";
 import { setDocUpdateHook, type DocUpdateEvent } from "../realtimeHook.js";
 import { getBlocksMap, readPageBlocks, writeBlock } from "@semprec/block-model";
-import { docEtag, readPageMarkdown } from "../docs/pageMarkdown.js";
+import { docEtag, insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -1247,6 +1248,65 @@ describe("docs (CRDT layer)", () => {
       const error = await readMarkdown(item.id).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({ status: 400, details: { reason: "not_a_page_host" } });
+    });
+  });
+
+  describe("insert Markdown into a page (issue #1679)", () => {
+    const insertMarkdown = (itemId: string, input: Parameters<typeof insertPageMarkdown>[2]) =>
+      withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+
+    it("writes one document update authored by the origin the caller names, system included", async () => {
+      const item = await makeItem();
+      const { blockIds } = await insertMarkdown(item.id, {
+        placement: "end",
+        markdown: "One\n\nTwo",
+        origin: "system",
+      });
+      expect(blockIds).toHaveLength(2);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+        [item.id],
+      );
+      expect(rows).toEqual([{ created_by: "system" }]);
+      expect((await withTransaction(pool, (client) => readPageMarkdown(client, item.id))).markdown).toBe("One\n\nTwo");
+    });
+
+    it("rolls the lazily created document back when the placement is unknown", async () => {
+      const item = await makeItem();
+      const error = await insertMarkdown(item.id, {
+        placement: { afterBlockId: "missing" },
+        markdown: "Never written",
+        origin: "user",
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "placement.afterBlockId" } });
+      expect((await pool.query(`SELECT 1 FROM docs WHERE item_id = $1`, [item.id])).rows).toHaveLength(0);
+    });
+
+    it("refuses a trashed item and an unknown one with the same NotFoundError and creates no document", async () => {
+      const item = await makeItem();
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      for (const id of [item.id, randomUUID()]) {
+        const error = await insertMarkdown(id, { placement: "end", markdown: "x", origin: "user" }).catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(NotFoundError);
+      }
+      expect((await pool.query(`SELECT 1 FROM docs`)).rows).toHaveLength(0);
+    });
+
+    it("keeps the nesting indent of the parsed blocks and inserts after a block in document order", async () => {
+      const item = await makeItem();
+      await insertMarkdown(item.id, { placement: "end", markdown: "- parent\n  - child\n\nlast", origin: "user" });
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("Missing doc");
+      const loaded = await loadDoc(pool, doc.id);
+      const blocks = readPageBlocks(loaded);
+      expect(blocks.map((block) => [block.type, block.indent])).toEqual([
+        ["bullet", 0],
+        ["bullet", 1],
+        ["text", 0],
+      ]);
     });
   });
 });

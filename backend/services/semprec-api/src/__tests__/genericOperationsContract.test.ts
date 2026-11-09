@@ -117,7 +117,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 37-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 38-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -510,6 +510,26 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(await read.json()).toMatchObject({
       subpageCount: 1,
       blocks: [{ id: page?.blockId, type: "page", pageId: page?.pageItemId, text: "Release checklist" }],
+    });
+  },
+  "page.insert": async (fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/insert`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ placement: "end", markdown: "First line\n\nSecond line" }),
+    });
+    expect(response.status).toBe(200);
+    const inserted = z
+      .object({ blockIds: z.array(z.string()).length(2) })
+      .strict()
+      .parse(await response.json());
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(await read.json()).toMatchObject({
+      blockCount: 2,
+      blocks: [
+        { id: inserted.blockIds[0], text: "First line" },
+        { id: inserted.blockIds[1], text: "Second line" },
+      ],
     });
   },
   "page.get": async (fx, headers, baseUrl) => {

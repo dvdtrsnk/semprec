@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 37 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 38 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -103,6 +103,8 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "page.get": nonDestructive("core.page.read", "read"),
   // Additive and reversible through `item.delete`; the item-write capability is the issue's choice (#1844 refines it).
   "page.createSubpage": nonDestructive("core.item.write", "write"),
+  // Additive: it destroys no content and its blocks carry the caller as `created_by` (docs/adr/2026-10-29-agent-page-write-policy.md).
+  "page.insert": nonDestructive("core.page.write", "write"),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
   "page.restoreVersion": destructive("core.page.write", true),
 };
