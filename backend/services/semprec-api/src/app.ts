@@ -19,6 +19,7 @@ import { createAccountExportDownloadListener, createAccountRoutes } from "./acco
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createItemRoutes } from "./itemsHandler.js";
+import { createPageChangesRoutes } from "./pageChangesHandler.js";
 import { createPropertyRoutes } from "./propertiesHandler.js";
 import { createViewRoutes } from "./viewsHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
@@ -34,6 +35,12 @@ import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
+import {
+  createPageMarkdownRequestListener,
+  createPageInsertRequestListener,
+  isPageInsertPath,
+  isPageMarkdownPath,
+} from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { isAllowedOrigin } from "./originCheck.js";
@@ -106,6 +113,7 @@ export async function createDispatcher(
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
     ...createViewRoutes(genericApplicationService, pool),
     ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
+    ...createPageChangesRoutes(genericApplicationService),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
@@ -117,6 +125,13 @@ export async function createDispatcher(
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
   const mcpListener = await createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities, options.moduleRegistry);
+  // `page.insert` over HTTP also accepts a scoped run credential, through the same gateway and capability set as `/mcp`.
+  const pageInsertListener = createPageInsertRequestListener(
+    pool,
+    genericApplicationService,
+    mcpGateway,
+    mcpGrantedCapabilities,
+  );
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
@@ -147,6 +162,7 @@ export async function createDispatcher(
     files: options.blobStorage,
     mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
   });
+  const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
@@ -174,6 +190,14 @@ export async function createDispatcher(
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (req.method === "POST" && isMessageSpeechPath(pathname)) {
       speechListener(req, res);
+      return;
+    }
+    if (req.method === "GET" && isPageMarkdownPath(pathname)) {
+      pageMarkdownListener(req, res);
+      return;
+    }
+    if (req.method === "POST" && isPageInsertPath(pathname)) {
+      pageInsertListener(req, res);
       return;
     }
     if (pathname === "/healthz") {

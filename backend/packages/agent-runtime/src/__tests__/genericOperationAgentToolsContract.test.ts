@@ -151,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 36-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 39-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -263,6 +263,9 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
+  "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
+  "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
@@ -323,7 +326,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
     const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
     const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
-    for (const name of ["page.get", "page.ensure", "page.restoreVersion"] as const) {
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"] as const) {
       expect(discovered).not.toContain(name);
       const args =
         name === "page.restoreVersion"
@@ -653,7 +656,13 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
       const outcome = await tools[operation](run.id, testCase.args(fx));
 
-      if (operation === "page.get" || operation === "page.ensure" || operation === "page.restoreVersion") {
+      if (
+        operation === "page.get" ||
+        operation === "page.ensure" ||
+        operation === "page.restoreVersion" ||
+        operation === "page.insert" ||
+        operation === "page.changes"
+      ) {
         expect(outcome.error).toBe(true);
         expect(outcome.approvalRequestId).toBeUndefined();
         expect(outcome.result).toContain("Unknown operation");
@@ -670,6 +679,16 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         if (operation === "relation.set") {
           const relations = await chokePoint.listItemRelations(fx.itemB.id, fx.singleRelationProperty.id);
           expect(relations).toMatchObject([{ targetItemId: fx.secondTarget.id }]);
+        }
+        if (operation === "page.createSubpage") {
+          // The agent's call is a direct write attributed to the agent: the parent's page document gets one update
+          // authored `ai_agent`, and no approval request exists (checked below with every non-destructive call).
+          const { rows } = await pool.query<{ created_by: string }>(
+            `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
+             WHERE d.item_id = $1 ORDER BY u.id`,
+            [fx.itemA.id],
+          );
+          expect(rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
         }
         if (operation === "item.create") {
           const { rows } = await pool.query<{ id: string }>(

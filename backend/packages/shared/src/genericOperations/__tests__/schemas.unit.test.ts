@@ -24,6 +24,9 @@ import {
   RelationPutInputSchema,
   RelationSetInputSchema,
   PageRestoreVersionInputSchema,
+  PageCreateSubpageInputSchema,
+  PageInsertInputSchema,
+  PageChangesInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -68,6 +71,8 @@ const ALL_SCHEMAS = [
   RelationDeleteInputSchema,
   RelationListInputSchema,
   PageRestoreVersionInputSchema,
+  PageCreateSubpageInputSchema,
+  PageInsertInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -495,5 +500,114 @@ describe("item.create initial relations", () => {
         .success,
     ).toBe(false);
     expect(ItemCreateInputSchema.safeParse({ ...base, relations: [{ ...relation, extra: true }] }).success).toBe(false);
+  });
+});
+
+describe("PageCreateSubpageInputSchema (issue #1676)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+  it("accepts an item parent or a Journal period parent, with optional placement and title", () => {
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId } }).success).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, afterBlockId: "b1", title: "Notes" }).success,
+    ).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({ parent: { journal: { type: "day", period: "2026-10-16" } } }).success,
+    ).toBe(true);
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, title: "" }).success).toBe(true);
+    expect(PageCreateSubpageInputSchema.safeParse({ parent: { itemId }, fromBlockIds: ["a", "b"] }).success).toBe(true);
+    expect(
+      PageCreateSubpageInputSchema.safeParse({
+        parent: { itemId },
+        fromBlockIds: Array.from({ length: 200 }, (_, i) => `b${i}`),
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a missing, malformed, mixed or unknown parent and unknown keys", () => {
+    for (const input of [
+      {},
+      { parent: {} },
+      { parent: { itemId: "not-a-uuid" } },
+      { parent: { itemId, journal: { type: "day", period: "2026-10-16" } } },
+      { parent: { itemId, extra: true } },
+      { parent: { journal: { type: "decade", period: "2020" } } },
+      { parent: { journal: { type: "day", period: "" } } },
+      { parent: { journal: { type: "day", period: "2026-10-16", extra: true } } },
+      { parent: { itemId }, afterBlockId: "" },
+      { parent: { itemId }, title: 5 },
+      { parent: { itemId }, unexpected: true },
+      { parent: { itemId }, fromBlockIds: [] },
+      { parent: { itemId }, fromBlockIds: ["a", "a"] },
+      { parent: { itemId }, fromBlockIds: [""] },
+      { parent: { itemId }, fromBlockIds: Array.from({ length: 201 }, (_, i) => `b${i}`) },
+    ]) {
+      expect(PageCreateSubpageInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+});
+
+describe("PageInsertInputSchema (issue #1679)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+  it("accepts the three placements, optional caller ids and empty Markdown", () => {
+    for (const placement of ["start", "end", { afterBlockId: "b1" }]) {
+      expect(PageInsertInputSchema.safeParse({ itemId, placement, markdown: "Text" }).success).toBe(true);
+    }
+    expect(
+      PageInsertInputSchema.safeParse({ itemId, placement: "end", markdown: "", blockIds: ["a", "b"] }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a missing or malformed field, an unknown placement and an oversized body or id list", () => {
+    for (const input of [
+      { placement: "end", markdown: "x" },
+      { itemId: "bad", placement: "end", markdown: "x" },
+      { itemId, markdown: "x" },
+      { itemId, placement: "middle", markdown: "x" },
+      { itemId, placement: { afterBlockId: "" }, markdown: "x" },
+      { itemId, placement: { afterBlockId: "b1", extra: true }, markdown: "x" },
+      { itemId, placement: "end" },
+      { itemId, placement: "end", markdown: 7 },
+      { itemId, placement: "end", markdown: "x".repeat(1_000_001) },
+      { itemId, placement: "end", markdown: "x", blockIds: [""] },
+      { itemId, placement: "end", markdown: "x", blockIds: Array.from({ length: 10_001 }, (_, i) => `b${i}`) },
+      { itemId, placement: "end", markdown: "x", extra: true },
+    ]) {
+      expect(PageInsertInputSchema.safeParse(input).success, JSON.stringify(input).slice(0, 80)).toBe(false);
+    }
+  });
+});
+
+describe("PageChangesInputSchema (issue #1680)", () => {
+  const itemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const since = "2026-11-09T10:00:00.000Z";
+
+  it("defaults the author to the assistant and the limit to 100, and accepts every author and the limit bounds", () => {
+    expect(PageChangesInputSchema.parse({ itemId, since })).toEqual({ itemId, since, by: "ai_agent", limit: 100 });
+    for (const by of ["user", "ai_agent", "system"]) {
+      expect(PageChangesInputSchema.safeParse({ itemId, since, by }).success, by).toBe(true);
+    }
+    for (const limit of [1, 500]) {
+      expect(PageChangesInputSchema.safeParse({ itemId, since, limit }).success, String(limit)).toBe(true);
+    }
+    expect(PageChangesInputSchema.safeParse({ itemId, since: "2026-11-09T12:00:00+02:00" }).success).toBe(true);
+  });
+
+  it("refuses a missing or malformed field, an unknown author, an out-of-range limit and an unknown key", () => {
+    for (const input of [
+      { since },
+      { itemId },
+      { itemId: "bad", since },
+      { itemId, since: "yesterday" },
+      { itemId, since: "2026-11-09" },
+      { itemId, since, by: "robot" },
+      { itemId, since, limit: 0 },
+      { itemId, since, limit: 501 },
+      { itemId, since, limit: 1.5 },
+      { itemId, since, extra: true },
+    ]) {
+      expect(PageChangesInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
   });
 });

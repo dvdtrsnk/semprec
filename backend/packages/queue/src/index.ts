@@ -49,6 +49,9 @@ export const CORE_TASK_NAMES = {
   // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
   // with a 30-second debounce (`preserve_run_at`).
   ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
+  // Issue #1715: copies the text of a parent document's `page` blocks onto the `title` of their Pages items, enqueued by
+  // a page edit with a 10-second debounce (`preserve_run_at`).
+  PAGE_TITLE_MIRROR: "pageTitleMirror",
   // Issue #1468: fills mail_message_meta.preview_text/ingested_at for rows that predate them.
   MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
   // Issue #1496: removes Gmail pseudo-label folders (UNREAD, STARRED, CATEGORY_*...) and keeps their mail in Archive.
@@ -145,6 +148,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "api",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
@@ -212,6 +216,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "tenant",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "tenant",
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",

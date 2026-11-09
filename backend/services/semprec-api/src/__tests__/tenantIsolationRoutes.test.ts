@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { WebSocket } from "ws";
+import { z } from "zod";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
@@ -2160,6 +2161,72 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(refused.status).toBe(404);
     expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
   },
+  "list page changes": async () => {
+    const since = encodeURIComponent(new Date(Date.now() - 1_000).toISOString());
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page/changes?since=${since}`,
+    }));
+    expect(refused.status).toBe(404);
+    // The allowed side: B lists the changes of an item of its own that has no page, an empty list.
+    const created = await send(b.member, {
+      method: "POST",
+      path: `/api/databases/${b.databaseId}/items`,
+      body: { properties: {} },
+    });
+    expect(created.status, created.text).toBe(201);
+    const fresh = z.object({ id: z.string() }).parse(JSON.parse(created.text)).id;
+    const own = await send(b.member, { method: "GET", path: `/api/items/${fresh}/page/changes?since=${since}` });
+    expect(own.status, own.text).toBe(200);
+    expect(JSON.parse(own.text)).toEqual([]);
+  },
+  "read page markdown": async () => {
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page.md`,
+    }));
+    expect(refused.status).toBe(404);
+    // The allowed side: B reads its own page, whose body and token carry none of A's ids.
+    const own = await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page.md` });
+    expect(own.status, own.text).toBe(200);
+    expectNoneOf(own.text, a.ids, "B's own page.md");
+  },
+  "insert page markdown": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/insert`,
+        body: { placement: "end", markdown: "Foreign text" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B inserts into its own page.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/insert`,
+        body: { placement: "end", markdown: "Own text" },
+      });
+      expect(own.status, own.text).toBe(200);
+      expectNoneOf(own.text, a.ids, "B's own insert");
+    }),
+  "create subpage": () =>
+    leavesAUnchanged(async () => {
+      // A foreign parent answers exactly as a random one does, and nothing of A's is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/subpages`,
+        body: { title: "Foreign subpage" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B creates one under B's own item.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/subpages`,
+        body: { title: "Own subpage" },
+      });
+      expect(own.status, own.text).toBe(201);
+      expectNoneOf(own.text, a.ids, "B's own subpage");
+    }),
   "restore page version": () =>
     leavesAUnchanged(async () => {
       // A foreign item answers exactly as a random one does, and nothing of A's page is written.
@@ -2752,9 +2819,25 @@ const MCP_CASES = {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
     await p.excludesA({ itemId: b.itemId }, []);
   },
+  "page.createSubpage": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ parent: { itemId }, title: "Foreign subpage" }));
+    await p.excludesA({ parent: { itemId: b.itemId }, title: "Own subpage" }, []);
+  },
+  "page.insert": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, placement: "end", markdown: "Foreign insert" }));
+    await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
+  },
+  "page.changes": async (p) => {
+    // The probe instant: after every page document of the fixtures exists and not in the future.
+    const since = new Date().toISOString();
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, since }));
+    await p.excludesA({ itemId: b.itemId, since }, []);
+  },
   "page.get": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));
     await p.excludesA({ itemId: b.itemId, format: "summary" }, []);
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "markdown" }));
+    await p.excludesA({ itemId: b.itemId, format: "markdown" }, []);
   },
   "page.restoreVersion": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({

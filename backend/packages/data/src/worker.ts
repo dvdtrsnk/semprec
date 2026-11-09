@@ -19,6 +19,7 @@ import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
 import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
+import { handlePageTitleMirrorTask } from "./docs/pageTitleMirrorJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -154,6 +155,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: async (payload) => {
       await handleItemSearchPageTextTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: async (payload) => {
+      await handlePageTitleMirrorTask(pool, payload);
     },
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);

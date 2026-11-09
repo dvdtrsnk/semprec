@@ -28,6 +28,7 @@ import {
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
+  createTestProjectItem,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -1149,6 +1150,36 @@ describe("createSyncServer doc sync (issue #162)", () => {
     wsA.close();
     wsB.close();
     wsC.close();
+  });
+
+  it("opens the page document of a subpage created by page.createSubpage and syncs its content (issue #1676)", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
+
+    const project = await createTestProjectItem(pool);
+    const created = await docStore.createSubpage({ parent: { itemId: project } }, "user");
+    const page = created.pages[0];
+    if (!page) throw new Error("Missing created page");
+    // `semprec://page/<pageItemId>` resolves to the document the socket opens: the page summary names that docId.
+    expect((await docStore.getPageSummary(page.pageItemId, "en")).docId).toBe(page.docId);
+
+    const wsA = await connect("a");
+    const wsB = await connect("b");
+    const clientA = new TestDocClient(wsA, page.docId);
+    const clientB = new TestDocClient(wsB, page.docId);
+    clientA.open();
+    clientB.open();
+    await waitUntil(() => clientA.received.length > 0 && clientB.received.length > 0);
+
+    clientA.mutate((doc) => doc.getText("body").insert(0, "typed into the new page"));
+
+    await waitUntil(() => clientB.ydoc.getText("body").toJSON() === "typed into the new page");
+    expect(clientB.ydoc.getText("body").toJSON()).toBe("typed into the new page");
+
+    wsA.close();
+    wsB.close();
   });
 
   it("converges two subscribed clients after concurrent updates from both, including a duplicate resend", async () => {

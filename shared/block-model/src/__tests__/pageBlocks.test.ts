@@ -154,8 +154,25 @@ describe("writeBlock", () => {
     expect(getOrderArray(doc).toArray()).toEqual(["x"]);
     const stored = getBlocksMap(doc).get("x");
     expect(stored?.has("done")).toBe(false);
-    expect(stored?.has("text")).toBe(false);
+    const storedText = stored?.get("text");
+    expect(storedText instanceof Y.Text ? storedText.toString() : null).toBe("");
     expect(readPageBlocks(doc)[0]).toMatchObject({ type: "page", pageId: "p1", text: [], done: false });
+  });
+
+  it("stores a page title as plain text and reads a page block's text without attributes", () => {
+    const doc = new Y.Doc();
+    doc.transact(() => writeBlock(doc, { id: "x", type: "page", pageId: "p1", text: "Release checklist" }));
+    expect(readPageBlocks(doc)[0]).toMatchObject({
+      type: "page",
+      pageId: "p1",
+      text: [{ insert: "Release checklist" }],
+    });
+
+    // A sync client may have formatted the title; the reader returns it as plain text and stores nothing.
+    const stored = getBlocksMap(doc).get("x")?.get("text");
+    if (!(stored instanceof Y.Text)) throw new Error("expected the stored page title to be a Y.Text");
+    doc.transact(() => stored.format(0, 7, { bold: true, link: { href: "https://example.com" } }));
+    expect(readPageBlocks(doc)[0]?.text).toEqual([{ insert: "Release checklist" }]);
   });
 
   it("replaces the text of an existing block", () => {
@@ -201,8 +218,19 @@ describe("validateBlockInput", () => {
     expect(codes({ id: "a", type: "page", pageId: 3 })).toEqual(["invalid_page_id"]);
   });
 
-  it("rejects text on a page block and malformed text", () => {
-    expect(codes({ id: "a", type: "page", pageId: "p", text: "x" })).toEqual(["text_not_allowed"]);
+  it("accepts plain text on a page block and rejects inline attributes on it", () => {
+    expect(codes({ id: "a", type: "page", pageId: "p", text: "x" })).toEqual([]);
+    expect(codes({ id: "a", type: "page", pageId: "p", text: [{ insert: "x" }] })).toEqual([]);
+    const issues = validateBlockInput({
+      id: "a",
+      type: "page",
+      pageId: "p",
+      text: [{ insert: "x", attributes: { bold: true } }],
+    });
+    expect(issues.map((issue) => [issue.path, issue.code])).toEqual([["text[0].attributes", "invalid_text"]]);
+  });
+
+  it("rejects malformed text", () => {
     expect(codes({ id: "a", type: "text", text: 5 })).toEqual(["invalid_text"]);
     expect(codes({ id: "a", type: "text", text: [{ insert: 1 }] })).toEqual(["invalid_text"]);
     expect(codes({ id: "a", type: "text", text: [{ insert: "x", attributes: { underline: true } }] })).toEqual([

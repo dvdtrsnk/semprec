@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -25,6 +26,8 @@ import {
 } from "../docs/docHistory.js";
 import { getBlock as readBlock, listBlocks as readBlocks } from "../docs/blocks.js";
 import { setDocUpdateHook, type DocUpdateEvent } from "../realtimeHook.js";
+import { getBlocksMap, readPageBlocks, writeBlock } from "@semprec/block-model";
+import { docEtag, insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -1161,6 +1164,149 @@ describe("docs (CRDT layer)", () => {
       } finally {
         clientX.release();
       }
+    });
+  });
+
+  describe("page Markdown and its version token (issue #1678)", () => {
+    const readMarkdown = (itemId: string) => withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+
+    async function pageWithBlocks() {
+      const item = await makeItem();
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        writeBlock(ydoc, { id: "h", type: "h1", text: "Heading" });
+        writeBlock(ydoc, { id: "p", type: "text", text: "Body text" });
+      });
+      return { item, doc };
+    }
+
+    it("returns the same token for two reads with a compaction between them", async () => {
+      const { item, doc } = await pageWithBlocks();
+      const first = await readMarkdown(item.id);
+      const updatesBefore = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
+      expect(updatesBefore.rows[0]!.n).toBeGreaterThan(0);
+
+      // Threshold 1 compacts every pending update into the snapshot on this read: the stored rows change, the page does not.
+      await loadDoc(pool, doc.id, 1);
+      const updatesAfter = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
+      expect(updatesAfter.rows[0]!.n).toBe(0);
+
+      const second = await readMarkdown(item.id);
+      expect(second.etag).toBe(first.etag);
+      expect(second.markdown).toBe(first.markdown);
+      expect(first.markdown).toBe("# Heading\n\nBody text");
+    });
+
+    it("changes the token when a write only deletes text", async () => {
+      const { item, doc } = await pageWithBlocks();
+      const before = await readMarkdown(item.id);
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        const text = getBlocksMap(ydoc).get("p")?.get("text");
+        if (!(text instanceof Y.Text)) throw new Error("expected the block text to be a Y.Text");
+        text.delete(0, 5);
+      });
+      const after = await readMarkdown(item.id);
+      expect(after.markdown).toBe("# Heading\n\ntext");
+      expect(after.etag).not.toBe(before.etag);
+    });
+
+    it("reads an item without a document as an empty body with the token of an empty document, creating no row", async () => {
+      const item = await makeItem();
+      const result = await readMarkdown(item.id);
+      expect(result).toEqual({ docId: null, markdown: "", etag: docEtag(new Y.Doc()) });
+      expect((await pool.query(`SELECT 1 FROM docs WHERE item_id = $1`, [item.id])).rows).toHaveLength(0);
+
+      // The token of an empty read is the token of a page that was created and left empty.
+      const created = await docStore.getOrCreateDoc(item.id, "page");
+      expect(await readMarkdown(item.id)).toEqual({ docId: created.id, markdown: "", etag: result.etag });
+    });
+
+    it("writes a page block as a link captioned with the block's own title and never writes the page title", async () => {
+      const item = await makeItem();
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        ydoc.getMap("meta").set("title", "Root title");
+        writeBlock(ydoc, { id: "a", type: "page", pageId: "11111111-1111-4111-8111-111111111111", text: "Subpage" });
+        writeBlock(ydoc, { id: "b", type: "h1", text: "Heading block" });
+      });
+      const result = await readMarkdown(item.id);
+      expect(result.markdown).toContain("[Subpage](semprec://page/11111111-1111-4111-8111-111111111111)");
+      expect(result.markdown).toContain("# Heading block");
+      expect(result.markdown).not.toContain("Root title");
+      expect(readPageBlocks(await loadDoc(pool, doc.id)).map((block) => block.id)).toEqual(["a", "b"]);
+    });
+
+    it("refuses an item that already holds a canvas document, as one that cannot host a page", async () => {
+      const item = await makeItem();
+      await docStore.getOrCreateDoc(item.id, "canvas");
+      const error = await readMarkdown(item.id).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ status: 400, details: { reason: "not_a_page_host" } });
+    });
+  });
+
+  describe("insert Markdown into a page (issue #1679)", () => {
+    const insertMarkdown = (itemId: string, input: Parameters<typeof insertPageMarkdown>[2]) =>
+      withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+
+    it("writes one document update authored by the origin the caller names, system included", async () => {
+      const item = await makeItem();
+      const { blockIds } = await insertMarkdown(item.id, {
+        placement: "end",
+        markdown: "One\n\nTwo",
+        origin: "system",
+      });
+      expect(blockIds).toHaveLength(2);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+        [item.id],
+      );
+      expect(rows).toEqual([{ created_by: "system" }]);
+      expect((await withTransaction(pool, (client) => readPageMarkdown(client, item.id))).markdown).toBe("One\n\nTwo");
+    });
+
+    it("rolls the lazily created document back when the placement is unknown", async () => {
+      const item = await makeItem();
+      const error = await insertMarkdown(item.id, {
+        placement: { afterBlockId: "missing" },
+        markdown: "Never written",
+        origin: "user",
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "placement.afterBlockId" } });
+      expect((await pool.query(`SELECT 1 FROM docs WHERE item_id = $1`, [item.id])).rows).toHaveLength(0);
+    });
+
+    it("refuses a trashed item and an unknown one with the same NotFoundError and creates no document", async () => {
+      const item = await makeItem();
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      for (const id of [item.id, randomUUID()]) {
+        const error = await insertMarkdown(id, { placement: "end", markdown: "x", origin: "user" }).catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(NotFoundError);
+      }
+      expect((await pool.query(`SELECT 1 FROM docs`)).rows).toHaveLength(0);
+    });
+
+    it("keeps the nesting indent of the parsed blocks and inserts after a block in document order", async () => {
+      const item = await makeItem();
+      await insertMarkdown(item.id, { placement: "end", markdown: "- parent\n  - child\n\nlast", origin: "user" });
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("Missing doc");
+      const loaded = await loadDoc(pool, doc.id);
+      const blocks = readPageBlocks(loaded);
+      expect(blocks.map((block) => [block.type, block.indent])).toEqual([
+        ["bullet", 0],
+        ["bullet", 1],
+        ["text", 0],
+      ]);
     });
   });
 });

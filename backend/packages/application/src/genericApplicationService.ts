@@ -6,6 +6,7 @@ import {
   createDocStore,
   ForbiddenError,
   NotFoundError,
+  PAGES_MODULE_ID,
   ValidationError,
   type Actor,
   type InitialItemRelation,
@@ -27,7 +28,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 36-operation catalog's business logic.
+ * path into the 39-operation catalog's business logic.
  */
 
 /**
@@ -479,12 +480,17 @@ export function createGenericApplicationService(
 
     async getPage(actor, input) {
       const item = await requireItem(input.itemId);
+      if (input.format === "markdown") {
+        const { docId, markdown, etag } = await docStore.readPageMarkdown(item.id);
+        return { docId, kind: "page", markdown, etag };
+      }
       const summary = await docStore.getPageSummary(
         item.id,
         (await chokePoint.findUserLocale(actor.userId)) ?? "en",
         input.limit,
       );
       const path = await chokePoint.getItemPath(item.id);
+      let hostedByPagesDatabase = false;
       const breadcrumbs = await Promise.all(
         path.map(async (entry) => {
           const database = await chokePoint.getDatabase(entry.databaseId);
@@ -495,6 +501,7 @@ export function createGenericApplicationService(
             .sort()[0];
           const titleValue = entry.properties[titleKey ?? "name"];
           const title = typeof titleValue === "string" ? titleValue : "";
+          if (entry.id === item.id) hostedByPagesDatabase = database?.ownerModuleId === PAGES_MODULE_ID;
           const journal =
             database?.ownerModuleId === "journal" &&
             typeof entry.properties.type === "string" &&
@@ -504,11 +511,29 @@ export function createGenericApplicationService(
           return { itemId: entry.id, title, databaseKey: database?.key ?? null, ...(journal ? { journal } : {}) };
         }),
       );
-      return { ...summary, breadcrumbs: breadcrumbs.length > 1 || breadcrumbs[0]?.journal ? breadcrumbs : null };
+      // A Pages item always has breadcrumbs, even the one-element trail of a page whose parent is missing or trashed.
+      const hasTrail = breadcrumbs.length > 1 || breadcrumbs[0]?.journal || hostedByPagesDatabase;
+      return { ...summary, breadcrumbs: hasTrail ? breadcrumbs : null };
+    },
+
+    /** The change list of one page; the docs module resolves the item in the caller's tenant and bounds the replay. */
+    async listPageChanges(_actor, input) {
+      return docStore.listPageChanges(input.itemId, { since: new Date(input.since), by: input.by, limit: input.limit });
     },
 
     async ensurePage(_actor, input) {
       return docStore.ensurePage(input.itemId);
+    },
+
+    /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
+    async createSubpage(actor, input) {
+      return docStore.createSubpage(input, toActor(actor).type);
+    },
+
+    /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */
+    async insertPage(actor, input) {
+      const { itemId, placement, markdown, blockIds } = input;
+      return docStore.insertPageMarkdown(itemId, { placement, markdown, blockIds, origin: toActor(actor).type });
     },
 
     // ---- pages ----

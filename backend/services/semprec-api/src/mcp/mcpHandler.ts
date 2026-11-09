@@ -7,14 +7,11 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
-  resolveMcpRunCredential,
   resolveModuleAgentToolsForRun,
 } from "@semprec/data";
 import {
-  CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   operationInputJsonSchema,
-  runAsSystem,
   runInTenant,
   type AuthenticatedActor,
   type CapabilityId,
@@ -25,6 +22,7 @@ import type { GenericOperationGateway } from "@semprec/application";
 import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
 import { authenticateRequest } from "../authHandler.js";
+import { resolveRunCredentialCaller } from "./callerActor.js";
 import { logger } from "../logger.js";
 
 /** MCP protocol revisions `initialize` can agree on, newest first; the first is the fallback. */
@@ -111,25 +109,8 @@ export async function createMcpRequestListener(
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
-    // The token is resolved to its tenant in the global plane before any tenant is known; the
-    // credential itself is then read under RLS inside that tenant (`resolveMcpRunCredential`).
-    const credential = await runAsSystem("mcp-run-credential-lookup", () => resolveMcpRunCredential(pool, bearerToken));
-    if (credential) {
-      const capabilities = new Set(
-        (CAPABILITY_IDS as readonly CapabilityId[]).filter(
-          (id) => credential.capabilities.includes(id) && grantedCapabilities.has(id),
-        ),
-      );
-      return {
-        actor: {
-          userId: credential.actorUserId,
-          runId: credential.runId,
-          agentProjectItemId: credential.agentProjectItemId,
-        },
-        capabilities,
-        tenantId: credential.tenantId,
-      };
-    }
+    const credentialCaller = await resolveRunCredentialCaller(pool, bearerToken, grantedCapabilities);
+    if (credentialCaller) return credentialCaller;
 
     const identity = await authenticateRequest(pool, req);
     return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities, tenantId: identity.tenantId };

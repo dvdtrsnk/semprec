@@ -11,6 +11,7 @@ import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.
 import { getBlock, listBlocks } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
+import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
@@ -29,6 +30,8 @@ const segmentsSchema = z.array(
   z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
 );
 const RELATED_KEYS = new Set(["project", "projects", "company", "companies", "people", "sourceInbox", "proposals"]);
+/** A task's attachments are its `files` relation (issue #1771); other databases keep the common set. */
+const TASK_RELATED_KEYS = new Set([...RELATED_KEYS, "files"]);
 const MAX_RELATION_TARGETS = 200;
 
 function blobProjection(blob: BlobRow | null): SempRefContext["blob"] {
@@ -41,10 +44,10 @@ async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {
   return typeof value === "string" ? value.slice(0, 500) : "";
 }
 
-async function relatedNames(client: PoolClient, item: ItemRow) {
+async function relatedNames(client: PoolClient, item: ItemRow, keys: ReadonlySet<string> = RELATED_KEYS) {
   const result: Record<string, { names: string[]; truncated: boolean }> = {};
   for (const property of await listPropertiesByDatabase(client, item.databaseId)) {
-    if (property.type !== "relation" || !RELATED_KEYS.has(property.key)) continue;
+    if (property.type !== "relation" || !keys.has(property.key)) continue;
     const definition = await getRelationDefinitionByPropertyId(client, property.id);
     if (!definition) continue;
     const { rows } = await client.query<{ item_a: string; item_b: string }>(
@@ -144,6 +147,42 @@ async function blockDetails(client: PoolClient, itemId: string, blockId: string)
   }
 }
 
+const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A future occurrence of a repeating task (issue #1771): the series template, the day and the relations of the series'
+ * current instance, which carries the series' project, people and attachments. A series the tenant does not hold
+ * (deleted since the message was sent, or never there), one whose owner item is deleted, and one whose row has no template
+ * are unavailable.
+ */
+async function readTaskOccurrenceContext(
+  client: PoolClient,
+  seriesId: string,
+  occurrenceDate: string,
+): Promise<SempRefContext | null> {
+  // `series_id` is a uuid column: a string of any other shape names no series, and must not reach the cast.
+  if (!SERIES_ID_SHAPE.test(seriesId)) return null;
+  const series = await getTaskRecurrenceBySeriesId(client, seriesId.toLowerCase());
+  if (!series?.template) return null;
+  // Soft deletion keeps the recurrence row until the purge: a series whose current owner item is gone is unavailable.
+  const [instance] = await getItemsByIds(client, [series.itemId]);
+  if (!instance) return null;
+  const template = publicTaskRecurrenceTemplate(series.template);
+  return {
+    label: Array.from(template.name ?? "")
+      .slice(0, 500)
+      .join(""),
+    state: "active",
+    details: {
+      series: { seriesId: seriesId.toLowerCase(), mode: series.mode, rule: series.rule, anchorDate: series.anchorDate },
+      template,
+      occurrenceDate,
+      relations: await relatedNames(client, instance, TASK_RELATED_KEYS),
+    },
+    blob: null,
+  };
+}
+
 /** Composes existing tenant readers for exactly the reference carried by this turn. */
 export async function readSempRefContext(client: PoolClient, ref: SempMessageRef): Promise<SempRefContext | null> {
   requireManagedTransaction(client);
@@ -187,14 +226,33 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
       blob: blobProjection(await getBlob(client, row.blob_id)),
     };
   }
+  if (ref.kind === "taskOccurrence") return readTaskOccurrenceContext(client, ref.seriesId, ref.occurrenceDate);
   const [raw] = await getItemsByIdsIncludingDeleted(client, [ref.itemId]);
-  if (!raw || (ref.kind === "item" && raw.databaseId !== ref.databaseId.toLowerCase())) return null;
+  if (!raw || ((ref.kind === "item" || ref.kind === "taskTrace") && raw.databaseId !== ref.databaseId.toLowerCase()))
+    return null;
+  // A trace names a live task: a task deleted since the message was sent is unavailable, not a trashed marker.
+  if (ref.kind === "taskTrace" && raw.deletedAt) return null;
   const item = (await projectItemsForRead(client, [raw]))[0];
   if (!item) return null;
   const database = await getDatabase(client, item.databaseId);
   if (!database) return null;
+  // A deleted task is unavailable, like a deleted trace; other trashed items keep the trashed marker.
+  if (ref.kind === "item" && item.deletedAt && database.ownerModuleId === "tasks") return null;
   const label = await itemTitle(client, item);
   const state = item.deletedAt ? "trashed" : "active";
+  if (ref.kind === "taskTrace") {
+    if (database.ownerModuleId !== "tasks") return null;
+    return {
+      label,
+      state,
+      details: {
+        properties: item.properties,
+        relations: await relatedNames(client, item, TASK_RELATED_KEYS),
+        traceDay: ref.traceDay,
+      },
+      blob: null,
+    };
+  }
   if (ref.kind === "block") {
     const block = await blockDetails(client, item.id, ref.blockId);
     return block === null ? null : { label, state, details: { page: item.properties, ...{ block } }, blob: null };
@@ -225,7 +283,11 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
     state,
     details: {
       properties: item.properties,
-      relations: await relatedNames(client, item),
+      relations: await relatedNames(
+        client,
+        item,
+        database.ownerModuleId === "tasks" ? TASK_RELATED_KEYS : RELATED_KEYS,
+      ),
       inboxRelated: await inboxRelatedItems(client, item, database.ownerModuleId),
       ...(database.ownerModuleId === "emails" ? { thread: await mailThreadMessages(client, item.id) } : {}),
     },

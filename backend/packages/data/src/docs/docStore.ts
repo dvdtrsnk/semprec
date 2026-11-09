@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
-import type { PageRestoreOutput } from "@semprec/shared";
+import type { PageCreateSubpageInput, PageCreateSubpageOutput, PageRestoreOutput } from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
@@ -13,6 +13,9 @@ import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
 import { openDocVersionAt } from "./docHistory.js";
 import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
+import { createSubpageWithClient } from "./pageOperations.js";
+import { insertPageMarkdown, readPageMarkdown, type InsertPageMarkdownInput } from "./pageMarkdown.js";
+import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -81,6 +84,36 @@ export function createDocStore(pool: Pool) {
       return withTransaction(pool, (client) => readPageSummary(client, itemId, locale, limit));
     },
 
+    /** The page as canonical Markdown plus its version token (issue #1678); never creates a document. */
+    async readPageMarkdown(itemId: string) {
+      return withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+    },
+
+    /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
+    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput) {
+      return withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+    },
+
+    /**
+     * What was written to the page of `itemId` since `options.since` by `options.by` (issue #1680). The item is read in
+     * the caller's tenant like any item read, so a foreign or unknown id is one `NotFoundError`; an item without a page
+     * document has no changes (`[]`), and then only the future check applies since there is no history to bound `since`.
+     */
+    async listPageChanges(itemId: string, options: ListPageChangesOptions): Promise<PageChange[]> {
+      const doc = await withTransaction(pool, async (client) => {
+        const [item] = await getItemsByIds(client, [itemId]);
+        if (!item) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        return docsStore.getDocByItemId(client, itemId);
+      });
+      if (!doc) {
+        if (options.since.getTime() > Date.now()) {
+          throw new ValidationError("'since' must not be in the future", { field: "since" });
+        }
+        return [];
+      }
+      return listPageChanges(pool, doc.id, options);
+    },
+
     async ensurePage(itemId: string): Promise<{ docId: string }> {
       return withTransaction(pool, async (client) => {
         const [visible] = await getItemsByIds(client, [itemId]);
@@ -90,6 +123,11 @@ export function createDocStore(pool: Pool) {
         const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
         return { docId: doc.id };
       });
+    },
+
+    /** Creates one subpage (issue #1676) in one transaction; `origin` is derived server-side from the caller. */
+    async createSubpage(input: PageCreateSubpageInput, origin: CreatedBy): Promise<PageCreateSubpageOutput> {
+      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin));
     },
 
     // ---- page content (blocks) ----

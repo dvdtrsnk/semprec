@@ -30,8 +30,11 @@ export interface SerializableBlock {
 }
 
 export interface SerializeOptions {
-  /** Title written inside a page block link; an empty title is written when absent. */
-  resolvePageTitle?: (pageId: string) => string;
+  /**
+   * Title written inside a page block link; an empty title is written when absent. The resolver also receives the
+   * block itself, so two page blocks that share one page id can keep their own captions.
+   */
+  resolvePageTitle?: (pageId: string, block: SerializableBlock) => string;
   /** Write the `semprec:block` id comment before every block. */
   withIds?: boolean;
 }
@@ -343,7 +346,7 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
     let line: string;
     switch (type) {
       case "page": {
-        const title = options.resolvePageTitle?.(block.pageId as string) ?? "";
+        const title = options.resolvePageTitle?.(block.pageId as string, block) ?? "";
         const caption = serializeInline([{ insert: title }]);
         line = `[${caption}](${PAGE_LINK_PREFIX}${encodePageId(block.pageId as string)})`;
         break;
@@ -836,7 +839,8 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
     const block: ParsedBlock = { id, type: draft.type, indent: draft.indent };
     if (isBlockType(draft.type)) {
       const rule = BLOCK_TYPE_RULES[draft.type];
-      if (rule.hasText) block.text = draft.text ?? [];
+      // A page link carries no title text here; the title is resolved separately from the block's own text.
+      if (!rule.hasPageId) block.text = draft.text ?? [];
       if (rule.hasDone) block.done = draft.done === true;
       if (rule.hasPageId) block.pageId = draft.pageId;
       const issues: BlockIssue[] = validateBlockInput(block).map((issue) => ({

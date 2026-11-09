@@ -16,6 +16,7 @@ import {
   reconcileGmailAccount,
   resetDatabase,
   type GmailMailClient,
+  startTaskSeries,
 } from "@semprec/data/testSupport";
 import {
   createAgentRun,
@@ -436,6 +437,109 @@ describe("durable Semp thread history", () => {
     }
     await runInTenant(tenant, () => createChokePoint(pool).softDeleteItem(own.databaseId, own.itemId));
     expect((await post({ kind: "item", itemId: own.itemId, databaseId: own.databaseId })).status).toBe(202);
+  });
+
+  it("accepts and stores task occurrence and trace refs, and refuses foreign, unknown, deleted and non-task ones without effects", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreignTenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const createFixture = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        await seedSystem(pool);
+        const databases = await withTransaction(pool, async (client) => {
+          const tasks = await getDatabaseByModuleId(client, "tasks");
+          const projects = await getDatabaseByModuleId(client, "projects");
+          if (!tasks || !projects) throw new Error("Missing system databases");
+          return { tasks: tasks.id, projects: projects.id };
+        });
+        const chokePoint = createChokePoint(pool);
+        const task = await chokePoint.createItem({
+          databaseId: databases.tasks,
+          properties: { name: "Weekly review", date: "2026-11-02" },
+        });
+        const deleted = await chokePoint.createItem({
+          databaseId: databases.tasks,
+          properties: { name: "Deleted", date: "2026-11-03" },
+        });
+        const project = await chokePoint.createItem({ databaseId: databases.projects, properties: { name: "Apollo" } });
+        const seriesId = await startTaskSeries(pool, {
+          databaseId: databases.tasks,
+          itemId: task.id,
+          mode: "fixed",
+          rule: { kind: "weekdays", days: ["mon"] },
+        });
+        await chokePoint.softDeleteItem(databases.tasks, deleted.id);
+        return { ...databases, task, deleted, project, seriesId };
+      });
+    const own = await createFixture(tenant);
+    const foreign = await createFixture(foreignTenant);
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const post = (ref: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "question", context: [ref] }),
+      });
+    const occurrence = { kind: "taskOccurrence", seriesId: own.seriesId, occurrenceDate: "2026-11-16" };
+    const trace = { kind: "taskTrace", itemId: own.task.id, databaseId: own.tasks, traceDay: "2026-11-02" };
+
+    const accepted = await post(occurrence);
+    expect(accepted.status).toBe(202);
+    expect((await post(trace)).status).toBe(202);
+    const stored = await runInTenant(tenant, () =>
+      pool.query<{ context: unknown }>(
+        "SELECT context FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+        [threadId],
+      ),
+    );
+    // Stored exactly as sent: the occurrence carries no item id.
+    expect(stored.rows).toHaveLength(2);
+    expect(stored.rows).toEqual(expect.arrayContaining([{ context: [occurrence] }, { context: [trace] }]));
+
+    const snapshot = () =>
+      runInTenant(tenant, async () => {
+        const messages = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1",
+          [threadId],
+        );
+        const jobs = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+          [`semp-chat:${tenant}`],
+        );
+        return { messages: messages.rows, jobs: jobs.rows };
+      });
+    const before = await snapshot();
+    const refusedBodies: unknown[] = [];
+    for (const ref of [
+      { kind: "taskOccurrence", seriesId: foreign.seriesId, occurrenceDate: "2026-11-16" },
+      { kind: "taskOccurrence", seriesId: randomUUID(), occurrenceDate: "2026-11-16" },
+      { kind: "taskOccurrence", seriesId: "not-a-uuid", occurrenceDate: "2026-11-16" },
+      { kind: "taskTrace", itemId: own.project.id, databaseId: own.projects, traceDay: "2026-11-02" },
+      { kind: "taskTrace", itemId: own.deleted.id, databaseId: own.tasks, traceDay: "2026-11-03" },
+      { kind: "taskTrace", itemId: foreign.task.id, databaseId: foreign.tasks, traceDay: "2026-11-02" },
+    ]) {
+      const response = await post(ref);
+      expect(response.status, JSON.stringify(ref)).toBe(400);
+      refusedBodies.push(await response.json());
+      expect(await snapshot()).toEqual(before);
+    }
+    // Every refusal is the same body: a foreign series or task answers exactly as an unknown one.
+    for (const body of refusedBodies) {
+      expect(body).toMatchObject({ error: { code: "validation_failed", details: { field: "context[0]" } } });
+      expect(body).toEqual(refusedBodies[0]);
+    }
+    // An extra key, an unknown kind and a malformed day are refused at the edge.
+    for (const bad of [
+      { ...occurrence, itemId: own.task.id },
+      { ...trace, extra: true },
+      { ...occurrence, occurrenceDate: "2026-02-30" },
+      { kind: "taskRun", seriesId: own.seriesId },
+    ]) {
+      expect((await post(bad)).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(await snapshot()).toEqual(before);
   });
 
   it("validates block membership and the Transcripts database through the real message route", async () => {

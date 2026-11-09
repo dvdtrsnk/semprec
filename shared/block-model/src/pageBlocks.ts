@@ -35,7 +35,7 @@ export interface PageBlock {
   type: BlockType;
   indent: number;
   done: boolean;
-  /** Always empty for `page` blocks. */
+  /** Plain text without attributes for `page` blocks, which carry their title here. */
   text: TextRun[];
   pageId: string | null;
   /** `true` for the empty `text` block an empty document is read as; reading never stores it. */
@@ -65,7 +65,6 @@ export interface BlockIssue {
     | "invalid_done"
     | "done_not_allowed"
     | "invalid_text"
-    | "text_not_allowed"
     | "invalid_page_id"
     | "page_id_not_allowed"
     | "page_id_required"
@@ -111,7 +110,7 @@ function validateRunAttributes(attributes: unknown, path: string, issues: BlockI
   }
 }
 
-function validateText(text: unknown, issues: BlockIssue[]): void {
+function validateText(text: unknown, plainOnly: boolean, issues: BlockIssue[]): void {
   if (typeof text === "string") {
     return;
   }
@@ -126,7 +125,15 @@ function validateText(text: unknown, issues: BlockIssue[]): void {
       return;
     }
     if (run.attributes !== undefined) {
-      validateRunAttributes(run.attributes, `${path}.attributes`, issues);
+      if (plainOnly) {
+        issues.push({
+          path: `${path}.attributes`,
+          code: "invalid_text",
+          message: "this block type carries plain text without inline attributes",
+        });
+      } else {
+        validateRunAttributes(run.attributes, `${path}.attributes`, issues);
+      }
     }
   });
 }
@@ -165,11 +172,7 @@ export function validateBlockInput(input: unknown): BlockIssue[] {
     }
   }
   if (input.text !== undefined) {
-    if (!rule.hasText) {
-      issues.push({ path: "text", code: "text_not_allowed", message: "page blocks have no text" });
-    } else {
-      validateText(input.text, issues);
-    }
+    validateText(input.text, !rule.hasInlineAttributes, issues);
   }
   if (rule.hasPageId) {
     if (typeof input.pageId !== "string" || input.pageId === "") {
@@ -214,6 +217,14 @@ function readRuns(value: unknown): TextRun[] {
   return runs;
 }
 
+/** The text of a block type without inline attributes: one plain run, or none when the text is empty. */
+function readPlainRuns(value: unknown): TextRun[] {
+  const text = readRuns(value)
+    .map((run) => run.insert)
+    .join("");
+  return text === "" ? [] : [{ insert: text }];
+}
+
 function normalizeBlock(id: string, block: Y.Map<unknown>): PageBlock {
   const flavour = block.get("sys:flavour");
   const type: BlockType = isBlockType(flavour) ? flavour : "text";
@@ -226,7 +237,7 @@ function normalizeBlock(id: string, block: Y.Map<unknown>): PageBlock {
     indent:
       typeof indent === "number" && Number.isInteger(indent) ? Math.min(MAX_INDENT, Math.max(MIN_INDENT, indent)) : 0,
     done: rule.hasDone && block.get("done") === true,
-    text: rule.hasText ? readRuns(block.get("text")) : [],
+    text: rule.hasInlineAttributes ? readRuns(block.get("text")) : readPlainRuns(block.get("text")),
     pageId: rule.hasPageId && typeof pageId === "string" && pageId !== "" ? pageId : null,
     synthetic: false,
   };
@@ -315,11 +326,7 @@ export function writeBlock(doc: Y.Doc, input: BlockInput): void {
   } else {
     block.delete("done");
   }
-  if (rule.hasText) {
-    writeText(block, input.text);
-  } else {
-    block.delete("text");
-  }
+  writeText(block, input.text);
   if (rule.hasPageId) {
     block.set("pageId", input.pageId);
   } else {

@@ -16,6 +16,7 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import { withFromInbox } from "./itemOriginReads.js";
+import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
@@ -39,6 +40,11 @@ async function buildFilterSqlForDatabase(
   const context = await resolveFilterCompileContext(client, node, now);
   return (params) => compileFilterNode(node, filterProperties, params, context);
 }
+
+/** The longest breadcrumb chain `getItemPath` returns; a longer one is cut at its root end. */
+const MAX_ITEM_PATH_LENGTH = 1000;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ListItemsInput extends itemsStore.ListItemsOptions {
   /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
@@ -121,6 +127,13 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * ancestor's item or database has since gone missing partway up the chain; the caller
      * already has everything found below that point.
      *
+     * An item of the hidden Pages database (docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md) has
+     * no database parent to follow: its chain continues with its `parentItemId` property, the host item or parent page,
+     * and from a host that is not a Pages item with the host's own database parents. Every subpage of a chain lives in
+     * the same database, so the walk cannot use the repeated-database guard below there; it tracks the item ids
+     * already walked instead, so a stored `parentItemId` cycle ends the walk rather than failing the read, and the
+     * chain is cut at `MAX_ITEM_PATH_LENGTH` elements. A trashed or missing ancestor ends the walk too, with what was found.
+     *
      * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
      * whose own parent item is, transitively, back in database A) by tracking every database
      * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
@@ -133,14 +146,21 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       return withTransaction(pool, async (client) => {
         const chain: ItemRow[] = [];
         const visitedDatabaseIds = new Set<string>();
+        const visitedItemIds = new Set<string>();
         let currentId: string | undefined = itemId;
-        while (currentId) {
+        while (currentId && chain.length < MAX_ITEM_PATH_LENGTH && !visitedItemIds.has(currentId)) {
+          visitedItemIds.add(currentId);
           const [item] = await itemsStore.getItemsByIds(client, [currentId]);
           if (!item) break;
           chain.unshift(item);
+          const database = await databasesStore.getDatabase(client, item.databaseId);
+          if (database?.system && database.ownerModuleId === PAGES_MODULE_ID) {
+            const parent: unknown = item.properties.parentItemId;
+            currentId = typeof parent === "string" && UUID_RE.test(parent) ? parent : undefined;
+            continue;
+          }
           if (visitedDatabaseIds.has(item.databaseId)) break;
           visitedDatabaseIds.add(item.databaseId);
-          const database = await databasesStore.getDatabase(client, item.databaseId);
           currentId = database?.parentItemId ?? undefined;
         }
         const projected = await projectItemsForRead(client, chain);

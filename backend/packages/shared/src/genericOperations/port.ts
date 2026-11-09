@@ -15,7 +15,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 36 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 38 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -56,8 +56,33 @@ export interface OutputByOperation {
   "page.restoreVersion": PageRestoreOutput;
   "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
   "link.relink": { itemId: string; propertyKey: string } & ItemLink;
-  "page.get": PageSummary;
+  "page.get": PageSummary | PageMarkdown;
   "page.ensure": { docId: string };
+  "page.createSubpage": PageCreateSubpageOutput;
+  "page.insert": { blockIds: string[] };
+  "page.changes": PageChangeEntry[];
+}
+
+/** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
+export interface PageChangeEntry {
+  /** When the update was stored (ISO 8601). */
+  at: string;
+  /** The blocks the change touched, in document order (a deleted block in the order it had before the update). */
+  blockIds: string[];
+  kind: "insert" | "update" | "delete";
+}
+
+/** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
+export interface PageCreateSubpageOutput {
+  pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
+}
+
+/** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
+export interface PageMarkdown {
+  docId: string | null;
+  kind: "page";
+  markdown: string;
+  etag: string;
 }
 
 export interface PageSummary {
@@ -231,6 +256,18 @@ export interface GenericApplicationPort {
     input: InputByOperation["page.ensure"],
   ): Promise<OutputByOperation["page.ensure"]>;
   getPage(actor: AuthenticatedActor, input: InputByOperation["page.get"]): Promise<OutputByOperation["page.get"]>;
+  createSubpage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.createSubpage"],
+  ): Promise<OutputByOperation["page.createSubpage"]>;
+  insertPage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.insert"],
+  ): Promise<OutputByOperation["page.insert"]>;
+  listPageChanges(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.changes"],
+  ): Promise<OutputByOperation["page.changes"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

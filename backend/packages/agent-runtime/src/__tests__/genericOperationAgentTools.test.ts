@@ -709,7 +709,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       });
       try {
         const granted = await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver);
-        const excluded = ["page.get", "page.ensure", "page.restoreVersion"];
+        const excluded = ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"];
         expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
         for (const name of excluded) expect(granted).not.toContain(name);
         expect(seen?.has("owned.read")).toBe(false);
@@ -741,7 +741,7 @@ describe("generic operation AgentTools (issue #220)", () => {
 
       const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
-      const excluded = ["page.get", "page.ensure", "page.restoreVersion"];
+      const excluded = ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"];
       expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
       for (const name of excluded) expect(granted).not.toContain(name);
     });

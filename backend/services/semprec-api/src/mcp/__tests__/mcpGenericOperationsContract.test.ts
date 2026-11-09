@@ -222,7 +222,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 36-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 38-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -389,7 +389,25 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.ensure": { tool: (fx) => ({ name: "semprec.page.ensure", arguments: { itemId: fx.itemA.id } }) },
+  "page.insert": {
+    tool: (fx) => ({
+      name: "semprec.page.insert",
+      arguments: { itemId: fx.itemA.id, placement: "end", markdown: "Contract text" },
+    }),
+  },
+  "page.createSubpage": {
+    tool: (fx) => ({
+      name: "semprec.page.createSubpage",
+      arguments: { parent: { itemId: fx.itemA.id }, title: "Contract subpage" },
+    }),
+  },
   "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },
+  "page.changes": {
+    tool: (fx) => ({
+      name: "semprec.page.changes",
+      arguments: { itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() },
+    }),
+  },
   "page.restoreVersion": {
     // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
     tool: (fx) => ({
@@ -509,6 +527,32 @@ describe("generic operation MCP contract (issue #220)", () => {
       content(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
     ).toMatchObject(first);
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fx.itemA.id])).rows).toHaveLength(1);
+  });
+
+  it("creates a subpage under a Journal day that has no entry yet, in one call", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const body = await rpc(baseUrl, await authHeader(), "semprec.page.createSubpage", {
+      parent: { journal: { type: "day", period: "2026-10-16" } },
+      title: "Day plan",
+    });
+    expect(body.error).toBeUndefined();
+    const text = body.result?.content[0]?.text;
+    if (!text) throw new Error("Missing MCP output");
+    const created = z
+      .object({ pages: z.array(z.object({ pageItemId: z.string(), blockId: z.string() })).length(1) })
+      .parse(JSON.parse(text));
+    const journalDay = await pool.query<{ id: string }>(
+      `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+       WHERE d.owner_module_id = 'journal' AND i.properties->>'period' = '2026-10-16'`,
+    );
+    expect(journalDay.rows).toHaveLength(1);
+    const dayPage = await pool.query<{ item_id: string }>(
+      `SELECT item_id FROM docs WHERE item_id = $1 AND kind = 'page'`,
+      [journalDay.rows[0]!.id],
+    );
+    expect(dayPage.rows).toHaveLength(1);
+    expect(created.pages[0]?.pageItemId).toEqual(expect.any(String));
   });
 
   it("validates Areas create and patch through MCP", async () => {

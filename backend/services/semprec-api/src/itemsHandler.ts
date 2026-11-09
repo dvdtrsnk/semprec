@@ -77,10 +77,11 @@ async function resolveRelationProperty(
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
  * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `GET /api/items/:id/relations`
  * (with optional `?propertyKey=`), `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
- * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field).
+ * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field) and `POST /api/items/:id/page/subpages`
+ * (issue #1676).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
- * own `createChokePoint(pool)` for an operation the 36-operation catalog covers. `?include=path`'s breadcrumb chain
+ * own `createChokePoint(pool)` for an operation the 39-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
@@ -369,6 +370,26 @@ export function createItemRoutes(
           ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
         });
         return { status: 200, body: result };
+      },
+    },
+    {
+      // The path item is the parent (ADR 2026-10-28-page-operation-family); a Journal period parent is reachable
+      // through the catalog (MCP, agent tools), not here, because a period without an entry has no item id to name.
+      method: "POST",
+      path: "/api/items/:id/page/subpages",
+      handler: async (ctx) => {
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find(
+          (key) => key !== "afterBlockId" && key !== "title" && key !== "fromBlockIds",
+        );
+        if (unexpected !== undefined) throw new ValidationError("Unexpected subpage field", { field: unexpected });
+        const created = await dispatchGenericOperation(service, "page.createSubpage", restActor(ctx.identity.user.id), {
+          parent: { itemId: requireUuidParam(ctx.params, "id") },
+          afterBlockId: body.afterBlockId,
+          title: body.title,
+          fromBlockIds: body.fromBlockIds,
+        });
+        return { status: 201, body: created };
       },
     },
     {

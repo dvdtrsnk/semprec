@@ -1,7 +1,8 @@
 /**
  * The closed registry of block type keys and their field rules, from
  * `docs/adr/2026-10-28-block-model-for-page-documents.md`. The keys are stored in
- * `sys:flavour`; labels are UI copy and live outside the stored model.
+ * `sys:flavour`; labels are UI copy and live outside the stored model. Every type carries `text`; a `page` block
+ * carries its title there as plain text (`docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md`).
  */
 export const BLOCK_TYPES = ["text", "h1", "h2", "h3", "bullet", "number", "todo", "quote", "page"] as const;
 
@@ -13,15 +14,15 @@ export const MAX_INDENT = 5;
 
 /** Which optional fields a block type carries. `indent` applies to every type. */
 export interface BlockTypeRule {
-  /** `text` is a `Y.Text` on this type. */
-  readonly hasText: boolean;
   /** `done` is a boolean on this type. */
   readonly hasDone: boolean;
   /** `pageId` is a string on this type. */
   readonly hasPageId: boolean;
+  /** Runs of the `text` `Y.Text` may carry `bold`, `italic`, `code` and `link`; a `page` title is plain text. */
+  readonly hasInlineAttributes: boolean;
 }
 
-const TEXT_RULE: BlockTypeRule = { hasText: true, hasDone: false, hasPageId: false };
+const TEXT_RULE: BlockTypeRule = { hasDone: false, hasPageId: false, hasInlineAttributes: true };
 
 export const BLOCK_TYPE_RULES: Readonly<Record<BlockType, BlockTypeRule>> = {
   text: TEXT_RULE,
@@ -30,9 +31,9 @@ export const BLOCK_TYPE_RULES: Readonly<Record<BlockType, BlockTypeRule>> = {
   h3: TEXT_RULE,
   bullet: TEXT_RULE,
   number: TEXT_RULE,
-  todo: { hasText: true, hasDone: true, hasPageId: false },
+  todo: { hasDone: true, hasPageId: false, hasInlineAttributes: true },
   quote: TEXT_RULE,
-  page: { hasText: false, hasDone: false, hasPageId: true },
+  page: { hasDone: false, hasPageId: true, hasInlineAttributes: false },
 };
 
 export function isBlockType(value: unknown): value is BlockType {

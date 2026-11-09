@@ -39,6 +39,8 @@ describe("Semp reference observation", () => {
       { kind: "mailAttachment", attachmentId: randomUUID() },
       { kind: "agentRun", agentRunId: randomUUID() },
       { kind: "approvalRequest", approvalRequestId: randomUUID() },
+      { kind: "taskTrace", itemId: randomUUID(), databaseId: randomUUID(), traceDay: "2026-11-02" },
+      { kind: "taskOccurrence", seriesId: randomUUID(), occurrenceDate: "2026-11-16" },
     ];
     await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => {
@@ -61,7 +63,7 @@ describe("Semp reference observation", () => {
           if (original) Object.defineProperty(client, "query", original);
           else Reflect.deleteProperty(client, "query");
         }
-        expect(queries).toHaveLength(6);
+        expect(queries).toHaveLength(8);
         for (const fragment of [
           "JOIN items i ON i.id = r.item_id AND i.database_id",
           "d.owner_module_id = 'transcripts'",
@@ -69,6 +71,8 @@ describe("Semp reference observation", () => {
           "JOIN mail_attachments t",
           "JOIN agent_runs t",
           "JOIN approval_requests t",
+          "JOIN items t ON t.id = r.item_id AND t.database_id",
+          "JOIN task_recurrence t ON t.series_id = r.series_id",
         ]) {
           expect(queries.filter((sql) => sql.includes(fragment))).toHaveLength(1);
         }

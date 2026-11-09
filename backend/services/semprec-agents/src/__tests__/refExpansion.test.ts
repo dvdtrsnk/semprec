@@ -31,11 +31,13 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   createInboxItemWithClient,
+  createSeriesOccurrence,
   ensureFolderItem,
   getTestPool,
   ingestEmailMessage,
   resetDatabase,
   reviseProposalWithClient,
+  startTaskSeries,
 } from "@semprec/data/testSupport";
 import { expandSempRefs } from "../refExpansion.js";
 
@@ -390,14 +392,105 @@ describe("tenant-scoped reference blob expansion", () => {
     expect((await snapshot()).rows).toEqual(before.rows);
   });
 
+  it("expands task occurrence and trace refs for the agent turn, and a deleted task as a note that does not fail the turn", async () => {
+    const tasks = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!tasks) throw new Error("Missing Tasks database");
+    const cp = createChokePoint(runtime);
+    const task = await runInTenant(tenant, () =>
+      cp.createItem({
+        databaseId: tasks.id,
+        properties: {
+          name: "Task sentinel",
+          date: "2026-11-02",
+          timeFrom: "09:00",
+          description: "Description sentinel",
+        },
+      }),
+    );
+    const seriesId = await runInTenant(tenant, () =>
+      startTaskSeries(runtime, {
+        databaseId: tasks.id,
+        itemId: task.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon"] },
+      }),
+    );
+    await runInTenant(tenant, () =>
+      createSeriesOccurrence(runtime, {
+        databaseId: tasks.id,
+        seriesId,
+        occurrenceDate: "2026-11-09",
+        status: "notDone",
+      }),
+    );
+    const doomed = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Doomed sentinel", date: "2026-11-03" } }),
+    );
+    const refs = [
+      { kind: "taskOccurrence" as const, seriesId, occurrenceDate: "2026-11-16" },
+      { kind: "taskOccurrence" as const, seriesId, occurrenceDate: "2026-11-09" },
+      { kind: "taskTrace" as const, itemId: task.id, databaseId: tasks.id, traceDay: "2026-11-02" },
+      { kind: "taskTrace" as const, itemId: doomed.id, databaseId: tasks.id, traceDay: "2026-11-03", label: "Saved" },
+    ];
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks.id, doomed.id));
+
+    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+
+    const sections = result.text.split("\n\n");
+    expect(sections).toHaveLength(4);
+    expect(sections[0]).toContain("taskOccurrence: Task sentinel");
+    expect(sections[0]).toContain('"occurrenceDate":"2026-11-16"');
+    expect(sections[0]).toContain("Description sentinel");
+    expect(sections[0]).toContain(seriesId);
+    expect(sections[0]).not.toContain("persistent");
+    expect(sections[1]).toContain('"occurrenceDate":"2026-11-09"');
+    expect(sections[2]).toContain("taskTrace: Task sentinel");
+    expect(sections[2]).toContain('"traceDay":"2026-11-02"');
+    expect(sections[2]).toContain("Description sentinel");
+    expect(sections[3]).toBe("taskTrace: no longer exists or is unavailable.");
+    expect(result.context.map((ref) => ref.label)).toEqual([
+      "Task sentinel",
+      "Task sentinel",
+      "Task sentinel",
+      "Saved",
+    ]);
+    for (const ref of result.context) expect(labeledSempMessageRefSchema.safeParse(ref).success).toBe(true);
+
+    // A series of another tenant is as unavailable as one that never existed, and shows nothing of it.
+    const foreignTasks = await runInTenant(foreign, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!foreignTasks) throw new Error("Missing foreign Tasks database");
+    const foreignTask = await runInTenant(foreign, () =>
+      cp.createItem({ databaseId: foreignTasks.id, properties: { name: "Foreign task sentinel", date: "2026-11-02" } }),
+    );
+    const foreignSeries = await runInTenant(foreign, () =>
+      startTaskSeries(runtime, {
+        databaseId: foreignTasks.id,
+        itemId: foreignTask.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon"] },
+      }),
+    );
+    const foreignRefs = [{ kind: "taskOccurrence" as const, seriesId: foreignSeries, occurrenceDate: "2026-11-16" }];
+    const unavailable = await runInTenant(tenant, () =>
+      expandSempRefs(runtime, foreignRefs, { files, mailAttachments }),
+    );
+    expect(unavailable.text).toBe("taskOccurrence: no longer exists or is unavailable.");
+    expect(unavailable.text).not.toContain("Foreign task sentinel");
+  });
+
+  // Projects, not Tasks: a deleted Tasks item expands as unavailable (next test), other trashed items keep the marker.
   it("marks only an own trashed item during direct tenant-scoped expansion", async () => {
     const ownDatabase = await runInTenant(tenant, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
     const foreignDatabase = await runInTenant(foreign, () =>
-      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
     );
-    if (!ownDatabase || !foreignDatabase) throw new Error("Missing task databases");
+    if (!ownDatabase || !foreignDatabase) throw new Error("Missing project databases");
     const cp = createChokePoint(runtime);
     const active = await runInTenant(tenant, () =>
       cp.createItem({ databaseId: ownDatabase.id, properties: { name: "Active marker control" } }),
@@ -466,6 +559,43 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(JSON.stringify(result.context)).not.toContain("Trashed marker sentinel");
     expect((await snapshot()).rows).toEqual(before.rows);
     expect((await foreignSnapshot()).rows).toEqual(foreignBefore.rows);
+  });
+
+  it("expands a soft-deleted Tasks item and a series whose owner was soft-deleted as unavailable, not as trashed", async () => {
+    const tasks = await runInTenant(tenant, () =>
+      withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!tasks) throw new Error("Missing Tasks database");
+    const cp = createChokePoint(runtime);
+    const owner = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Owner sentinel", date: "2026-11-02" } }),
+    );
+    const seriesId = await runInTenant(tenant, () =>
+      startTaskSeries(runtime, {
+        databaseId: tasks.id,
+        itemId: owner.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon"] },
+      }),
+    );
+    const plain = await runInTenant(tenant, () =>
+      cp.createItem({ databaseId: tasks.id, properties: { name: "Deleted task sentinel", date: "2026-11-03" } }),
+    );
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks.id, owner.id));
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks.id, plain.id));
+    const refs = [
+      { kind: "taskOccurrence" as const, seriesId, occurrenceDate: "2026-11-16" },
+      { kind: "item" as const, itemId: plain.id, databaseId: tasks.id, label: "Saved task label" },
+    ];
+
+    const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));
+
+    expect(result.text.split("\n\n")).toEqual([
+      "taskOccurrence: no longer exists or is unavailable.",
+      "item: no longer exists or is unavailable.",
+    ]);
+    expect(result.text).not.toContain("[trashed]");
+    expect(result.text).not.toContain("sentinel");
   });
 
   it("extracts real PDF and DOCX bytes and turns a current image into an ephemeral JPEG", async () => {

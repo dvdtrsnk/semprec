@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 36-operation catalog (issues #252, #1404), extracted from #37's
+ * Strict Zod input schemas for the 38-operation catalog (issues #252, #1404, #1676, #1679), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -402,11 +402,87 @@ export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 export const PageGetInputSchema = z
   .object({
     itemId: canonicalUuid,
-    format: z.literal("summary").default("summary"),
+    format: z.enum(["summary", "markdown"]).default("summary"),
+    /** Bounds `blocks` of the summary; the Markdown format returns the whole page and ignores it. */
     limit: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type PageGetInput = z.infer<typeof PageGetInputSchema>;
+
+/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
+const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
+
+/** Most blocks one conversion may name; it bounds the Pages items and documents one transaction creates. */
+const PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS = 200;
+
+/**
+ * Creates one new subpage under an item's page, or under a Journal period's page (issue #1676): the parent names a
+ * live item or a Journal `{ type, period }` whose entry is created when missing. `afterBlockId` places the `page`
+ * block after a block of the parent's document (the end when absent). With `fromBlockIds` (issue #2013) the named
+ * non-page blocks of the parent are converted in place into one empty subpage each, and `afterBlockId` and `title` are
+ * ignored. The period key itself is validated by the operation, not by this schema.
+ */
+export const PageCreateSubpageInputSchema = z
+  .object({
+    parent: z.union([
+      z.object({ itemId: canonicalUuid }).strict(),
+      z
+        .object({
+          journal: z.object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) }).strict(),
+        })
+        .strict(),
+    ]),
+    afterBlockId: z.string().min(1).optional(),
+    title: z.string().optional(),
+    fromBlockIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS)
+      .refine((ids) => new Set(ids).size === ids.length, "fromBlockIds must not repeat an id")
+      .optional(),
+  })
+  .strict();
+export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;
+
+/** Most blocks one insert may name by id; bounds the array the edge accepts. */
+const PAGE_INSERT_MAX_BLOCK_IDS = 10_000;
+/** Longest Markdown body one insert accepts, in UTF-16 units (the REST adapter's own body cap is tighter in bytes). */
+const PAGE_INSERT_MAX_MARKDOWN_LENGTH = 1_000_000;
+
+/**
+ * Inserts Markdown into the page of `itemId` at a placement (issue #1679): at the `"start"`, at the `"end"`, or right
+ * after the block `afterBlockId`. `blockIds`, when given, names the new blocks, one id per parsed block in order;
+ * otherwise the ids are generated. Whether the ids are well-formed and free is decided by the operation.
+ */
+export const PageInsertInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    placement: z.union([z.enum(["start", "end"]), z.object({ afterBlockId: z.string().min(1) }).strict()]),
+    markdown: z.string().max(PAGE_INSERT_MAX_MARKDOWN_LENGTH),
+    blockIds: z.array(z.string().min(1)).max(PAGE_INSERT_MAX_BLOCK_IDS).optional(),
+  })
+  .strict();
+export type PageInsertInput = z.infer<typeof PageInsertInputSchema>;
+
+/** The most entries one `page.changes` call returns, and what it returns without a `limit`. */
+const PAGE_CHANGES_MAX_LIMIT = 500;
+const PAGE_CHANGES_DEFAULT_LIMIT = 100;
+
+/**
+ * What was written to the page of `itemId` since an instant, by one author (issue #1680): `since` is an ISO 8601
+ * timestamp with an offset, `by` the stored author of the updates to list (the assistant by default) and `limit` the
+ * most entries returned, oldest first. A `since` in the future or before the retained history is refused by the
+ * operation, not by this schema.
+ */
+export const PageChangesInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    since: z.iso.datetime({ offset: true }),
+    by: z.enum(["user", "ai_agent", "system"]).default("ai_agent"),
+    limit: z.number().int().min(1).max(PAGE_CHANGES_MAX_LIMIT).default(PAGE_CHANGES_DEFAULT_LIMIT),
+  })
+  .strict();
+export type PageChangesInput = z.infer<typeof PageChangesInputSchema>;
 
 export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
@@ -420,7 +496,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 36 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 38 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -458,6 +534,9 @@ export interface InputByOperation {
   "link.relink": ValueLinkInput;
   "page.get": PageGetInput;
   "page.ensure": PageEnsureInput;
+  "page.createSubpage": PageCreateSubpageInput;
+  "page.insert": PageInsertInput;
+  "page.changes": PageChangesInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

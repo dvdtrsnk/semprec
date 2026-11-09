@@ -1,5 +1,5 @@
 /**
- * The closed 36-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616). Every other file in `genericOperations` is
+ * The closed 38-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679). Every other file in `genericOperations` is
  * keyed off this exact list — adding or removing an operation means touching this array and
  * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
  * and `bindings.ts` point at whatever is now missing or extra.
@@ -43,6 +43,9 @@ export const GENERIC_OPERATION_NAMES = [
   "link.relink",
   "page.get",
   "page.ensure",
+  "page.createSubpage",
+  "page.insert",
+  "page.changes",
 ] as const;
 
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];

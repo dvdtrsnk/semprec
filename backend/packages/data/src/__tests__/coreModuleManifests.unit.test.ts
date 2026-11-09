@@ -4,6 +4,7 @@ import { filterNodeSchema } from "../views/filterTree.js";
 import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
+import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
@@ -57,11 +58,13 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getDatabases()).toEqual([]);
   });
 
-  it("loads the docs manifest and declares no core-reserved task or heartbeat names", async () => {
+  it("loads the docs manifest, which declares only the hidden Pages database, and no core-reserved task or heartbeat names", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(DOCS_PATH);
 
     expect(moduleId).toBe("docs");
+    // No order fields and no visibility flag: no collection list or switcher shows the hidden database.
+    expect(await registry.getDatabases()).toEqual([{ moduleId: "docs", key: PAGES_MODULE_ID, name: "Pages" }]);
     expect(await registry.getTasks()).toEqual([]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
     expect(await registry.getMigrations()).toEqual([
@@ -121,7 +124,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     await registry.loadModule(SYSTEM_DATABASES_PATH);
 
     expect(registry.listModuleIds().sort()).toEqual(["docs", "schemaCore", "systemDatabases", "views"]);
-    expect((await registry.getDatabases()).length).toBe(TEN_DATABASE_MODULE_IDS.length);
+    expect((await registry.getDatabases()).length).toBe(TEN_DATABASE_MODULE_IDS.length + 1);
   });
 });
 

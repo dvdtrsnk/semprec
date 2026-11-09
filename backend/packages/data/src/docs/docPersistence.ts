@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { requireAffectedRows, runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy, DocKind } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
@@ -15,6 +15,9 @@ export const DEFAULT_COMPACTION_THRESHOLD = 200;
 
 /** A page's text is converted this long after its last edit; further edits within the window keep this run time (issue #1658). */
 const PAGE_TEXT_DEBOUNCE_MS = 30_000;
+
+/** Subpage titles are mirrored this long after the first edit of a burst; the job keeps that run time (issue #1715). */
+const PAGE_TITLE_MIRROR_DEBOUNCE_MS = 10_000;
 
 interface PendingUpdateRow {
   id: string;
@@ -208,6 +211,19 @@ async function appendDocUpdateWithClient(
         jobKey: doc.item_id,
         jobKeyMode: "preserve_run_at",
         runAt: new Date(Date.now() + PAGE_TEXT_DEBOUNCE_MS),
+      },
+    );
+    // A second, independent job: it copies the edited `page` block titles onto their Pages items. `add_job` runs in
+    // this transaction, so the job exists only if the edit commits, and `preserve_run_at` keeps the run time of the
+    // first edit while the job waits (the default `replace` would push it back for as long as the user types).
+    await enqueueJob(
+      client,
+      CORE_TASK_NAMES.PAGE_TITLE_MIRROR,
+      { itemId: doc.item_id },
+      {
+        jobKey: `page-title-mirror:${doc.item_id}`,
+        jobKeyMode: "preserve_run_at",
+        runAt: new Date(Date.now() + PAGE_TITLE_MIRROR_DEBOUNCE_MS),
       },
     );
   }

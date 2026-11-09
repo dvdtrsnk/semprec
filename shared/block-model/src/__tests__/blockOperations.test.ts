@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BlockInputError,
   BlockOperationError,
+  convertBlocksToPages,
   deleteBlocks,
   duplicateBlocks,
   getBlocksMap,
@@ -375,6 +376,91 @@ describe("setType", () => {
     expect(readPageBlocks(doc)[0]?.done).toBe(true);
     setType(doc, ["t"], "todo");
     expect(readPageBlocks(doc)[0]?.done).toBe(false);
+  });
+});
+
+describe("convertBlocksToPages", () => {
+  const pageIdFor = (id: string): string => `page-of-${id}`;
+
+  it("converts the selected blocks in place as one update, keeping ids, order, indent and the plain text", () => {
+    const doc = docWith(
+      { id: "a", type: "text", text: "Alpha" },
+      {
+        id: "b",
+        type: "todo",
+        done: true,
+        indent: 2,
+        text: [
+          { insert: "Bold", attributes: { bold: true } },
+          { insert: " and " },
+          { insert: "link", attributes: { link: { href: "https://example.com" } } },
+        ],
+      },
+      { id: "c", type: "h2", text: "Gamma" },
+    );
+    const updates: Uint8Array[] = [];
+    doc.on("update", (update: Uint8Array) => updates.push(update));
+
+    convertBlocksToPages(doc, ["c", "b"], pageIdFor);
+
+    expect(updates).toHaveLength(1);
+    expect(readPageBlocks(doc)).toEqual([
+      { id: "a", type: "text", indent: 0, done: false, text: [{ insert: "Alpha" }], pageId: null, synthetic: false },
+      {
+        id: "b",
+        type: "page",
+        indent: 2,
+        done: false,
+        text: [{ insert: "Bold and link" }],
+        pageId: "page-of-b",
+        synthetic: false,
+      },
+      {
+        id: "c",
+        type: "page",
+        indent: 0,
+        done: false,
+        text: [{ insert: "Gamma" }],
+        pageId: "page-of-c",
+        synthetic: false,
+      },
+    ]);
+    expect(getBlocksMap(doc).get("b")?.has("done")).toBe(false);
+  });
+
+  it("does nothing for an empty selection and carries the origin", () => {
+    const doc = docWith({ id: "a", type: "text", text: "Alpha" });
+    const before = Y.encodeStateAsUpdate(doc);
+    convertBlocksToPages(doc, [], pageIdFor);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+
+    const origins: unknown[] = [];
+    doc.on("update", (_update: Uint8Array, origin: unknown) => origins.push(origin));
+    convertBlocksToPages(doc, ["a"], pageIdFor, "user");
+    expect(origins).toEqual(["user"]);
+  });
+
+  it("refuses an already-page block, an unknown id and a repeated id without changing anything", () => {
+    const doc = docWith(
+      { id: "a", type: "text", text: "Alpha" },
+      { id: "p", type: "page", pageId: "existing", text: "Page" },
+    );
+    expectUnchangedCode(doc, () => convertBlocksToPages(doc, ["a", "p"], pageIdFor), "block_already_page");
+    expectUnchangedCode(doc, () => convertBlocksToPages(doc, ["a", "missing"], pageIdFor), "block_not_found");
+    expectUnchangedCode(doc, () => convertBlocksToPages(doc, ["a", "a"], pageIdFor), "duplicate_block_id");
+  });
+
+  it("refuses an invalid page id without changing anything", () => {
+    const doc = docWith({ id: "a", type: "text", text: "Alpha" });
+    const before = Y.encodeStateAsUpdate(doc);
+    expect(() => convertBlocksToPages(doc, ["a"], () => "")).toThrow(BlockInputError);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
+  it("keeps setType refusing every conversion to or from page", () => {
+    const doc = docWith({ id: "a", type: "text", text: "Alpha" }, { id: "p", type: "page", pageId: "x", text: "P" });
+    expectUnchangedCode(doc, () => setType(doc, ["a"], "page"), "page_conversion_required");
+    expectUnchangedCode(doc, () => setType(doc, ["p"], "text"), "page_conversion_required");
   });
 });
 

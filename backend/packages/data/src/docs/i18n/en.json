@@ -1,3 +1,6 @@
 {
-  "page.notes.title": "Notes"
+  "page.notes.title": "Notes",
+  "database.pages.name": "Pages",
+  "property.pages.title.name": "Title",
+  "property.pages.parentItemId.name": "Parent"
 }

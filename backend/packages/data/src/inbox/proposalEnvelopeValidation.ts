@@ -73,7 +73,10 @@ export async function assertValidV2PageContent(
     const afterHeading = parsed.data.placement.afterHeading;
     const summary = await readPageSummary(client, targetPage.id, "en");
     if (!summary.headings.some((heading) => heading.id === afterHeading))
-      throw new ValidationError("Proposal heading is unavailable", { field: "properties" });
+      throw new ValidationError("Proposal heading is unavailable", {
+        field: "properties",
+        reason: "heading_unavailable",
+      });
   }
 }
 

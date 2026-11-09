@@ -49,7 +49,10 @@ const EXPECTED_ROWS: Record<
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
   "page.ensure": { schema: schemas.PageEnsureInputSchema, method: "ensurePage" },
+  "page.createSubpage": { schema: schemas.PageCreateSubpageInputSchema, method: "createSubpage" },
+  "page.insert": { schema: schemas.PageInsertInputSchema, method: "insertPage" },
   "page.get": { schema: schemas.PageGetInputSchema, method: "getPage" },
+  "page.changes": { schema: schemas.PageChangesInputSchema, method: "listPageChanges" },
   "link.unlink": { schema: schemas.ValueLinkInputSchema, method: "unlinkValue" },
   "link.relink": { schema: schemas.ValueLinkInputSchema, method: "relinkValue" },
   "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
@@ -244,6 +247,24 @@ const EXPECTED_METADATA: Record<
     reversible: true,
   },
   "page.get": { requiresCapability: "core.page.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "page.changes": {
+    requiresCapability: "core.page.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "page.insert": {
+    requiresCapability: "core.page.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "page.createSubpage": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
   "page.restoreVersion": {
     requiresCapability: "core.page.write",
     requiresApproval: true,
@@ -253,14 +274,14 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 36 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(36);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(36);
+  it("has exactly 39 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(39);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(39);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 36 catalog rows and no others", () => {
+  it("has exactly the 39 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

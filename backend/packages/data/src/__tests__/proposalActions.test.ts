@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
+import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
 import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
 import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -22,6 +24,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import { createMarkdownPageContentProposal } from "../testSupport/pageProposalFixtures.js";
 import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
@@ -41,6 +44,10 @@ import { insertValueLink, listValueLinksByItemIds } from "../chokePoint/valueLin
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
+import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
+import { createSubpageWithClient } from "../docs/pageOperations.js";
+import { proposalBlockId } from "../inbox/proposalPageContent.js";
+import { listPageChanges } from "../docs/pageChanges.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
@@ -363,6 +370,23 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
   return rows[0].id;
+}
+
+/** The authors of a page document's updates, oldest first. */
+async function docUpdateAuthors(itemId: string): Promise<string[]> {
+  const { rows } = await pool.query<{ created_by: string }>(
+    `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+    [itemId],
+  );
+  return rows.map((row) => row.created_by);
+}
+
+/** The block ids a confirmed card's primary result lists. */
+function resultBlockIds(confirmed: { properties: Record<string, unknown> }): string[] {
+  const results = z
+    .array(z.object({ role: z.string(), blockIds: z.array(z.string()) }))
+    .parse(confirmed.properties.results);
+  return results.find((result) => result.role === "primary")?.blockIds ?? [];
 }
 
 describe("Processing proposal confirm/reject/revise (issue #105)", () => {
@@ -900,7 +924,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(rows[0].n).toBe(1);
   });
 
-  it("revises a Markdown proposal and refuses confirmation without changing its card or page", async () => {
+  it("revises a Markdown proposal and then confirms it into the page as the user, through the runtime role", async () => {
     const proposal = await createDatabaseProposal("Page proposal");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
@@ -936,31 +960,24 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         status: 400,
         details: { field: "properties" },
       });
-      const readCard = () =>
-        runInTenant(tenant, () =>
-          withTransaction(runtime, (client) => itemsStore.getItemById(client, proposalsId, proposal.id)),
-        );
-      const before = await readCard();
       const docsBefore = await runInTenant(tenant, () =>
         runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [project.id]),
       );
-      await expect(
-        runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
-          ),
+      expect(docsBefore.rows).toEqual([{ count: 0 }]);
+      // Issue #1681 replaced the earlier 409: the revised card now confirms and writes its content.
+      const confirmed = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
         ),
-      ).rejects.toMatchObject({ status: 409 });
-      expect(await readCard()).toEqual(before);
-      expect(
-        (
-          await runInTenant(tenant, () =>
-            runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [
-              project.id,
-            ]),
-          )
-        ).rows,
-      ).toEqual(docsBefore.rows);
+      );
+      expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: project.id });
+      const written = await runInTenant(tenant, () =>
+        runtime.query<{ created_by: string }>(
+          `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1`,
+          [project.id],
+        ),
+      );
+      expect(written.rows).toEqual([{ created_by: "user" }]);
     } finally {
       await runtime.end();
     }
@@ -1053,6 +1070,311 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     const block = await docStore.getBlock(targetPageId, proposal.id);
     expect(block).toMatchObject({ "sys:flavour": "paragraph", content: "A thought" });
+  });
+
+  it("confirms an old-shape page-content card as before, now authored user, and lists its block id", async () => {
+    const { proposal, targetPageId } = await createPageContentProposal("Old shape");
+
+    const confirmed = await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+
+    expect(confirmed.properties.resultItemId).toBe(targetPageId);
+    expect(await docUpdateAuthors(targetPageId)).toEqual(["user"]);
+    expect(resultBlockIds(confirmed)).toEqual([proposal.id]);
+  });
+
+  describe("v2 page content (issue #1681)", () => {
+    const HEADING_ID = "h-tiles";
+
+    async function projectWithPage(blocks: BlockInput[]): Promise<string> {
+      const projectsId = await databaseIdFor("projects");
+      const project = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: projectsId, properties: { name: "Host project" } }),
+      );
+      if (blocks.length > 0) {
+        const doc = await docStore.getOrCreateDoc(project.id, "page");
+        await mutateDoc(pool, doc.id, "user", (ydoc) => blocks.forEach((block) => writeBlock(ydoc, block)));
+      }
+      return project.id;
+    }
+
+    /** The target page's blocks in document order, as [id, type, text]. */
+    async function pageBlocks(itemId: string): Promise<Array<[string, string, string]>> {
+      const doc = await docStore.getDoc(itemId);
+      if (!doc) return [];
+      const ydoc = await loadDoc(pool, doc.id);
+      return readPageBlocks(ydoc)
+        .filter((block) => !block.synthetic)
+        .map((block) => [block.id ?? "", block.type, block.text.map((run) => run.insert).join("")]);
+    }
+
+    async function createV2Proposal(target: string, properties: Record<string, unknown>) {
+      return createMarkdownPageContentProposal(pool, { inboxId, typesId, proposalsId }, target, properties);
+    }
+
+    const confirm = (proposalId: string) =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      );
+
+    const readProposal = (proposalId: string) =>
+      withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposalId));
+
+    const sectioned: BlockInput[] = [
+      { id: "h-intro", type: "h1", text: "Intro" },
+      { id: "i1", type: "text", text: "Intro text" },
+      { id: HEADING_ID, type: "h2", text: "Tiles" },
+      { id: "t1", type: "text", text: "Tile one" },
+      { id: "t2", type: "text", text: "Tile two" },
+      { id: "h-other", type: "h2", text: "Other" },
+      { id: "o1", type: "text", text: "Other text" },
+    ];
+
+    it("inserts the optional heading and the bullets at the end of the chosen section, leaving other blocks in order", async () => {
+      const target = await projectWithPage(sectioned);
+      const proposal = await createV2Proposal(target, {
+        markdown: "- first\n- second",
+        placement: { afterHeading: HEADING_ID },
+        heading: "New tiles",
+      });
+
+      const confirmed = await confirm(proposal.id);
+
+      const blocks = await pageBlocks(target);
+      const ids = [0, 1, 2].map((index) => proposalBlockId(proposal.id, index));
+      expect(blocks.map(([, type, text]) => [type, text])).toEqual([
+        ["h1", "Intro"],
+        ["text", "Intro text"],
+        ["h2", "Tiles"],
+        ["text", "Tile one"],
+        ["text", "Tile two"],
+        ["h3", "New tiles"],
+        ["bullet", "first"],
+        ["bullet", "second"],
+        ["h2", "Other"],
+        ["text", "Other text"],
+      ]);
+      expect(blocks.filter(([id]) => ids.includes(id)).map(([id]) => id)).toEqual(ids);
+      expect(blocks.map(([id]) => id).filter((id) => !ids.includes(id))).toEqual(sectioned.map((block) => block.id));
+      expect(confirmed.properties.status).toBe("confirmed");
+      expect(confirmed.properties.resultItemId).toBe(target);
+      expect(confirmed.properties.resultLabel).toBe("Host project");
+      expect(resultBlockIds(confirmed)).toEqual(ids);
+      expect(await docUpdateAuthors(target)).toEqual(["user", "user"]);
+    });
+
+    it("adds no block when the same proposal is confirmed again, and returns the stored result", async () => {
+      const target = await projectWithPage(sectioned);
+      const proposal = await createV2Proposal(target, { markdown: "Once", placement: "end" });
+      const first = await confirm(proposal.id);
+      const afterFirst = { blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) };
+
+      const second = await confirm(proposal.id);
+
+      expect(second.properties.results).toEqual(first.properties.results);
+      expect({ blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) }).toEqual(afterFirst);
+    });
+
+    it("answers 409 when the chosen heading was removed, keeps the card proposed and writes nothing", async () => {
+      const target = await projectWithPage(sectioned);
+      const proposal = await createV2Proposal(target, { markdown: "Late", placement: { afterHeading: HEADING_ID } });
+      const doc = await docStore.getDoc(target);
+      await mutateDoc(pool, doc!.id, "user", (ydoc) => {
+        ydoc.getMap("blocks").delete(HEADING_ID);
+        const order = ydoc.getArray<string>("order");
+        order.delete(order.toArray().indexOf(HEADING_ID), 1);
+      });
+      const before = { blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) };
+
+      await expect(confirm(proposal.id)).rejects.toBeInstanceOf(ConflictError);
+
+      expect((await readProposal(proposal.id))!.properties.status).toBe("proposed");
+      expect({ blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) }).toEqual(before);
+    });
+
+    it("answers 409 as well when the chosen block is still there but no longer a heading", async () => {
+      const target = await projectWithPage(sectioned);
+      const proposal = await createV2Proposal(target, { markdown: "Late", placement: { afterHeading: HEADING_ID } });
+      const doc = await docStore.getDoc(target);
+      await mutateDoc(pool, doc!.id, "user", (ydoc) => {
+        ydoc.getMap<import("yjs").Map<unknown>>("blocks").get(HEADING_ID)?.set("sys:flavour", "text");
+      });
+
+      await expect(confirm(proposal.id)).rejects.toBeInstanceOf(ConflictError);
+      expect((await readProposal(proposal.id))!.properties.status).toBe("proposed");
+    });
+
+    it("creates the page document of a target that has none and the content is its only content", async () => {
+      const target = await projectWithPage([]);
+      expect(await docStore.getDoc(target)).toBeNull();
+      const proposal = await createV2Proposal(target, { markdown: "Fresh\n\nPage", placement: "end" });
+
+      await confirm(proposal.id);
+
+      expect((await pageBlocks(target)).map(([, type, text]) => [type, text])).toEqual([
+        ["text", "Fresh"],
+        ["text", "Page"],
+      ]);
+    });
+
+    it("maps start and end directly", async () => {
+      const target = await projectWithPage([{ id: "only", type: "text", text: "Existing" }]);
+      const atEnd = await createV2Proposal(target, { markdown: "End", placement: "end" });
+      const atStart = await createV2Proposal(target, { markdown: "Start", placement: "start" });
+      await confirm(atEnd.id);
+      await confirm(atStart.id);
+      expect((await pageBlocks(target)).map(([, , text]) => text)).toEqual(["Start", "Existing", "End"]);
+    });
+
+    it.each([
+      ["h1", "h2"],
+      ["h2", "h3"],
+      ["h3", "h3"],
+    ] as const)("writes the heading of a card under an %s section as %s", async (sectionType, expected) => {
+      const target = await projectWithPage([{ id: "sec", type: sectionType, text: "Section" }]);
+      const proposal = await createV2Proposal(target, {
+        markdown: "Body",
+        placement: { afterHeading: "sec" },
+        heading: "Added",
+      });
+      await confirm(proposal.id);
+      expect((await pageBlocks(target)).map(([, type, text]) => [type, text])).toEqual([
+        [sectionType, "Section"],
+        [expected, "Added"],
+        ["text", "Body"],
+      ]);
+    });
+
+    it("writes the heading as h2 when the placement is not under a heading", async () => {
+      const target = await projectWithPage([{ id: "x", type: "text", text: "Existing" }]);
+      const proposal = await createV2Proposal(target, { markdown: "Body", placement: "end", heading: "Added" });
+      await confirm(proposal.id);
+      expect((await pageBlocks(target)).map(([, type, text]) => [type, text])).toEqual([
+        ["text", "Existing"],
+        ["h2", "Added"],
+        ["text", "Body"],
+      ]);
+    });
+
+    it("ends a section at the next heading of the same or a higher level, not at a deeper one", async () => {
+      const target = await projectWithPage([
+        { id: "a", type: "h2", text: "Section" },
+        { id: "b", type: "h3", text: "Deeper" },
+        { id: "c", type: "text", text: "Deeper text" },
+        { id: "d", type: "h1", text: "Higher" },
+      ]);
+      const proposal = await createV2Proposal(target, { markdown: "Appended", placement: { afterHeading: "a" } });
+      await confirm(proposal.id);
+      expect((await pageBlocks(target)).map(([, , text]) => text)).toEqual([
+        "Section",
+        "Deeper",
+        "Deeper text",
+        "Appended",
+        "Higher",
+      ]);
+    });
+
+    it("writes the heading one level below its section heading and never below h3", async () => {
+      const cases = [
+        { section: "h1", heading: "h2" },
+        { section: "h2", heading: "h3" },
+        { section: "h3", heading: "h3" },
+      ] as const;
+      for (const { section, heading } of cases) {
+        const target = await projectWithPage([
+          { id: "s", type: section, text: "Section" },
+          { id: "inside", type: "text", text: "Inside" },
+        ]);
+        const proposal = await createV2Proposal(target, {
+          markdown: "Body",
+          placement: { afterHeading: "s" },
+          heading: "Added",
+        });
+        await confirm(proposal.id);
+        expect((await pageBlocks(target)).map(([, type, text]) => [type, text])).toEqual([
+          [section, "Section"],
+          ["text", "Inside"],
+          [heading, "Added"],
+          ["text", "Body"],
+        ]);
+      }
+    });
+
+    it("lists a confirmed card's blocks as the user's changes and not as the assistant's", async () => {
+      const target = await projectWithPage(sectioned);
+      // Taken after the page and its blocks exist, so only the confirm below is stored after it.
+      const since = new Date();
+      const proposal = await createV2Proposal(target, {
+        markdown: "- first\n- second",
+        placement: { afterHeading: HEADING_ID },
+        heading: "New tiles",
+      });
+      await confirm(proposal.id);
+      const ids = [0, 1, 2].map((index) => proposalBlockId(proposal.id, index));
+      const doc = await docStore.getDoc(target);
+      if (!doc) throw new Error("Missing page document");
+
+      expect(await listPageChanges(pool, doc.id, { since, by: "user", limit: 100 })).toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "insert", blockIds: ids })]),
+      );
+      expect(await listPageChanges(pool, doc.id, { since, by: "ai_agent", limit: 100 })).toEqual([]);
+    });
+
+    it("writes into the page of a real subpage, the Pages host", async () => {
+      const project = await projectWithPage([]);
+      const page = await withTransaction(pool, (client) =>
+        createSubpageWithClient(client, { parent: { itemId: project }, title: "Notes" }, "user"),
+      );
+      const subpage = page.pages[0]!.pageItemId;
+      const proposal = await createV2Proposal(subpage, { markdown: "Into the subpage", placement: "end" });
+
+      const confirmed = await confirm(proposal.id);
+
+      expect(confirmed.properties.resultItemId).toBe(subpage);
+      expect((await pageBlocks(subpage)).map(([, , text]) => text)).toEqual(["Into the subpage"]);
+    });
+
+    it("leaves no partial block and the card proposed when a later step of the confirm fails", async () => {
+      const target = await projectWithPage([{ id: "x", type: "text", text: "Existing" }]);
+      const proposal = await createV2Proposal(target, { markdown: "Never kept", placement: "end", heading: "Gone" });
+      const before = { blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) };
+      // A trigger refuses the status write that locks the card `confirmed`, after the blocks were inserted.
+      await pool.query(`CREATE FUNCTION public.zz_test_refuse_confirmed() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.properties->>'status' = 'confirmed' THEN RAISE EXCEPTION 'refused by the test trigger'; END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER zz_test_refuse_confirmed BEFORE UPDATE ON items FOR EACH ROW EXECUTE FUNCTION public.zz_test_refuse_confirmed()`,
+      );
+      try {
+        await expect(confirm(proposal.id)).rejects.toThrow(/refused by the test trigger/);
+      } finally {
+        await pool.query(`DROP TRIGGER zz_test_refuse_confirmed ON items`);
+        await pool.query(`DROP FUNCTION public.zz_test_refuse_confirmed()`);
+      }
+      expect((await readProposal(proposal.id))!.properties.status).toBe("proposed");
+      expect({ blocks: await pageBlocks(target), authors: await docUpdateAuthors(target) }).toEqual(before);
+    });
+
+    it("refuses a link to an item that was deleted after the card was computed, keeping the card proposed", async () => {
+      const target = await projectWithPage([]);
+      const projectsId = await databaseIdFor("projects");
+      const linked = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: projectsId, properties: { name: "Linked" } }),
+      );
+      const proposal = await createV2Proposal(target, {
+        markdown: `See [it](semprec://items/${linked.id})`,
+        placement: "end",
+      });
+      await pool.query(`UPDATE items SET deleted_at = now() WHERE id = $1`, [linked.id]);
+
+      await expect(confirm(proposal.id)).rejects.toBeInstanceOf(ValidationError);
+
+      expect((await readProposal(proposal.id))!.properties.status).toBe("proposed");
+      expect(await docStore.getDoc(target)).toBeNull();
+    });
   });
 
   it("confirm refuses a needsClarification proposal (no computed envelope)", async () => {
