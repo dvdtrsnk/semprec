@@ -248,6 +248,52 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     expect(again.rows).toEqual(state.rows);
   });
 
+  it("leaves a weekly occurrence open before its next day and catches up only to the latest weekly day", async () => {
+    const notDue = await task({ date: day(-6) });
+    await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: notDue },
+        body: { preset: "weekly" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    const before = await row(notDue);
+    const overdue = await task({ date: day(-8) });
+    const series = await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: overdue },
+        body: { preset: "weekly" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    await run();
+    expect(await row(notDue)).toEqual(before);
+    expect((await row(overdue)).properties).toMatchObject({ status: "missed", date: day(-8) });
+    const occurrences = await inTenant(() =>
+      pool.query<{ id: string; properties: Record<string, unknown> }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+        [tasksId, series.item.properties.seriesId],
+      ),
+    );
+    expect(occurrences.rows).toHaveLength(2);
+    expect(occurrences.rows.find((entry) => entry.id !== overdue)?.properties).toMatchObject({
+      status: "notDone",
+      date: day(-1),
+      occurrenceDate: day(-1),
+    });
+    await run();
+    expect(
+      (
+        await inTenant(() =>
+          pool.query<{ id: string; properties: Record<string, unknown> }>(
+            "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+            [tasksId, series.item.properties.seriesId],
+          ),
+        )
+      ).rows,
+    ).toEqual(occurrences.rows);
+  });
+
   it("moves a task whose event ended yesterday, with since yesterday", async () => {
     const id = await task({ date: day(-3) });
     // The event-derived day and the end of its event (#1780, #1798 write them later): synthetic Tasks values.
