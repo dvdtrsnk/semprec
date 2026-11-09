@@ -10,7 +10,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import { insertItem, softDeleteItem } from "../chokePoint/itemsStore.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -92,7 +92,7 @@ describe("Inbox type lock", () => {
           otherSide(relation, item.id),
         );
       });
-    return { cp, edge, second: second.id, targets, cardId, proposals };
+    return { cp, edge, second: second.id, targets, cardId, proposals, inbox, types };
   }
 
   it("refuses a second type without changing the first edge", async () =>
@@ -211,4 +211,30 @@ describe("Inbox type lock", () => {
     expect(missing).toMatchObject({ status: 400, code: "validation_failed", details: { field: "relationPropertyId" } });
     expect(await runInTenant(tenant, () => own.targets())).toEqual([own.edge.targetItemId]);
   });
+
+  it.each([
+    ["confirmed", false, true],
+    ["rejected", false, true],
+    ["confirmed", true, false],
+    ["proposed", false, false],
+  ] as const)("type deletion keeps decided live history for %s trashed=%s", async (status, trashed, retained) =>
+    runInTenant(tenant, async () => {
+      const { edge, targets, inbox, types, proposals } = await fixture(status, trashed);
+      const removed = await withTransaction(pool, (client) =>
+        deleteInboxTypeWithClient(client, {
+          inboxDatabaseId: inbox,
+          inboxItemTypesDatabaseId: types,
+          processingProposalsDatabaseId: proposals,
+          typeItemId: edge.targetItemId,
+        }),
+      );
+      expect(removed?.id).toBe(edge.targetItemId);
+      expect(await targets()).toEqual(retained ? [edge.targetItemId] : []);
+      const type = await pool.query<{ deleted: boolean }>(
+        "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE database_id = $1 AND id = $2",
+        [types, edge.targetItemId],
+      );
+      expect(type.rows).toEqual([{ deleted: true }]);
+    }),
+  );
 });
