@@ -297,4 +297,41 @@ describe("the fileCompaniesFromProjects link rule (issue #1653)", () => {
     await inTenant(() => cp.updateItem({ databaseId: ids.files, itemId: file, propertiesPatch: { name: "Renamed" } }));
     expect(await fileCompanies(file)).toEqual([]);
   });
+
+  it("keeps an existing file's own nonempty companies unchanged when the rule is deployed and a project changes", async () => {
+    const { novak, web } = await twoProjects();
+    const own = await item(ids.companies, "Own Studio s.r.o.");
+    const file = await item(ids.files, "Contract archive");
+    // The file's own company, set by hand before it had any project: no link is created for it.
+    await link(ids.fileCompanies, file, own);
+    // Synthetic pre-rule state, as in the case above: the project edge an older release stored directly.
+    await inTenant(async () => {
+      const { rows } = await pool.query<{ id: string; a: string }>(
+        "SELECT id, property_id_a AS a FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
+        [ids.fileProjects],
+      );
+      const definition = rows[0];
+      if (!definition) throw new Error("Files.projects definition missing");
+      const fileIsA = definition.a === ids.fileProjects;
+      const inserted = await pool.query(
+        "INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)",
+        [definition.id, fileIsA ? file : web, fileIsA ? web : file],
+      );
+      expect(inserted.rowCount).toBe(1);
+    });
+
+    await runAsSystem("test:deploy", () => runTenantCutoverMigrations(pool));
+    await inTenant(async () => runModuleDataMigrations(pool, await loadFullModuleRegistry()));
+    await runPropagation();
+    expect(await fileCompanies(file)).toEqual([own]);
+    expect(await valueLinkRows(file)).toEqual([]);
+
+    // A later change of the project's company does not reach the file either.
+    const agency = await item(ids.companies, "Agency a.s.");
+    await unlink(ids.projectCompany, web, novak);
+    await link(ids.projectCompany, web, agency);
+    await runPropagation();
+    expect(await fileCompanies(file)).toEqual([own]);
+    expect(await valueLinkRows(file)).toEqual([]);
+  });
 });

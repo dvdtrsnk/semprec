@@ -2,10 +2,11 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -13,6 +14,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { prepareTaskProposal } from "../tasks/taskPreWriteTransform.js";
 import { createTaskRecurrenceSetRouteHandler } from "../tasks/taskRecurrenceRoutes.js";
+import { getTaskRecurrenceBySeriesId, replaceTaskRecurrenceRule } from "../tasks/taskRecurrenceStore.js";
 import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -72,6 +74,100 @@ async function refusal(promise: Promise<unknown>): Promise<ValidationError> {
   );
   if (!(error instanceof ValidationError)) throw new Error(`Expected a ValidationError, got ${String(error)}`);
   return error;
+}
+
+const WAIT_MS = 10_000;
+
+const asError = (error: unknown): Error =>
+  error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
+
+/** Rejects after `WAIT_MS` unless `promise` settles first. */
+async function bounded<T>(promise: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), WAIT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * One transaction of the tenant that runs `work`, then stays open until `release`: `pid` resolves with its backend
+ * once `work` is done, `settled` with its error (or null) once it ended.
+ */
+function heldTransaction(work: (client: PoolClient) => Promise<void>) {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let pidNow!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => (pidNow = resolve));
+  const settled = runInTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      await work(client);
+      pidNow((await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+      await released;
+    }),
+  ).then(
+    () => null,
+    (error: unknown) => asError(error),
+  );
+  return { pid, release, settled };
+}
+
+/** Waits until some backend is blocked by `pid`. */
+async function waitForBlocked(pid: number, what: string): Promise<void> {
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    const { rows } = await admin.query<{ waiting: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
+      [pid],
+    );
+    if (rows[0]?.waiting === true) return;
+    if (Date.now() > deadline) throw new Error(`Nothing waited for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * Holds `first` open, starts `second` and waits until it is blocked by `first`, then releases `first`. Settles both
+ * actors and rethrows the first failure.
+ */
+async function secondWaitsForFirst(
+  first: ReturnType<typeof heldTransaction>,
+  second: () => Promise<unknown>,
+  what: string,
+): Promise<void> {
+  let waiting: Promise<Error | null> | undefined;
+  let failure: Error | null = null;
+  try {
+    const pid = await bounded(
+      Promise.race([first.pid, first.settled.then((error) => Promise.reject(error ?? new Error("ended early")))]),
+      "the first transaction",
+    );
+    waiting = second().then(
+      () => null,
+      (error: unknown) => asError(error),
+    );
+    await waitForBlocked(pid, what);
+  } catch (error) {
+    failure = asError(error);
+  } finally {
+    first.release();
+  }
+  const firstError = await bounded(first.settled, "the first transaction to settle");
+  const secondError = waiting === undefined ? null : await bounded(waiting, "the second transaction to settle");
+  if (failure !== null) throw failure;
+  if (firstError !== null) throw firstError;
+  if (secondError !== null) throw secondError;
+}
+
+/** A monthly rule on the occurrence's day of the month: its next date after `date` is a month later. */
+function monthlyOn(date: string) {
+  return { mode: "fixed" as const, rule: { kind: "monthDates" as const, dates: [DateTime.fromISO(date).day] } };
 }
 
 describe("the missed status of Tasks (issue #1668)", () => {
@@ -170,6 +266,73 @@ describe("the missed status of Tasks (issue #1668)", () => {
     );
     expect((await refusal(prepareTaskProposal({ stored: task, patch: { status: "missed" } }))).details).toEqual({
       field: "status",
+    });
+  });
+
+  describe("reopening an old occurrence while its series rule changes (R1: the rule is read locked)", () => {
+    it("waits for a rule replacement holding the series and judges by the new rule", async () => {
+      const seriesId = await dailySeries();
+      const past = await doneOccurrence(seriesId, day(-3));
+      const replacement = heldTransaction(async (client) => {
+        await replaceTaskRecurrenceRule(client, seriesId, monthlyOn(day(-3)));
+      });
+      await secondWaitsForFirst(replacement, () => write(past, { status: "notDone" }, USER), "the replacement");
+      // The next date of the monthly rule is a month after the occurrence, not yet come: the occurrence is open again.
+      expect(await stored(past)).toMatchObject({ status: "notDone", completedOn: null, completedAt: null });
+      const series = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getTaskRecurrenceBySeriesId(client, seriesId)),
+      );
+      expect(series?.rule).toEqual(monthlyOn(day(-3)).rule);
+    });
+
+    it("holds the series until the reopen commits, so a later replacement does not change its outcome", async () => {
+      const seriesId = await dailySeries();
+      const past = await doneOccurrence(seriesId, day(-3));
+      const reopen = heldTransaction(async (client) => {
+        await updateItemWithClient(
+          client,
+          { databaseId: tasksId, itemId: past, propertiesPatch: { status: "notDone" } },
+          { writer: USER },
+        );
+      });
+      await secondWaitsForFirst(
+        reopen,
+        () =>
+          runInTenant(tenant, () =>
+            withTransaction(pool, (client) => replaceTaskRecurrenceRule(client, seriesId, monthlyOn(day(-3)))),
+          ),
+        "the reopen",
+      );
+      // Judged by the daily rule it locked: the next day has come, so the occurrence was missed.
+      expect(await stored(past)).toMatchObject({ status: "missed", completedOn: null });
+      const series = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getTaskRecurrenceBySeriesId(client, seriesId)),
+      );
+      expect(series?.rule).toEqual(monthlyOn(day(-3)).rule);
+    });
+
+    it("lets the current occurrence be completed while an old one is reopened, without a deadlock", async () => {
+      const seriesId = await dailySeries();
+      const past = await doneOccurrence(seriesId, day(-3));
+      const series = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getTaskRecurrenceBySeriesId(client, seriesId)),
+      );
+      const current = series?.itemId;
+      if (current === undefined) throw new Error("The series has no current occurrence");
+      const reopen = heldTransaction(async (client) => {
+        await updateItemWithClient(
+          client,
+          { databaseId: tasksId, itemId: past, propertiesPatch: { status: "notDone" } },
+          { writer: USER },
+        );
+      });
+      await secondWaitsForFirst(reopen, () => write(current, { status: "done" }, USER), "the reopen");
+      expect(await stored(past)).toMatchObject({ status: "missed" });
+      expect(await stored(current)).toMatchObject({ status: "done" });
+      const advanced = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getTaskRecurrenceBySeriesId(client, seriesId)),
+      );
+      expect(advanced?.itemId).not.toBe(current);
     });
   });
 });

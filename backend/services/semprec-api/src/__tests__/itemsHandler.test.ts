@@ -130,6 +130,10 @@ const itemLinkEntry = z
     brokenAt: z.string().nullable(),
   })
   .strict();
+/** An error body as REST sends it: its code and details. */
+const httpError = z.object({ error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }) });
+/** The properties of an item body. */
+const itemProperties = z.object({ properties: z.record(z.string(), z.unknown()) });
 /** The targets of an item's relations, from the relation list route. */
 const relationTargets = z.object({
   relations: z.array(z.object({ propertyKey: z.string(), targetItemId: z.string() })),
@@ -3723,6 +3727,159 @@ describe("item routes (issue #241)", () => {
         expect(res.status, JSON.stringify(body)).toBe(400);
         expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
       }
+    });
+  });
+
+  describe("batch 37 write boundaries over REST (R1)", () => {
+    let headers: Record<string, string>;
+    let tasksDb: string;
+
+    beforeEach(async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const databases = await runInTenant(getTenantZeroId(), () => chokePoint.listDatabases());
+      tasksDb = databases.find((database) => database.ownerModuleId === "tasks")?.id ?? "";
+      if (!tasksDb) throw new Error("Tasks not seeded");
+    });
+
+    async function createTask(properties: Record<string, unknown>): Promise<{ id: string; updatedAt: string }> {
+      const created = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.createItem({ databaseId: tasksDb, properties: { name: "Task", ...properties } }),
+      );
+      return { id: created.id, updatedAt: created.updatedAt };
+    }
+
+    async function storedProperties(id: string): Promise<Record<string, unknown>> {
+      const item = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(tasksDb, id));
+      if (!item) throw new Error(`Item ${id} missing`);
+      return item.properties;
+    }
+
+    function patch(id: string, properties: Record<string, unknown>) {
+      return fetch(`${baseUrl}/api/items/${id}`, { method: "PATCH", headers, body: JSON.stringify({ properties }) });
+    }
+
+    function recurrence(method: "PUT" | "DELETE", id: string, body?: unknown) {
+      return fetch(`${baseUrl}/api/tasks/${id}/recurrence`, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+
+    it("sets a weekly recurrence on a Thursday task, refuses one without a date, and turns it off with DELETE (gh-1665)", async () => {
+      const thursday = await createTask({ date: "2026-10-22" });
+      const set = await recurrence("PUT", thursday.id, { preset: "weekly" });
+      expect(set.status).toBe(200);
+      const setProperties = itemProperties.parse(await set.json()).properties;
+      expect(setProperties.recurrence).toEqual({
+        preset: "weekly",
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["thu"] },
+      });
+      expect(setProperties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+
+      const undated = await createTask({});
+      const before = await storedProperties(undated.id);
+      const refused = await recurrence("PUT", undated.id, { preset: "weekly" });
+      expect(refused.status).toBe(400);
+      expect(httpError.parse(await refused.json()).error).toEqual({
+        code: "validation_failed",
+        details: { field: "date" },
+      });
+      expect(await storedProperties(undated.id)).toEqual(before);
+
+      const cleared = await recurrence("DELETE", thursday.id);
+      expect(cleared.status).toBe(200);
+      expect(itemProperties.parse(await cleared.json()).properties).toMatchObject({
+        date: "2026-10-22",
+        seriesId: null,
+        occurrenceDate: null,
+        recurrence: null,
+      });
+    });
+
+    it.each([
+      ["null", null],
+      ["an empty string", ""],
+    ])(
+      "refuses a PATCH of the date to %s on a recurring task with 400 on date, and keeps the row",
+      async (_label, date) => {
+        const recurring = await createTask({ date: "2026-10-22" });
+        expect((await recurrence("PUT", recurring.id, { preset: "weekly" })).status).toBe(200);
+        const before = await storedProperties(recurring.id);
+        const response = await patch(recurring.id, { date });
+        expect(response.status).toBe(400);
+        expect(httpError.parse(await response.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "date" },
+        });
+        expect(await storedProperties(recurring.id)).toEqual(before);
+      },
+    );
+
+    it("clears the date of a task without a series over REST", async () => {
+      const once = await createTask({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
+      const response = await patch(once.id, { date: null });
+      expect(response.status).toBe(200);
+      expect(await storedProperties(once.id)).toMatchObject({ date: null, timeFrom: null, timeTo: null });
+    });
+
+    it("refuses a client PATCH of status missed with 400 on status, and accepts missed to done (gh-1668)", async () => {
+      const task = await createTask({ date: "2026-10-22" });
+      const before = await storedProperties(task.id);
+      const refused = await patch(task.id, { status: "missed" });
+      expect(refused.status).toBe(400);
+      expect(httpError.parse(await refused.json()).error).toEqual({
+        code: "validation_failed",
+        details: { field: "status" },
+      });
+      expect(await storedProperties(task.id)).toEqual(before);
+
+      // The Tasks module, a system writer, may store missed.
+      await runInTenant(getTenantZeroId(), () =>
+        chokePoint.updateItem({ databaseId: tasksDb, itemId: task.id, propertiesPatch: { status: "missed" } }),
+      );
+      const done = await patch(task.id, { status: "done" });
+      expect(done.status).toBe(200);
+      expect(await storedProperties(task.id)).toMatchObject({ status: "done", completedOn: expect.any(String) });
+    });
+
+    it("answers 409 naming the live entry when restoring a Journal entry whose period is held, and 200 otherwise (gh-1666)", async () => {
+      const databases = await runInTenant(getTenantZeroId(), () => chokePoint.listDatabases());
+      const journalDb = databases.find((database) => database.ownerModuleId === "journal")?.id ?? "";
+      if (!journalDb) throw new Error("Journal not seeded");
+      const ensure = (period: string) =>
+        runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) => ensureJournalPeriodDoc(client, "day", period)),
+        );
+      const trashed = (await ensure("2026-05-03")).itemId;
+      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(journalDb, trashed));
+      const live = (await ensure("2026-05-03")).itemId;
+      expect(live).not.toBe(trashed);
+
+      const held = await fetch(`${baseUrl}/api/items/${trashed}/restore`, { method: "POST", headers });
+      expect(held.status).toBe(409);
+      expect(httpError.parse(await held.json()).error).toEqual({
+        code: "version_conflict",
+        details: { liveItemId: live },
+      });
+      const { rows: trashRows } = await pool.query<{ deleted: boolean }>(
+        "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE id = $1",
+        [trashed],
+      );
+      expect(trashRows).toEqual([{ deleted: true }]);
+
+      const alone = (await ensure("2026-05-04")).itemId;
+      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(journalDb, alone));
+      const restored = await fetch(`${baseUrl}/api/items/${alone}/restore`, { method: "POST", headers });
+      expect(restored.status).toBe(200);
+      expect(
+        z
+          .object({ deletedAt: z.null() })
+          .passthrough()
+          .parse(await restored.json()).deletedAt,
+      ).toBeNull();
     });
   });
 });

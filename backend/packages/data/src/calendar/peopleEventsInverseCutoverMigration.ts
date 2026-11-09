@@ -27,8 +27,9 @@ export async function runPeopleEventsInverseCutoverMigration(pool: Pool): Promis
     const people = await getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
     if (!events || !people) return;
 
-    // Excludes concurrent schema reads and writes for the duration of the cutover, so no reader sees the
-    // `People.events` property before the definition points at it.
+    // Blocks concurrent writes to `properties` (and other lockers of a mode EXCLUSIVE conflicts with) until this
+    // transaction ends. Ordinary reads (ACCESS SHARE) continue; they see neither change until this transaction commits,
+    // and then the `People.events` property and the definition pointing at it are committed together.
     await client.query("LOCK TABLE properties IN EXCLUSIVE MODE");
 
     const { rows: sourceRows } = await client.query<{ id: string }>(

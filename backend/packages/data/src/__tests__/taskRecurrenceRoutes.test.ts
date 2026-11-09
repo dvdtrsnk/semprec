@@ -5,13 +5,19 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
+import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { prepareTaskProposal } from "../tasks/taskPreWriteTransform.js";
 import {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
 } from "../tasks/taskRecurrenceRoutes.js";
+import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -20,6 +26,7 @@ let tenant: string;
 let cp: ChokePoint;
 let tasksId: string;
 const userId = randomUUID();
+const USER: WriterIdentity = { writerKind: "user" };
 
 const seriesRow = z.object({
   item_id: z.string(),
@@ -283,5 +290,84 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
   it("refuses an id that is no UUID on id", async () => {
     expect((await refusal(put("not-a-uuid", { preset: "weekly" }))).details).toEqual({ field: "id" });
     expect((await refusal(remove("not-a-uuid"))).details).toEqual({ field: "id" });
+  });
+
+  describe("clearing the date of a recurring task through the generic write (R1, gh-1665 decision)", () => {
+    function patch(id: string, propertiesPatch: Record<string, unknown>) {
+      return runInTenant(tenant, () =>
+        cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch }, undefined, undefined, USER),
+      );
+    }
+
+    it.each([
+      ["null", null],
+      ["an empty string", ""],
+    ])(
+      "refuses a date of %s on a recurring task with 400 on date, changing neither task nor series",
+      async (_label, date) => {
+        const id = await task({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
+        await put(id, { preset: "weekly" });
+        const before = await stored(id);
+        const series = await seriesRows();
+        expect((await refusal(patch(id, { date }))).details).toEqual({ field: "date" });
+        expect(await stored(id)).toEqual(before);
+        expect(await seriesRows()).toEqual(series);
+      },
+    );
+
+    it("refuses it for a past occurrence that keeps its series id", async () => {
+      const id = await task({ date: "2026-10-22" });
+      const seriesId = (await put(id, { preset: "daily" })).item.properties.seriesId;
+      if (typeof seriesId !== "string") throw new Error("No series id");
+      const past = await runInTenant(tenant, () =>
+        createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: "2026-10-20", status: "done" }),
+      );
+      const before = await stored(past);
+      expect((await refusal(patch(past, { date: null }))).details).toEqual({ field: "date" });
+      expect(await stored(past)).toEqual(before);
+    });
+
+    it("refuses an agent proposal that would clear the date of a recurring task", async () => {
+      const id = await task({ date: "2026-10-22" });
+      await put(id, { preset: "weekly" });
+      const item = await runInTenant(tenant, () => cp.getItem(tasksId, id));
+      if (!item) throw new Error("Task missing");
+      expect((await refusal(prepareTaskProposal({ stored: item, patch: { date: null } }))).details).toEqual({
+        field: "date",
+      });
+    });
+
+    it("clears the date and times of a task without a series", async () => {
+      const id = await task({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
+      await patch(id, { date: null });
+      expect(await stored(id)).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+    });
+
+    it("clears the date once DELETE turned recurrence off", async () => {
+      const id = await task({ date: "2026-10-22" });
+      await put(id, { preset: "weekly" });
+      await remove(id);
+      await patch(id, { date: "" });
+      expect(await stored(id)).toMatchObject({ date: null, seriesId: null });
+    });
+
+    it("lets the Tasks module clear the series identity and the date in one write", async () => {
+      const id = await task({ date: "2026-10-22" });
+      await put(id, { preset: "weekly" });
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: tasksId,
+              itemId: id,
+              propertiesPatch: { seriesId: null, occurrenceDate: null, recurrence: null, date: null },
+            },
+            { allowedSystemKeys: ["seriesId", "occurrenceDate", "recurrence"], systemOwnerProcess: TASKS_MODULE_ID },
+          ),
+        ),
+      );
+      expect(await stored(id)).toMatchObject({ date: null, seriesId: null, occurrenceDate: null, recurrence: null });
+    });
   });
 });

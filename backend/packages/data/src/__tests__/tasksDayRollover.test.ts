@@ -71,6 +71,31 @@ async function setSystemProperties(id: string, properties: Record<string, unknow
   });
 }
 
+/** Synthetic `effectiveDate`/`hiddenUntil` for many tasks at once, as `setSystemProperties` does for one. */
+async function setSystemPropertiesMany(ids: string[], properties: Record<string, unknown>): Promise<void> {
+  await inTenant(async () => {
+    const result = await pool.query(
+      "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = ANY($2::uuid[])",
+      [tasksId, ids, JSON.stringify(properties)],
+    );
+    expect(result.rowCount).toBe(ids.length);
+  });
+}
+
+/** The item invalidations a run sends, per item id. */
+async function invalidationsDuring(work: () => Promise<void>): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  setInvalidationHook((event) => {
+    if (event.scope === "item") counts.set(event.itemId, (counts.get(event.itemId) ?? 0) + 1);
+  });
+  try {
+    await work();
+  } finally {
+    setInvalidationHook(() => {});
+  }
+  return counts;
+}
+
 describe("the midnight Tasks rollover (issue #1674)", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -283,6 +308,104 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     if (waitFailure !== null) throw waitFailure;
     if (rolloverError !== null) throw rolloverError;
     expect((await row(locked)).properties).toMatchObject({ date: day(0), since: day(-1) });
+  });
+
+  describe("a task with a stale effectiveDate (synthetic: no production writer sets effectiveDate before #1780)", () => {
+    it("moves it once: one invalidation, and a second run the same day writes nothing", async () => {
+      const id = await task({ date: day(-3) });
+      await setSystemProperties(id, { effectiveDate: day(-2), hiddenUntil: today.minus({ hours: 1 }).toISO() });
+      const first = await invalidationsDuring(run);
+      const moved = await row(id);
+      expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, effectiveDate: day(-2) });
+      expect(first.get(id)).toBe(1);
+      const second = await invalidationsDuring(run);
+      expect(second.get(id)).toBeUndefined();
+      expect(await row(id)).toEqual(moved);
+    });
+
+    it("clears the times of a task dated today once, then leaves it alone", async () => {
+      const id = await task({ date: day(0), timeFrom: "10:00", timeTo: "11:00" });
+      await setSystemProperties(id, { effectiveDate: day(-1) });
+      const first = await invalidationsDuring(run);
+      const moved = await row(id);
+      expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, time: null });
+      expect(first.get(id)).toBe(1);
+      const second = await invalidationsDuring(run);
+      expect(second.size).toBe(0);
+      expect(await row(id)).toEqual(moved);
+    });
+
+    it("moves 101 of them and a row held during the first pass, each exactly once, in one run", async () => {
+      const stale: string[] = [];
+      for (let index = 0; index < 101; index++) stale.push(await task({ date: day(-2) }));
+      await setSystemPropertiesMany(stale, { effectiveDate: day(-1) });
+      const locked = await task({ date: day(-1) });
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holderPid: (pid: number) => void = () => undefined;
+      const holding = new Promise<number>((resolve) => {
+        holderPid = resolve;
+      });
+      const asError = (error: unknown): Error =>
+        error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
+      const holder: Promise<Error | null> = inTenant(() =>
+        withTransaction(pool, async (client) => {
+          await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [locked]);
+          holderPid((await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+          await held;
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => asError(error),
+      );
+      let rollover: Promise<Map<string, number> | Error> | undefined;
+      let waitFailure: Error | null = null;
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const pid = await Promise.race([
+          holding,
+          holder.then((error) => Promise.reject(error ?? new Error("The holder ended before locking"))),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("The holder did not lock the row")), WAIT_MS);
+          }),
+        ]);
+        rollover = invalidationsDuring(run).then(
+          (counts) => counts,
+          (error: unknown) => asError(error),
+        );
+        const deadline = Date.now() + WAIT_MS;
+        for (;;) {
+          const { rows } = await admin.query<{ waiting: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
+            [pid],
+          );
+          if (rows[0]?.waiting === true) break;
+          if (Date.now() > deadline) throw new Error("The rollover never waited for the held row");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        // The second pass waits for the held row only: every stale task already moved and stopped qualifying.
+        expect((await Promise.all(stale.map(row))).every((moved) => moved.properties.date === day(0))).toBe(true);
+        expect((await row(locked)).properties.date).toBe(day(-1));
+      } catch (error) {
+        waitFailure = asError(error);
+      } finally {
+        clearTimeout(timer);
+        release();
+      }
+      const holderError = await holder;
+      const counts = rollover === undefined ? null : await rollover;
+      if (holderError !== null) throw holderError;
+      if (waitFailure !== null) throw waitFailure;
+      if (counts instanceof Error) throw counts;
+      expect((await row(locked)).properties).toMatchObject({ date: day(0), since: day(-1) });
+      expect(counts?.size).toBe(102);
+      expect([...(counts?.values() ?? [])].every((count) => count === 1)).toBe(true);
+      expect(counts?.get(locked)).toBe(1);
+      const rerun = await invalidationsDuring(run);
+      expect(rerun.size).toBe(0);
+    });
   });
 });
 

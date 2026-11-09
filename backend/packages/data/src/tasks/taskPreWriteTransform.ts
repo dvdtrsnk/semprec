@@ -127,8 +127,9 @@ export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
   }
   if (stored && Object.hasOwn(patch, "date")) output = { ...output, ...taskSinceRule(old, output, today) };
   if (reopenedOccurrence && typeof old.seriesId === "string" && typeof old.occurrenceDate === "string") {
-    // The rule is read from the series row after the choke point locked the item (items before `task_recurrence`).
-    const series = await getTaskRecurrenceBySeriesId(client, old.seriesId);
+    // The rule is read from the series row locked after the item the choke point already locked (items before
+    // `task_recurrence`), so a concurrent rule change commits before this read or waits for this write.
+    const series = await getTaskRecurrenceBySeriesId(client, old.seriesId, true);
     if (series) {
       const occurrenceDate = old.occurrenceDate;
       const next = firstOccurrenceAfter(series.rule, occurrenceDate, occurrenceDate, occurrenceDate);
@@ -157,6 +158,19 @@ function normalizeCalendarDate(value: unknown): string | null {
   throw new ValidationError("Property 'date' must be a calendar date YYYY-MM-DD", { field: "date" });
 }
 
+/**
+ * Issue #1665: a recurring task keeps its date; recurrence is switched off explicitly (`DELETE
+ * /api/tasks/:id/recurrence`), never by clearing the date. A task is recurring while its resulting `seriesId` (the
+ * patched one when named, else the stored one) is a nonempty string, for a series' current and its past occurrences
+ * alike. A write that clears `seriesId` together with the date leaves no series identity and is not refused.
+ */
+function assertNotRecurring(storedProperties: Record<string, unknown>, patch: Record<string, unknown>): void {
+  const seriesId = Object.hasOwn(patch, "seriesId") ? patch.seriesId : storedProperties.seriesId;
+  if (typeof seriesId === "string" && seriesId !== "") {
+    throw new ValidationError("A recurring task keeps its date; turn its recurrence off first", { field: "date" });
+  }
+}
+
 function deriveTimeAndCheckSchedule(stored: ItemRow | null, patch: Record<string, unknown>): Record<string, unknown> {
   const storedProperties = stored?.properties ?? {};
   const dateNamed = patch.date !== undefined;
@@ -165,6 +179,8 @@ function deriveTimeAndCheckSchedule(stored: ItemRow | null, patch: Record<string
     patch.timeFrom === undefined ? undefined : normalizeWallClockTime(patch.timeFrom, { field: "timeFrom" });
   const namedTo =
     patch.timeTo === undefined ? undefined : normalizeWallClockTime(patch.timeTo, { field: "timeTo", allow2400: true });
+
+  if (dateNamed && date === null) assertNotRecurring(storedProperties, patch);
 
   const output: Record<string, unknown> = { ...patch };
   if (dateNamed) output.date = date;

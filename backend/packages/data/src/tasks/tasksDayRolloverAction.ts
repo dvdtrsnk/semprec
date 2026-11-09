@@ -35,7 +35,8 @@ type CompletedInEventSide = "item_a" | "item_b" | null;
  * The candidates of one chunk, locked: live, `notDone`, not recurring (no `seriesId`), whose effective day
  * (`effectiveDate` when set, else `date`, until #1780 and #1798 define it fully) is a calendar day before `today`, and
  * visible by the predicate the Tasks today view (#1798) is to use: `hiddenUntil` empty or before now, and no
- * `completedInEvent` edge. The first pass
+ * `completedInEvent` edge. A task already in the state a rollover leaves for `today` (`date` today, no `timeFrom`, no
+ * `timeTo`) is no candidate, whatever its `effectiveDate`: moving it again would write the same values. The first pass
  * skips rows another transaction holds and pages by id; the second waits for them.
  */
 async function lockCandidates(
@@ -63,6 +64,9 @@ async function lockCandidates(
        AND COALESCE(NULLIF(i.properties->>'effectiveDate', ''), i.properties->>'date') ~ '^\\d{4}-\\d{2}-\\d{2}$'
        AND COALESCE(NULLIF(i.properties->>'effectiveDate', ''), i.properties->>'date') < $2
        AND (COALESCE(i.properties->>'hiddenUntil', '') = '' OR (i.properties->>'hiddenUntil')::timestamptz < now())
+       AND NOT (COALESCE(i.properties->>'date', '') = $2
+                AND COALESCE(i.properties->>'timeFrom', '') = ''
+                AND COALESCE(i.properties->>'timeTo', '') = '')
        AND ${completedClause}
        AND ($3::uuid IS NULL OR i.id > $3::uuid)
      ORDER BY i.id LIMIT $4 FOR UPDATE${input.skipLocked ? " SKIP LOCKED" : ""}`,
@@ -97,9 +101,10 @@ async function completedInEventEdge(
  * `CHUNK_SIZE`, each its own transaction, with `FOR UPDATE SKIP LOCKED`; the second pass waits (`FOR UPDATE`) for the
  * rows the first one skipped, chunk after chunk from the start, until no candidate is left. Each pass runs at most
  * `MAX_SWEEP_CHUNKS_PER_TENANT` chunks, the cap of the heartbeat sweep; what is left after that waits for the next
- * run. A moved task's day is today, so it is no candidate again: a second run on the same day changes nothing, and a
- * run after an outage of several days writes each task once. See
- * docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md.
+ * run. A moved task is in the rollover's result state for today, so it is no candidate again even when a stale
+ * `effectiveDate` still lies in the past: a second run on the same day changes nothing, and a run after an outage of
+ * several days writes each task once. See docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md and
+ * docs/adr/2026-11-09-task-rollover-excludes-its-current-result-state.md.
  */
 export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
   return async (actionConfig) => {
