@@ -1,5 +1,6 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
+import { DateTime, Settings } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
@@ -173,6 +174,22 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     expect(await stored(id)).toEqual(before);
   });
 
+  it("advances a completed yearly occurrence to the next year", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const first = await put(id, { preset: "yearly" });
+    const previousNow = Settings.now;
+    Settings.now = () => DateTime.fromISO("2026-10-22T12:00:00Z").toMillis();
+    try {
+      await runInTenant(tenant, () => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status: "done" } }));
+    } finally {
+      Settings.now = previousNow;
+    }
+    const [series] = await seriesRows();
+    if (!series) throw new Error("Missing series");
+    expect(series.item_id).not.toBe(id);
+    expect(await stored(series.item_id)).toMatchObject({ date: "2027-10-22", occurrenceDate: "2027-10-22", seriesId: first.item.properties.seriesId });
+  });
+
   it("uses the supplied date for the yearly preset and refuses impossible dates without writes", async () => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset: "yearly", date: "2026-12-24" });
@@ -287,7 +304,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
   it.each([
     ["a body that is no object", null, "body"],
     ["an unknown field", { preset: "weekly", every: 2 }, "every"],
-    ["an unknown preset", { preset: "yearly" }, "preset"],
+    ["an unknown preset", { preset: "biennial" }, "preset"],
     ["a preset with a mode", { preset: "weekly", mode: "fixed", rule: { kind: "weekdays", days: ["mon"] } }, "preset"],
     ["an unknown mode", { mode: "sometimes", rule: {} }, "mode"],
     ["a mode without a rule", { mode: "fixed" }, "rule"],
