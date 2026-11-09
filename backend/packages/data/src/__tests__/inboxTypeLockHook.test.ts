@@ -130,69 +130,101 @@ describe("Inbox type lock", () => {
     }),
   );
 
-  it("returns a version conflict without changing the edge when a candidate card is reserved", async () =>
-    runInTenant(tenant, async () => {
-      const { cp, edge, targets, cardId, proposals } = await fixture("proposed");
-      if (!cardId) throw new Error("Missing proposal card");
-      let release = () => {};
-      let signalReady: (identity: { pid: number; started: string }) => void = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
-        signalReady = resolve;
-      });
-      const holder = withTransaction(pool, async (client) => {
-        await client.query("SET LOCAL lock_timeout = '5s'");
-        const identity = await client.query<{ pid: number; started: string }>(
-          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+  it.each([
+    ["proposed", false],
+    ["confirmed", true],
+  ] as const)(
+    "returns a version conflict when a candidate card is reserved (%s, trashed=%s)",
+    async (status, trashed) =>
+      runInTenant(tenant, async () => {
+        const { cp, edge, targets, cardId, proposals, inbox, types } = await fixture(status, trashed);
+        if (!cardId) throw new Error("Missing proposal card");
+        const jobsBefore = await admin.query<{ key: string | null }>(
+          "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
         );
-        if (!identity.rows[0]) throw new Error("Missing holder identity");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [proposals, cardId]);
-        signalReady(identity.rows[0]);
-        await gate;
-      }).then(
-        () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
-      );
-      let failure: { error: unknown } | undefined;
-      try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const identity = await Promise.race([
-          ready,
-          holder.then((outcome) => {
-            throw outcome.ok ? new Error("Holder ended early") : outcome.error;
-          }),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Holder did not reserve card")), 5000);
-          }),
-        ]).finally(() => {
-          if (timer) clearTimeout(timer);
+        let release = () => {};
+        let signalReady: (identity: { pid: number; started: string }) => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
         });
-        const observed = await admin.query<{ present: boolean }>(
-          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
-          [identity.pid, identity.started],
+        const ready = new Promise<{ pid: number; started: string }>((resolve) => {
+          signalReady = resolve;
+        });
+        const holder = withTransaction(pool, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '5s'");
+          const identity = await client.query<{ pid: number; started: string }>(
+            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+          );
+          if (!identity.rows[0]) throw new Error("Missing holder identity");
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [proposals, cardId]);
+          signalReady(identity.rows[0]);
+          await gate;
+        }).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
         );
-        expect(observed.rows).toEqual([{ present: true }]);
-        await expect(cp.deleteRelation(edge)).rejects.toMatchObject({
-          status: 409,
-          code: "version_conflict",
-          details: { field: "type" },
-        });
+        let failure: { error: unknown } | undefined;
+        try {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const identity = await Promise.race([
+            ready,
+            holder.then((outcome) => {
+              throw outcome.ok ? new Error("Holder ended early") : outcome.error;
+            }),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Holder did not reserve card")), 5000);
+            }),
+          ]).finally(() => {
+            if (timer) clearTimeout(timer);
+          });
+          const observed = await admin.query<{ present: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+            [identity.pid, identity.started],
+          );
+          expect(observed.rows).toEqual([{ present: true }]);
+          await expect(cp.deleteRelation(edge)).rejects.toMatchObject({
+            status: 409,
+            code: "version_conflict",
+            details: { field: "type" },
+          });
+          expect(await targets()).toEqual([edge.targetItemId]);
+          await expect(
+            withTransaction(pool, (client) =>
+              deleteInboxTypeWithClient(client, {
+                inboxDatabaseId: inbox,
+                inboxItemTypesDatabaseId: types,
+                processingProposalsDatabaseId: proposals,
+                typeItemId: edge.targetItemId,
+              }),
+            ),
+          ).rejects.toMatchObject({ status: 409, code: "version_conflict", details: { field: "type" } });
+          expect(
+            (
+              await pool.query<{ deleted: boolean }>(
+                "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE database_id = $1 AND id = $2",
+                [types, edge.targetItemId],
+              )
+            ).rows,
+          ).toEqual([{ deleted: false }]);
+          expect(
+            (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+              .rows,
+          ).toEqual(jobsBefore.rows);
+          expect(await targets()).toEqual([edge.targetItemId]);
+        } catch (error) {
+          failure = { error };
+        }
+        release();
+        const outcome = await holder;
+        if (!outcome.ok && failure)
+          throw new AggregateError([failure.error, outcome.error], "Reservation test and holder failed", {
+            cause: failure.error,
+          });
+        if (!outcome.ok) throw outcome.error;
+        if (failure) throw failure.error;
         expect(await targets()).toEqual([edge.targetItemId]);
-      } catch (error) {
-        failure = { error };
-      }
-      release();
-      const outcome = await holder;
-      if (!outcome.ok && failure)
-        throw new AggregateError([failure.error, outcome.error], "Reservation test and holder failed", {
-          cause: failure.error,
-        });
-      if (!outcome.ok) throw outcome.error;
-      if (failure) throw failure.error;
-      expect(await targets()).toEqual([edge.targetItemId]);
-    }));
+      }),
+  );
 
   it("does not let another tenant delete an Inbox type edge", async () => {
     const own = await runInTenant(tenant, () => fixture("proposed"));
