@@ -369,6 +369,60 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
       ]);
     });
 
+    describe("one update against the 4 MiB fetch group", () => {
+      const FETCH_GROUP_BYTES = 4 * 1024 * 1024;
+
+      /** A valid Yjs update of exactly `bytes` bytes: one text insert whose length is tuned for the encoding overhead. */
+      function updateOfSize(bytes: number): Uint8Array {
+        let overhead = 16;
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          const length = bytes - overhead;
+          const [update] = scriptedUpdates((doc, step) => step(() => doc.getText("t").insert(0, "x".repeat(length))));
+          if (!update) throw new Error("Missing scripted update");
+          if (update.length === bytes) return update;
+          overhead = update.length - length;
+        }
+        throw new Error(`No update of exactly ${bytes} bytes`);
+      }
+
+      const tooLarge = { details: { field: "since", reason: "history_window_too_large" } };
+
+      it("replays an update of exactly 4 MiB", async () => {
+        const { docId, since } = await page();
+        await insertHistory(docId, [
+          { update: updateOfSize(FETCH_GROUP_BYTES), by: "user", at: new Date(since.getTime() - 60_000) },
+        ]);
+
+        expect(await changes(docId, since, "ai_agent")).toEqual([]);
+      });
+
+      it("refuses an update of 4 MiB plus one byte, which is within the 16 MiB budget, before reading its bytes", async () => {
+        const { docId, since } = await page();
+        await insertHistory(docId, [
+          { update: updateOfSize(FETCH_GROUP_BYTES + 1), by: "user", at: new Date(since.getTime() - 60_000) },
+        ]);
+
+        await expect(changes(docId, since, "ai_agent")).rejects.toMatchObject(tooLarge);
+      });
+
+      it("replays a valid prefix before an oversized update first: the prefix may fill the limit, and the refusal comes when the update is needed", async () => {
+        const { docId, since } = await page();
+        const [agentInsert] = scriptedUpdates((doc, step) => {
+          step(() => writeBlock(doc, { id: "z", type: "text", text: "now" }));
+        });
+        if (!agentInsert) throw new Error("Missing scripted update");
+        await insertHistory(docId, [
+          { update: agentInsert, by: "ai_agent", at: new Date(since.getTime() + 60_000) },
+          { update: updateOfSize(FETCH_GROUP_BYTES + 1), by: "user", at: new Date(since.getTime() - 60_000) },
+        ]);
+
+        expect((await changes(docId, since, "ai_agent", 1)).map(({ kind, blockIds }) => ({ kind, blockIds }))).toEqual([
+          { kind: "insert", blockIds: ["z"] },
+        ]);
+        await expect(changes(docId, since, "ai_agent", 2)).rejects.toMatchObject(tooLarge);
+      });
+    });
+
     it("refuses an update larger than the byte budget before fetching it, and an oversized checkpoint before decoding it", async () => {
       const { docId, since } = await page();
       // Not a Yjs update: if the size were read after the fetch or decode, this would fail as a decode error instead.

@@ -84,7 +84,7 @@ export const PAGE_CHANGES_MAX_UPDATES = 5_000;
 export const PAGE_CHANGES_MAX_BYTES = 16 * 1024 * 1024;
 /** Rows whose sizes one metadata query reads. */
 const METADATA_ROWS = 200;
-/** The most update bytes one fetch reads (a single update larger than this is still fetched alone, within the budget). */
+/** The most update bytes one fetch reads; an update larger than this is never fetched, so no group exceeds it. */
 const FETCH_BYTES = 4 * 1024 * 1024;
 
 function historyWindowTooLarge(): ValidationError {
@@ -110,7 +110,8 @@ function historyWindowTooLarge(): ValidationError {
  * history page come from one snapshot, so a retention sweep that commits meanwhile cannot remove rows the checkpoint
  * relies on. Work is bounded by a fixed budget of `PAGE_CHANGES_MAX_UPDATES` updates and `PAGE_CHANGES_MAX_BYTES`
  * serialized bytes (the checkpoint state counts; its size is read before the state is fetched). Sizes are read in
- * pages of at most `METADATA_ROWS` rows and update bytes are fetched in groups of at most `FETCH_BYTES`. The replay
+ * pages of at most `METADATA_ROWS` rows and update bytes are fetched in groups of at most `FETCH_BYTES`; one update
+ * larger than `FETCH_BYTES` cannot be fetched at all and makes the window too large when the replay reaches it. The replay
  * stops after the group that fills `limit`, so the rest of the history is not read; a replay that
  * needs more than the budget before that is a `ValidationError` on `since` with reason `history_window_too_large`.
  * The byte budget bounds what is read, not the memory a decoded Yjs state takes.
@@ -147,14 +148,18 @@ export async function listPageChanges(
           const ids: string[] = [];
           let groupBytes = 0;
           for (const row of sizes) {
-            const fitsBudget =
+            // A row that does not fit the budget, or is larger than one fetch group, ends the group. Only when it is the
+            // first row of the group does the replay need it now and refuse, before any of its bytes are read; after a
+            // valid prefix the prefix is replayed first and may already fill `limit`.
+            const selectable =
               usedUpdates + ids.length < PAGE_CHANGES_MAX_UPDATES &&
-              usedBytes + groupBytes + row.size <= PAGE_CHANGES_MAX_BYTES;
-            if (!fitsBudget) {
+              usedBytes + groupBytes + row.size <= PAGE_CHANGES_MAX_BYTES &&
+              row.size <= FETCH_BYTES;
+            if (!selectable) {
               if (ids.length === 0) throw historyWindowTooLarge();
               break;
             }
-            if (ids.length > 0 && groupBytes + row.size > FETCH_BYTES) break;
+            if (groupBytes + row.size > FETCH_BYTES) break;
             ids.push(row.update_id);
             groupBytes += row.size;
           }
