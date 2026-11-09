@@ -11,6 +11,8 @@ type StoredRef = SempMessageRef | ReturnType<typeof labeledSempMessageRefSchema.
 type Entry = { page: number; index: number; ref: StoredRef };
 type RefKind = SempMessageRef["kind"];
 
+const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const PURGED: SempRefResolution = { label: null, databaseKey: null, state: "purged" };
 
 function isUnknownArray(value: unknown): value is unknown[] {
@@ -35,9 +37,9 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
   }
   for (const [kind, entries] of grouped) {
     let values: SempRefResolution[];
-    if (kind === "item" || kind === "block" || kind === "transcriptSegment") {
+    if (kind === "item" || kind === "block" || kind === "transcriptSegment" || kind === "taskTrace") {
       const refs = entries.map(({ ref }) => {
-        if (ref.kind !== "item" && ref.kind !== "block" && ref.kind !== "transcriptSegment")
+        if (ref.kind !== "item" && ref.kind !== "block" && ref.kind !== "transcriptSegment" && ref.kind !== "taskTrace")
           throw new Error("Invalid item reference group");
         return ref;
       });
@@ -56,7 +58,10 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
            LEFT JOIN LATERAL (SELECT p.key FROM properties p WHERE p.tenant_id = i.tenant_id
                               AND p.database_id = i.database_id AND p.type = 'title' ORDER BY p.id LIMIT 1) title ON true
           ORDER BY r.ordinal`,
-        [refs.map((ref) => ref.itemId), refs.map((ref) => (ref.kind === "item" ? ref.databaseId : null))],
+        [
+          refs.map((ref) => ref.itemId),
+          refs.map((ref) => (ref.kind === "item" || ref.kind === "taskTrace" ? ref.databaseId : null)),
+        ],
       );
       values = rows.map((row) =>
         row.found
@@ -65,6 +70,23 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
               databaseKey: row.database_key,
               state: row.deleted_at ? "trashed" : "active",
             }
+          : PURGED,
+      );
+    } else if (kind === "taskOccurrence") {
+      // `series_id` is a uuid column; a stored id of any other shape names no series and resolves as purged.
+      const ids = entries.map(({ ref }) => {
+        if (ref.kind !== "taskOccurrence") throw new Error("Invalid occurrence reference group");
+        return SERIES_ID_SHAPE.test(ref.seriesId) ? ref.seriesId : null;
+      });
+      const { rows } = await client.query<{ found: boolean; name: unknown }>(
+        `SELECT t.series_id IS NOT NULL AS found, t.template -> 'name' AS name
+           FROM unnest($1::uuid[]) WITH ORDINALITY AS r(id, ordinal)
+           LEFT JOIN task_recurrence t ON t.series_id = r.id ORDER BY r.ordinal`,
+        [ids],
+      );
+      values = rows.map((row) =>
+        row.found
+          ? { label: typeof row.name === "string" ? row.name : null, databaseKey: "tasks", state: "active" }
           : PURGED,
       );
     } else if (kind === "mailAttachment") {

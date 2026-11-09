@@ -17,6 +17,8 @@ const valid: Record<string, Record<string, unknown>> = {
   mailAttachment: { kind: "mailAttachment", attachmentId: id() },
   agentRun: { kind: "agentRun", agentRunId: id(), messageId: id() },
   approvalRequest: { kind: "approvalRequest", approvalRequestId: id() },
+  taskOccurrence: { kind: "taskOccurrence", seriesId: id(), occurrenceDate: "2026-11-16" },
+  taskTrace: { kind: "taskTrace", itemId: id(), databaseId: id(), traceDay: "2026-11-02" },
 };
 
 describe("sempMessageRefSchema", () => {
@@ -52,7 +54,8 @@ describe("sempMessageRefSchema", () => {
         });
       }
 
-      for (const field of required.filter((k) => k.endsWith("Id"))) {
+      // `seriesId` is deliberately any non-empty string on the wire; only a series of the tenant makes a ref valid.
+      for (const field of required.filter((k) => k.endsWith("Id") && k !== "seriesId")) {
         it(`rejects a non-UUID ${field}`, () => {
           expect(sempMessageRefSchema.safeParse({ ...value, [field]: "not-a-uuid" }).success).toBe(false);
         });
@@ -70,6 +73,54 @@ describe("sempMessageRefSchema", () => {
 
   it("rejects an unknown kind", () => {
     expect(sempMessageRefSchema.safeParse({ kind: "recording", itemId: id() }).success).toBe(false);
+  });
+
+  describe("task references (issue #1771)", () => {
+    const occurrence = (overrides: Record<string, unknown>) => ({ ...valid.taskOccurrence, ...overrides });
+    const trace = (overrides: Record<string, unknown>) => ({ ...valid.taskTrace, ...overrides });
+
+    it("accepts any non-empty series id and refuses an empty or non-string one", () => {
+      expect(sempMessageRefSchema.safeParse(occurrence({ seriesId: "not-a-uuid" })).success).toBe(true);
+      expect(sempMessageRefSchema.safeParse(occurrence({ seriesId: "" })).success).toBe(false);
+      expect(sempMessageRefSchema.safeParse(occurrence({ seriesId: 7 })).success).toBe(false);
+    });
+
+    it("carries no item id on an occurrence and refuses one, as it refuses any extra key", () => {
+      expect(sempMessageRefSchema.safeParse(occurrence({ itemId: id() })).success).toBe(false);
+      expect(sempMessageRefSchema.safeParse(trace({ blockId: id() })).success).toBe(false);
+    });
+
+    it.each([
+      "2026-1-01",
+      "26-11-02",
+      "2026-11-02T00:00:00Z",
+      "2026-13-01",
+      "2026-02-30",
+      "2026-00-10",
+      "",
+      "tomorrow",
+    ])("refuses %j as the day of an occurrence or a trace", (day) => {
+      expect(sempMessageRefSchema.safeParse(occurrence({ occurrenceDate: day })).success).toBe(false);
+      expect(sempMessageRefSchema.safeParse(trace({ traceDay: day })).success).toBe(false);
+    });
+
+    it("accepts a leap day and refuses it in a common year", () => {
+      expect(sempMessageRefSchema.safeParse(occurrence({ occurrenceDate: "2028-02-29" })).success).toBe(true);
+      expect(sempMessageRefSchema.safeParse(occurrence({ occurrenceDate: "2027-02-29" })).success).toBe(false);
+    });
+
+    it("keys an occurrence by series and day and a trace by task, database and day", () => {
+      const seriesId = id();
+      const itemId = id();
+      const databaseId = id();
+      const key = (value: unknown) => messageRefKey(sempMessageRefSchema.parse(value));
+      expect(key(occurrence({ seriesId }))).toBe(key(occurrence({ seriesId })));
+      expect(key(occurrence({ seriesId }))).not.toBe(key(occurrence({ seriesId, occurrenceDate: "2026-11-17" })));
+      expect(key(occurrence({ seriesId }))).not.toBe(key(occurrence({ seriesId: id() })));
+      expect(key(trace({ itemId, databaseId }))).toBe(key(trace({ itemId, databaseId })));
+      expect(key(trace({ itemId, databaseId }))).not.toBe(key(trace({ itemId, databaseId, traceDay: "2026-11-03" })));
+      expect(key(trace({ itemId, databaseId }))).not.toBe(key(trace({ itemId: id(), databaseId })));
+    });
   });
 
   describe("transcriptSegment range", () => {

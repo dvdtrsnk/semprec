@@ -2,6 +2,15 @@ import { z } from "zod";
 
 const uuid = z.uuid();
 
+/** A calendar day as `YYYY-MM-DD`; a date that does not exist, such as `2026-02-30`, is refused. */
+const calendarDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((day) => {
+    const parsed = new Date(`${day}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(day);
+  }, "Not a calendar day");
+
 const itemRefSchema = z.strictObject({
   kind: z.literal("item"),
   itemId: uuid,
@@ -44,6 +53,25 @@ const approvalRequestRefSchema = z.strictObject({
   approvalRequestId: uuid,
 });
 
+/**
+ * A future occurrence of a repeating task that exists only as a computed day: named by its series and day, with no item
+ * id (docs/adr/2026-10-25-task-and-event-recurrence-model.md). `seriesId` is any non-empty string here; only a series
+ * of the caller's tenant makes a reference valid.
+ */
+const taskOccurrenceRefSchema = z.strictObject({
+  kind: z.literal("taskOccurrence"),
+  seriesId: z.string().min(1),
+  occurrenceDate: calendarDay,
+});
+
+/** The trace of a task on a past day: the task item plus the day. */
+const taskTraceRefSchema = z.strictObject({
+  kind: z.literal("taskTrace"),
+  itemId: uuid,
+  databaseId: uuid,
+  traceDay: calendarDay,
+});
+
 /** Closed union of the objects a message sent to Semp can reference. */
 export const sempMessageRefSchema = z.discriminatedUnion("kind", [
   itemRefSchema,
@@ -52,6 +80,8 @@ export const sempMessageRefSchema = z.discriminatedUnion("kind", [
   mailAttachmentRefSchema,
   agentRunRefSchema,
   approvalRequestRefSchema,
+  taskOccurrenceRefSchema,
+  taskTraceRefSchema,
 ]);
 
 export type SempMessageRef = z.infer<typeof sempMessageRefSchema>;
@@ -64,6 +94,8 @@ export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
   mailAttachmentRefSchema.safeExtend({ label: z.string() }),
   agentRunRefSchema.safeExtend({ label: z.string() }),
   approvalRequestRefSchema.safeExtend({ label: z.string() }),
+  taskOccurrenceRefSchema.safeExtend({ label: z.string() }),
+  taskTraceRefSchema.safeExtend({ label: z.string() }),
 ]);
 
 export type LabeledSempMessageRef = z.infer<typeof labeledSempMessageRefSchema>;
@@ -97,6 +129,8 @@ export const SEMP_MESSAGE_REF_KINDS = [
   "mailAttachment",
   "agentRun",
   "approvalRequest",
+  "taskOccurrence",
+  "taskTrace",
 ] as const satisfies readonly SempMessageRef["kind"][];
 
 /**
@@ -118,5 +152,9 @@ export function messageRefKey(ref: SempMessageRef): string {
       return `agentRun:${ref.agentRunId}`;
     case "approvalRequest":
       return `approvalRequest:${ref.approvalRequestId}`;
+    case "taskOccurrence":
+      return `taskOccurrence:${ref.seriesId}:${ref.occurrenceDate}`;
+    case "taskTrace":
+      return `taskTrace:${ref.itemId}:${ref.databaseId}:${ref.traceDay}`;
   }
 }
