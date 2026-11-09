@@ -6,6 +6,7 @@ import { runAfterCommit } from "../db/pool.js";
 import { notifyNotificationCreated } from "../realtimeHook.js";
 import { enqueueNotificationFanout } from "./notificationFanoutJob.js";
 import type { NotificationKind } from "./notificationKinds.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
@@ -117,6 +118,18 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const catalogs = await getNotificationCatalogs();
   const locale = toManifestLocale(user.locale);
   const localeCatalog = catalogs[locale];
+  let payload = input.payload ?? {};
+  if (input.kind === "agent_guidance_drift_resolved") {
+    const kind = payload.kind ?? "permission";
+    if (kind !== "permission" && kind !== "behavior") throw new Error("Invalid guidance drift kind");
+    if (typeof payload.projectItemId !== "string") throw new Error("Missing guidance drift project");
+    const [project] = await getItemsByIds(client, [payload.projectItemId]);
+    if (!project) throw new Error("Guidance drift project not found");
+    const projectName = project.properties.name;
+    if (typeof projectName !== "string") throw new Error("Guidance drift project has no name");
+    const template = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.guidanceResolved.${kind}`);
+    payload = { ...payload, kind, resolutionTitle: interpolate(template, { project: projectName }) };
+  }
   const titleTemplate = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
   const action =
@@ -148,7 +161,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       input.sourceTable,
       input.sourceId,
       input.transitionInstance,
-      JSON.stringify(input.payload ?? {}),
+      JSON.stringify(payload),
     ],
   );
 

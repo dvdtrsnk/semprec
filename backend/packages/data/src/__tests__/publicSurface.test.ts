@@ -304,6 +304,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createProjectAgentGuidanceReadRouteHandler",
   "createProjectAgentGuidanceSaveRouteHandler",
   "createProjectGuidanceDriftReadRouteHandler",
+  "createResolveGuidanceDriftFindingRouteHandler",
   "createRelationWithClient",
   "createRerunTranscriptionRouteHandler",
   "createSempChatThread",

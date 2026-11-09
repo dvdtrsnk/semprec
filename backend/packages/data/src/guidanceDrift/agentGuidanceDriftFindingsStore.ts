@@ -7,6 +7,7 @@ import type {
 import { validateGuidanceDriftContradiction } from "@semprec/shared";
 import { requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 
 interface FindingRow {
   id: string;
@@ -16,7 +17,7 @@ interface FindingRow {
   // matches `GuidanceDriftContradiction`'s shape (a direct DB patch or schema evolution could
   // diverge it), so `mapRow` validates and narrows it below rather than casting.
   payload: Record<string, unknown>;
-  status: "active" | "resolved";
+  status: string;
   first_seen_at: Date;
   last_seen_at: Date;
   resolved_at: Date | null;
@@ -28,7 +29,7 @@ function mapRow(row: FindingRow): GuidanceDriftFinding {
     projectItemId: row.project_item_id,
     fingerprint: row.fingerprint,
     payload: validateGuidanceDriftContradiction(row.payload, `agent_guidance_drift_findings row ${row.id}`),
-    status: row.status,
+    status: assertKnownValue(["active", "resolved", "dismissed"] as const, row.status, "guidance drift status"),
     firstSeenAt: row.first_seen_at.toISOString(),
     lastSeenAt: row.last_seen_at.toISOString(),
     resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
@@ -55,8 +56,8 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
     // Row-lock first (rather than a single `INSERT ... ON CONFLICT`) because the caller needs to
     // know whether this was a genuine active/resolved *transition* — an `ON CONFLICT DO UPDATE`
     // can't distinguish "was already active" from "was resolved" for the row it just touched.
-    const { rows: existingRows } = await tx.query<{ id: string; status: "active" | "resolved" }>(
-      `SELECT id, status FROM agent_guidance_drift_findings
+    const { rows: existingRows } = await tx.query<FindingRow & { resolution_choice: string | null }>(
+      `SELECT ${COLUMNS}, resolution_choice FROM agent_guidance_drift_findings
        WHERE project_item_id = $1 AND fingerprint = $2 FOR UPDATE`,
       [input.projectItemId, input.fingerprint],
     );
@@ -77,6 +78,10 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
       };
     }
 
+    if (existing.status === "dismissed" || (existing.status === "resolved" && existing.resolution_choice !== null)) {
+      return { finding: mapRow(existing), transitionedToActive: false };
+    }
+
     const wasResolved = existing.status === "resolved";
     const { rows } = await tx.query<FindingRow>(
       `UPDATE agent_guidance_drift_findings
@@ -92,12 +97,15 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
   },
 
   async resolve(tx, findingId, resolvedAt) {
-    const { rows: existingRows } = await tx.query<{ status: "active" | "resolved" }>(
-      `SELECT status FROM agent_guidance_drift_findings WHERE id = $1 FOR UPDATE`,
+    const { rows: existingRows } = await tx.query<FindingRow & { resolution_choice: string | null }>(
+      `SELECT ${COLUMNS}, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1 FOR UPDATE`,
       [findingId],
     );
     const existing = existingRows[0];
     if (!existing) throw new NotFoundError(`Guidance drift finding ${findingId} not found`);
+
+    if (existing.status === "dismissed" || existing.resolution_choice !== null)
+      return { finding: mapRow(existing), transitionedToResolved: false };
 
     const wasActive = existing.status === "active";
     const { rows } = await tx.query<FindingRow>(
@@ -111,5 +119,17 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
       finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings resolve")),
       transitionedToResolved: wasActive,
     };
+  },
+  async decide(tx, findingId, decision) {
+    if ((decision.status === "dismissed") !== (decision.choice === "dismiss"))
+      throw new Error("Guidance drift decision status and choice disagree");
+    const { rows } = await tx.query<FindingRow>(
+      `UPDATE agent_guidance_drift_findings
+       SET status = $2, resolution_choice = $3, resolved_by = $4, resolved_at = $5, last_seen_at = $5
+       WHERE id = $1 AND status = 'active' RETURNING ${COLUMNS}`,
+      [findingId, decision.status, decision.choice, decision.userId, decision.at],
+    );
+    if (!rows[0]) throw new NotFoundError("Guidance drift finding not found");
+    return mapRow(rows[0]);
   },
 };

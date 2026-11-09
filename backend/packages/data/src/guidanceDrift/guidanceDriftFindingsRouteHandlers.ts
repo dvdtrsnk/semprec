@@ -2,9 +2,11 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { GuidanceReferenceNotFoundError, type GuidanceDriftFinding } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { agentGuidanceDriftFindingsStore } from "./agentGuidanceDriftFindingsStore.js";
+import { resolveGuidanceDriftFinding } from "./resolveGuidanceDriftFinding.js";
+import { loadGuidanceSections } from "../projectAgentGuidance/projectAgentGuidanceSections.js";
 
 interface Context {
   params: Record<string, string>;
@@ -87,5 +89,39 @@ export function createProjectGuidanceDriftReadRouteHandler(pool: Pool) {
     if (!parsed.success) throw new ValidationError("Project id must be a UUID", { field: "id" });
     const body = await withTransaction(pool, (tx) => readDrift(tx, parsed.data), { isolation: "repeatable_read" });
     return { status: 200, body };
+  };
+}
+
+const decisionSchema = z.object({
+  choice: z.enum(["allow", "forbid", "dismiss"]),
+  expectedGuidanceUpdatedAt: z.string().datetime({ offset: true }).nullable(),
+}).strict();
+
+export function createResolveGuidanceDriftFindingRouteHandler(pool: Pool) {
+  return async (ctx: Context & { body: unknown; identity: { user: { id: string } } }) => {
+    const id = z.string().uuid().safeParse(ctx.params.id);
+    const decision = decisionSchema.safeParse(ctx.body);
+    if (!id.success) throw new ValidationError("Finding id must be a UUID", { field: "id" });
+    if (!decision.success) throw new ValidationError("Invalid decision", { field: "choice" });
+    try {
+      const body = await withTransaction(pool, (tx) => resolveGuidanceDriftFinding(tx, {
+        findingId: id.data, actorUserId: ctx.identity.user.id, ...decision.data,
+      }), { isolation: "serializable" });
+      return { status: 200, body };
+    } catch (error) {
+      if (error instanceof ConflictError)
+        return { status: 409, body: { error: { code: "version_conflict", details: error.details } } };
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "40001") {
+        const current = await withTransaction(pool, async (tx) => {
+          const row = await tx.query<{ project_item_id: string }>("SELECT project_item_id FROM agent_guidance_drift_findings WHERE id = $1", [id.data]);
+          if (!row.rows[0]) throw new NotFoundError("Guidance drift finding not found");
+          const value = await loadGuidanceSections(tx, row.rows[0].project_item_id);
+          if (value.ownerUserId !== ctx.identity.user.id) throw new ForbiddenError("Guidance owner required", undefined, "owner_violation");
+          return value;
+        });
+        return { status: 409, body: { error: { code: "version_conflict", details: { current } } } };
+      }
+      throw error;
+    }
   };
 }

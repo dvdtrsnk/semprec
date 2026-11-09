@@ -17,6 +17,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "project guidance read": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
   "project guidance save": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
   "project guidance drift read": "packages/data/src/guidanceDrift/guidanceDriftFindingsRouteHandlers.ts",
+  "guidance drift resolve": "packages/data/src/guidanceDrift/guidanceDriftFindingsRouteHandlers.ts",
   "semp thread detail": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread create message": "services/semprec-api/src/sempThreadsHandler.ts",
   "semp thread send message": "services/semprec-api/src/sempThreadsHandler.ts",

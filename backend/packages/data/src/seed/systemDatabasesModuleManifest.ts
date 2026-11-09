@@ -33,7 +33,7 @@ export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
-export { createProjectGuidanceDriftReadRouteHandler } from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
+export { createProjectGuidanceDriftReadRouteHandler, createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDrift/guidanceDriftFindingsRouteHandlers.js";
 
 export {
   createCreateTranscriptionRouteHandler,
@@ -380,6 +380,13 @@ export const manifest: ModuleManifest = {
       // Serves the AGENT page's drift cards: the project's active findings together with the
       // guidance version they are resolved against, which no generic item read returns.
       justification: "single-consumer-read",
+    },
+    {
+      name: "resolveGuidanceDriftFinding",
+      method: "POST",
+      path: "/api/agent-guidance-drift/:id/resolve",
+      handlerExport: "createResolveGuidanceDriftFindingRouteHandler",
+      justification: "transactional-semantics",
     },
     {
       name: "setTaskRecurrence",
