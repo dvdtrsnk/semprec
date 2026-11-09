@@ -400,6 +400,71 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     if (failure) throw failure.error;
   });
 
+  it.each(["done", "wontDo", "missed"] as const)(
+    "preserves an already materialized latest %s occurrence",
+    async (status) => {
+      const old = await task({ date: day(-1) });
+      const series = await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: old },
+          body: { preset: "daily" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      const seriesId = series.item.properties.seriesId;
+      if (typeof seriesId !== "string") throw new Error("Missing series id");
+      // Synthetic materialized terminal occurrence: normal completion owns the series advance.
+      const latest = await inTenant(() =>
+        createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status }),
+      );
+      const beforeLatest = await row(latest);
+      await run();
+      expect((await row(old)).properties.status).toBe("missed");
+      expect(await row(latest)).toEqual(beforeLatest);
+      const all = await inTenant(() =>
+        pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+          [tasksId, seriesId],
+        ),
+      );
+      expect(all.rows.map((entry) => entry.id).sort()).toEqual([old, latest].sort());
+    },
+  );
+
+  it("replaces a trashed latest occurrence without restoring or modifying its history", async () => {
+    const old = await task({ date: day(-1) });
+    const series = await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: old },
+        body: { preset: "daily" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    const seriesId = series.item.properties.seriesId;
+    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    // A pre-materialized latest occurrence is a historical fixture; then use the real trash path.
+    const trashed = await inTenant(() =>
+      createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
+    );
+    await inTenant(() => cp.softDeleteItem(tasksId, trashed));
+    const beforeTrashed = await row(trashed);
+    await run();
+    expect(await row(trashed)).toEqual(beforeTrashed);
+    expect((await row(old)).properties.status).toBe("missed");
+    const live = await inTenant(() =>
+      pool.query<{ id: string; properties: Record<string, unknown> }>(
+        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+        [tasksId, seriesId],
+      ),
+    );
+    expect(live.rows).toHaveLength(2);
+    expect(live.rows.find((entry) => entry.id !== old)?.properties).toMatchObject({
+      status: "notDone",
+      date: day(0),
+      occurrenceDate: day(0),
+    });
+  });
+
   it("moves a task whose event ended yesterday, with since yesterday", async () => {
     const id = await task({ date: day(-3) });
     // The event-derived day and the end of its event (#1780, #1798 write them later): synthetic Tasks values.
