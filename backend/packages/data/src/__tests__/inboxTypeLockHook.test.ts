@@ -23,12 +23,34 @@ let pool: Pool;
 let tenant: string;
 const pendingRaceActors = new Set<Promise<unknown>>();
 
-function trackRaceActor<T>(actor: Promise<T>): void {
+type RaceOutcome = { ok: true } | { ok: false; error: unknown };
+type RaceActor = { actor: Promise<RaceOutcome>; consumed: boolean; ignored?: { value: unknown } };
+
+function trackRaceActor(records: RaceActor[], actor: Promise<RaceOutcome>): RaceActor {
+  const record: RaceActor = { actor, consumed: false };
+  records.push(record);
   pendingRaceActors.add(actor);
   void actor.then(
     () => pendingRaceActors.delete(actor),
     () => pendingRaceActors.delete(actor),
   );
+  return record;
+}
+
+async function finishRaceActors(records: RaceActor[], primary?: { error: unknown }): Promise<void> {
+  const errors: unknown[] = primary ? [primary.error] : [];
+  for (const record of records) {
+    try {
+      const outcome = await boundRace(record.actor);
+      if (!outcome.ok && !record.consumed && (!record.ignored || outcome.error !== record.ignored.value))
+        errors.push(outcome.error);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, "Inbox race actor failures", { cause: primary ? primary.error : errors[0] });
 }
 
 async function boundRace<T>(actor: Promise<T>): Promise<T> {
@@ -297,15 +319,18 @@ describe("Inbox type lock", () => {
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       );
-      trackRaceActor(confirmation);
+      const actors: RaceActor[] = [];
+      const confirmationRecord = trackRaceActor(actors, confirmation);
       const invalidations: InvalidationEvent[] = [];
       let primary: { error: unknown } | undefined;
       let commit = false;
+      let readyReceived = false;
       try {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const confirmer = await Promise.race([
           ready,
           confirmation.then((outcome) => {
+            if (!readyReceived) confirmationRecord.consumed = true;
             throw outcome.ok ? new Error("Confirmation ended early") : outcome.error;
           }),
           new Promise<never>((_, reject) => {
@@ -314,6 +339,7 @@ describe("Inbox type lock", () => {
         ]).finally(() => {
           if (timer) clearTimeout(timer);
         });
+        readyReceived = true;
         const observed = await admin.query<{ present: boolean }>(
           "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
           [confirmer.pid, confirmer.started],
@@ -334,11 +360,12 @@ describe("Inbox type lock", () => {
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        trackRaceActor(probe);
+        const probeRecord = trackRaceActor(actors, probe);
         const probeOutcome = await boundRace(probe);
         if (probeOutcome.ok) throw new Error("Card reservation probe unexpectedly succeeded");
         expect(probeIdentity?.pid).not.toBe(confirmer.pid);
         expect(probeOutcome.error).toMatchObject({ code: "55P03" });
+        probeRecord.consumed = true;
         const beforeCard = await withTransaction(pool, (client) => getItemById(client, proposals, cardId));
         const beforeSource = await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId));
         const jobs = await admin.query<{ id: string; key: string | null }>(
@@ -351,7 +378,7 @@ describe("Inbox type lock", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-        trackRaceActor(deletion);
+        const deletionRecord = trackRaceActor(actors, deletion);
         const deletionOutcome = await boundRace(deletion);
         if (deletionOutcome.ok) throw new Error("Type deletion unexpectedly succeeded");
         expect(deletionOutcome.error).toMatchObject({
@@ -359,6 +386,7 @@ describe("Inbox type lock", () => {
           code: "version_conflict",
           details: { field: "type" },
         });
+        deletionRecord.consumed = true;
         expect(await targets()).toEqual([edge.targetItemId]);
         expect(await withTransaction(pool, (client) => getItemById(client, proposals, cardId))).toEqual(beforeCard);
         expect(await withTransaction(pool, (client) => getItemById(client, inbox, edge.callerItemId))).toEqual(
@@ -376,35 +404,62 @@ describe("Inbox type lock", () => {
       } catch (error) {
         primary = { error };
       }
+      if (!commit) confirmationRecord.ignored = { value: cancelled };
       release(commit);
-      let outcome: Awaited<typeof confirmation> | undefined;
-      let cleanup: { error: unknown } | undefined;
+      let failure: { error: unknown } | undefined;
       try {
-        outcome = await boundRace(confirmation);
-        await boundRace(Promise.allSettled([...pendingRaceActors]));
+        await finishRaceActors(actors, primary);
       } catch (error) {
-        cleanup = { error };
+        failure = { error };
       }
       if (!pendingRaceActors.size) setInvalidationHook(() => {});
-      if (cleanup) {
-        if (primary)
-          throw new AggregateError([primary.error, cleanup.error], "Inbox type race cleanup failed", {
-            cause: primary.error,
-          });
-        throw cleanup.error;
-      }
-      if (!outcome) throw new Error("Missing confirmation outcome");
-      if (primary && !outcome.ok && outcome.error !== cancelled)
-        throw new AggregateError([primary.error, outcome.error], "Inbox type race and confirmation failed", {
-          cause: primary.error,
-        });
-      if (primary) throw primary.error;
-      if (!outcome.ok) throw outcome.error;
+      if (failure) throw failure.error;
       expect(await targets()).toEqual([edge.targetItemId]);
       expect((await withTransaction(pool, (client) => getItemById(client, proposals, cardId)))?.properties.status).toBe(
         "confirmed",
       );
     }));
+
+  it("retains synthetic late actor failures in launch order with a falsy primary", async () => {
+    const actors: RaceActor[] = [];
+    const firstError = new Error("first late failure");
+    const secondError = new Error("second late failure");
+    let first: (outcome: RaceOutcome) => void = () => {};
+    let second: (outcome: RaceOutcome) => void = () => {};
+    let third: (outcome: RaceOutcome) => void = () => {};
+    trackRaceActor(
+      actors,
+      new Promise<RaceOutcome>((resolve) => {
+        first = resolve;
+      }),
+    );
+    trackRaceActor(
+      actors,
+      new Promise<RaceOutcome>((resolve) => {
+        second = resolve;
+      }),
+    );
+    trackRaceActor(
+      actors,
+      new Promise<RaceOutcome>((resolve) => {
+        third = resolve;
+      }),
+    );
+    second({ ok: false, error: secondError });
+    third({ ok: true });
+    first({ ok: false, error: firstError });
+    const failure = await finishRaceActors(actors, { error: 0 }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate failure");
+    expect(failure.cause).toBe(0);
+    expect(failure.errors).toEqual([0, firstError, secondError]);
+    expect(failure.errors[1]).toBe(firstError);
+    expect(failure.errors[2]).toBe(secondError);
+    expect(pendingRaceActors.size).toBe(0);
+  });
 
   it("does not let another tenant delete an Inbox type edge", async () => {
     const own = await runInTenant(tenant, () => fixture("proposed"));
