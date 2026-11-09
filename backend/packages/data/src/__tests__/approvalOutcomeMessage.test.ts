@@ -5,6 +5,7 @@ import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
+  createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
@@ -17,6 +18,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
+import { getSempMessageTurn } from "../sempThreads/sempThreadsStore.js";
+import { createUser } from "../auth/usersStore.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -173,6 +176,71 @@ describe("approval outcome messages", () => {
       ),
     );
     expect(rows.rows).toEqual([{ role: "system", system_key: "approval.outcome.rejected" }]);
+  });
+
+  it("rejects foreign and missing approval references identically without exposing their results", async () => {
+    const own = await tickFixture(true);
+    const otherThread = await fixture(true);
+    const other = await createTestTenant(admin);
+    await createUser(admin, { tenantId: other, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await runInTenant(other, () => seedSystem(runtime));
+    const foreign = await runInTenant(other, () =>
+      withTransaction(runtime, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId: inbox.ownerProjectItemId,
+          name: "Foreign",
+          rule: { kind: "interval", minutes: 10 },
+          actionId: "core.agentRun",
+          actionConfig: { task: "Foreign" },
+        });
+        const thread = await client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+          [heartbeat.id],
+        );
+        if (!thread.rows[0]) throw new Error("Missing thread");
+        const run = await createAgentRun(client, {
+          triggeredBy: "heartbeat",
+          task: "Foreign",
+          projectItemId: inbox.ownerProjectItemId,
+          heartbeatId: heartbeat.id,
+          threadId: thread.rows[0].id,
+        });
+        return createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "private",
+          riskClass: "write",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      }),
+    );
+    const attempt = async (requestId: string) =>
+      runInTenant(tenant(), () =>
+        withTransaction(runtime, async (client) => {
+          // Synthetic historical source: normal outcome writers never point across threads or tenants.
+          const source = await client.query<{ id: string }>(
+            "INSERT INTO semp_messages (thread_id, role, system_key, system_params, context) VALUES ($1, 'system', 'approval.outcome.executed', '{}'::jsonb, $2::jsonb) RETURNING id",
+            [own.threadId, JSON.stringify([{ kind: "approvalRequest", approvalRequestId: requestId }])],
+          );
+          if (!source.rows[0]) throw new Error("Missing source");
+          const reply = await client.query<{ id: string }>(
+            "INSERT INTO semp_messages (thread_id, role, reply_to_message_id, status) VALUES ($1, 'assistant', $2, 'queued') RETURNING id",
+            [own.threadId, source.rows[0].id],
+          );
+          if (!reply.rows[0]) throw new Error("Missing reply");
+          return getSempMessageTurn(client, own.threadId, reply.rows[0].id);
+        }),
+      );
+    const capture = (id: string) =>
+      attempt(id).then(
+        () => "unexpected success",
+        (error: unknown) => (error instanceof Error ? error.message : "unexpected error"),
+      );
+    expect(await capture(foreign.id)).toBe("Approval outcome provenance mismatch");
+    expect(await capture(randomUUID())).toBe("Approval outcome provenance mismatch");
+    expect(await capture(otherThread.request.id)).toBe("Approval outcome provenance mismatch");
   });
   it("posts one canonical rejection on the decision transaction and ignores redelivery", async () => {
     const { threadId, request } = await fixture(true);
