@@ -74,7 +74,7 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
   return new AggregateError(details, "Prior rollover actor crossed its deadline; resources remain reserved");
 }
 async function settleRolloverActor<T>(actor: Promise<T>): Promise<T> {
-  if (!rolloverActorRecords.has(actor)) trackRolloverActor(actor);
+  if (!rolloverActorRecords.has(actor)) void trackRolloverActor(actor);
   const record = rolloverActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

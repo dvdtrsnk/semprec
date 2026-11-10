@@ -64,7 +64,7 @@ function guidanceActorDiagnostic(): AggregateError | undefined {
   return new AggregateError(details, "Prior guidance actor crossed its deadline; resources remain reserved");
 }
 async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
-  if (!guidanceActorRecords.has(actor)) trackGuidanceActor(actor);
+  if (!guidanceActorRecords.has(actor)) void trackGuidanceActor(actor);
   const record = guidanceActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
