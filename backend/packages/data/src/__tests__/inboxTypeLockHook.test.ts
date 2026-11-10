@@ -25,30 +25,69 @@ let tenant: string;
 const pendingRaceActors = new Set<Promise<unknown>>();
 
 type RaceOutcome = { ok: true } | { ok: false; error: unknown };
-type RaceActor = { actor: Promise<RaceOutcome>; consumed: boolean; ignored?: { value: unknown } };
+type RaceActor = {
+  actor: Promise<RaceOutcome>;
+  consumed: boolean;
+  ignored?: { value: unknown };
+  label: string;
+  status: "pending" | "fulfilled" | "rejected";
+  outcome?: RaceOutcome;
+  error?: unknown;
+};
+const retainedRaceCases: Array<{ primary?: { error: unknown }; records: RaceActor[] }> = [];
+function raceDiagnostic(): AggregateError | undefined {
+  if (!retainedRaceCases.length && !pendingRaceActors.size) return undefined;
+  const errors: unknown[] = [];
+  for (const item of retainedRaceCases) {
+    if (item.primary) errors.push(item.primary.error);
+    for (const record of item.records) {
+      if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
+      else if (record.status === "rejected") errors.push(record.error);
+      else if (
+        record.outcome &&
+        !record.outcome.ok &&
+        !record.consumed &&
+        (!record.ignored || record.outcome.error !== record.ignored.value)
+      )
+        errors.push(record.outcome.error);
+    }
+  }
+  return new AggregateError(errors, "Prior Inbox race remains unsafe; resources remain reserved");
+}
 
 function trackRaceActor(records: RaceActor[], actor: Promise<RaceOutcome>): RaceActor {
-  const record: RaceActor = { actor, consumed: false };
+  const record: RaceActor = { actor, consumed: false, label: `Inbox actor ${records.length + 1}`, status: "pending" };
   records.push(record);
   pendingRaceActors.add(actor);
   void actor.then(
-    () => pendingRaceActors.delete(actor),
-    () => pendingRaceActors.delete(actor),
+    (outcome) => {
+      record.status = "fulfilled";
+      record.outcome = outcome;
+      pendingRaceActors.delete(actor);
+    },
+    (error: unknown) => {
+      record.status = "rejected";
+      record.error = error;
+      pendingRaceActors.delete(actor);
+    },
   );
   return record;
 }
 
 async function finishRaceActors(records: RaceActor[], primary?: { error: unknown }): Promise<void> {
   const errors: unknown[] = primary ? [primary.error] : [];
+  let timedOut = false;
   for (const record of records) {
     try {
       const outcome = await boundRace(record.actor);
       if (!outcome.ok && !record.consumed && (!record.ignored || outcome.error !== record.ignored.value))
         errors.push(outcome.error);
     } catch (error) {
+      if (record.status === "pending") timedOut = true;
       errors.push(error);
     }
   }
+  if (timedOut) retainedRaceCases.push({ primary, records });
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1)
     throw new AggregateError(errors, "Inbox race actor failures", { cause: primary ? primary.error : errors[0] });
@@ -70,7 +109,8 @@ async function boundRace<T>(actor: Promise<T>): Promise<T> {
 
 describe("Inbox type lock", () => {
   beforeEach(async () => {
-    if (pendingRaceActors.size) throw new Error("A prior race actor remains unsettled");
+    const unsafe = raceDiagnostic();
+    if (unsafe) throw unsafe;
     admin ??= getTestPool();
     pool ??= await createRuntimeRolePool(admin, "semprec_data");
     await resetDatabase(admin);
@@ -78,7 +118,8 @@ describe("Inbox type lock", () => {
     await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
   });
   afterAll(async () => {
-    if (pendingRaceActors.size) throw new Error("A race actor remains unsettled; pools remain open");
+    const unsafe = raceDiagnostic();
+    if (unsafe) throw unsafe;
     await pool?.end();
     await admin?.end();
   });

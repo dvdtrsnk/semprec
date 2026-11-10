@@ -25,7 +25,13 @@ import {
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { startStdioContractServer } from "@semprec/data/testSupport/mcpContractServers";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { mcpModelToolName } from "../agentSessionComposition.js";
@@ -37,6 +43,52 @@ import type { GatewayModel } from "../modelComposition.js";
 let admin: Pool;
 let runtime: Pool;
 let lifecycleUnsafe = false;
+type CleanupRecord = {
+  label: string;
+  status: "pending" | "fulfilled" | "rejected";
+  error?: unknown;
+  reported: boolean;
+  outcome: Promise<void>;
+};
+const retainedCleanupCases: Array<{ primary?: { error: unknown }; records: CleanupRecord[] }> = [];
+function cleanupDiagnostic(): AggregateError {
+  const errors: unknown[] = [];
+  for (const item of retainedCleanupCases) {
+    if (item.primary) errors.push(item.primary.error);
+    for (const record of item.records) {
+      if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
+      if (record.status === "rejected" && !record.reported) errors.push(record.error);
+    }
+  }
+  return new AggregateError(errors, "Prior cleanup remains unsafe; resources cannot be reused or closed");
+}
+function observeCleanup(label: string, cleanup: () => Promise<void>, records: CleanupRecord[]): CleanupRecord {
+  const record: CleanupRecord = { label, status: "pending", reported: false, outcome: Promise.resolve() };
+  records.push(record);
+  record.outcome = Promise.resolve()
+    .then(cleanup)
+    .then(
+      () => {
+        record.status = "fulfilled";
+      },
+      (error: unknown) => {
+        record.status = "rejected";
+        record.error = error;
+      },
+    );
+  return record;
+}
+async function awaitCleanup(record: CleanupRecord, deadlineMs = 10_000): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const completed = await Promise.race([
+    record.outcome.then(() => true),
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), deadlineMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return completed;
+}
 describe("settled tick approval outcome continuation", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -50,10 +102,10 @@ describe("settled tick approval outcome continuation", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(() => {
-    if (lifecycleUnsafe) throw new Error("A previous actor did not settle; refusing to reuse its pools");
+    if (lifecycleUnsafe) throw cleanupDiagnostic();
   });
   afterAll(async () => {
-    if (lifecycleUnsafe) throw new Error("An actor did not settle; refusing to end its pools");
+    if (lifecycleUnsafe) throw cleanupDiagnostic();
     await runtime.end();
     await admin.end();
   });
@@ -314,7 +366,10 @@ describe("settled tick approval outcome continuation", () => {
           if (!inbox?.ownerProjectItemId || !servers) throw new Error("Missing seeded databases");
           const serverItem = await createItemWithClient(
             client,
-            { databaseId: servers.id, properties: { name: "Closed contract server", active: true, connectionConfig: server.connectionConfig } },
+            {
+              databaseId: servers.id,
+              properties: { name: "Closed contract server", active: true, connectionConfig: server.connectionConfig },
+            },
             { humanWriterUserId: user.id },
           );
           const heartbeat = await createHeartbeat(client, {
@@ -493,31 +548,25 @@ describe("settled tick approval outcome continuation", () => {
       failure = { error };
     }
     const errors: unknown[] = [];
-    const lateFailures: Array<{ error: unknown; reported: boolean }> = [];
+    const records: CleanupRecord[] = [];
     const settle = async (label: string, cleanup: () => Promise<void>): Promise<boolean> => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const outcome = cleanup().then(
-        () => ({ ok: true as const }),
-        (error: unknown) => {
-          const failure = { error, reported: false };
-          lateFailures.push(failure);
-          return { ok: false as const, error, failure };
-        },
-      );
-      const timeout = new Promise<{ ok: false; error: Error }>((resolve) => {
-        timer = setTimeout(() => resolve({ ok: false, error: new Error(`${label} did not settle`) }), 10_000);
-      });
-      const result = await Promise.race([outcome, timeout]);
-      if (timer) clearTimeout(timer);
-      if (!result.ok) {
-        errors.push(result.error);
-        if ("failure" in result) result.failure.reported = true;
+      const record = observeCleanup(label, cleanup, records);
+      if (!(await awaitCleanup(record))) {
+        errors.push(new Error(`${label} did not settle`));
+        lifecycleUnsafe = true;
+        return false;
+      }
+      if (record.status === "rejected") {
+        errors.push(record.error);
+        record.reported = true;
         lifecycleUnsafe = true;
         return false;
       }
       return true;
     };
-    const runnerSettled = await settle("queue runner", async () => { await runner?.stop(); });
+    const runnerSettled = await settle("queue runner", async () => {
+      await runner?.stop();
+    });
     const sessionsSettled = await settle("thread sessions", async () => {
       await closeIdleThreadSessions(runtime);
     });
@@ -525,14 +574,50 @@ describe("settled tick approval outcome continuation", () => {
     if (runnerSettled && sessionsSettled && childSettled) {
       await settle("stdio fixture", () => server.stop());
     }
-    for (const late of lateFailures) {
-      if (!late.reported) errors.push(late.error);
+    for (const record of records) {
+      if (record.status === "rejected" && !record.reported) {
+        errors.push(record.error);
+        record.reported = true;
+      }
     }
+    if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records });
     if (errors.length)
       throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Real outcome cleanup failed", {
         cause: failure?.error,
       });
     if (failure) throw failure.error;
+  });
+
+  it("retains a late cleanup failure after a bounded deadline", async () => {
+    const records: CleanupRecord[] = [];
+    let rejectLate!: (error: unknown) => void;
+    const lateError = new Error("late actor failure");
+    const record = observeCleanup(
+      "late actor",
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectLate = reject;
+        }),
+      records,
+    );
+    expect(await awaitCleanup(record, 1)).toBe(false);
+    const later = observeCleanup("independent actor", async () => {}, records);
+    expect(await awaitCleanup(later, 1000)).toBe(true);
+    const finite = new AggregateError([0, new Error("late actor did not settle")], "finite snapshot", { cause: 0 });
+    expect(finite.cause).toBe(0);
+    expect(finite.errors).toHaveLength(2);
+    const item = { primary: { error: 0 }, records };
+    retainedCleanupCases.push(item);
+    try {
+      expect(cleanupDiagnostic().errors[0]).toBe(0);
+      rejectLate(lateError);
+      await record.outcome;
+      expect(record.status).toBe("rejected");
+      expect(cleanupDiagnostic().errors).toEqual([0, lateError]);
+      expect(later.status).toBe("fulfilled");
+    } finally {
+      retainedCleanupCases.splice(retainedCleanupCases.indexOf(item), 1);
+    }
   });
 
   it("delivers a bounded successful result from a synthetic settled outcome", async () => {

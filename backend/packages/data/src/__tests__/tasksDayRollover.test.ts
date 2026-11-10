@@ -21,22 +21,70 @@ import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const WAIT_MS = 10_000;
+type RolloverActorRecord = {
+  label: string;
+  status: "pending" | "fulfilled" | "rejected";
+  value?: unknown;
+  error?: unknown;
+  timedOut: boolean;
+};
 const pendingRolloverActors = new Set<Promise<unknown>>();
+const rolloverActorRecords = new Map<Promise<unknown>, RolloverActorRecord>();
 function trackRolloverActor<T>(actor: Promise<T>): Promise<T> {
+  const record: RolloverActorRecord = {
+    label: `rollover actor ${rolloverActorRecords.size + 1}`,
+    status: "pending",
+    timedOut: false,
+  };
+  rolloverActorRecords.set(actor, record);
   pendingRolloverActors.add(actor);
   void actor.then(
-    () => pendingRolloverActors.delete(actor),
-    () => pendingRolloverActors.delete(actor),
+    (value) => {
+      record.status = "fulfilled";
+      record.value = value;
+      pendingRolloverActors.delete(actor);
+    },
+    (error: unknown) => {
+      record.status = "rejected";
+      record.error = error;
+      pendingRolloverActors.delete(actor);
+    },
   );
   return actor;
 }
+function rolloverActorDiagnostic(): AggregateError | undefined {
+  const retained = [...rolloverActorRecords.values()].filter(
+    (record) => record.timedOut || record.status === "pending",
+  );
+  if (!retained.length) return undefined;
+  const details: unknown[] = [];
+  for (const record of retained) {
+    if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
+    else if (record.status === "rejected") details.push(record.error);
+    else if (
+      typeof record.value === "object" &&
+      record.value !== null &&
+      "ok" in record.value &&
+      record.value.ok === false &&
+      "error" in record.value
+    )
+      details.push(record.value.error);
+    else details.push(new Error(`${record.label} settled after its deadline`));
+  }
+  return new AggregateError(details, "Prior rollover actor crossed its deadline; resources remain reserved");
+}
 async function settleRolloverActor<T>(actor: Promise<T>): Promise<T> {
+  if (!rolloverActorRecords.has(actor)) trackRolloverActor(actor);
+  const record = rolloverActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       actor,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Rollover actor did not settle")), WAIT_MS);
+        timer = setTimeout(() => {
+          if (record) record.timedOut = true;
+          reject(new Error("Rollover actor did not settle"));
+        }, WAIT_MS);
       }),
     ]);
   } finally {
@@ -134,7 +182,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   });
 
   beforeEach(async () => {
-    if (pendingRolloverActors.size) throw new Error("A rollover actor remains unsettled");
+    const unsafe = rolloverActorDiagnostic();
+    if (unsafe) throw unsafe;
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     await inTenant(() => seedSystem(pool, createViewTypeRegistry()));
@@ -155,7 +204,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   });
 
   afterAll(async () => {
-    if (pendingRolloverActors.size) throw new Error("A rollover actor remains unsettled; pools remain open");
+    const unsafe = rolloverActorDiagnostic();
+    if (unsafe) throw unsafe;
     setInvalidationHook(() => {});
     await pool?.end();
     await admin?.end();

@@ -11,22 +11,70 @@ import { saveGuidanceSections } from "../../projectAgentGuidance/projectAgentGui
 import { agentGuidanceDriftFindingsStore } from "../agentGuidanceDriftFindingsStore.js";
 import { createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDriftFindingsRouteHandlers.js";
 
+type GuidanceActorRecord = {
+  label: string;
+  status: "pending" | "fulfilled" | "rejected";
+  value?: unknown;
+  error?: unknown;
+  timedOut: boolean;
+};
 const pendingGuidanceActors = new Set<Promise<unknown>>();
+const guidanceActorRecords = new Map<Promise<unknown>, GuidanceActorRecord>();
 function trackGuidanceActor<T>(actor: Promise<T>): Promise<T> {
+  const record: GuidanceActorRecord = {
+    label: `guidance actor ${guidanceActorRecords.size + 1}`,
+    status: "pending",
+    timedOut: false,
+  };
+  guidanceActorRecords.set(actor, record);
   pendingGuidanceActors.add(actor);
   void actor.then(
-    () => pendingGuidanceActors.delete(actor),
-    () => pendingGuidanceActors.delete(actor),
+    (value) => {
+      record.status = "fulfilled";
+      record.value = value;
+      pendingGuidanceActors.delete(actor);
+    },
+    (error: unknown) => {
+      record.status = "rejected";
+      record.error = error;
+      pendingGuidanceActors.delete(actor);
+    },
   );
   return actor;
 }
+function guidanceActorDiagnostic(): AggregateError | undefined {
+  const retained = [...guidanceActorRecords.values()].filter(
+    (record) => record.timedOut || record.status === "pending",
+  );
+  if (!retained.length) return undefined;
+  const details: unknown[] = [];
+  for (const record of retained) {
+    if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
+    else if (record.status === "rejected") details.push(record.error);
+    else if (
+      typeof record.value === "object" &&
+      record.value !== null &&
+      "ok" in record.value &&
+      record.value.ok === false &&
+      "error" in record.value
+    )
+      details.push(record.value.error);
+    else details.push(new Error(`${record.label} settled after its deadline`));
+  }
+  return new AggregateError(details, "Prior guidance actor crossed its deadline; resources remain reserved");
+}
 async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
+  if (!guidanceActorRecords.has(actor)) trackGuidanceActor(actor);
+  const record = guidanceActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       actor,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Guidance actor did not settle")), 5000);
+        timer = setTimeout(() => {
+          if (record) record.timedOut = true;
+          reject(new Error("Guidance actor did not settle"));
+        }, 5000);
       }),
     ]);
   } finally {
@@ -62,7 +110,8 @@ describe("guidance drift decisions", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
-    if (pendingGuidanceActors.size) throw new Error("A guidance actor remains unsettled");
+    const unsafe = guidanceActorDiagnostic();
+    if (unsafe) throw unsafe;
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     user = (
@@ -77,7 +126,8 @@ describe("guidance drift decisions", () => {
     });
   });
   afterAll(async () => {
-    if (pendingGuidanceActors.size) throw new Error("A guidance actor remains unsettled; pools remain open");
+    const unsafe = guidanceActorDiagnostic();
+    if (unsafe) throw unsafe;
     await pool.end();
     await admin.end();
   });
