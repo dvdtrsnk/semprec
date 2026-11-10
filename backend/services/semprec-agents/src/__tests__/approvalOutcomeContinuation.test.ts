@@ -272,7 +272,7 @@ describe("settled tick approval outcome continuation", () => {
       );
       const waitForReply = async (id: string) => {
         const deadline = Date.now() + 15_000;
-        let rows: Array<{ status: string; text: string | null }> = [];
+        let rows: Array<{ status: string; text: string | null }>;
         do {
           rows = (
             await runInTenant(tenant, () =>
