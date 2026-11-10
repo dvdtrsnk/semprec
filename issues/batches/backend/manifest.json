@@ -3807,8 +3807,8 @@
       "sequence": 39,
       "status": "proposed",
       "title": "[backend-delivery 39/74] Implement data/inbox, data/tasks, data/chokePoint changes",
-      "bodyCharacters": 59990,
-      "specSha256": "36d90b0f129aa24b7608aa83477a820f1d92352cf29d07003383363195334531",
+      "bodyCharacters": 59984,
+      "specSha256": "348b9c14d872ac47ed10b9283db96ab3e423fc35f8fb18ccfd1a95ea0c666875",
       "members": [
         {
           "id": "gh-1669",
@@ -3878,7 +3878,7 @@
         },
         {
           "id": "gh-1685",
-          "specSha256": "ea8d28d577682ad49229243d96368ea7672952da24d5418b090b89777c3f605f",
+          "specSha256": "4c94a3174ed6646ea0c355bb5a32d7344b4c0f5253216339704c767a2265b0f0",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1674",
