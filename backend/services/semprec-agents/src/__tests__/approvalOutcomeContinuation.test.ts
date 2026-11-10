@@ -630,6 +630,28 @@ describe("settled tick approval outcome continuation", () => {
           ),
         );
       const beforeServer = await serverRow();
+      const domain = () =>
+        runInTenant(tenant, async () => ({
+          items: (
+            await runtime.query<{
+              id: string;
+              database_id: string;
+              properties: unknown;
+              updated_at: Date;
+              deleted_at: Date | null;
+            }>("SELECT id, database_id, properties, updated_at, deleted_at FROM items ORDER BY id")
+          ).rows,
+          relations: (
+            await runtime.query<{
+              id: string;
+              relation_definition_id: string;
+              item_a: string;
+              item_b: string;
+              metadata: unknown;
+            }>("SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations ORDER BY id")
+          ).rows,
+        }));
+      const beforeDomain = await domain();
       const userBeforeReject = await runInTenant(tenant, () =>
         runtime.query<{ id: string }>(
           "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
@@ -661,6 +683,7 @@ describe("settled tick approval outcome continuation", () => {
       expect(server.getHandshakeCount()).toBe(priorHandshakes);
       expect(server.getLastToolCall()).toEqual(priorCall);
       expect((await serverRow()).rows).toEqual(beforeServer.rows);
+      expect(await domain()).toEqual(beforeDomain);
       expect(
         (
           await runInTenant(tenant, () =>
