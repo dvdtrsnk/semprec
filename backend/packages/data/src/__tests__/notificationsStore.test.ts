@@ -116,6 +116,41 @@ async function boundNotificationActor<T>(actor: Promise<T>, deadlineMs = 5000): 
   }
 }
 
+type NotificationOutcome = { ok: true } | { ok: false; error: unknown };
+async function waitNotificationReady<T>(
+  ready: Promise<T>,
+  actor: Promise<NotificationOutcome>,
+  message: string,
+  deadlineMs = 5000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      ready.then((value) => ({ kind: "ready" as const, value })),
+      actor.then(
+        (outcome) => ({ kind: "actor" as const, outcome }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), deadlineMs);
+      }),
+    ]);
+    if (winner.kind === "ready") return winner.value;
+    const record = notificationActorRecords.get(actor);
+    if (winner.kind === "error") {
+      if (record) record.consumed = true;
+      throw winner.error;
+    }
+    if (!winner.outcome.ok) {
+      if (record) record.consumed = true;
+      throw winner.outcome.error;
+    }
+    throw new Error("Actor ended before readiness");
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 describe("notificationsStore (issue #152)", () => {
   beforeEach(async () => {
     const unsafe = notificationActorDiagnostic();
@@ -168,6 +203,76 @@ describe("notificationsStore (issue #152)", () => {
     );
   }
 
+  it("retains a notification actor failure after readiness timeout", async () => {
+    const never = new Promise<never>(() => {});
+    type Outcome = { ok: true } | { ok: false; error: unknown };
+    let finish: (value: Outcome) => void = () => {};
+    const actor = observeNotificationActor(
+      new Promise<Outcome>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    let finishPending: (value: Outcome) => void = () => {};
+    const pendingActor = observeNotificationActor(
+      new Promise<Outcome>((resolve) => {
+        finishPending = resolve;
+      }),
+    );
+    let earlyActor: Promise<Outcome> | undefined;
+    try {
+      const timeout = await waitNotificationReady(never, actor, "readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(timeout).toMatchObject({ message: "readiness timeout" });
+      const late = new Error("late notification actor");
+      finish({ ok: false, error: late });
+      await actor;
+      const outcome = await boundNotificationActor(actor, 10);
+      expect(outcome).toEqual({ ok: false, error: late });
+      if (outcome.ok) throw new Error("Missing actor failure");
+      const aggregate = new AggregateError([timeout, outcome.error], "finite settlement", { cause: timeout });
+      expect(aggregate.cause).toBe(timeout);
+      expect(aggregate.errors).toEqual([timeout, late]);
+      expect(aggregate.errors[1]).toBe(late);
+      expect(notificationActorRecords.get(actor)?.consumed).toBe(false);
+
+      const pendingTimeout = await waitNotificationReady(never, pendingActor, "pending readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await expect(boundNotificationActor(pendingActor, 1)).rejects.toThrow("Notification actor did not settle");
+      const pendingRecord = notificationActorRecords.get(pendingActor);
+      if (!pendingRecord) throw new Error("Missing pending record");
+      pendingRecord.primary = { error: pendingTimeout };
+      expect(notificationActorDiagnostic()?.errors[0]).toBe(pendingTimeout);
+      expect(pendingNotificationActors.has(pendingActor)).toBe(true);
+      const retained = new Error("retained notification actor");
+      finishPending({ ok: false, error: retained });
+      await pendingActor;
+      expect(notificationActorDiagnostic()?.errors.find((error) => error === retained)).toBe(retained);
+      const earlyError = new Error("early notification actor");
+      earlyActor = observeNotificationActor(Promise.resolve<Outcome>({ ok: false, error: earlyError }));
+      const early = await waitNotificationReady(never, earlyActor, "unused deadline", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(early).toBe(earlyError);
+      expect(notificationActorRecords.get(earlyActor)?.consumed).toBe(true);
+      const earlyOutcome = await boundNotificationActor(earlyActor, 10);
+      const errors = [early];
+      if (!earlyOutcome.ok && !notificationActorRecords.get(earlyActor)?.consumed) errors.push(earlyOutcome.error);
+      expect(errors).toEqual([earlyError]);
+    } finally {
+      finish({ ok: true });
+      finishPending({ ok: true });
+      await Promise.all([actor, pendingActor, earlyActor]);
+      notificationActorRecords.delete(actor);
+      notificationActorRecords.delete(pendingActor);
+      if (earlyActor) notificationActorRecords.delete(earlyActor);
+    }
+  });
+
   it("retains a late notification actor failure after a bounded deadline", async () => {
     let resolveLate!: (value: { ok: false; error: unknown }) => void;
     const error = new Error("late notification actor failure");
@@ -214,6 +319,7 @@ describe("notificationsStore (issue #152)", () => {
     });
     const intentional = new Error("First notification transaction rolled back");
     let primary: { error: unknown } | undefined;
+    let firstReadyCompleted = false;
     let first: Promise<{ ok: true; value: string } | { ok: false; error: unknown }> | undefined;
     let second: Promise<{ ok: true; value: string } | { ok: false; error: unknown }> | undefined;
     try {
@@ -255,20 +361,8 @@ describe("notificationsStore (issue #152)", () => {
           (error: unknown) => ({ ok: false as const, error }),
         ),
       );
-      let firstReadyReceived = false;
-      const firstIdentity = await boundNotificationActor(
-        Promise.race([
-          firstSignal,
-          first.then((result) => {
-            if (!result.ok && !firstReadyReceived) {
-              const record = first && notificationActorRecords.get(first);
-              if (record) record.consumed = true;
-            }
-            throw result.ok ? new Error("First actor ended before reservation") : result.error;
-          }),
-        ]),
-      );
-      firstReadyReceived = true;
+      const firstIdentity = await waitNotificationReady(firstSignal, first, "Notification actor did not settle");
+      firstReadyCompleted = true;
       second = observeNotificationActor(
         runInTenant(tenant, () =>
           withTransaction(runtime, async (client) => {
@@ -280,20 +374,7 @@ describe("notificationsStore (issue #152)", () => {
           (error: unknown) => ({ ok: false as const, error }),
         ),
       );
-      let secondReadyReceived = false;
-      const secondIdentity = await boundNotificationActor(
-        Promise.race([
-          secondSignal,
-          second.then((result) => {
-            if (!result.ok && !secondReadyReceived) {
-              const record = second && notificationActorRecords.get(second);
-              if (record) record.consumed = true;
-            }
-            throw result.ok ? new Error("Second actor ended before observation") : result.error;
-          }),
-        ]),
-      );
-      secondReadyReceived = true;
+      const secondIdentity = await waitNotificationReady(secondSignal, second, "Notification actor did not settle");
       await expect
         .poll(
           async () => {
@@ -332,7 +413,7 @@ describe("notificationsStore (issue #152)", () => {
     if (
       outcomes[0] &&
       !outcomes[0].ok &&
-      outcomes[0].error !== intentional &&
+      !(firstReadyCompleted && outcomes[0].error === intentional) &&
       !notificationActorRecords.get(first!)?.consumed
     )
       errors.push(outcomes[0].error);
@@ -346,7 +427,9 @@ describe("notificationsStore (issue #152)", () => {
       }
     } else errors.push(new Error("Notification actor remains unsettled; pool remains open"));
     if (errors.length)
-      throw new AggregateError(errors, "Concurrent notification test failed", { cause: primary?.error ?? errors[0] });
+      throw new AggregateError(errors, "Concurrent notification test failed", {
+        cause: primary ? primary.error : errors[0],
+      });
     expect(outcomes[0]).toMatchObject({ ok: false, error: intentional });
     expect(outcomes[1]).toMatchObject({ ok: true, value: expect.any(String) });
     const rows = await runInTenant(tenant, () =>

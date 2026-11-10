@@ -73,7 +73,7 @@ function guidanceActorDiagnostic(): AggregateError | undefined {
   }
   return new AggregateError(details, "Prior guidance actor crossed its deadline; resources remain reserved");
 }
-async function settleGuidanceActor<T>(actor: Promise<T>, primary?: { error: unknown }): Promise<T> {
+async function settleGuidanceActor<T>(actor: Promise<T>, primary?: { error: unknown }, deadlineMs = 5000): Promise<T> {
   if (!guidanceActorRecords.has(actor)) void trackGuidanceActor(actor);
   const record = guidanceActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -87,9 +87,44 @@ async function settleGuidanceActor<T>(actor: Promise<T>, primary?: { error: unkn
             record.primary = primary;
           }
           reject(new Error("Guidance actor did not settle"));
-        }, 5000);
+        }, deadlineMs);
       }),
     ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+type GuidanceOutcome = { ok: true } | { ok: false; error: unknown };
+async function waitGuidanceReady<T>(
+  ready: Promise<T>,
+  actor: Promise<GuidanceOutcome>,
+  message: string,
+  deadlineMs = 5000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      ready.then((value) => ({ kind: "ready" as const, value })),
+      actor.then(
+        (outcome) => ({ kind: "actor" as const, outcome }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), deadlineMs);
+      }),
+    ]);
+    if (winner.kind === "ready") return winner.value;
+    const record = guidanceActorRecords.get(actor);
+    if (winner.kind === "error") {
+      if (record) record.consumed = true;
+      throw winner.error;
+    }
+    if (!winner.outcome.ok) {
+      if (record) record.consumed = true;
+      throw winner.outcome.error;
+    }
+    throw new Error("Actor ended before readiness");
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -144,6 +179,73 @@ describe("guidance drift decisions", () => {
     await pool.end();
     await admin.end();
   });
+  it("retains a guidance actor failure after readiness timeout", async () => {
+    const never = new Promise<never>(() => {});
+    type Outcome = { ok: true } | { ok: false; error: unknown };
+    let finish: (value: Outcome) => void = () => {};
+    const actor = trackGuidanceActor(
+      new Promise<Outcome>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    let finishPending: (value: Outcome) => void = () => {};
+    const pendingActor = trackGuidanceActor(
+      new Promise<Outcome>((resolve) => {
+        finishPending = resolve;
+      }),
+    );
+    let earlyActor: Promise<Outcome> | undefined;
+    try {
+      const timeout = await waitGuidanceReady(never, actor, "readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(timeout).toMatchObject({ message: "readiness timeout" });
+      const late = new Error("late guidance actor");
+      finish({ ok: false, error: late });
+      await actor;
+      const outcome = await settleGuidanceActor(actor, { error: timeout }, 10);
+      expect(outcome).toEqual({ ok: false, error: late });
+      if (outcome.ok) throw new Error("Missing actor failure");
+      const aggregate = new AggregateError([timeout, outcome.error], "finite settlement", { cause: timeout });
+      expect(aggregate.cause).toBe(timeout);
+      expect(aggregate.errors).toEqual([timeout, late]);
+      expect(aggregate.errors[1]).toBe(late);
+      expect(guidanceActorRecords.get(actor)?.consumed).toBe(false);
+
+      const pendingTimeout = await waitGuidanceReady(never, pendingActor, "pending readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await expect(settleGuidanceActor(pendingActor, { error: pendingTimeout }, 1)).rejects.toThrow();
+      expect(guidanceActorDiagnostic()?.errors[0]).toBe(pendingTimeout);
+      expect(pendingGuidanceActors.has(pendingActor)).toBe(true);
+      const retained = new Error("retained guidance actor");
+      finishPending({ ok: false, error: retained });
+      await pendingActor;
+      expect(guidanceActorDiagnostic()?.errors.find((error) => error === retained)).toBe(retained);
+      const earlyError = new Error("early guidance actor");
+      earlyActor = trackGuidanceActor(Promise.resolve<Outcome>({ ok: false, error: earlyError }));
+      const early = await waitGuidanceReady(never, earlyActor, "unused deadline", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(early).toBe(earlyError);
+      expect(guidanceActorRecords.get(earlyActor)?.consumed).toBe(true);
+      const earlyOutcome = await settleGuidanceActor(earlyActor, { error: timeout }, 10);
+      const errors = [early];
+      if (!earlyOutcome.ok && !guidanceActorRecords.get(earlyActor)?.consumed) errors.push(earlyOutcome.error);
+      expect(errors).toEqual([earlyError]);
+    } finally {
+      finish({ ok: true });
+      finishPending({ ok: true });
+      await Promise.all([actor, pendingActor, earlyActor]);
+      guidanceActorRecords.delete(actor);
+      guidanceActorRecords.delete(pendingActor);
+      if (earlyActor) guidanceActorRecords.delete(earlyActor);
+    }
+  });
+
   it("adds decision columns to populated historical rows in two tenants", async () => {
     const other = await createTestTenant(admin);
     const otherUser = await createUser(admin, { email: "other@example.test", passwordHash: "hash", tenantId: other });
@@ -655,26 +757,8 @@ describe("guidance drift decisions", () => {
         waiterReady(client.processID);
       };
       let failure: { error: unknown } | undefined;
-      let ownerReady = false;
-      let contenderReady = false;
       try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const owner = await Promise.race([
-          held,
-          holder.then((result) => {
-            if (!result.ok && !ownerReady) {
-              const record = guidanceActorRecords.get(holder);
-              if (record) record.consumed = true;
-            }
-            throw result.ok ? new Error("Holder ended early") : result.error;
-          }),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Holder readiness timed out")), 5000);
-          }),
-        ]).finally(() => {
-          if (timer) clearTimeout(timer);
-        });
-        ownerReady = true;
+        const owner = await waitGuidanceReady(held, holder, "Holder readiness timed out");
         pool.on("acquire", onAcquire);
         const route = createResolveGuidanceDriftFindingRouteHandler(pool);
         contender = trackGuidanceActor(
@@ -687,24 +771,9 @@ describe("guidance drift decisions", () => {
             (error: unknown) => ({ ok: false as const, error }),
           ),
         );
-        let waitTimer: ReturnType<typeof setTimeout> | undefined;
-        const waiterPid = await Promise.race([
-          acquired,
-          contender.then((result) => {
-            if (!result.ok && !contenderReady && contender) {
-              const record = guidanceActorRecords.get(contender);
-              if (record) record.consumed = true;
-            }
-            throw result.ok ? new Error("Contender ended early") : result.error;
-          }),
-          new Promise<never>((_, reject) => {
-            waitTimer = setTimeout(() => reject(new Error("Contender readiness timed out")), 5000);
-          }),
-        ]).finally(() => {
-          if (waitTimer) clearTimeout(waitTimer);
+        const waiterPid = await waitGuidanceReady(acquired, contender, "Contender readiness timed out").finally(() => {
           pool.off("acquire", onAcquire);
         });
-        contenderReady = true;
         const found = await admin.query<{ started: string }>(
           "SELECT backend_start::text AS started FROM pg_stat_activity WHERE pid = $1",
           [waiterPid],

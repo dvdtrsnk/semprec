@@ -74,12 +74,12 @@ function trackRaceActor(records: RaceActor[], actor: Promise<RaceOutcome>): Race
   return record;
 }
 
-async function finishRaceActors(records: RaceActor[], primary?: { error: unknown }): Promise<void> {
+async function finishRaceActors(records: RaceActor[], primary?: { error: unknown }, deadlineMs = 5000): Promise<void> {
   const errors: unknown[] = primary ? [primary.error] : [];
   let timedOut = false;
   for (const record of records) {
     try {
-      const outcome = await boundRace(record.actor);
+      const outcome = await boundRace(record.actor, deadlineMs);
       if (!outcome.ok && !record.consumed && (!record.ignored || outcome.error !== record.ignored.value)) {
         errors.push(outcome.error);
         record.consumed = true;
@@ -96,15 +96,43 @@ async function finishRaceActors(records: RaceActor[], primary?: { error: unknown
     throw new AggregateError(errors, "Inbox race actor failures", { cause: primary ? primary.error : errors[0] });
 }
 
-async function boundRace<T>(actor: Promise<T>): Promise<T> {
+async function boundRace<T>(actor: Promise<T>, deadlineMs = 5000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       actor,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Race actor did not settle")), 5000);
+        timer = setTimeout(() => reject(new Error("Race actor did not settle")), deadlineMs);
       }),
     ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitInboxReady<T>(ready: Promise<T>, record: RaceActor, message: string, deadlineMs = 5000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      ready.then((value) => ({ kind: "ready" as const, value })),
+      record.actor.then(
+        (outcome) => ({ kind: "actor" as const, outcome }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), deadlineMs);
+      }),
+    ]);
+    if (winner.kind === "ready") return winner.value;
+    if (winner.kind === "error") {
+      record.consumed = true;
+      throw winner.error;
+    }
+    if (!winner.outcome.ok) {
+      record.consumed = true;
+      throw winner.outcome.error;
+    }
+    throw new Error("Actor ended before readiness");
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -436,23 +464,9 @@ describe("Inbox type lock", () => {
         );
         const records: RaceActor[] = [];
         const holderRecord = trackRaceActor(records, holder);
-        let readyReceived = false;
         let failure: { error: unknown } | undefined;
         try {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const identity = await Promise.race([
-            ready,
-            holder.then((outcome) => {
-              if (!outcome.ok && !readyReceived) holderRecord.consumed = true;
-              throw outcome.ok ? new Error("Holder ended early") : outcome.error;
-            }),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Holder did not reserve card")), 5000);
-            }),
-          ]).finally(() => {
-            if (timer) clearTimeout(timer);
-          });
-          readyReceived = true;
+          const identity = await waitInboxReady(ready, holderRecord, "Holder did not reserve card");
           const observed = await admin.query<{ present: boolean }>(
             "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
             [identity.pid, identity.started],
@@ -580,21 +594,11 @@ describe("Inbox type lock", () => {
         (error: unknown) => ({ ok: false as const, error }),
       );
       const holderRecord = trackRaceActor(actors, holder);
-      let readyReceived = false;
       let primary: { error: unknown } | undefined;
       const deletedSources: string[] = [];
       const events: InvalidationEvent[] = [];
       try {
-        const identity = await boundRace(
-          Promise.race([
-            ready,
-            holder.then((outcome) => {
-              if (!outcome.ok && !readyReceived) holderRecord.consumed = true;
-              throw outcome.ok ? new Error("Holder ended early") : outcome.error;
-            }),
-          ]),
-        );
-        readyReceived = true;
+        const identity = await waitInboxReady(ready, holderRecord, "Race actor did not settle");
         expect(
           (
             await admin.query<{ present: boolean }>(
@@ -695,22 +699,8 @@ describe("Inbox type lock", () => {
       const invalidations: InvalidationEvent[] = [];
       let primary: { error: unknown } | undefined;
       let commit = false;
-      let readyReceived = false;
       try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const confirmer = await Promise.race([
-          ready,
-          confirmation.then((outcome) => {
-            if (!readyReceived) confirmationRecord.consumed = true;
-            throw outcome.ok ? new Error("Confirmation ended early") : outcome.error;
-          }),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Confirmation did not reach its commit gate")), 5000);
-          }),
-        ]).finally(() => {
-          if (timer) clearTimeout(timer);
-        });
-        readyReceived = true;
+        const confirmer = await waitInboxReady(ready, confirmationRecord, "Confirmation did not reach its commit gate");
         const observed = await admin.query<{ present: boolean }>(
           "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
           [confirmer.pid, confirmer.started],
@@ -790,6 +780,75 @@ describe("Inbox type lock", () => {
         "confirmed",
       );
     }));
+
+  it("retains actor errors after readiness timeout and consumes only the winning actor", async () => {
+    const never = new Promise<never>(() => {});
+    const actors: RaceActor[] = [];
+    let resolveActor: (outcome: RaceOutcome) => void = () => {};
+    const actor = new Promise<RaceOutcome>((resolve) => {
+      resolveActor = resolve;
+    });
+    const record = trackRaceActor(actors, actor);
+    const timeout = await waitInboxReady(never, record, "readiness deadline", 1).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(timeout).toMatchObject({ message: "readiness deadline" });
+    const late = new Error("late Inbox actor");
+    resolveActor({ ok: false, error: late });
+    await actor;
+    const settled = await finishRaceActors(actors, { error: timeout }, 10).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(settled).toBeInstanceOf(AggregateError);
+    if (!(settled instanceof AggregateError)) throw new Error("Missing finite aggregate");
+    expect(settled.cause).toBe(timeout);
+    expect(settled.errors).toEqual([timeout, late]);
+    expect(settled.errors[1]).toBe(late);
+
+    const pendingActors: RaceActor[] = [];
+    let releasePending: (outcome: RaceOutcome) => void = () => {};
+    const pending = new Promise<RaceOutcome>((resolve) => {
+      releasePending = resolve;
+    });
+    const pendingRecord = trackRaceActor(pendingActors, pending);
+    const pendingTimeout = await waitInboxReady(never, pendingRecord, "pending readiness deadline", 1).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const retainedStart = retainedRaceCases.length;
+    try {
+      await expect(finishRaceActors(pendingActors, { error: pendingTimeout }, 1)).rejects.toBeInstanceOf(
+        AggregateError,
+      );
+      expect(raceDiagnostic()?.errors[0]).toBe(pendingTimeout);
+      expect(pendingRaceActors.has(pending)).toBe(true);
+      const later = new Error("retained Inbox actor");
+      releasePending({ ok: false, error: later });
+      await pending;
+      expect(raceDiagnostic()?.errors).toContain(later);
+      expect(raceDiagnostic()?.errors.find((error) => error === later)).toBe(later);
+    } finally {
+      releasePending({ ok: true });
+      await pending;
+      retainedRaceCases.splice(retainedStart);
+    }
+    const earlyActors: RaceActor[] = [];
+    const earlyError = new Error("early Inbox actor");
+    const early = trackRaceActor(earlyActors, Promise.resolve({ ok: false, error: earlyError }));
+    const winning = await waitInboxReady(never, early, "not reached", 10).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(winning).toBe(earlyError);
+    expect(
+      await finishRaceActors(earlyActors, { error: winning }, 10).then(
+        () => null,
+        (error: unknown) => error,
+      ),
+    ).toBe(earlyError);
+  });
 
   it("retains synthetic late actor failures in launch order with a falsy primary", async () => {
     const actors: RaceActor[] = [];

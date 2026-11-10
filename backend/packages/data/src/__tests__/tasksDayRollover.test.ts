@@ -82,7 +82,11 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
   }
   return new AggregateError(details, "Prior rollover actor crossed its deadline; resources remain reserved");
 }
-async function settleRolloverActor<T>(actor: Promise<T>, primary?: { error: unknown }): Promise<T> {
+async function settleRolloverActor<T>(
+  actor: Promise<T>,
+  primary?: { error: unknown },
+  deadlineMs = WAIT_MS,
+): Promise<T> {
   if (!rolloverActorRecords.has(actor)) void trackRolloverActor(actor);
   const record = rolloverActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -96,9 +100,46 @@ async function settleRolloverActor<T>(actor: Promise<T>, primary?: { error: unkn
             record.primary = primary;
           }
           reject(new Error("Rollover actor did not settle"));
-        }, WAIT_MS);
+        }, deadlineMs);
       }),
     ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+type RolloverOutcome = { ok: true } | { ok: false; error: unknown };
+async function waitRolloverReady<T>(
+  ready: Promise<T>,
+  actors: Array<Promise<RolloverOutcome>>,
+  message: string,
+  deadlineMs = WAIT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      ready.then((value) => ({ kind: "ready" as const, value })),
+      ...actors.map((actor) =>
+        actor.then(
+          (outcome) => ({ kind: "actor" as const, actor, outcome }),
+          (error: unknown) => ({ kind: "error" as const, actor, error }),
+        ),
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), deadlineMs);
+      }),
+    ]);
+    if (winner.kind === "ready") return winner.value;
+    const record = rolloverActorRecords.get(winner.actor);
+    if (winner.kind === "error") {
+      if (record) record.consumed = true;
+      throw winner.error;
+    }
+    if (!winner.outcome.ok) {
+      if (record) record.consumed = true;
+      throw winner.outcome.error;
+    }
+    throw new Error("Actor ended before readiness");
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -221,6 +262,73 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     setInvalidationHook(() => {});
     await pool?.end();
     await admin?.end();
+  });
+
+  it("retains a rollover actor failure after readiness timeout", async () => {
+    const never = new Promise<never>(() => {});
+    type Outcome = { ok: true } | { ok: false; error: unknown };
+    let finish: (value: Outcome) => void = () => {};
+    const actor = trackRolloverActor(
+      new Promise<Outcome>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    let finishPending: (value: Outcome) => void = () => {};
+    const pendingActor = trackRolloverActor(
+      new Promise<Outcome>((resolve) => {
+        finishPending = resolve;
+      }),
+    );
+    let earlyActor: Promise<Outcome> | undefined;
+    try {
+      const timeout = await waitRolloverReady(never, [actor], "readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(timeout).toMatchObject({ message: "readiness timeout" });
+      const late = new Error("late rollover actor");
+      finish({ ok: false, error: late });
+      await actor;
+      const outcome = await settleRolloverActor(actor, { error: timeout }, 10);
+      expect(outcome).toEqual({ ok: false, error: late });
+      if (outcome.ok) throw new Error("Missing actor failure");
+      const aggregate = new AggregateError([timeout, outcome.error], "finite settlement", { cause: timeout });
+      expect(aggregate.cause).toBe(timeout);
+      expect(aggregate.errors).toEqual([timeout, late]);
+      expect(aggregate.errors[1]).toBe(late);
+      expect(rolloverActorRecords.get(actor)?.consumed).toBe(false);
+
+      const pendingTimeout = await waitRolloverReady(never, [pendingActor], "pending readiness timeout", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await expect(settleRolloverActor(pendingActor, { error: pendingTimeout }, 1)).rejects.toThrow();
+      expect(rolloverActorDiagnostic()?.errors[0]).toBe(pendingTimeout);
+      expect(pendingRolloverActors.has(pendingActor)).toBe(true);
+      const retained = new Error("retained rollover actor");
+      finishPending({ ok: false, error: retained });
+      await pendingActor;
+      expect(rolloverActorDiagnostic()?.errors.find((error) => error === retained)).toBe(retained);
+      const earlyError = new Error("early rollover actor");
+      earlyActor = trackRolloverActor(Promise.resolve<Outcome>({ ok: false, error: earlyError }));
+      const early = await waitRolloverReady(never, [earlyActor], "unused deadline", 1).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(early).toBe(earlyError);
+      expect(rolloverActorRecords.get(earlyActor)?.consumed).toBe(true);
+      const earlyOutcome = await settleRolloverActor(earlyActor, { error: timeout }, 10);
+      const errors = [early];
+      if (!earlyOutcome.ok && !rolloverActorRecords.get(earlyActor)?.consumed) errors.push(earlyOutcome.error);
+      expect(errors).toEqual([earlyError]);
+    } finally {
+      finish({ ok: true });
+      finishPending({ ok: true });
+      await Promise.all([actor, pendingActor, earlyActor]);
+      rolloverActorRecords.delete(actor);
+      rolloverActorRecords.delete(pendingActor);
+      if (earlyActor) rolloverActorRecords.delete(earlyActor);
+    }
   });
 
   it("moves a notDone task of yesterday 10:00-11:00 to today without times, with since yesterday", async () => {
@@ -539,21 +647,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       );
       let action: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
       let primary: { error: unknown } | undefined;
-      let readyReceived = false;
       try {
-        const held = await settleRolloverActor(
-          Promise.race([
-            ready,
-            holder.then((result) => {
-              if (!result.ok && !readyReceived) {
-                const record = rolloverActorRecords.get(holder);
-                if (record) record.consumed = true;
-              }
-              throw result.ok ? new Error("Holder ended early") : result.error;
-            }),
-          ]),
-        );
-        readyReceived = true;
+        const held = await waitRolloverReady(ready, [holder], "Rollover actor did not settle");
         expect(
           (
             await admin.query<{ present: boolean }>(
@@ -647,7 +742,6 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     let release = () => {};
     let holder: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
-    let readyReceived = false;
     try {
       vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
       const old = await task({ date: "2026-10-12" });
@@ -704,19 +798,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
           (error: unknown) => ({ ok: false as const, error }),
         ),
       );
-      const identity = await settleRolloverActor(
-        Promise.race([
-          ready,
-          holder.then((result) => {
-            if (!result.ok && !readyReceived && holder) {
-              const record = rolloverActorRecords.get(holder);
-              if (record) record.consumed = true;
-            }
-            throw result.ok ? new Error("Holder ended before reservation") : result.error;
-          }),
-        ]),
-      );
-      readyReceived = true;
+      const identity = await waitRolloverReady(ready, [holder], "Rollover actor did not settle");
       expect(
         (
           await admin.query<{ present: boolean }>(
@@ -846,25 +928,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       ),
     );
     let failure: { error: unknown } | undefined;
-    let readyReceived = false;
     try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const identity = await Promise.race([
-        ready,
-        holder.then((outcome) => {
-          if (!outcome.ok && !readyReceived) {
-            const record = rolloverActorRecords.get(holder);
-            if (record) record.consumed = true;
-          }
-          throw outcome.ok ? new Error("Holder ended early") : outcome.error;
-        }),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("Latest reservation timed out")), WAIT_MS);
-        }),
-      ]).finally(() => {
-        if (timer) clearTimeout(timer);
-      });
-      readyReceived = true;
+      const identity = await waitRolloverReady(ready, [holder], "Latest reservation timed out");
       expect(
         (
           await admin.query<{ present: boolean }>(
@@ -1041,33 +1106,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     let contender: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
     try {
-      const bounded = async (
-        value: Promise<Identity>,
-        actors: Array<Promise<{ ok: true } | { ok: false; error: unknown }>>,
-      ) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let waiting = true;
-        try {
-          return await Promise.race([
-            value,
-            ...actors.map((actor) =>
-              actor.then((result) => {
-                if (!result.ok && waiting) {
-                  const record = rolloverActorRecords.get(actor);
-                  if (record) record.consumed = true;
-                }
-                throw result.ok ? new Error("Actor ended early") : result.error;
-              }),
-            ),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Actor readiness timed out")), WAIT_MS);
-            }),
-          ]);
-        } finally {
-          waiting = false;
-          if (timer) clearTimeout(timer);
-        }
-      };
+      const bounded = (value: Promise<Identity>, actors: Array<Promise<RolloverOutcome>>) =>
+        waitRolloverReady(value, actors, "Actor readiness timed out");
       const owner = await bounded(held, [holder]);
       contender = trackRolloverActor(
         inTenant(async () => {
