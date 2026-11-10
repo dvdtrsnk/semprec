@@ -4,7 +4,13 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
-export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+export { ensureMailAccountSyncState, recordProviderAccountAddress } from "../mail/mailAccountSyncStateStore.js";
+export { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
+export { ensureFolderItem } from "../mail/folderDiscovery.js";
+// Test-only: exercises the existing mail-ingest owner from cross-package integration fixtures.
+export { ingestEmailMessage } from "../mail/ingest.js";
+export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 export {
   bindToTenantZero,
   createRuntimeRolePool,
@@ -18,6 +24,31 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+export { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
+export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
+export { writePageTextBlocks } from "./pageFixtures.js";
+export { createSeriesOccurrence, startTaskSeries } from "./taskSeriesFixtures.js";
+// Test-only: the production writer of a heartbeat's tick thread (gh-1557), for route tests of its detail.
+export { getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
+// Test-only: lets a composition-root test outside this package observe the write hook contexts
+// (`writer`) a transport's request reaches the choke point with.
+export {
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  registerItemDeleteHook,
+  registerItemRestoreHook,
+  registerRelationEdgeWriteHook,
+  registerRelationEdgeDeleteHook,
+  registerRelationEdgeChangedHook,
+  clearHooksForTests,
+  type ItemCreateHookContext,
+  type ItemUpdateHookContext,
+  type ItemDeleteHookContext,
+  type ItemRestoreHookContext,
+  type RelationEdgeWriteHookContext,
+  type RelationEdgeDeleteHookContext,
+  type RelationEdgeChangedHookContext,
+} from "../chokePoint/hooks.js";
 
 /**
  * The superuser pool existing suites seed and assert through. Superusers bypass row-level security,
@@ -77,3 +108,8 @@ export async function resetDatabase(pool: Pool): Promise<void> {
     END $$;
   `);
 }
+
+export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+
+export { createInboxItemWithClient } from "../inbox/inboxStore.js";
+export { reviseProposalWithClient } from "../inbox/proposalActions.js";

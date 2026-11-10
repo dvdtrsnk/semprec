@@ -1,9 +1,22 @@
 ---
 name: implement-issue
-description: "The execution contract for implementing one Semprec issue end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
+description: "The execution contract for implementing one Semprec issue or a scoped sequential backend delivery batch end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch, a sequential backend delivery batch, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
 ---
 
 # Implementing one issue
+
+## Scoped sequential backend batches
+
+When the issue has `execution:batch`, use
+`issues/batches/backend/README.md` and the scoped exception in
+`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`. Implement every
+embedded member Task and AC in the declared order, with one writer in one
+working tree. Keep targeted checks during development; perform independent
+review, complete AC acceptance and full backend verification at the batch gate.
+Do not dispatch records labeled `execution:batch-source` independently. Do not
+run web/mobile checks for this backend-only program. All aggregate and source
+approval/completion guards remain in force. External-gate and held records
+cannot be passed or implemented by an ordinary implementation agent.
 
 Check `issues/migration/state.json` first. If authority is `repository`, read
 the local record with `node .github/scripts/issues.mjs show <id>`, and read

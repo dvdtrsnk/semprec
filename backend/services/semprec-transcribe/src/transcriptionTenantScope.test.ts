@@ -88,7 +88,10 @@ class ScopeRecordingSummaryGateway implements AiGatewayClientPort {
     if (this.failure) throw this.failure;
     if (input.operation === "transcript_speaker_suggestion")
       return { content: { mappings: [] }, usage: { inputTokens: 10, outputTokens: 5 } };
-    return { content: { summary: "a summary" }, usage: { inputTokens: 10, outputTokens: 5 } };
+    return {
+      content: { title: "Notes", summary: "a summary", shortSummary: "a summary", decisions: [], actionItems: [] },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    };
   }
 }
 
@@ -168,8 +171,7 @@ describe("transcribe process runs each job inside its tenant under strict enforc
     // Fixtures are written under warn mode first; strict is switched on once they exist.
     process.env.SEMPREC_TENANT_SCOPE = "warn";
     await resetDatabase(resetPool);
-    const { rows } = await resetPool.query<{ id: string }>(`SELECT app_sole_tenant() AS id`);
-    tenantZero = rows[0]!.id;
+    tenantZero = getTenantZeroId();
     await inTenantZero(async () => {
       await seedSystem(pool);
       await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });

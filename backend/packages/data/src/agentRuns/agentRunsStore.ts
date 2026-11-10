@@ -4,6 +4,9 @@ import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { withTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
+import { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode } from "./agentRunErrorCodes.js";
+
+export { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode };
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -18,11 +21,23 @@ export interface AgentRunRow {
   projectItemId: string | null;
   parentRunId: string | null;
   heartbeatId: string | null;
+  /** The run this one retries (issue #1448); `null` for a run that is not a retry. */
+  retryOfRunId: string | null;
+  /** The attempt number: 1 unless the creator gave another one (issue #1448). */
+  attempt: number;
+  /** The scheduled heartbeat occurrence this run was started for (issue #1458); `null` for a manual or item-event run. */
+  heartbeatOccurrenceId: string | null;
+  /** The Semp thread this run belongs to (issue #1452); `null` for an MCP run or a run with no thread. */
+  threadId: string | null;
   triggeredBy: TriggeredBy;
   unit: AgentRunUnit;
   task: string;
   status: AgentRunStatus;
   result: string | null;
+  /** Why the run failed: set for `status = 'error'` (a row closed before the column existed reads `internal`), `null` otherwise. */
+  errorCode: AgentRunErrorCode | null;
+  /** Plain object of ids and counters (no user content) a closer attached to the failure, if any. */
+  errorDetail: Record<string, unknown> | null;
   startedAt: string;
   finishedAt: string | null;
   /**
@@ -42,18 +57,35 @@ type AgentRunDbRow = {
   project_item_id: string | null;
   parent_run_id: string | null;
   heartbeat_id: string | null;
+  retry_of_run_id: string | null;
+  heartbeat_occurrence_id: string | null;
+  attempt: number;
+  thread_id: string | null;
   triggered_by: string;
   unit: string;
   task: string;
   status: string;
   result: string | null;
+  error_code: string | null;
+  error_detail: unknown;
   started_at: Date;
   finished_at: Date | null;
   actor_user_id: string;
 };
 
 const AGENT_RUN_ROW_COLUMNS =
-  "id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at, actor_user_id";
+  "id, project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
+
+function mapErrorCode(row: AgentRunDbRow): AgentRunErrorCode | null {
+  if (row.error_code !== null) return assertKnownValue(AGENT_RUN_ERROR_CODES, row.error_code, "error_code");
+  return row.status === "error" ? "internal" : null;
+}
+
+function parseErrorDetail(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed error_detail in database row");
+  return Object.fromEntries(Object.entries(value));
+}
 
 function mapRow(row: AgentRunDbRow): AgentRunRow {
   return {
@@ -61,11 +93,17 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     projectItemId: row.project_item_id,
     parentRunId: row.parent_run_id,
     heartbeatId: row.heartbeat_id,
+    retryOfRunId: row.retry_of_run_id,
+    attempt: row.attempt,
+    heartbeatOccurrenceId: row.heartbeat_occurrence_id,
+    threadId: row.thread_id,
     triggeredBy: assertKnownValue(TRIGGERED_BY_VALUES, row.triggered_by, "triggered_by"),
     unit: assertKnownValue(AGENT_RUN_UNITS, row.unit, "unit"),
     task: row.task,
     status: assertKnownValue(AGENT_RUN_STATUSES, row.status, "status"),
     result: row.result,
+    errorCode: mapErrorCode(row),
+    errorDetail: parseErrorDetail(row.error_detail),
     startedAt: row.started_at.toISOString(),
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
     actorUserId: row.actor_user_id,
@@ -76,6 +114,18 @@ export interface CreateAgentRunInput {
   projectItemId?: string | null;
   parentRunId?: string | null;
   heartbeatId?: string | null;
+  /** The run this one retries (issue #1448). Defaults to null; `createChainedAgentRun` requires it. */
+  retryOfRunId?: string | null;
+  /** The attempt number (issue #1448). Defaults to 1. */
+  attempt?: number;
+  /** The scheduled heartbeat occurrence the run is started for (issue #1458). Defaults to null. */
+  heartbeatOccurrenceId?: string | null;
+  /**
+   * The Semp thread the run belongs to (issue #1452). When omitted and `parentRunId` is set, the
+   * store copies the parent run's `thread_id`, so every delegation path inherits it; an MCP run
+   * leaves it unset and stays NULL.
+   */
+  threadId?: string | null;
   triggeredBy: TriggeredBy;
   unit?: AgentRunUnit;
   task: string;
@@ -100,14 +150,10 @@ export interface CreateAgentRunInput {
  */
 async function resolveActorUserId(
   client: Pool | PoolClient,
-  parentRunId: string | null | undefined,
+  parent: AgentRunRow | null,
   userId: string | undefined,
 ): Promise<string> {
-  if (parentRunId) {
-    const parent = await getAgentRun(client, parentRunId);
-    if (!parent) throw new Error(`Cannot create a delegated agent run: parent run '${parentRunId}' does not exist`);
-    return parent.actorUserId;
-  }
+  if (parent) return parent.actorUserId;
   if (userId) return userId;
   const tenantUserId = await getTenantUserId(client);
   if (!tenantUserId) throw new Error("Cannot create an agent run: the current tenant has no user");
@@ -115,15 +161,27 @@ async function resolveActorUserId(
 }
 
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
-  const actorUserId = await resolveActorUserId(client, input.parentRunId, input.userId);
+  let parent: AgentRunRow | null = null;
+  if (input.parentRunId) {
+    parent = await getAgentRun(client, input.parentRunId);
+    if (!parent) {
+      throw new Error(`Cannot create a delegated agent run: parent run '${input.parentRunId}' does not exist`);
+    }
+  }
+  const actorUserId = await resolveActorUserId(client, parent, input.userId);
+  const threadId = input.threadId === undefined ? (parent?.threadId ?? null) : input.threadId;
   const { rows } = await client.query<AgentRunDbRow>(
-    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, actor_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, actor_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
     [
       input.projectItemId ?? null,
       input.parentRunId ?? null,
       input.heartbeatId ?? null,
+      input.retryOfRunId ?? null,
+      input.attempt ?? 1,
+      input.heartbeatOccurrenceId ?? null,
+      threadId,
       input.triggeredBy,
       input.unit ?? "invocation",
       input.task,
@@ -134,21 +192,101 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
 }
 
 /**
+ * Creates the retry of `input.retryOfRunId` and returns it, or `null` when that run was already
+ * retried. The unique key on `(tenant_id, retry_of_run_id)` decides this inside the insert
+ * (`ON CONFLICT DO NOTHING`), so of two concurrent callers exactly one gets a row. The new run
+ * takes its `actor_user_id` from the retried run. Throws `NotFoundError` when the retried run does
+ * not exist in the current tenant.
+ */
+export async function createChainedAgentRun(
+  client: Pool | PoolClient,
+  input: CreateAgentRunInput & { retryOfRunId: string },
+): Promise<AgentRunRow | null> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, actor_user_id)
+     SELECT $2, $3, $4, r.id, $5, $6, $7, $8, $9, $10, r.actor_user_id
+     FROM agent_runs r WHERE r.id = $1
+     ON CONFLICT (tenant_id, retry_of_run_id) DO NOTHING
+     RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
+    [
+      input.retryOfRunId,
+      input.projectItemId ?? null,
+      input.parentRunId ?? null,
+      input.heartbeatId ?? null,
+      input.attempt ?? 1,
+      input.heartbeatOccurrenceId ?? null,
+      input.threadId ?? null,
+      input.triggeredBy,
+      input.unit ?? "invocation",
+      input.task,
+    ],
+  );
+  if (rows[0]) return mapRow(rows[0]);
+  if (!(await getAgentRun(client, input.retryOfRunId))) {
+    throw new NotFoundError(`Agent run '${input.retryOfRunId}' not found`);
+  }
+  return null;
+}
+
+/** The id of the run that retries `runId`, or `null` when it was not retried. */
+export async function getRetrySuccessorId(client: Pool | PoolClient, runId: string): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>("SELECT id FROM agent_runs WHERE retry_of_run_id = $1", [runId]);
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * The run of a heartbeat occurrence with the highest `attempt` (ties by `started_at`), or `null`
+ * when no run was started for it yet (issue #1458).
+ */
+export async function getLatestRunOfOccurrence(
+  client: Pool | PoolClient,
+  occurrenceId: string,
+): Promise<AgentRunRow | null> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs
+     WHERE heartbeat_occurrence_id = $1
+     ORDER BY attempt DESC, started_at DESC
+     LIMIT 1`,
+    [occurrenceId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
  * Closes a run that is still `running` and reports whether this call did it. The `status =
  * 'running'` guard lives in the `UPDATE` itself, so of two concurrent closers exactly one wins
  * and the row keeps the first status, result and `finished_at`. Losing that race (the run was
  * already `done`/`error`) is a normal outcome the caller logs, not an error: it returns `false`.
  * Throws `NotFoundError` only when no run with that id exists at all.
  */
+export function finishAgentRun(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "done",
+  result: string | null,
+): Promise<boolean>;
+export function finishAgentRun(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "error",
+  result: string | null,
+  errorCode: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
+): Promise<boolean>;
 export async function finishAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "done" | "error",
   result: string | null,
+  errorCode?: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
+  const detail = parseErrorDetail(errorDetail ?? null);
   const updated = await client.query(
-    `UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1 AND status = 'running'`,
-    [agentRunId, status, result],
+    `UPDATE agent_runs SET status = $2, result = $3, error_code = $4, error_detail = $5, finished_at = now()
+     WHERE id = $1 AND status = 'running'`,
+    [agentRunId, status, result, status === "error" ? (errorCode ?? null) : null, detail],
   );
   if (updated.rowCount === 1) return true;
   const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);
@@ -178,14 +316,18 @@ export async function finishAgentRunWithErrorNotification(
   client: Pool | PoolClient,
   agentRunId: string,
   result: string | null,
+  errorCode: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
   // `writeNotification` requires an actual transaction client (it's meant to run alongside the
   // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
   // so the close and the notification still land atomically together.
   if (client instanceof Pool) {
-    return withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, result));
+    return withTransaction(client, (c) =>
+      finishAgentRunWithErrorNotification(c, agentRunId, result, errorCode, errorDetail),
+    );
   }
-  const closed = await finishAgentRun(client, agentRunId, "error", result);
+  const closed = await finishAgentRun(client, agentRunId, "error", result, errorCode, errorDetail);
   if (!closed) return false;
   const userId = await getTenantUserId(client);
   if (!userId) return true;
@@ -255,18 +397,45 @@ export async function listAgentRunsByHeartbeat(
 }
 
 /**
+ * The most recently started run of a heartbeat whose `status` is still `running`, or `null`. The
+ * manual trigger (issue #1453) reads it to refuse a second run while this one is active.
+ */
+export async function getRunningAgentRunOfHeartbeat(
+  client: Pool | PoolClient,
+  heartbeatId: string,
+): Promise<AgentRunRow | null> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs WHERE heartbeat_id = $1 AND status = 'running'
+     ORDER BY started_at DESC LIMIT 1`,
+    [heartbeatId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
  * Identifies one dormant conversation's `unit='session'` runs — the filter both Semp's own
  * conversation (#118, `triggered_by='user'`, `parent_run_id` null) and a delegated one (#229,
  * `triggered_by='supervisor'`, `parent_run_id` the supervisor run that key's `DelegationRegistry`
  * entry belongs to) pass to `@semprec/data`'s `listSessionAgentRunEventsFromLastCompaction`
  * (`agentRunEventsStore.ts`) to rebuild an `Entry[]` tree for a freshly woken session (#119).
  */
-export interface SessionAgentRunsFilter {
-  projectItemId: string;
-  triggeredBy: TriggeredBy;
-  /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
-  parentRunId: string | null;
-}
+export type SessionAgentRunsFilter =
+  | {
+      projectItemId: string;
+      triggeredBy: TriggeredBy;
+      /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
+      parentRunId: string | null;
+    }
+  | {
+      /**
+       * A thread's main conversation (#1560): the user runs of `threadId` with no parent. A delegated
+       * session inherits `thread_id` (#1452) but has a `parent_run_id`, so it never matches this form.
+       */
+      threadId: string;
+      triggeredBy: "user";
+      parentRunId: null;
+    };
 
 /**
  * Every run still marked `running` that is visible in the current tenant scope — orphaned after a

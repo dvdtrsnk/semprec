@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
 /**
@@ -8,6 +9,30 @@ import { configDefaults, defineConfig } from "vitest/config";
  * (`vitest.e2e.config.ts`) — both are excluded here so no test file runs in more than one tier.
  */
 export default defineConfig({
+  resolve: {
+    alias: [
+      {
+        find: /^@semprec\/shared$/,
+        replacement: fileURLToPath(new URL("./packages/shared/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/queue$/,
+        replacement: fileURLToPath(new URL("./packages/queue/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/module-registry$/,
+        replacement: fileURLToPath(new URL("./packages/module-registry/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/block-model$/,
+        replacement: fileURLToPath(new URL("../shared/block-model/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/shared\/src\/logger\.js$/,
+        replacement: fileURLToPath(new URL("./packages/shared/src/logger.ts", import.meta.url)),
+      },
+    ],
+  },
   test: {
     include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"],
     exclude: [...configDefaults.exclude, "**/*.unit.test.ts", "**/*.e2e.test.ts"],

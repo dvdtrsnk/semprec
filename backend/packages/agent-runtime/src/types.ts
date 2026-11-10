@@ -1,5 +1,20 @@
+import type { LabeledSempMessageRef } from "@semprec/shared";
+
 export type AgentMessageKind =
-  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update";
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update" | "user_message";
+
+/**
+ * One context ref attached to a user turn, stored as sent: the ref object (item, block,
+ * transcript segment, ...) plus its label at send time. Expanded ref content is never stored.
+ */
+export type UserTurnContextRef = LabeledSempMessageRef;
+
+/** Ephemeral image input for a model prompt; never written to a run event. */
+export interface AgentImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
 
 /** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
 export interface AgentMessage {
@@ -19,10 +34,15 @@ export interface ConversationEntry {
   seq: number;
   timestamp: number;
   message: AgentMessage;
+  /** Rebuilt for this wake only and never stored with the event. */
+  images?: readonly AgentImage[];
 }
 
 export interface AgentSessionOptions {
   task: string;
+  /** Context refs sent with the wake turn's `task`; persisted on its `user_message` event. */
+  context?: readonly UserTurnContextRef[];
+  images?: readonly AgentImage[];
   /** Cancels the underlying agent, including a prompt blocked waiting for its next event. */
   signal?: AbortSignal;
   /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
@@ -52,7 +72,11 @@ export interface AgentSession {
    * whole transcript again. Optional because every session up to #228/#117 only ever ran
    * one turn to completion and never needed it.
    */
-  send?(task: string): AsyncIterable<AgentMessage>;
+  send?(
+    task: string,
+    context?: readonly UserTurnContextRef[],
+    images?: readonly AgentImage[],
+  ): AsyncIterable<AgentMessage>;
 }
 
 export type CreateAgentSession = (options: AgentSessionOptions) => AgentSession;

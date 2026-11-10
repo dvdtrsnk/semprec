@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry, type ModuleCatalogs } from "@semprec/module-registry";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { withTransaction } from "../db/pool.js";
+import { ensurePagesDatabase } from "../docs/pagesDatabase.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
@@ -21,7 +25,16 @@ function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
 }
 
-const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
+const ALL_MODULE_IDS = [
+  "schemaCore",
+  "views",
+  "docs",
+  "systemDatabases",
+  "library",
+  "mailSync",
+  "inboxPipeline",
+  "calendar",
+];
 
 const MANIFEST_PATHS = [
   manifestPath("chokePoint/schemaCoreModuleManifest.js"),
@@ -31,6 +44,7 @@ const MANIFEST_PATHS = [
   manifestPath("library/libraryModuleManifest.js"),
   manifestPath("mail/mailModuleManifest.js"),
   manifestPath("inbox/inboxModuleManifest.js"),
+  manifestPath("calendar/calendarModuleManifest.js"),
 ];
 
 /** The non-built-in view types this issue covers, each owned by a different manifest than "views". */
@@ -70,6 +84,9 @@ describe("system i18n catalog coverage (issue #146)", () => {
     viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
+    // The hidden Pages database the docs module declares is created on first use, not by the seed; create it the way
+    // production does so its properties are covered like every other declared database's.
+    await runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => ensurePagesDatabase(client)));
 
     registry = new ModuleRegistry(() => new Set(ALL_MODULE_IDS));
     for (const path of MANIFEST_PATHS) {
@@ -91,6 +108,17 @@ describe("system i18n catalog coverage (issue #146)", () => {
     for (const db of databases) {
       assertLabel(catalogsByModuleId.get(db.moduleId), db.moduleId, `database.${db.key}.name`);
     }
+  });
+
+  it("has a cs and en search placeholder for every client-visible database and the generic one", async () => {
+    const metadata = await createCollectionMetadataResolver(registry);
+    const databases = await registry.getDatabases();
+    const visible = databases.filter((db) => metadata.resolve({ key: db.key, system: true }).clientVisible);
+    expect(visible.length).toBeGreaterThan(0);
+    for (const db of visible) {
+      assertLabel(catalogsByModuleId.get(db.moduleId), db.moduleId, `database.${db.key}.searchPlaceholder`);
+    }
+    assertLabel(catalogsByModuleId.get("systemDatabases"), "systemDatabases", "collection.custom.searchPlaceholder");
   });
 
   it("has a cs and en label for every property and select/multi_select option seeded under a manifest-declared database", async () => {

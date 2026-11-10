@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { filterNodeSchema, type FilterNode } from "../filterSort.js";
+import { filterNodeSchema, sortSpecSchema, type FilterNode } from "../filterSort.js";
+import { DatabaseQueryInputSchema } from "../schemas.js";
 
 function buildNotChain(depth: number): FilterNode {
   let node: FilterNode = { type: "equals", property: "status", value: "done" };
@@ -57,5 +58,75 @@ describe("relation_path_contains schema", () => {
       filterNodeSchema.safeParse({ type: "relation_path_contains", path: ["project", "area"], value, ...override })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("numeric comparison schema", () => {
+  it.each(["lt", "lte", "gt", "gte"] as const)("accepts %s with a finite number", (type) => {
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: 4 }).success).toBe(true);
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: -0.5 }).success).toBe(true);
+  });
+
+  it.each([["4"], [null], [Number.POSITIVE_INFINITY], [Number.NaN], [true]])("rejects value %j", (value) => {
+    expect(filterNodeSchema.safeParse({ type: "gte", property: "rating", value }).success).toBe(false);
+  });
+});
+
+describe("relation emptiness schema", () => {
+  it.each(["relation_is_empty", "relation_is_not_empty"])(
+    "accepts %s with a property only, also in a group",
+    (type) => {
+      const node = { type, property: "projects" };
+      expect(filterNodeSchema.parse(node)).toEqual(node);
+      expect(filterNodeSchema.safeParse({ type: "and", nodes: [node] }).success).toBe(true);
+    },
+  );
+
+  it.each([{ property: undefined }, { property: "" }, { property: 1 }, { value: "x" }, { path: ["a", "b"] }])(
+    "rejects malformed emptiness condition %j",
+    (override) => {
+      expect(filterNodeSchema.safeParse({ type: "relation_is_empty", property: "projects", ...override }).success).toBe(
+        false,
+      );
+    },
+  );
+});
+
+describe("date_relative schema", () => {
+  it.each([
+    { type: "date_relative", property: "due", preset: "today" },
+    { type: "date_relative", property: "due", endProperty: "until", preset: { fromDays: -2, toDays: 3 } },
+  ])("accepts %j", (node) => {
+    expect(filterNodeSchema.parse(node)).toEqual(node);
+  });
+
+  it.each([
+    { type: "date_relative", property: "due", preset: "today", extra: true },
+    { type: "date_relative", property: "due", preset: { fromDays: 0, extra: true } },
+    { type: "date_relative", property: "due", preset: { fromDays: 2, toDays: 1 } },
+    { type: "date_relative", property: "due", preset: "unknown" },
+  ])("rejects %j", (node) => {
+    expect(filterNodeSchema.safeParse(node).success).toBe(false);
+  });
+});
+
+describe("sort spec schema (issue #1594)", () => {
+  it.each([
+    [{ property: "createdAt", direction: "asc" }],
+    [{ system: "createdAt", direction: "desc" }],
+    [{ system: "updatedAt", direction: "asc" }],
+  ])("accepts %j", (spec) => {
+    expect(sortSpecSchema.safeParse(spec).success).toBe(true);
+  });
+
+  it.each([
+    [{ property: "title", system: "createdAt", direction: "asc" }],
+    [{ system: "deletedAt", direction: "asc" }],
+    [{ system: "createdAt" }],
+    [{ system: "", direction: "asc" }],
+    [{ direction: "asc" }],
+  ])("rejects %j, also inside a database query input", (spec) => {
+    expect(sortSpecSchema.safeParse(spec).success).toBe(false);
+    expect(DatabaseQueryInputSchema.safeParse({ databaseId: "db", sort: [spec] }).success).toBe(false);
   });
 });

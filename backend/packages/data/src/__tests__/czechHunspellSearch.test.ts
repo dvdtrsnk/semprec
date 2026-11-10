@@ -1,15 +1,25 @@
-import { copyFile, rm } from "node:fs/promises";
+import { copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
+import { indexItem } from "../search/itemSearchIndexer.js";
+import { handleItemSearchBackfillTask, runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
+import { createApiCoreTaskList } from "../worker.js";
+import { createActionRegistry } from "../scheduler/actions.js";
+import "../domainWriteHooks.js";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "czech-hunspell");
 const ASSET_FILES = ["cs_cz.dict", "cs_cz.affix"];
@@ -81,6 +91,12 @@ async function installAssets(pool: Pool): Promise<void> {
   for (const file of ASSET_FILES) {
     await copyFile(path.join(FIXTURE_DIR, file), path.join(dir, file));
   }
+  const dictPath = path.join(dir, "cs_cz.dict");
+  const affixPath = path.join(dir, "cs_cz.affix");
+  const dict = await readFile(dictPath, "utf8");
+  const affix = await readFile(affixPath, "utf8");
+  await writeFile(dictPath, dict.replace(/^2\n/, "3\n") + "koupelna/Z\n");
+  await writeFile(affixPath, affix.replace("SFX Z Y 7", "SFX Z Y 8") + "\nSFX Z   a           ě          na\n");
 }
 
 async function removeAssets(pool: Pool): Promise<void> {
@@ -122,7 +138,9 @@ async function indexEmail(pool: Pool, text: string): Promise<{ emailsId: string;
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'emails'");
     const emailsId = rows[0]?.id;
     if (!emailsId) throw new Error("Database 'emails' was not seeded");
-    const itemId = randomUUID();
+    const itemId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
     await withTransaction(pool, (client) => reindexItemSearch(client, { itemId, databaseId: emailsId, text }));
     return { emailsId, itemId };
   });
@@ -135,11 +153,146 @@ async function searchHits(pool: Pool, emailsId: string, query: string): Promise<
 
 describe("Czech Hunspell full-text search (issue #207)", () => {
   it(
+    "rebuilds pre-activation vectors without losing stored page projections",
+    async () => {
+      await withFreshDatabase(async (pool) => {
+        await removeAssets(pool);
+        await runMigrations(pool);
+        await ensureQueueSchema(pool);
+        const tenants = await pool.query<{ id: string }>("SELECT id FROM tenants");
+        const tenantId = tenants.rows[0]?.id;
+        if (!tenantId) throw new Error("Missing tenant");
+        await runInTenant(tenantId, async () => {
+          await seedSystem(pool);
+          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+          if (!files) throw new Error("Missing Files database");
+          const cp = createChokePoint(pool);
+          const invoice = await cp.createItem({ databaseId: files.id, properties: { name: "Faktura_2026-10.pdf" } });
+          const bathroom = await cp.createItem({ databaseId: files.id, properties: { name: "Rekonstrukce koupelny" } });
+          const both = await cp.createItem({ databaseId: files.id, properties: { name: "Faktura koupelně" } });
+          const unrelated = await cp.createItem({ databaseId: files.id, properties: { name: "Smlouva_2026.pdf" } });
+          await withTransaction(pool, (client) => indexItem(client, invoice.id, { pageText: "Retained page text" }));
+          const search = async (text: string): Promise<string[]> => {
+            const query = buildItemSearchQuery(text, 2);
+            // The fragment contains only validated parameter positions; input remains bound.
+            const { rows } = await withTransaction(pool, (client) =>
+              client.query<{ item_id: string }>(
+                `SELECT item_id FROM item_search_index WHERE database_id = $1 AND search_vector @@ ${query.sql} ORDER BY item_id`,
+                [files.id, ...query.params],
+              ),
+            );
+            return rows.map((row) => row.item_id);
+          };
+          expect(await search("faktury")).not.toContain(invoice.id);
+          const projection = async () =>
+            (
+              await withTransaction(pool, (client) =>
+                client.query<{ body: string; page_text: string }>(
+                  "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+                  [invoice.id],
+                ),
+              )
+            ).rows;
+          const beforeMigration = await projection();
+          // Synthetic pre-0133 catalog state: no prior release binary can create it in this harness.
+          await pool.query("DROP TEXT SEARCH CONFIGURATION czech_simple");
+          const removed = await pool.query("DELETE FROM schema_migrations WHERE id = $1", [
+            "0133_czech_simple_search_config.sql",
+          ]);
+          expect(removed.rowCount).toBe(1);
+          await runMigrations(pool);
+          expect(await projection()).toEqual(beforeMigration);
+          await installAssets(pool);
+          try {
+            expect(await activateCzechHunspellSearch(pool)).toBe(true);
+            await handleItemSearchBackfillTask(pool, { onlyMissing: false });
+            expect(await search("faktury")).toContain(invoice.id);
+            expect(await search("fak")).toContain(invoice.id);
+            expect(await search("faktury")).not.toContain(unrelated.id);
+            expect(await search("koupelně")).toContain(bathroom.id);
+            expect(await search("faktury koupelne")).toContain(both.id);
+            const result = await withTransaction(pool, (client) =>
+              client.query<{ body: string; page_text: string }>(
+                "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+                [invoice.id],
+              ),
+            );
+            expect(result.rows[0]).toEqual({ body: "Retained page text", page_text: "Retained page text" });
+          } finally {
+            await removeAssets(pool);
+          }
+        });
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "re-enqueues the full rebuild after a queue-readiness failure",
+    async () => {
+      await withFreshDatabase(async (pool) => {
+        await removeAssets(pool);
+        await runMigrations(pool);
+        await ensureQueueSchema(pool);
+        const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
+        const tenantId = tenants[0]?.id;
+        if (!tenantId) throw new Error("Missing tenant");
+        await runInTenant(tenantId, () => seedSystem(pool));
+        const files = await runInTenant(tenantId, () =>
+          withTransaction(pool, (client) => getDatabaseByModuleId(client, "files")),
+        );
+        if (!files) throw new Error("Missing Files database");
+        const item = await runInTenant(tenantId, () =>
+          createChokePoint(pool).createItem({ databaseId: files.id, properties: { name: "Faktura" } }),
+        );
+        const { rows: dbs } = await pool.query<{ name: string }>("SELECT current_database() AS name");
+        const databaseName = dbs[0]?.name;
+        if (!databaseName) throw new Error("Missing scratch database name");
+        const url = new URL(testDatabaseUrl());
+        url.pathname = `/${databaseName}`;
+        const runtime = createPool(url.toString(), { role: "semprec_data" });
+        try {
+          await installAssets(pool);
+          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          // This disposable database has no production caller capable of removing the queue schema.
+          await pool.query("DROP SCHEMA graphile_worker CASCADE");
+          await expect(
+            runAsSystem("test failed deploy", () => runItemSearchBackfillCutover(runtime, false)),
+          ).rejects.toThrow();
+          await ensureQueueSchema(pool);
+          await grantQueueSchemaPrivileges(pool);
+          await runAsSystem("test successful redeploy", () => runItemSearchBackfillCutover(runtime, false));
+          const taskName = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
+          const handler = createApiCoreTaskList(runtime, createActionRegistry())[taskName];
+          if (!handler) throw new Error("Missing item search task");
+          await runOnce({ pgPool: pool }, { [taskName]: handler });
+          await runInTenant(tenantId, async () => {
+            const query = buildItemSearchQuery("faktury", 2);
+            // The fragment contains only validated parameter positions; input remains bound.
+            const { rows } = await withTransaction(runtime, (client) =>
+              client.query<{ matched: boolean }>(
+                `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
+                [item.id, ...query.params],
+              ),
+            );
+            expect(rows[0]?.matched).toBe(true);
+          });
+        } finally {
+          await runtime.end();
+          await removeAssets(pool);
+        }
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "keeps the unaccent/simple fallback when the migration runs without the assets",
     async () => {
       await withFreshDatabase(async (pool) => {
         await removeAssets(pool);
         await runMigrations(pool);
+        await ensureQueueSchema(pool);
 
         expect(await activateCzechHunspellSearch(pool)).toBe(false);
         expect(await czechHunspellDictionaryCount(pool)).toBe(0);
@@ -161,6 +314,7 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
         await installAssets(pool);
         try {
           await runMigrations(pool);
+          await ensureQueueSchema(pool);
 
           expect(await lexize(pool, "fakturu")).toEqual(["faktura"]);
           expect(await lexize(pool, "zprávách")).toEqual(["zpráva"]);
@@ -184,6 +338,7 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
       await withFreshDatabase(async (pool) => {
         await removeAssets(pool);
         await runMigrations(pool);
+        await ensureQueueSchema(pool);
         const { rows: applied } = await pool.query<{ id: string }>(
           "SELECT id FROM schema_migrations WHERE id = '0046_czech_hunspell_search.sql'",
         );

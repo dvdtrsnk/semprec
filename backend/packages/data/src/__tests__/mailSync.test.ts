@@ -1,7 +1,11 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerGmailMovePreparer, registerGraphMovePreparer } from "../mail/mailMoveProviderAdapters.js";
+import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
+import { GmailRestClient } from "../mail/gmailRestClient.js";
+import { GraphRestClient } from "../mail/graphRestClient.js";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -9,14 +13,19 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
+  withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { ensureMailFolderSyncState, recordReconcile } from "../mail/mailFolderSyncStateStore.js";
+import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import {
@@ -27,6 +36,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
+import { recordDesiredMailMessageMove, listPendingMoves } from "../mail/mailMessageMoveSyncStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import {
   getMailMessageMetaByItemId,
@@ -58,14 +68,20 @@ import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconc
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
+  type MailModuleIds,
   type MailSyncAdapterFactory,
 } from "../mail/mailSyncJob.js";
 import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
   defaultSyncModeForProvider,
+  recordImapActivity,
+  recordGmailActivity,
+  recordGraphActivity,
+  recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import {
   AttachmentCapExceededError,
   MailConnectionLimitError,
@@ -81,7 +97,7 @@ import {
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
-import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
+import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
@@ -90,6 +106,69 @@ import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../ma
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
+  it(
+    name,
+    () =>
+      inTenantZero(async () => {
+        await fn();
+      }),
+    timeout,
+  );
+
+async function waitForMoveTestSignal<T>(signal: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signal,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for owned move test signal")), 10_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function holdMoveBaseline(pool: Pool): { reached: Promise<number>; release: () => void } {
+  let release!: () => void;
+  let ready!: (pid: number) => void;
+  const reached = new Promise<number>((resolve) => {
+    ready = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const wrapped = new WeakSet<object>();
+  let held = false;
+  pool.on("acquire", (client) => {
+    if (wrapped.has(client)) return;
+    wrapped.add(client);
+    client.query = new Proxy(client.query.bind(client), {
+      apply(target, thisArg, args: unknown[]) {
+        const result: unknown = Reflect.apply(target, thisArg, args);
+        if (
+          !held &&
+          typeof args[0] === "string" &&
+          args[0].includes("SELECT message_item_id, mailbox_item_id, desired_revision, status, operation_token") &&
+          result instanceof Promise
+        ) {
+          held = true;
+          return result.then(async (value: unknown) => {
+            const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!pid.rows[0]) throw new Error("Missing baseline backend pid");
+            ready(pid.rows[0].pid);
+            await gate;
+            return value;
+          });
+        }
+        return result;
+      },
+    });
+  });
+  return { reached, release };
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -366,12 +445,12 @@ describe("conversation threading (issue #26)", () => {
     await seedSystem(pool);
   });
 
-  it("gives an unrelated message its own thread", async () => {
+  tenantIt("gives an unrelated message its own thread", async () => {
     const threadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<a@x>" }));
     expect(threadId).toBeTruthy();
   });
 
-  it("threads a reply onto its parent's thread", async () => {
+  tenantIt("threads a reply onto its parent's thread", async () => {
     const parentThreadId = await withTransaction(pool, (client) =>
       resolveThreadId(client, { messageId: "<parent@x>" }),
     );
@@ -386,22 +465,25 @@ describe("conversation threading (issue #26)", () => {
     expect(replyThreadId).toBe(parentThreadId);
   });
 
-  it("self-heals: a message arriving after its reply joins the reply's thread instead of staying separate", async () => {
-    const replyThreadId = await withTransaction(pool, (client) =>
-      resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<late-parent@x>" }),
-    );
-    await pool.query(
-      `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES (gen_random_uuid(), '<reply@x>', '<late-parent@x>', $1, '{}')`,
-      [replyThreadId],
-    );
+  tenantIt(
+    "self-heals: a message arriving after its reply joins the reply's thread instead of staying separate",
+    async () => {
+      const replyThreadId = await withTransaction(pool, (client) =>
+        resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<late-parent@x>" }),
+      );
+      await pool.query(
+        `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES (gen_random_uuid(), '<reply@x>', '<late-parent@x>', $1, '{}')`,
+        [replyThreadId],
+      );
 
-    const parentThreadId = await withTransaction(pool, (client) =>
-      resolveThreadId(client, { messageId: "<late-parent@x>" }),
-    );
-    expect(parentThreadId).toBe(replyThreadId);
-  });
+      const parentThreadId = await withTransaction(pool, (client) =>
+        resolveThreadId(client, { messageId: "<late-parent@x>" }),
+      );
+      expect(parentThreadId).toBe(replyThreadId);
+    },
+  );
 
-  it("merging two threads deletes the losing thread's now-empty mail_threads row", async () => {
+  tenantIt("merging two threads deletes the losing thread's now-empty mail_threads row", async () => {
     const threadAId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<a1@x>" }));
     await pool.query(
       `INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<a1@x>', $1, '{}')`,
@@ -441,7 +523,7 @@ describe("message ingest dedup (issue #26)", () => {
     await seedSystem(pool);
   });
 
-  it("a repeat ingest of the same Message-ID converges onto the same item instead of duplicating", async () => {
+  tenantIt("a repeat ingest of the same Message-ID converges onto the same item instead of duplicating", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -478,6 +560,64 @@ describe("message ingest dedup (issue #26)", () => {
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
   });
+
+  tenantIt(
+    "stores is_bulk from the bulk headers and sender, and a repeat ingest leaves it unchanged (issue #1502)",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
+      const base = {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      };
+      const person = { from: { address: "anna@example.com" } };
+      const cases: Array<[string, Partial<Parameters<typeof ingestEmailMessage>[1]>, boolean]> = [
+        ["<unsub@x>", { envelope: person, bulkHeaders: { listUnsubscribe: "<mailto:u@example.com>" } }, true],
+        ["<listid@x>", { envelope: person, bulkHeaders: { listId: "<l.example.com>" } }, true],
+        ["<prec@x>", { envelope: person, bulkHeaders: { precedence: "bulk" } }, true],
+        ["<auto@x>", { envelope: person, bulkHeaders: { autoSubmitted: "auto-generated" } }, true],
+        ["<noreply@x>", { envelope: { from: { address: "No-Reply@example.com" } } }, true],
+        ["<person@x>", { envelope: person, bulkHeaders: { autoSubmitted: "no" } }, false],
+      ];
+      for (const [messageId, extra, expected] of cases) {
+        const { itemId } = await withTransaction(pool, (client) =>
+          ingestEmailMessage(client, { ...base, envelope: {}, messageId, ...extra }),
+        );
+        const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+        expect(rows[0].is_bulk, messageId).toBe(expected);
+      }
+
+      // A later pass over an already-ingested message, even one now reporting different headers, keeps the flag.
+      const again = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          ...base,
+          messageId: "<unsub@x>",
+          envelope: person,
+          bulkHeaders: { autoSubmitted: "no" },
+        }),
+      );
+      expect(again.created).toBe(false);
+      const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [again.itemId]);
+      expect(rows[0].is_bulk).toBe(true);
+    },
+  );
 });
 
 describe("per-mailbox message identity (issue #674)", () => {
@@ -574,29 +714,32 @@ describe("per-mailbox message identity (issue #674)", () => {
     };
   }
 
-  it("ingests the same Message-ID for two mailboxes as two items, each linked only to its own mailbox's folder", async () => {
-    const { emailsId, a, b, ingestInto, folderIdsOf } = await setUpTwoMailboxes();
+  tenantIt(
+    "ingests the same Message-ID for two mailboxes as two items, each linked only to its own mailbox's folder",
+    async () => {
+      const { emailsId, a, b, ingestInto, folderIdsOf } = await setUpTwoMailboxes();
 
-    const inA = await ingestInto(a, "<shared@x>");
-    const inB = await ingestInto(b, "<shared@x>");
+      const inA = await ingestInto(a, "<shared@x>");
+      const inB = await ingestInto(b, "<shared@x>");
 
-    expect(inA.created).toBe(true);
-    expect(inB.created).toBe(true);
-    expect(inB.itemId).not.toBe(inA.itemId);
-    expect(await folderIdsOf(inA.itemId)).toEqual([a.inboxItemId]);
-    expect(await folderIdsOf(inB.itemId)).toEqual([b.inboxItemId]);
+      expect(inA.created).toBe(true);
+      expect(inB.created).toBe(true);
+      expect(inB.itemId).not.toBe(inA.itemId);
+      expect(await folderIdsOf(inA.itemId)).toEqual([a.inboxItemId]);
+      expect(await folderIdsOf(inB.itemId)).toEqual([b.inboxItemId]);
 
-    const metaA = await getMailMessageMetaByMailboxAndMessageId(pool, a.mailboxItemId, "<shared@x>");
-    const metaB = await getMailMessageMetaByMailboxAndMessageId(pool, b.mailboxItemId, "<shared@x>");
-    expect(metaA).toMatchObject({ itemId: inA.itemId, mailboxItemId: a.mailboxItemId });
-    expect(metaB).toMatchObject({ itemId: inB.itemId, mailboxItemId: b.mailboxItemId });
+      const metaA = await getMailMessageMetaByMailboxAndMessageId(pool, a.mailboxItemId, "<shared@x>");
+      const metaB = await getMailMessageMetaByMailboxAndMessageId(pool, b.mailboxItemId, "<shared@x>");
+      expect(metaA).toMatchObject({ itemId: inA.itemId, mailboxItemId: a.mailboxItemId });
+      expect(metaB).toMatchObject({ itemId: inB.itemId, mailboxItemId: b.mailboxItemId });
 
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: inA.itemId, propertiesPatch: { read: true } });
-    expect((await chokePoint.getItem(emailsId, inA.itemId))?.properties).toMatchObject({ read: true });
-    expect((await chokePoint.getItem(emailsId, inB.itemId))?.properties).toMatchObject({ read: false });
-  });
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: inA.itemId, propertiesPatch: { read: true } });
+      expect((await chokePoint.getItem(emailsId, inA.itemId))?.properties).toMatchObject({ read: true });
+      expect((await chokePoint.getItem(emailsId, inB.itemId))?.properties).toMatchObject({ read: false });
+    },
+  );
 
-  it("still converges a repeat ingest of the same Message-ID within one mailbox onto one item", async () => {
+  tenantIt("still converges a repeat ingest of the same Message-ID within one mailbox onto one item", async () => {
     const { emailsId, a, ingestInto, folderIdsOf } = await setUpTwoMailboxes();
 
     const first = await ingestInto(a, "<again@x>");
@@ -610,7 +753,7 @@ describe("per-mailbox message identity (issue #674)", () => {
     expect(rows[0].n).toBe(1);
   });
 
-  it("resolves a pending flag write for one mailbox only through that mailbox's folder edge", async () => {
+  tenantIt("resolves a pending flag write for one mailbox only through that mailbox's folder edge", async () => {
     const { emailsId, a, b, ingestInto, folderDefinitionId, mailboxFolderDefinitionId } = await setUpTwoMailboxes();
     const inA = await ingestInto(a, "<flag-shared@x>");
     await ingestInto(b, "<flag-shared@x>");
@@ -629,29 +772,32 @@ describe("per-mailbox message identity (issue #674)", () => {
     expect(await pendingFor(b.mailboxItemId)).toEqual([]);
   });
 
-  it("the migration backfills mailbox_item_id through the folder -> mailbox edges and leaves an unlinked row NULL", async () => {
-    const { a, b, ingestInto } = await setUpTwoMailboxes();
-    const inA = await ingestInto(a, "<backfill-a@x>");
-    const inB = await ingestInto(b, "<backfill-b@x>");
-    const orphanItemId = randomUUID();
-    await pool.query(
-      `INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, '<backfill-orphan@x>', '{}')`,
-      [orphanItemId],
-    );
-    // The pre-migration shape of the two linked rows: no mailbox recorded yet.
-    await pool.query(`UPDATE mail_message_meta SET mailbox_item_id = NULL WHERE item_id = ANY($1::uuid[])`, [
-      [inA.itemId, inB.itemId],
-    ]);
+  tenantIt(
+    "the migration backfills mailbox_item_id through the folder -> mailbox edges and leaves an unlinked row NULL",
+    async () => {
+      const { a, b, ingestInto } = await setUpTwoMailboxes();
+      const inA = await ingestInto(a, "<backfill-a@x>");
+      const inB = await ingestInto(b, "<backfill-b@x>");
+      const orphanItemId = randomUUID();
+      await pool.query(
+        `INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, '<backfill-orphan@x>', '{}')`,
+        [orphanItemId],
+      );
+      // The pre-migration shape of the two linked rows: no mailbox recorded yet.
+      await pool.query(`UPDATE mail_message_meta SET mailbox_item_id = NULL WHERE item_id = ANY($1::uuid[])`, [
+        [inA.itemId, inB.itemId],
+      ]);
 
-    const sql = await readFile(path.join(MIGRATIONS_DIR, "0053_mail_message_meta_per_mailbox.sql"), "utf8");
-    await pool.query(sql);
-    // Idempotent: a second run changes nothing and does not fail on the already-applied DDL.
-    await pool.query(sql);
+      const sql = await readFile(path.join(MIGRATIONS_DIR, "0053_mail_message_meta_per_mailbox.sql"), "utf8");
+      await pool.query(sql);
+      // Idempotent: a second run changes nothing and does not fail on the already-applied DDL.
+      await pool.query(sql);
 
-    expect((await getMailMessageMetaByItemId(pool, inA.itemId))?.mailboxItemId).toBe(a.mailboxItemId);
-    expect((await getMailMessageMetaByItemId(pool, inB.itemId))?.mailboxItemId).toBe(b.mailboxItemId);
-    expect((await getMailMessageMetaByItemId(pool, orphanItemId))?.mailboxItemId).toBeNull();
-  });
+      expect((await getMailMessageMetaByItemId(pool, inA.itemId))?.mailboxItemId).toBe(a.mailboxItemId);
+      expect((await getMailMessageMetaByItemId(pool, inB.itemId))?.mailboxItemId).toBe(b.mailboxItemId);
+      expect((await getMailMessageMetaByItemId(pool, orphanItemId))?.mailboxItemId).toBeNull();
+    },
+  );
 });
 
 describe("provider_message_id uniqueness convergence (issue #204)", () => {
@@ -690,28 +836,147 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     };
   }
 
-  it("converges two concurrent inserts for distinct Message-IDs sharing one provider id onto a single stable row without a raw Postgres error", async () => {
-    const inputA = await baseInput("<race-a@x>", { providerMessageId: "provider-race-1" });
-    const inputB = await baseInput("<race-b@x>", { providerMessageId: "provider-race-1" });
+  tenantIt(
+    "keeps the thread guard after a provider-id savepoint rollback and continues the transaction",
+    async () => {
+      const winnerInput = await baseInput("<winner@x>", { providerMessageId: "guarded-provider" });
+      const conflictInput = await baseInput("<conflict@x>", { providerMessageId: "guarded-provider" });
+      const continuationInput = await baseInput("<continuation@x>");
+      const nextInput = await baseInput("<next@x>");
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const operationPids: Array<Promise<number>> = [];
+      runtimePool.on("acquire", (client: PoolClient) => {
+        operationPids.push(
+          client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows }) => {
+            if (rows[0] === undefined) throw new Error("Missing participant PID");
+            return rows[0].pid;
+          }),
+        );
+      });
+      const winner = await withTransaction(runtimePool, (client) => ingestEmailMessage(client, winnerInput));
+      let release: () => void = () => undefined;
+      let reportHolder: (pid: number) => void = () => undefined;
+      let reportWaiter: (pid: number) => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holderStarted = new Promise<number>((resolve) => {
+        reportHolder = resolve;
+      });
+      const waiterStarted = new Promise<number>((resolve) => {
+        reportWaiter = resolve;
+      });
+      async function bounded<T>(promise: Promise<T>): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("Savepoint overlap timed out")), 5000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      const holder = withTransaction(runtimePool, async (client) => {
+        const result = await ingestEmailMessage(client, conflictInput);
+        expect(result).toEqual({ itemId: winner.itemId, created: false });
+        const continuation = await ingestEmailMessage(client, continuationInput);
+        expect(continuation.created).toBe(true);
+        const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        if (pid.rows[0] === undefined) throw new Error("Missing holder PID");
+        reportHolder(pid.rows[0].pid);
+        await gate;
+        return result;
+      });
+      const holderSettled = holder.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      let waiter: Promise<Awaited<ReturnType<typeof ingestEmailMessage>>> | undefined;
+      try {
+        const role = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+        const holderPid = await bounded(holderStarted);
+        waiter = withTransaction(runtimePool, async (client) => {
+          const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (pid.rows[0] === undefined) throw new Error("Missing waiter PID");
+          reportWaiter(pid.rows[0].pid);
+          return ingestEmailMessage(client, nextInput);
+        });
+        const waiterSettled = waiter.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        const waiterPid = await bounded(waiterStarted);
+        const deadline = Date.now() + 5000;
+        let blocked = false;
+        while (Date.now() < deadline) {
+          const result = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holderPid, waiterPid],
+          );
+          if (result.rows[0]?.blocked) {
+            blocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+        console.info("MAIL_GUARD_SAVEPOINT", { holderPid, waiterPid });
+        release();
+        expect(await bounded(holderSettled)).toMatchObject({ value: { itemId: winner.itemId, created: false } });
+        expect(await bounded(waiterSettled)).toMatchObject({ value: { created: true } });
+        const { rows } = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM mail_threads t WHERE NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id)",
+        );
+        expect(rows[0]?.count).toBe(0);
+      } finally {
+        release();
+        const operations = Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+        try {
+          await bounded(operations).catch(async (error: unknown) => {
+            const pids = await bounded(Promise.all(operationPids));
+            for (const pid of new Set(pids)) await bounded(pool.query("SELECT pg_terminate_backend($1)", [pid]));
+            await bounded(operations);
+            throw error;
+          });
+        } finally {
+          await bounded(runtimePool.end());
+        }
+      }
+    },
+    30000,
+  );
 
-    const [resultA, resultB] = await Promise.all([
-      withTransaction(pool, (client) => ingestEmailMessage(client, inputA)),
-      withTransaction(pool, (client) => ingestEmailMessage(client, inputB)),
-    ]);
+  tenantIt(
+    "converges two concurrent inserts for distinct Message-IDs sharing one provider id onto a single stable row without a raw Postgres error",
+    async () => {
+      const inputA = await baseInput("<race-a@x>", { providerMessageId: "provider-race-1" });
+      const inputB = await baseInput("<race-b@x>", { providerMessageId: "provider-race-1" });
 
-    expect(resultA.itemId).toBe(resultB.itemId);
-    expect([resultA.created, resultB.created].sort()).toEqual([false, true]);
+      const [resultA, resultB] = await Promise.all([
+        withTransaction(pool, (client) => ingestEmailMessage(client, inputA)),
+        withTransaction(pool, (client) => ingestEmailMessage(client, inputB)),
+      ]);
 
-    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE provider_message_id = $1`, [
-      "provider-race-1",
-    ]);
-    expect(Number(rows[0].count)).toBe(1);
+      expect(resultA.itemId).toBe(resultB.itemId);
+      expect([resultA.created, resultB.created].sort()).toEqual([false, true]);
 
-    const { rows: itemRows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [
-      inputA.emailsDatabaseId,
-    ]);
-    expect(Number(itemRows[0].count)).toBe(1);
-  });
+      const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE provider_message_id = $1`, [
+        "provider-race-1",
+      ]);
+      expect(Number(rows[0].count)).toBe(1);
+
+      const { rows: itemRows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [
+        inputA.emailsDatabaseId,
+      ]);
+      expect(Number(itemRows[0].count)).toBe(1);
+    },
+  );
 
   it("fills a null provider_message_id via the message_id upsert's ON CONFLICT DO UPDATE (same-message fill)", async () => {
     const itemId = randomUUID();
@@ -735,7 +1000,7 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     expect(meta?.providerMessageId).toBe(sharedProviderId);
   });
 
-  it("leaves a null provider_message_id message-id-only, uninvolved in the partial unique index", async () => {
+  tenantIt("leaves a null provider_message_id message-id-only, uninvolved in the partial unique index", async () => {
     const input = await baseInput("<nullprovider@x>");
     const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
 
@@ -787,7 +1052,7 @@ describe("mailbox triage flags (issue #97)", () => {
     expect(messageFlagProperties(undefined)).toEqual({});
   });
 
-  it("seeds a newly ingested message's read/flag state from the flags the server reported", async () => {
+  tenantIt("seeds a newly ingested message's read/flag state from the flags the server reported", async () => {
     const input = await ingestInput({ flags: [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG] });
     const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
 
@@ -795,7 +1060,7 @@ describe("mailbox triage flags (issue #97)", () => {
     expect(item?.properties).toMatchObject({ read: true, flagged: true });
   });
 
-  it("does not overwrite the user's own triage state when the same message is ingested again", async () => {
+  tenantIt("does not overwrite the user's own triage state when the same message is ingested again", async () => {
     const input = await ingestInput({ flags: [] });
     const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
     await chokePoint.updateItem({ databaseId: input.emailsDatabaseId, itemId, propertiesPatch: { read: true } });
@@ -806,25 +1071,28 @@ describe("mailbox triage flags (issue #97)", () => {
     expect(item?.properties.read).toBe(true);
   });
 
-  it("accepts read/flagged through the generic update path while still refusing an owner:'system' field", async () => {
-    const input = await ingestInput();
-    const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+  tenantIt(
+    "accepts read/flagged through the generic update path while still refusing an owner:'system' field",
+    async () => {
+      const input = await ingestInput();
+      const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
 
-    const updated = await chokePoint.updateItem({
-      databaseId: input.emailsDatabaseId,
-      itemId,
-      propertiesPatch: { read: true, flagged: true },
-    });
-    expect(updated.properties).toMatchObject({ read: true, flagged: true });
-
-    await expect(
-      chokePoint.updateItem({
+      const updated = await chokePoint.updateItem({
         databaseId: input.emailsDatabaseId,
         itemId,
-        propertiesPatch: { sender: "spoofed@example.com" },
-      }),
-    ).rejects.toMatchObject({ name: "ForbiddenError" });
-  });
+        propertiesPatch: { read: true, flagged: true },
+      });
+      expect(updated.properties).toMatchObject({ read: true, flagged: true });
+
+      await expect(
+        chokePoint.updateItem({
+          databaseId: input.emailsDatabaseId,
+          itemId,
+          propertiesPatch: { sender: "spoofed@example.com" },
+        }),
+      ).rejects.toMatchObject({ name: "ForbiddenError" });
+    },
+  );
 });
 
 describe("attachment ingest (issue #26)", () => {
@@ -845,59 +1113,62 @@ describe("attachment ingest (issue #26)", () => {
     };
   }
 
-  it("streams each attachment to storage, creates a Files item, and dedups identical content by hash", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
-    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-    const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "INBOX" } },
-        { allowedSystemKeys: ["name"] },
-      ),
-    );
+  tenantIt(
+    "streams each attachment to storage, creates a Files item, and dedups identical content by hash",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
 
-    const sameBytes = Buffer.from("invoice-bytes");
-    const result = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<with-attachments@x>",
-        envelope: {},
-        attachments: [attachment("invoice.pdf", sameBytes), attachment("invoice-copy.pdf", sameBytes)],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
-    );
+      const sameBytes = Buffer.from("invoice-bytes");
+      const result = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<with-attachments@x>",
+          envelope: {},
+          attachments: [attachment("invoice.pdf", sameBytes), attachment("invoice-copy.pdf", sameBytes)],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
 
-    const { rows: attachmentRows } = await pool.query(
-      `SELECT filename, blob_id, byte_size FROM mail_attachments WHERE message_item_id = $1`,
-      [result.itemId],
-    );
-    expect(attachmentRows).toHaveLength(2);
-    expect(new Set(attachmentRows.map((r) => r.blob_id)).size).toBe(1); // same content hash -> one blob
-    expect(attachmentRows.every((r) => Number(r.byte_size) === sameBytes.length)).toBe(true);
+      const { rows: attachmentRows } = await pool.query(
+        `SELECT filename, blob_id, byte_size FROM mail_attachments WHERE message_item_id = $1`,
+        [result.itemId],
+      );
+      expect(attachmentRows).toHaveLength(2);
+      expect(new Set(attachmentRows.map((r) => r.blob_id)).size).toBe(1); // same content hash -> one blob
+      expect(attachmentRows.every((r) => Number(r.byte_size) === sameBytes.length)).toBe(true);
 
-    const { rows: fileItemRows } = await pool.query(
-      `SELECT properties->>'name' AS name FROM items WHERE database_id = $1 ORDER BY 1`,
-      [filesId],
-    );
-    expect(fileItemRows.map((r) => r.name)).toEqual(["invoice-copy.pdf", "invoice.pdf"]);
+      const { rows: fileItemRows } = await pool.query(
+        `SELECT properties->>'name' AS name FROM items WHERE database_id = $1 ORDER BY 1`,
+        [filesId],
+      );
+      expect(fileItemRows.map((r) => r.name)).toEqual(["invoice-copy.pdf", "invoice.pdf"]);
 
-    const { rows: relationRows } = await pool.query(
-      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1)`,
-      [attachmentsProperty.id],
-    );
-    expect(Number(relationRows[0].count)).toBe(2);
-  });
+      const { rows: relationRows } = await pool.query(
+        `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1)`,
+        [attachmentsProperty.id],
+      );
+      expect(Number(relationRows[0].count)).toBe(2);
+    },
+  );
 
-  it("extracts PDF attachment text at ingest and folds it into the message's own search index", async () => {
+  tenantIt("extracts PDF attachment text at ingest and folds it into the message's own search index", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -946,7 +1217,7 @@ describe("attachment ingest (issue #26)", () => {
     expect(found.map((f) => f.itemId)).toContain(result.itemId);
   });
 
-  it("skips an attachment that exceeds the size cap instead of failing the whole message ingest", async () => {
+  tenantIt("skips an attachment that exceeds the size cap instead of failing the whole message ingest", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -1114,6 +1385,61 @@ describe("HTML sanitization (issue #26)", () => {
     expect(sanitized).not.toContain("tracker.example");
     expect(sanitized).toContain("hi");
   });
+
+  // A protocol-relative source names a remote host without a scheme (R1 F1). The forms below are the
+  // ones the sanitizer is known to classify as protocol-relative today; entities reach it decoded.
+  const PROTOCOL_RELATIVE_SOURCES = [
+    ["two slashes", "//tracker.example/p.gif"],
+    ["two backslashes", "\\\\tracker.example\\p.gif"],
+    ["a slash and a backslash", "/\\tracker.example/p.gif"],
+    ["a leading space", " //tracker.example/p.gif"],
+    ["an embedded tab", "/\t/tracker.example/p.gif"],
+    ["an embedded newline", "/\n/tracker.example/p.gif"],
+    ["an embedded comment", "/<!-- x -->/tracker.example/p.gif"],
+    ["decimal entities", "&#47;&#47;tracker.example/p.gif"],
+    ["hexadecimal entities", "&#x2F;&#x2f;tracker.example/p.gif"],
+    ["named entities", "&sol;&sol;tracker.example/p.gif"],
+  ] as const;
+  const DEFAULT_AND_FALSE = [
+    ["by default", undefined],
+    ["with allowRemoteImages false", false],
+  ] as const;
+
+  it.each(
+    PROTOCOL_RELATIVE_SOURCES.flatMap(([form, source]) =>
+      DEFAULT_AND_FALSE.map(([mode, allow]) => [form, mode, source, allow] as const),
+    ),
+  )("strips a protocol-relative image source written with %s %s", (_form, _mode, source, allow) => {
+    const html = `<p>hi</p><img src="${source}" alt="pixel">`;
+    const sanitized =
+      allow === undefined ? sanitizeMailHtml(html) : sanitizeMailHtml(html, { allowRemoteImages: allow });
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).toContain('alt="pixel"');
+    expect(sanitized).toContain("hi");
+  });
+
+  it.each(PROTOCOL_RELATIVE_SOURCES)(
+    "keeps a protocol-relative image source written with %s when remote images are allowed",
+    (_form, source) => {
+      const sanitized = sanitizeMailHtml(`<img src="${source}" alt="pixel">`, { allowRemoteImages: true });
+      expect(sanitized).toContain("tracker.example");
+      expect(sanitized).toContain('alt="pixel"');
+    },
+  );
+
+  it.each([...DEFAULT_AND_FALSE, ["with allowRemoteImages true", true]] as const)(
+    "keeps protocol-relative links, inline data:/cid: images and relative sources as before %s",
+    (_mode, allow) => {
+      const html =
+        '<a href="//example.com/x">link</a><img src="data:image/png;base64,AAAA"><img src="cid:logo"><img src="/local.png">';
+      const sanitized =
+        allow === undefined ? sanitizeMailHtml(html) : sanitizeMailHtml(html, { allowRemoteImages: allow });
+      expect(sanitized).toContain('href="//example.com/x"');
+      expect(sanitized).toContain('src="data:image/png;base64,AAAA"');
+      expect(sanitized).toContain('src="cid:logo"');
+      expect(sanitized).toContain('src="/local.png"');
+    },
+  );
 });
 
 describe("full-text search over Emails (issue #26)", () => {
@@ -1126,7 +1452,9 @@ describe("full-text search over Emails (issue #26)", () => {
 
   it("indexes and finds a message by content", async () => {
     const emailsId = await databaseIdFor("emails");
-    const itemId = randomUUID();
+    const itemId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
     await withTransaction(pool, (client) =>
       reindexItemSearch(client, { itemId, databaseId: emailsId, text: "Invoice for consulting services" }),
     );
@@ -1144,8 +1472,12 @@ describe("full-text search over Emails (issue #26)", () => {
 
   it("ranks a more recently indexed match above an older one with identical text relevance", async () => {
     const emailsId = await databaseIdFor("emails");
-    const olderId = randomUUID();
-    const newerId = randomUUID();
+    const olderId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
+    const newerId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
     await withTransaction(pool, (client) =>
       reindexItemSearch(client, { itemId: olderId, databaseId: emailsId, text: "quarterly report" }),
     );
@@ -1220,7 +1552,7 @@ describe("full-text search over Emails (issue #26)", () => {
       }
     });
 
-    it("from: filters by the sender display text", async () => {
+    tenantIt("from: filters by the sender display text", async () => {
       const emailsId = await databaseIdFor("emails");
       const foldersId = await databaseIdFor("folders");
       const filesId = await databaseIdFor("files");
@@ -1271,64 +1603,67 @@ describe("full-text search over Emails (issue #26)", () => {
       expect(results.map((r) => r.itemId)).toEqual([fromAlice.itemId]);
     });
 
-    it("is:read/is:unread and is:flagged/is:unflagged filter on the canonical structured properties (issue #90)", async () => {
-      const emailsId = await databaseIdFor("emails");
-      const foldersId = await databaseIdFor("folders");
-      const filesId = await databaseIdFor("files");
-      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
-      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-      const folder = await withTransaction(pool, (client) =>
-        createItemWithClient(
-          client,
-          { databaseId: foldersId, properties: { name: "INBOX" } },
-          { allowedSystemKeys: ["name"] },
-        ),
-      );
-
-      const ingest = (messageId: string, flags: string[] | undefined) =>
-        withTransaction(pool, (client) =>
-          ingestEmailMessage(client, {
-            emailsDatabaseId: emailsId,
-            filesDatabaseId: filesId,
-            folderRelationPropertyId: folderProperty.id,
-            attachmentsRelationPropertyId: attachmentsProperty.id,
-            folderItemId: folder.id,
-            mailboxItemId: TEST_MAILBOX_ITEM_ID,
-            messageId,
-            subject: "Report",
-            envelope: { from: { address: "alice@x.com" } },
-            attachments: [],
-            storage: noopStorage,
-            storageKeyPrefix: "test",
-            flags,
-          }),
+    tenantIt(
+      "is:read/is:unread and is:flagged/is:unflagged filter on the canonical structured properties (issue #90)",
+      async () => {
+        const emailsId = await databaseIdFor("emails");
+        const foldersId = await databaseIdFor("folders");
+        const filesId = await databaseIdFor("files");
+        const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+        const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+        const folder = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: foldersId, properties: { name: "INBOX" } },
+            { allowedSystemKeys: ["name"] },
+          ),
         );
 
-      // Legacy row: no flags reported at ingest at all, the documented default is unread/unflagged.
-      const legacy = await ingest("<legacy@x>", undefined);
-      const readOnly = await ingest("<read@x>", [IMAP_SEEN_FLAG]);
-      const flaggedOnly = await ingest("<flagged@x>", [IMAP_FLAGGED_FLAG]);
-      const readAndFlagged = await ingest("<both@x>", [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG]);
+        const ingest = (messageId: string, flags: string[] | undefined) =>
+          withTransaction(pool, (client) =>
+            ingestEmailMessage(client, {
+              emailsDatabaseId: emailsId,
+              filesDatabaseId: filesId,
+              folderRelationPropertyId: folderProperty.id,
+              attachmentsRelationPropertyId: attachmentsProperty.id,
+              folderItemId: folder.id,
+              mailboxItemId: TEST_MAILBOX_ITEM_ID,
+              messageId,
+              subject: "Report",
+              envelope: { from: { address: "alice@x.com" } },
+              attachments: [],
+              storage: noopStorage,
+              storageKeyPrefix: "test",
+              flags,
+            }),
+          );
 
-      const unread = await searchItems(pool, { databaseId: emailsId, query: "report is:unread" });
-      expect(unread.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, legacy.itemId].sort());
+        // Legacy row: no flags reported at ingest at all, the documented default is unread/unflagged.
+        const legacy = await ingest("<legacy@x>", undefined);
+        const readOnly = await ingest("<read@x>", [IMAP_SEEN_FLAG]);
+        const flaggedOnly = await ingest("<flagged@x>", [IMAP_FLAGGED_FLAG]);
+        const readAndFlagged = await ingest("<both@x>", [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG]);
 
-      const read = await searchItems(pool, { databaseId: emailsId, query: "report is:read" });
-      expect(read.map((r) => r.itemId).sort()).toEqual([readAndFlagged.itemId, readOnly.itemId].sort());
+        const unread = await searchItems(pool, { databaseId: emailsId, query: "report is:unread" });
+        expect(unread.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, legacy.itemId].sort());
 
-      const unflagged = await searchItems(pool, { databaseId: emailsId, query: "report is:unflagged" });
-      expect(unflagged.map((r) => r.itemId).sort()).toEqual([legacy.itemId, readOnly.itemId].sort());
+        const read = await searchItems(pool, { databaseId: emailsId, query: "report is:read" });
+        expect(read.map((r) => r.itemId).sort()).toEqual([readAndFlagged.itemId, readOnly.itemId].sort());
 
-      const flagged = await searchItems(pool, { databaseId: emailsId, query: "report is:flagged" });
-      expect(flagged.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, readAndFlagged.itemId].sort());
+        const unflagged = await searchItems(pool, { databaseId: emailsId, query: "report is:unflagged" });
+        expect(unflagged.map((r) => r.itemId).sort()).toEqual([legacy.itemId, readOnly.itemId].sort());
 
-      // Read and flagged dimensions compose with AND, and with an unrelated existing operator (from:).
-      const readAndFlaggedQuery = await searchItems(pool, {
-        databaseId: emailsId,
-        query: "report is:read is:flagged from:alice@x.com",
-      });
-      expect(readAndFlaggedQuery.map((r) => r.itemId)).toEqual([readAndFlagged.itemId]);
-    });
+        const flagged = await searchItems(pool, { databaseId: emailsId, query: "report is:flagged" });
+        expect(flagged.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, readAndFlagged.itemId].sort());
+
+        // Read and flagged dimensions compose with AND, and with an unrelated existing operator (from:).
+        const readAndFlaggedQuery = await searchItems(pool, {
+          databaseId: emailsId,
+          query: "report is:read is:flagged from:alice@x.com",
+        });
+        expect(readAndFlaggedQuery.map((r) => r.itemId)).toEqual([readAndFlagged.itemId]);
+      },
+    );
   });
 });
 
@@ -1421,6 +1756,7 @@ describe("IMAP reconcile core (issue #26)", () => {
 
   function fakeImapClient(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     return {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
@@ -1448,11 +1784,12 @@ describe("IMAP reconcile core (issue #26)", () => {
       fetchAllUids: async () => [1, 2],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
       ...overrides,
     };
   }
 
-  it("initial sync ingests every fetched message and creates the INBOX folder", async () => {
+  tenantIt("initial sync ingests every fetched message and creates the INBOX folder", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -1489,7 +1826,7 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect(emailRows.map((r) => r.properties.name)).toEqual(["First", "Second"]);
   });
 
-  it("a UIDVALIDITY change resets folder sync state and forces a full re-fetch", async () => {
+  tenantIt("a UIDVALIDITY change resets folder sync state and forces a full re-fetch", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -1530,74 +1867,77 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect(rows[0].uidvalidity).toBe("999");
   });
 
-  it("re-observing the same message under a new UID after a UIDVALIDITY reset updates its edge in place, never adds a second one", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
-    const emailProps = await chokePoint.listProperties(emailsId);
-    const folderProps = await chokePoint.listProperties(foldersId);
-    const folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
+  tenantIt(
+    "re-observing the same message under a new UID after a UIDVALIDITY reset updates its edge in place, never adds a second one",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
+      const emailProps = await chokePoint.listProperties(emailsId);
+      const folderProps = await chokePoint.listProperties(foldersId);
+      const folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
 
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
-    );
-    const params = {
-      mailboxItemId: mailbox.id,
-      emailsDatabaseId: emailsId,
-      filesDatabaseId: filesId,
-      foldersDatabaseId: foldersId,
-      folderRelationPropertyId,
-      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
-      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
-      storage: noopStorage,
-      storageKeyPrefix: "test",
-    };
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      const params = {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        folderRelationPropertyId,
+        mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+        attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      };
 
-    const firstPassImap = fakeImapClient({
-      fetchMessagesSince: async () => [
-        {
-          uid: 5,
-          message: {
-            messageId: "<survivor@x>",
-            envelope: { from: { address: "a@x.com" } },
-            subject: "Survivor",
-            attachments: [],
+      const firstPassImap = fakeImapClient({
+        fetchMessagesSince: async () => [
+          {
+            uid: 5,
+            message: {
+              messageId: "<survivor@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Survivor",
+              attachments: [],
+            },
           },
-        },
-      ],
-    });
-    await withTransaction(pool, (client) => reconcileImapAccount(client, firstPassImap, params));
+        ],
+      });
+      await withTransaction(pool, (client) => reconcileImapAccount(client, firstPassImap, params));
 
-    const secondPassImap = fakeImapClient({
-      selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
-      // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
-      fetchMessagesSince: async () => [
-        {
-          uid: 1,
-          message: {
-            messageId: "<survivor@x>",
-            envelope: { from: { address: "a@x.com" } },
-            subject: "Survivor",
-            attachments: [],
+      const secondPassImap = fakeImapClient({
+        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
+        // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
+        fetchMessagesSince: async () => [
+          {
+            uid: 1,
+            message: {
+              messageId: "<survivor@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Survivor",
+              attachments: [],
+            },
           },
-        },
-      ],
-    });
-    await withTransaction(pool, (client) => reconcileImapAccount(client, secondPassImap, params));
+        ],
+      });
+      await withTransaction(pool, (client) => reconcileImapAccount(client, secondPassImap, params));
 
-    const { rows: emailRows } = await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId]);
-    expect(emailRows).toHaveLength(1); // still one Emails item, not a duplicate
+      const { rows: emailRows } = await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId]);
+      expect(emailRows).toHaveLength(1); // still one Emails item, not a duplicate
 
-    const { rows: edgeRows } = await pool.query(
-      `SELECT metadata FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
-      [folderRelationPropertyId, emailRows[0].id],
-    );
-    expect(edgeRows).toHaveLength(1); // one edge, updated in place — not a second, stale-generation edge
-    expect(edgeRows[0].metadata).toEqual({ uid: 1 }); // carries the new UID, not the pre-reset one
-  });
+      const { rows: edgeRows } = await pool.query(
+        `SELECT metadata FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+        [folderRelationPropertyId, emailRows[0].id],
+      );
+      expect(edgeRows).toHaveLength(1); // one edge, updated in place — not a second, stale-generation edge
+      expect(edgeRows[0].metadata).toEqual({ uid: 1 }); // carries the new UID, not the pre-reset one
+    },
+  );
 
-  it("removes the folder edge for a vanished UID", async () => {
+  tenantIt("removes the folder edge for a vanished UID", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -1636,98 +1976,101 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect(Number(rows[0].count)).toBe(1); // one of the two original edges was removed
   });
 
-  it("Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
-    const emailProps = await chokePoint.listProperties(emailsId);
-    const folderProps = await chokePoint.listProperties(foldersId);
+  tenantIt(
+    "Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
+      const emailProps = await chokePoint.listProperties(emailsId);
+      const folderProps = await chokePoint.listProperties(foldersId);
 
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
-    );
-    const params = {
-      mailboxItemId: mailbox.id,
-      emailsDatabaseId: emailsId,
-      filesDatabaseId: filesId,
-      foldersDatabaseId: foldersId,
-      folderRelationPropertyId: emailProps.find((p) => p.key === "folder")!.id,
-      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
-      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
-      storage: noopStorage,
-      storageKeyPrefix: "test",
-      folderPaths: ["[Gmail]/All Mail"],
-    };
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      const params = {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        folderRelationPropertyId: emailProps.find((p) => p.key === "folder")!.id,
+        mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+        attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        folderPaths: ["[Gmail]/All Mail"],
+      };
 
-    const gmailImap = fakeImapClient({
-      listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
-        {
-          uid: 1,
-          message: {
-            messageId: "<labeled@x>",
-            envelope: { from: { address: "a@x.com" } },
-            subject: "Labeled",
-            attachments: [],
-            gmailLabels: ["\\Inbox", "Work"],
+      const gmailImap = fakeImapClient({
+        listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
+          {
+            uid: 1,
+            message: {
+              messageId: "<labeled@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Labeled",
+              attachments: [],
+              gmailLabels: ["\\Inbox", "Work"],
+            },
           },
-        },
-      ],
-    });
-    await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImap, params));
+        ],
+      });
+      await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImap, params));
 
-    const { rows: folderRows } = await pool.query(
-      `SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'providerId'`,
-      [foldersId],
-    );
-    // All Mail (the physical folder synced) plus the two labels.
-    expect(folderRows.map((r) => r.properties.providerId).sort()).toEqual(["Work", "[Gmail]/All Mail", "\\Inbox"]);
-    expect(folderRows.find((r) => r.properties.providerId === "\\Inbox")).toMatchObject({
-      properties: { behavior: "label", specialPurpose: "inbox" },
-    });
-    expect(folderRows.find((r) => r.properties.providerId === "Work")).toMatchObject({
-      properties: { behavior: "label", specialPurpose: "none" },
-    });
+      const { rows: folderRows } = await pool.query(
+        `SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'providerId'`,
+        [foldersId],
+      );
+      // All Mail (the physical folder synced) plus the two labels.
+      expect(folderRows.map((r) => r.properties.providerId).sort()).toEqual(["Work", "[Gmail]/All Mail", "\\Inbox"]);
+      expect(folderRows.find((r) => r.properties.providerId === "\\Inbox")).toMatchObject({
+        properties: { behavior: "label", specialPurpose: "inbox" },
+      });
+      expect(folderRows.find((r) => r.properties.providerId === "Work")).toMatchObject({
+        properties: { behavior: "label", specialPurpose: "none" },
+      });
 
-    const emailItemId = (await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId])).rows[0].id;
-    const { rows: edgeCount } = await pool.query(
-      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
-      [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
-    );
-    expect(Number(edgeCount[0].count)).toBe(3); // All Mail + \Inbox + Work
+      const emailItemId = (await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId])).rows[0].id;
+      const { rows: edgeCount } = await pool.query(
+        `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+        [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
+      );
+      expect(Number(edgeCount[0].count)).toBe(3); // All Mail + \Inbox + Work
 
-    // A second pass re-observing the same message with one label dropped removes only that
-    // label's edge, keeping the physical All Mail edge and the other label. The fake client's
-    // fetchMessagesSince ignores the sinceUid it's called with (same as every other fake
-    // client in this file) so it can simply re-report uid 1 with a narrowed label set.
-    const gmailImapRelabeled = fakeImapClient({
-      listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
-        {
-          uid: 1,
-          message: {
-            messageId: "<labeled@x>",
-            envelope: { from: { address: "a@x.com" } },
-            subject: "Labeled",
-            attachments: [],
-            gmailLabels: ["Work"],
+      // A second pass re-observing the same message with one label dropped removes only that
+      // label's edge, keeping the physical All Mail edge and the other label. The fake client's
+      // fetchMessagesSince ignores the sinceUid it's called with (same as every other fake
+      // client in this file) so it can simply re-report uid 1 with a narrowed label set.
+      const gmailImapRelabeled = fakeImapClient({
+        listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
+          {
+            uid: 1,
+            message: {
+              messageId: "<labeled@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Labeled",
+              attachments: [],
+              gmailLabels: ["Work"],
+            },
           },
-        },
-      ],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [1],
-    });
-    await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImapRelabeled, params));
+        ],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [1],
+      });
+      await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImapRelabeled, params));
 
-    const { rows: edgeCountAfter } = await pool.query(
-      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
-      [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
-    );
-    expect(Number(edgeCountAfter[0].count)).toBe(2); // All Mail + Work; \Inbox's edge was dropped
-  });
+      const { rows: edgeCountAfter } = await pool.query(
+        `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+        [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
+      );
+      expect(Number(edgeCountAfter[0].count)).toBe(2); // All Mail + Work; \Inbox's edge was dropped
+    },
+  );
 });
 
 describe("Gmail reconcile core (issue #26)", () => {
@@ -1785,7 +2128,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("initial sync (no stored historyId) does a full listAllMessageIds pass and stores the returned historyId", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
     expect(state?.gmailHistoryId).toBe("100");
@@ -1795,7 +2140,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("a history.list 404 (invalidated) clears the stored historyId and forces a full resync instead of resuming", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
 
     let fullResyncCallCount = 0;
     const secondClient = fakeGmailClient({
@@ -1822,7 +2169,7 @@ describe("Gmail reconcile core (issue #26)", () => {
         },
       }),
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params)));
 
     expect(fullResyncCallCount).toBe(1);
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
@@ -1833,7 +2180,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("writes Gmail read and flagged transitions, and a matching history observation converges without an echo", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
     const emailItemId = (
       await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
     ).rows[0]!.id;
@@ -1849,7 +2198,7 @@ describe("Gmail reconcile core (issue #26)", () => {
       itemId: emailItemId,
       propertiesPatch: { read: true, flagged: true },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params)));
     expect(writes).toEqual([
       { id: "m1", add: ["STARRED"], remove: [] },
       { id: "m1", add: [], remove: ["UNREAD"] },
@@ -1860,7 +2209,7 @@ describe("Gmail reconcile core (issue #26)", () => {
       itemId: emailItemId,
       propertiesPatch: { read: false, flagged: false },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params)));
     expect(writes.slice(2)).toEqual([
       { id: "m1", add: [], remove: ["STARRED"] },
       { id: "m1", add: ["UNREAD"], remove: [] },
@@ -1888,7 +2237,7 @@ describe("Gmail reconcile core (issue #26)", () => {
         throw new Error("converged Gmail observation must not echo");
       },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, observed, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, observed, params)));
   });
 });
 
@@ -1948,7 +2297,7 @@ describe("Graph reconcile core (issue #26)", () => {
     };
   }
 
-  it("ingests a delta change into its parent folder and stores the returned deltaLink", async () => {
+  tenantIt("ingests a delta change into its parent folder and stores the returned deltaLink", async () => {
     const params = await reconcileParams();
     await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
 
@@ -1958,159 +2307,169 @@ describe("Graph reconcile core (issue #26)", () => {
     expect(rows[0].count).toBe("1");
   });
 
-  it("keeps Graph item/reference annotations in the message body without creating placeholder Files rows on repeat reconcile", async () => {
-    const params = await reconcileParams();
-    const graphMessage = {
-      messageId: "<graph-non-file@x>",
-      envelope: { from: { address: "a@x.com" } },
-      subject: "Mixed attachments",
-      bodyHtml: "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
-      attachments: [
-        {
-          filename: "report.txt",
-          contentType: "text/plain",
-          contentId: null,
-          disposition: "attachment" as const,
-          openStream: () => Readable.from("real file"),
+  tenantIt(
+    "keeps Graph item/reference annotations in the message body without creating placeholder Files rows on repeat reconcile",
+    async () => {
+      const params = await reconcileParams();
+      const graphMessage = {
+        messageId: "<graph-non-file@x>",
+        envelope: { from: { address: "a@x.com" } },
+        subject: "Mixed attachments",
+        bodyHtml: "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
+        attachments: [
+          {
+            filename: "report.txt",
+            contentType: "text/plain",
+            contentId: null,
+            disposition: "attachment" as const,
+            openStream: () => Readable.from("real file"),
+          },
+        ],
+      };
+      const graph = fakeGraphClient({
+        fetchDelta: async () => ({
+          invalidated: false,
+          newDeltaLink: "link-mixed",
+          changes: [{ id: "mixed-1", parentFolderId: "f1", removed: false, message: graphMessage }],
+        }),
+      });
+
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
+
+      const [emailRows, fileRows, attachmentRows] = await Promise.all([
+        pool.query<{ body: string }>(
+          `SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND properties->>'name' = $2`,
+          [params.emailsDatabaseId, "Mixed attachments"],
+        ),
+        pool.query<{ count: string }>(`SELECT count(*) FROM items WHERE database_id = $1`, [params.filesDatabaseId]),
+        pool.query<{ count: string }>(
+          `SELECT count(*) FROM mail_attachments WHERE message_item_id = (SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = $2)`,
+          [params.emailsDatabaseId, "Mixed attachments"],
+        ),
+      ]);
+
+      expect(emailRows.rows).toHaveLength(1);
+      const email = emailRows.rows[0];
+      const fileCount = fileRows.rows[0];
+      const attachmentCount = attachmentRows.rows[0];
+      if (!email || !fileCount || !attachmentCount) throw new Error("Expected reconciled Graph attachment rows");
+      expect(email.body).toBe(
+        "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
+      );
+      expect(fileCount.count).toBe("1");
+      expect(attachmentCount.count).toBe("1");
+    },
+  );
+
+  tenantIt(
+    "a deltaLink 410 Gone (invalidated) clears the stored deltaLink and runs a full resync (fetchDelta(null)) instead of resuming",
+    async () => {
+      const params = await reconcileParams();
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+
+      const deltaLinksSeen: (string | null)[] = [];
+      const secondClient = fakeGraphClient({
+        fetchDelta: async (deltaLink) => {
+          deltaLinksSeen.push(deltaLink);
+          if (deltaLink !== null) {
+            return { invalidated: true, newDeltaLink: "", changes: [] };
+          }
+          return {
+            invalidated: false,
+            newDeltaLink: "link-2",
+            changes: [
+              {
+                id: "m2",
+                parentFolderId: "f1",
+                removed: false,
+                message: {
+                  messageId: "<m2@x>",
+                  envelope: { from: { address: "b@x.com" } },
+                  subject: "Second",
+                  attachments: [],
+                },
+              },
+            ],
+          };
         },
-      ],
-    };
-    const graph = fakeGraphClient({
-      fetchDelta: async () => ({
-        invalidated: false,
-        newDeltaLink: "link-mixed",
-        changes: [{ id: "mixed-1", parentFolderId: "f1", removed: false, message: graphMessage }],
-      }),
-    });
+      });
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, secondClient, params));
 
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
+      expect(deltaLinksSeen).toEqual(["link-1", null]); // resumed from the stored link, got invalidated, retried from scratch
+      const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
+      expect(state?.graphDeltaLink).toBe("link-2");
+      const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
+      expect(rows[0].count).toBe("2");
+    },
+  );
 
-    const [emailRows, fileRows, attachmentRows] = await Promise.all([
-      pool.query<{ body: string }>(
-        `SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND properties->>'name' = $2`,
-        [params.emailsDatabaseId, "Mixed attachments"],
-      ),
-      pool.query<{ count: string }>(`SELECT count(*) FROM items WHERE database_id = $1`, [params.filesDatabaseId]),
-      pool.query<{ count: string }>(
-        `SELECT count(*) FROM mail_attachments WHERE message_item_id = (SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = $2)`,
-        [params.emailsDatabaseId, "Mixed attachments"],
-      ),
-    ]);
+  tenantIt(
+    "writes Graph read and flagged transitions, and a matching delta observation converges without an echo",
+    async () => {
+      const params = await reconcileParams();
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+      const emailItemId = (
+        await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
+      ).rows[0]!.id;
+      const writes: Array<{ id: string; patch: object }> = [];
+      const writer = fakeGraphClient({
+        patchMessage: async (id, patch) => {
+          writes.push({ id, patch });
+        },
+      });
 
-    expect(emailRows.rows).toHaveLength(1);
-    const email = emailRows.rows[0];
-    const fileCount = fileRows.rows[0];
-    const attachmentCount = attachmentRows.rows[0];
-    if (!email || !fileCount || !attachmentCount) throw new Error("Expected reconciled Graph attachment rows");
-    expect(email.body).toBe(
-      "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
-    );
-    expect(fileCount.count).toBe("1");
-    expect(attachmentCount.count).toBe("1");
-  });
+      await chokePoint.updateItem({
+        databaseId: params.emailsDatabaseId,
+        itemId: emailItemId,
+        propertiesPatch: { read: true, flagged: true },
+      });
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
+      expect(writes).toEqual([
+        { id: "m1", patch: { flag: { flagStatus: "flagged" } } },
+        { id: "m1", patch: { isRead: true } },
+      ]);
 
-  it("a deltaLink 410 Gone (invalidated) clears the stored deltaLink and runs a full resync (fetchDelta(null)) instead of resuming", async () => {
-    const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+      await chokePoint.updateItem({
+        databaseId: params.emailsDatabaseId,
+        itemId: emailItemId,
+        propertiesPatch: { read: false, flagged: false },
+      });
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
+      expect(writes.slice(2)).toEqual([
+        { id: "m1", patch: { flag: { flagStatus: "notFlagged" } } },
+        { id: "m1", patch: { isRead: false } },
+      ]);
 
-    const deltaLinksSeen: (string | null)[] = [];
-    const secondClient = fakeGraphClient({
-      fetchDelta: async (deltaLink) => {
-        deltaLinksSeen.push(deltaLink);
-        if (deltaLink !== null) {
-          return { invalidated: true, newDeltaLink: "", changes: [] };
-        }
-        return {
+      await chokePoint.updateItem({
+        databaseId: params.emailsDatabaseId,
+        itemId: emailItemId,
+        propertiesPatch: { read: true },
+      });
+      const observed = fakeGraphClient({
+        fetchDelta: async () => ({
           invalidated: false,
           newDeltaLink: "link-2",
           changes: [
             {
-              id: "m2",
+              id: "m1",
               parentFolderId: "f1",
               removed: false,
-              message: {
-                messageId: "<m2@x>",
-                envelope: { from: { address: "b@x.com" } },
-                subject: "Second",
-                attachments: [],
-              },
+              message: { messageId: "<m1@x>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
             },
           ],
-        };
-      },
-    });
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, secondClient, params));
-
-    expect(deltaLinksSeen).toEqual(["link-1", null]); // resumed from the stored link, got invalidated, retried from scratch
-    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
-    expect(state?.graphDeltaLink).toBe("link-2");
-    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
-    expect(rows[0].count).toBe("2");
-  });
-
-  it("writes Graph read and flagged transitions, and a matching delta observation converges without an echo", async () => {
-    const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
-    const emailItemId = (
-      await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
-    ).rows[0]!.id;
-    const writes: Array<{ id: string; patch: object }> = [];
-    const writer = fakeGraphClient({
-      patchMessage: async (id, patch) => {
-        writes.push({ id, patch });
-      },
-    });
-
-    await chokePoint.updateItem({
-      databaseId: params.emailsDatabaseId,
-      itemId: emailItemId,
-      propertiesPatch: { read: true, flagged: true },
-    });
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
-    expect(writes).toEqual([
-      { id: "m1", patch: { flag: { flagStatus: "flagged" } } },
-      { id: "m1", patch: { isRead: true } },
-    ]);
-
-    await chokePoint.updateItem({
-      databaseId: params.emailsDatabaseId,
-      itemId: emailItemId,
-      propertiesPatch: { read: false, flagged: false },
-    });
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
-    expect(writes.slice(2)).toEqual([
-      { id: "m1", patch: { flag: { flagStatus: "notFlagged" } } },
-      { id: "m1", patch: { isRead: false } },
-    ]);
-
-    await chokePoint.updateItem({
-      databaseId: params.emailsDatabaseId,
-      itemId: emailItemId,
-      propertiesPatch: { read: true },
-    });
-    const observed = fakeGraphClient({
-      fetchDelta: async () => ({
-        invalidated: false,
-        newDeltaLink: "link-2",
-        changes: [
-          {
-            id: "m1",
-            parentFolderId: "f1",
-            removed: false,
-            message: { messageId: "<m1@x>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
-          },
-        ],
-      }),
-      patchMessage: async () => {
-        throw new Error("converged Graph observation must not echo");
-      },
-    });
-    await withTransaction(pool, (client) => reconcileGraphAccount(client, observed, params));
-  });
+        }),
+        patchMessage: async () => {
+          throw new Error("converged Graph observation must not echo");
+        },
+      });
+      await withTransaction(pool, (client) => reconcileGraphAccount(client, observed, params));
+    },
+  );
 });
 
 describe("mail sync job error handling (issue #26)", () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -2118,184 +2477,848 @@ describe("mail sync job error handling (issue #26)", () => {
     await seedSystem(pool);
   });
 
-  it("persists last_error and pushes out next_expected_activity_at when a sync pass throws, surviving the aborted transaction's rollback", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
+  for (const scenario of [
+    "existing",
+    "inserted-after-baseline",
+    "competing-completion",
+    "completed-before-baseline",
+    "competing-in-flight",
+  ] as const)
+    tenantIt(`runs the real Gmail move phase outside transactions before reconcile: ${scenario}`, async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let releaseOwner: () => void = () => {};
+      let owner: Promise<void> | undefined;
+      let ownerToken: string | null | undefined;
+      let releaseBaseline: () => void = () => {};
+      let ownerSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+      let jobSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+      let primary: { value: unknown } | undefined;
+      const cleanupFailures: unknown[] = [];
+      try {
+        const moduleIds = {
+          emailsDatabaseId: await databaseIdFor("emails"),
+          filesDatabaseId: await databaseIdFor("files"),
+          foldersDatabaseId: await databaseIdFor("folders"),
+          mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+        };
+        const fixture = await withTransaction(runtime, async (client) => {
+          const mailbox = await createItemWithClient(client, {
+            databaseId: moduleIds.mailboxesDatabaseId,
+            properties: { name: "Mailbox" },
+          });
+          const message = await createItemWithClient(
+            client,
+            { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
+            { allowedSystemKeys: ["name"] },
+          );
+          await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+          await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
+          await upsertMailMessageMeta(client, {
+            itemId: message.id,
+            mailboxItemId: mailbox.id,
+            messageId: "<move-job@example.test>",
+            providerMessageId: "fake-provider-id",
+            envelope: {},
+          });
+          if (scenario === "existing" || scenario === "completed-before-baseline")
+            await recordDesiredMailMessageMove(client, {
+              messageItemId: message.id,
+              mailboxItemId: mailbox.id,
+              desiredPurpose: "archive",
+              source: { provider: "gmail", providerMessageId: "fake-provider-id" },
+            });
+          return { mailbox: mailbox.id, message: message.id };
+        });
+        if (scenario === "completed-before-baseline") {
+          const fetchProvider: typeof fetch = vi
+            .fn()
+            .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+            .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: [] }));
+          await drainGmailMoves(runtime, fixture.mailbox, new GmailRestClient(async () => "fake-token", fetchProvider));
+          expect(fetchProvider).toHaveBeenCalledTimes(2);
+        }
+        const calls: string[] = [];
+        const assertNoTransaction = async () => {
+          const result = await pool.query<{ pid: number; xact_start: Date | null }>(
+            "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+          );
+          expect(result.rows.length).toBeGreaterThan(0);
+          expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
+        };
+        const gmail: GmailMailClient = {
+          observeMoveMessage: async () => {
+            calls.push("observe");
+            await assertNoTransaction();
+            return { kind: "found", inTrash: false, inInbox: true, inSent: false };
+          },
+          getCurrentHistoryId: async () => {
+            calls.push("reconcile");
+            return "1";
+          },
+          listHistorySince: async () => ({
+            invalidated: false,
+            newHistoryId: "1",
+            changedMessageIds: [],
+            removedMessageIds: [],
+          }),
+          listAllMessageIds: async () => ["fake-provider-id"],
+          fetchMessage: async () => ({
+            id: "fake-provider-id",
+            threadId: "fake-thread",
+            labelIds: ["INBOX"],
+            message: { messageId: "<move-job@example.test>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
+          }),
+          listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+          modifyMessageLabels: async () => {},
+        };
+        registerGmailMovePreparer(gmail, async () => async () => {
+          calls.push("move");
+          await assertNoTransaction();
+          const state = await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox));
+          expect(state[0]).toMatchObject({ operation_phase: "in_flight", operation_step: "modify_labels" });
+          return { kind: "acknowledged", inTrash: false, inInbox: false, inSent: false };
+        });
+        let baselineReady!: (pid: number) => void;
+        const baselineReached = new Promise<number>((resolve) => {
+          baselineReady = resolve;
+        });
+        const baselineGate = new Promise<void>((resolve) => {
+          releaseBaseline = resolve;
+        });
+        let held = false;
+        const wrapped = new WeakSet<object>();
+        if (
+          scenario === "inserted-after-baseline" ||
+          scenario === "competing-completion" ||
+          scenario === "competing-in-flight"
+        )
+          runtime.on("acquire", (client) => {
+            if (wrapped.has(client)) return;
+            wrapped.add(client);
+            client.query = new Proxy(client.query.bind(client), {
+              apply(target, thisArg, args: unknown[]) {
+                const result: unknown = Reflect.apply(target, thisArg, args);
+                if (
+                  !held &&
+                  typeof args[0] === "string" &&
+                  args[0].includes(
+                    "SELECT message_item_id, mailbox_item_id, desired_revision, status, operation_token",
+                  ) &&
+                  result instanceof Promise
+                ) {
+                  held = true;
+                  return result.then(async (value: unknown) => {
+                    const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                    if (!pid.rows[0]) throw new Error("Missing baseline backend pid");
+                    baselineReady(pid.rows[0].pid);
+                    await baselineGate;
+                    return value;
+                  });
+                }
+                return result;
+              },
+            });
+          });
+        const job = handleSyncMailAccountTask(
+          runtime,
+          { mailboxItemId: fixture.mailbox },
+          { createGmailClient: () => gmail },
+          moduleIds,
+          noopStorage,
+        );
+        jobSettlement = Promise.allSettled([job]);
+        if (
+          scenario === "inserted-after-baseline" ||
+          scenario === "competing-completion" ||
+          scenario === "competing-in-flight"
+        ) {
+          try {
+            const baselinePid = await waitForMoveTestSignal(baselineReached);
+            const insertPid = await withTransaction(runtime, async (client) => {
+              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+              await recordDesiredMailMessageMove(client, {
+                messageItemId: fixture.message,
+                mailboxItemId: fixture.mailbox,
+                desiredPurpose: "archive",
+                source: { provider: "gmail", providerMessageId: "fake-provider-id" },
+              });
+              return pid.rows[0]?.pid;
+            });
+            expect(insertPid).toBeTypeOf("number");
+            expect(insertPid).not.toBe(baselinePid);
+            process.stdout.write(`batch18 move overlap baseline=${baselinePid} inserted=${insertPid}\n`);
+            if (scenario === "competing-completion") {
+              const fetchProvider: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: [] }));
+              await drainGmailMoves(
+                runtime,
+                fixture.mailbox,
+                new GmailRestClient(async () => "fake-token", fetchProvider),
+              );
+              expect(fetchProvider).toHaveBeenCalledTimes(2);
+              expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+            }
+            if (scenario === "competing-in-flight") {
+              let dispatchReady!: () => void;
+              const dispatched = new Promise<void>((resolve) => {
+                dispatchReady = resolve;
+              });
+              const gate = new Promise<void>((resolve) => {
+                releaseOwner = resolve;
+              });
+              const fetchProvider: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+                .mockImplementationOnce(async () => {
+                  const state = await withTransaction(runtime, async (client) => ({
+                    pid: (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+                    rows: await listPendingMoves(client, fixture.mailbox),
+                  }));
+                  expect(state.rows).toMatchObject([{ operation_phase: "in_flight" }]);
+                  ownerToken = state.rows[0]?.operation_token;
+                  expect(ownerToken).toBeTypeOf("string");
+                  expect(state.pid).toBeTypeOf("number");
+                  process.stdout.write(`batch18 gmail claimed owner=${state.pid}\n`);
+                  dispatchReady();
+                  await waitForMoveTestSignal(gate);
+                  return Response.json({ id: "fake-provider-id", labelIds: [] });
+                });
+              owner = drainGmailMoves(
+                runtime,
+                fixture.mailbox,
+                new GmailRestClient(async () => "fake-token", fetchProvider),
+              );
+              ownerSettlement = Promise.allSettled([owner]);
+              await waitForMoveTestSignal(dispatched);
+              expect(
+                await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox)),
+              ).toMatchObject([{ operation_phase: "in_flight" }]);
+            }
+          } finally {
+            releaseBaseline();
+          }
+        }
+        await waitForMoveTestSignal(job);
+        expect(calls).toEqual(
+          scenario === "competing-completion" ||
+            scenario === "completed-before-baseline" ||
+            scenario === "competing-in-flight"
+            ? ["reconcile"]
+            : ["observe", "move", "reconcile"],
+        );
+        if (scenario === "competing-in-flight") {
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toMatchObject([
+            { operation_phase: "in_flight", operation_token: ownerToken },
+          ]);
+        } else
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+        const oldEdges = await withTransaction(runtime, (client) =>
+          client.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM item_relations edge JOIN items folder ON
+         (folder.id = edge.item_a OR folder.id = edge.item_b)
+         WHERE (edge.item_a = $1 OR edge.item_b = $1) AND folder.properties ->> 'providerId' = 'INBOX'`,
+            [fixture.message],
+          ),
+        );
+        expect(oldEdges.rows[0]?.count).toBe(scenario === "completed-before-baseline" ? "1" : "0");
+        const observed = await withTransaction(runtime, (client) =>
+          client.query<{ read: string | null }>("SELECT properties ->> 'read' AS read FROM items WHERE id = $1", [
+            fixture.message,
+          ]),
+        );
+        if (scenario === "completed-before-baseline") expect(observed.rows[0]?.read).toBe("true");
+        else expect(observed.rows[0]?.read).not.toBe("true");
+        expect(
+          (await withTransaction(runtime, (client) => getMailMessageMetaByItemId(client, fixture.message)))
+            ?.providerMessageId,
+        ).toBe("fake-provider-id");
+        if (owner) {
+          releaseOwner();
+          await waitForMoveTestSignal(owner);
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+        }
+      } catch (error) {
+        primary = { value: error };
+      } finally {
+        releaseBaseline();
+        releaseOwner();
+        for (const settlement of [ownerSettlement, jobSettlement]) {
+          if (!settlement) continue;
+          for (const result of await settlement) {
+            if (result.status === "rejected") cleanupFailures.push(result.reason);
+          }
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (primary && cleanupFailures.length)
+        throw new AggregateError([primary.value, ...cleanupFailures], "Gmail move test and cleanup failed", {
+          cause: primary.value,
+        });
+      if (primary) throw primary.value;
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Gmail move test cleanup failed");
+    });
 
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
-    );
-    await withTransaction(pool, (client) =>
-      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
-    );
-    await withTransaction(pool, (client) =>
-      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
-    );
+  for (const provider of ["graph", "imap"] as const)
+    for (const scenario of ["competing-completion", "competing-in-flight", "completed-before-baseline"] as const)
+      tenantIt(`protects ${provider} job observations for ${scenario}`, async () => {
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        let releaseOwner: () => void = () => {};
+        let owner: Promise<void> | undefined;
+        let ownerToken: string | null | undefined;
+        let releaseBaseline: () => void = () => {};
+        let ownerSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+        let jobSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+        let primary: { value: unknown } | undefined;
+        const cleanupFailures: unknown[] = [];
+        try {
+          const moduleIds = {
+            emailsDatabaseId: await databaseIdFor("emails"),
+            filesDatabaseId: await databaseIdFor("files"),
+            foldersDatabaseId: await databaseIdFor("folders"),
+            mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+          };
+          const f = await withTransaction(runtime, async (client) => {
+            const emailFolder = await getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder");
+            const mailboxFolder = await getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox");
+            if (!emailFolder || !mailboxFolder) throw new Error("Missing mail relations");
+            const mailbox = await createItemWithClient(client, {
+              databaseId: moduleIds.mailboxesDatabaseId,
+              properties: { name: "Mailbox" },
+            });
+            const message = await createItemWithClient(
+              client,
+              { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
+              { allowedSystemKeys: ["name"] },
+            );
+            await ensureMailAccountSyncState(client, {
+              itemId: mailbox.id,
+              syncMode: provider === "graph" ? "graph_api" : "imap",
+            });
+            await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
+            await upsertMailMessageMeta(client, {
+              itemId: message.id,
+              mailboxItemId: mailbox.id,
+              messageId: "<baseline@example.test>",
+              ...(provider === "graph" ? { providerMessageId: "old-id" } : {}),
+              envelope: {},
+            });
+            const folder = async (path: string, specialPurpose: string, validity: string) => {
+              const id = await ensureFolderItem(client, {
+                foldersDatabaseId: moduleIds.foldersDatabaseId,
+                mailboxItemId: mailbox.id,
+                mailboxRelationPropertyId: mailboxFolder.id,
+                providerId: path,
+                name: path,
+                behavior: "folder",
+                specialPurpose,
+              });
+              if (provider === "imap") {
+                await ensureMailFolderSyncState(client, id);
+                await recordReconcile(client, {
+                  itemId: id,
+                  uidvalidity: validity,
+                  uidnext: path === "Source" ? "1" : "50",
+                  highestmodseq: null,
+                });
+              }
+              return id;
+            };
+            const source = await folder("Source", "inbox", "11");
+            const target = await folder("Destination", "archive", "12");
+            await createRelationWithClient(
+              client,
+              {
+                relationPropertyId: emailFolder.id,
+                callerItemId: message.id,
+                targetItemId: source,
+                ...(provider === "imap" ? { metadata: { uid: 7 } } : {}),
+              },
+              EMAILS_RELATION_CONTEXT,
+            );
+            return {
+              mailbox: mailbox.id,
+              message: message.id,
+              source,
+              target,
+              folderProperty: emailFolder.id,
+              mailboxProperty: mailboxFolder.id,
+            };
+          });
+          const recordIntent = () =>
+            withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await recordDesiredMailMessageMove(client, {
+                messageItemId: f.message,
+                mailboxItemId: f.mailbox,
+                desiredPurpose: "archive",
+                source:
+                  provider === "graph"
+                    ? { provider: "graph", providerMessageId: "old-id" }
+                    : { provider: "imap", folderItemId: f.source, path: "Source", uid: 7, uidValidity: "11" },
+              });
+              await deleteRelationWithClient(
+                client,
+                { relationPropertyId: f.folderProperty, callerItemId: f.message, targetItemId: f.source },
+                EMAILS_RELATION_CONTEXT,
+              );
+              await createRelationWithClient(
+                client,
+                { relationPropertyId: f.folderProperty, callerItemId: f.message, targetItemId: f.target },
+                EMAILS_RELATION_CONTEXT,
+              );
+              return pid;
+            });
+          let dispatchReady!: () => void;
+          const dispatched = new Promise<void>((resolve) => {
+            dispatchReady = resolve;
+          });
+          const ownerGate = new Promise<void>((resolve) => {
+            releaseOwner = resolve;
+          });
+          let dispatchCount = 0;
+          const perform = async () => {
+            dispatchCount++;
+            const state = await withTransaction(runtime, async (client) => ({
+              pid: (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+              rows: await listPendingMoves(client, f.mailbox),
+            }));
+            expect(state.rows).toMatchObject([{ operation_phase: "in_flight" }]);
+            ownerToken = state.rows[0]?.operation_token;
+            expect(ownerToken).toBeTypeOf("string");
+            expect(state.pid).toBeTypeOf("number");
+            process.stdout.write(`batch18 ${provider} move owner=${state.pid}\n`);
+            dispatchReady();
+            if (scenario === "competing-in-flight") await waitForMoveTestSignal(ownerGate);
+          };
+          const runOwner = (): Promise<void> => {
+            if (provider === "graph") {
+              const request: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "old-id", parentFolderId: "Source" }))
+                .mockImplementationOnce(async () => {
+                  await perform();
+                  return Response.json({ id: "new-id" });
+                });
+              return drainGraphMoves(
+                runtime,
+                f.mailbox,
+                new GraphRestClient(async () => "fake-token", request),
+                moduleIds.foldersDatabaseId,
+                f.mailboxProperty,
+              );
+            }
+            const unexpected = async (): Promise<never> => {
+              throw new Error("Unexpected IMAP move read or append");
+            };
+            const moveClient: ImapMailClient = {
+              prepareMove: async () => ({ uidValidity: "11", capabilities: new Set(["MOVE"]), found: true }),
+              executeMoveStep: async () => {
+                await perform();
+                return { kind: "acknowledged" as const, targetUid: 27, targetUidValidity: "12" };
+              },
+              getCapabilities: unexpected,
+              listFolders: unexpected,
+              selectFolder: unexpected,
+              fetchMessagesSince: unexpected,
+              fetchVanishedSince: unexpected,
+              fetchAllUids: unexpected,
+              fetchFlagsChangedSince: unexpected,
+              setMessageFlag: unexpected,
+              appendMessage: unexpected,
+              close: async () => {},
+            };
+            return drainImapMoves(
+              runtime,
+              f.mailbox,
+              async () => moveClient,
+              moduleIds.foldersDatabaseId,
+              f.mailboxProperty,
+              f.folderProperty,
+            );
+          };
+          if (scenario === "completed-before-baseline") {
+            await recordIntent();
+            await runOwner();
+          }
+          const graph: GraphMailClient = {
+            observeMoveMessage: async () => ({ kind: "found", id: "old-id", parentFolderId: "Source" }),
+            listFolders: async () => [
+              { id: "Source", displayName: "Source", wellKnownName: "inbox" },
+              { id: "Destination", displayName: "Destination", wellKnownName: "archive" },
+            ],
+            fetchDelta: async () => ({
+              invalidated: false,
+              newDeltaLink: "delta",
+              changes: [
+                {
+                  id: "old-id",
+                  parentFolderId: "Source",
+                  removed: false,
+                  message: {
+                    messageId: "<baseline@example.test>",
+                    envelope: {},
+                    attachments: [],
+                    flags: [IMAP_SEEN_FLAG],
+                  },
+                },
+              ],
+            }),
+            patchMessage: async () => {
+              throw new Error("Unexpected Graph flag mutation");
+            },
+          };
+          registerGraphMovePreparer(graph, async () => async () => {
+            throw new Error("Duplicate Graph move dispatch");
+          });
+          const imap: ImapMailClient = {
+            getCapabilities: async () => new Set(),
+            listFolders: async () => [
+              { path: "Source", specialUse: "\\Inbox" },
+              { path: "Destination", specialUse: "\\Archive" },
+            ],
+            selectFolder: async (path) => ({
+              uidvalidity: path === "Source" ? 11 : 12,
+              uidnext: 50,
+              highestModSeq: null,
+            }),
+            fetchMessagesSince: async (path) =>
+              path === "Source"
+                ? [
+                    {
+                      uid: 7,
+                      message: {
+                        messageId: "<baseline@example.test>",
+                        envelope: {},
+                        attachments: [],
+                        flags: [IMAP_SEEN_FLAG],
+                      },
+                    },
+                  ]
+                : [],
+            fetchVanishedSince: async () => null,
+            fetchAllUids: async () => [7, 27],
+            fetchFlagsChangedSince: async () => [],
+            setMessageFlag: async () => {
+              throw new Error("Unexpected IMAP flag mutation");
+            },
+            appendMessage: async () => {},
+            close: async () => {},
+          };
+          const gate = scenario === "completed-before-baseline" ? undefined : holdMoveBaseline(runtime);
+          if (gate) releaseBaseline = gate.release;
+          const job = handleSyncMailAccountTask(
+            runtime,
+            { mailboxItemId: f.mailbox },
+            { createGraphClient: () => graph, createImapClient: async () => imap },
+            moduleIds,
+            noopStorage,
+          );
+          jobSettlement = Promise.allSettled([job]);
+          if (gate) {
+            try {
+              const baselinePid = await waitForMoveTestSignal(gate.reached);
+              const intentPid = await recordIntent();
+              expect(intentPid).toBeTypeOf("number");
+              expect(intentPid).not.toBe(baselinePid);
+              process.stdout.write(`batch18 ${provider} baseline=${baselinePid} intent=${intentPid}\n`);
+              owner = runOwner();
+              ownerSettlement = Promise.allSettled([owner]);
+              await waitForMoveTestSignal(dispatched);
+              if (scenario === "competing-completion") await waitForMoveTestSignal(owner);
+            } finally {
+              releaseBaseline();
+            }
+          }
+          await waitForMoveTestSignal(job);
+          const rows = await withTransaction(runtime, (client) => listPendingMoves(client, f.mailbox));
+          if (scenario === "competing-in-flight")
+            expect(rows).toMatchObject([{ operation_phase: "in_flight", operation_token: ownerToken }]);
+          else expect(rows).toEqual([]);
+          const observed = await withTransaction(runtime, async (client) => ({
+            item: (
+              await client.query<{ read: string | null }>(
+                "SELECT properties ->> 'read' AS read FROM items WHERE id = $1",
+                [f.message],
+              )
+            ).rows[0],
+            meta: await getMailMessageMetaByItemId(client, f.message),
+            edges: (
+              await client.query<{ folder_id: string; uid: string | null }>(
+                `SELECT CASE WHEN item_a = $1 THEN item_b ELSE item_a END AS folder_id, metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[]))`,
+                [f.message, [f.source, f.target]],
+              )
+            ).rows,
+          }));
+          if (scenario === "completed-before-baseline") expect(observed.item?.read).toBe("true");
+          else {
+            expect(observed.item?.read).not.toBe("true");
+            expect(observed.edges.some((edge) => edge.folder_id === f.source)).toBe(false);
+            expect(observed.edges.some((edge) => edge.folder_id === f.target)).toBe(true);
+          }
+          if (provider === "graph")
+            expect(observed.meta?.providerMessageId).toBe(scenario === "competing-in-flight" ? "old-id" : "new-id");
+          if (provider === "imap" && scenario === "competing-completion")
+            expect(observed.edges.find((edge) => edge.folder_id === f.target)?.uid).toBe("27");
+          if (scenario === "completed-before-baseline")
+            expect(observed.edges.some((edge) => edge.folder_id === f.source)).toBe(true);
+          const foreign = await createTestTenant(pool);
+          const foreignView = await withTenantTransaction(runtime, foreign, async (client) => ({
+            meta: await getMailMessageMetaByItemId(client, f.message),
+            moves: await listPendingMoves(client, f.mailbox),
+          }));
+          expect(foreignView).toEqual({ meta: null, moves: [] });
+          if (owner) {
+            releaseOwner();
+            await waitForMoveTestSignal(owner);
+            expect(await withTransaction(runtime, (client) => listPendingMoves(client, f.mailbox))).toEqual([]);
+          }
+          if (scenario !== "completed-before-baseline") {
+            const final = await withTransaction(runtime, async (client) => ({
+              meta: await getMailMessageMetaByItemId(client, f.message),
+              edge: (
+                await client.query<{ uid: string | null }>(
+                  `SELECT metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)`,
+                  [f.message, f.target],
+                )
+              ).rows,
+              validity:
+                provider === "imap"
+                  ? (
+                      await client.query<{ uidvalidity: string | null }>(
+                        "SELECT uidvalidity FROM mail_folder_sync_state WHERE item_id = $1",
+                        [f.target],
+                      )
+                    ).rows[0]?.uidvalidity
+                  : undefined,
+            }));
+            if (provider === "graph") expect(final.meta?.providerMessageId).toBe("new-id");
+            else {
+              expect(final.edge).toEqual([{ uid: "27" }]);
+              expect(final.validity).toBe("12");
+            }
+          }
+          expect(dispatchCount).toBe(1);
+        } catch (error) {
+          primary = { value: error };
+        } finally {
+          releaseBaseline();
+          releaseOwner();
+          for (const settlement of [ownerSettlement, jobSettlement]) {
+            if (!settlement) continue;
+            for (const result of await settlement) {
+              if (result.status === "rejected") cleanupFailures.push(result.reason);
+            }
+          }
+          try {
+            await runtime.end();
+          } catch (error) {
+            cleanupFailures.push(error);
+          }
+        }
+        if (primary && cleanupFailures.length)
+          throw new AggregateError([primary.value, ...cleanupFailures], "Move matrix and cleanup failed", {
+            cause: primary.value,
+          });
+        if (primary) throw primary.value;
+        if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Move matrix cleanup failed");
+      });
 
-    const failingImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => {
-        throw new Error("connection refused");
-      },
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [],
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
+  tenantIt(
+    "persists last_error and pushes out next_expected_activity_at when a sync pass throws, surviving the aborted transaction's rollback",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
 
-    const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
 
-    await expect(
-      handleSyncMailAccountTask(
+      const failingImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => {
+          throw new Error("connection refused");
+        },
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+
+      const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
+
+      await expect(
+        handleSyncMailAccountTask(
+          pool,
+          { mailboxItemId: mailbox.id },
+          adapters,
+          {
+            emailsDatabaseId: emailsId,
+            filesDatabaseId: filesId,
+            foldersDatabaseId: foldersId,
+            mailboxesDatabaseId: mailboxesId,
+          },
+          noopStorage,
+        ),
+      ).rejects.toThrow("connection refused");
+
+      const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+      expect(state?.lastError).toBe("connection refused");
+      expect(state?.nextExpectedActivityAt).toBeTruthy();
+      expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now());
+
+      // The credential access attempt itself is still logged, even though the sync that used it failed later.
+      const { rows } = await pool.query(`SELECT purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].purpose).toBe("imap_sync");
+
+      // The user-visible Mailbox.syncStatus (distinct from the internal mail_account_sync_state
+      // bookkeeping above) also reflects the failure — this is what the mailbox UI would show.
+      const item = await withTransaction(pool, (client) =>
+        client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+      );
+      expect(item.rows[0].properties.syncStatus).toBe("error");
+    },
+  );
+
+  tenantIt(
+    "cleans up an attachment already written to disk when a later step in the same pass aborts the transaction",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
+
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
+
+      const writtenKeys: string[] = [];
+      const deletedKeys: string[] = [];
+      const trackingStorage: BlobStorageWriter = {
+        async writeStream(storageKey, source) {
+          writtenKeys.push(storageKey);
+          let byteSize = 0;
+          const hash = createHash("sha256");
+          for await (const chunk of source) {
+            hash.update(chunk as Buffer);
+            byteSize += (chunk as Buffer).length;
+          }
+          return { byteSize, contentHash: hash.digest("hex") };
+        },
+        async delete(storageKey) {
+          deletedKeys.push(storageKey);
+        },
+        readStream() {
+          throw new Error("readStream is not used by this test");
+        },
+      };
+
+      const moduleIds = {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      };
+
+      // A brand-new folder's very first reconcile pass never even looks at
+      // fetchVanishedSince/fetchAllUids (imapReconcile.ts: nothing to diff against yet) — a
+      // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
+      // below actually reaches (and can fail inside) the vanished-UID check.
+      const passOneImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+      await handleSyncMailAccountTask(
         pool,
         { mailboxItemId: mailbox.id },
-        adapters,
-        {
-          emailsDatabaseId: emailsId,
-          filesDatabaseId: filesId,
-          foldersDatabaseId: foldersId,
-          mailboxesDatabaseId: mailboxesId,
-        },
-        noopStorage,
-      ),
-    ).rejects.toThrow("connection refused");
+        { createImapClient: async () => passOneImap },
+        moduleIds,
+        trackingStorage,
+      );
 
-    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
-    expect(state?.lastError).toBe("connection refused");
-    expect(state?.nextExpectedActivityAt).toBeTruthy();
-    expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now());
-
-    // The credential access attempt itself is still logged, even though the sync that used it failed later.
-    const { rows } = await pool.query(`SELECT purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].purpose).toBe("imap_sync");
-
-    // The user-visible Mailbox.syncStatus (distinct from the internal mail_account_sync_state
-    // bookkeeping above) also reflects the failure — this is what the mailbox UI would show.
-    const item = await withTransaction(pool, (client) =>
-      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
-    );
-    expect(item.rows[0].properties.syncStatus).toBe("error");
-  });
-
-  it("cleans up an attachment already written to disk when a later step in the same pass aborts the transaction", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
-
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
-    );
-    await withTransaction(pool, (client) =>
-      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
-    );
-    await withTransaction(pool, (client) =>
-      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
-    );
-
-    const writtenKeys: string[] = [];
-    const deletedKeys: string[] = [];
-    const trackingStorage: BlobStorageWriter = {
-      async writeStream(storageKey, source) {
-        writtenKeys.push(storageKey);
-        let byteSize = 0;
-        const hash = createHash("sha256");
-        for await (const chunk of source) {
-          hash.update(chunk as Buffer);
-          byteSize += (chunk as Buffer).length;
-        }
-        return { byteSize, contentHash: hash.digest("hex") };
-      },
-      async delete(storageKey) {
-        deletedKeys.push(storageKey);
-      },
-      readStream() {
-        throw new Error("readStream is not used by this test");
-      },
-    };
-
-    const moduleIds = {
-      emailsDatabaseId: emailsId,
-      filesDatabaseId: filesId,
-      foldersDatabaseId: foldersId,
-      mailboxesDatabaseId: mailboxesId,
-    };
-
-    // A brand-new folder's very first reconcile pass never even looks at
-    // fetchVanishedSince/fetchAllUids (imapReconcile.ts: nothing to diff against yet) — a
-    // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
-    // below actually reaches (and can fail inside) the vanished-UID check.
-    const passOneImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => [],
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
-    await handleSyncMailAccountTask(
-      pool,
-      { mailboxItemId: mailbox.id },
-      { createImapClient: async () => passOneImap },
-      moduleIds,
-      trackingStorage,
-    );
-
-    const failingAfterAttachmentImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async () => [
-        {
-          uid: 1,
-          message: {
-            messageId: "<orphan@x>",
-            envelope: { from: { address: "a@x.com" } },
-            subject: "Has attachment",
-            attachments: [
-              {
-                filename: "f.txt",
-                contentType: "text/plain",
-                contentId: null,
-                disposition: "attachment",
-                openStream: () => Readable.from(Buffer.from("orphan-bytes")),
-              },
-            ],
+      const failingAfterAttachmentImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        fetchMessagesSince: async () => [
+          {
+            uid: 1,
+            message: {
+              messageId: "<orphan@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Has attachment",
+              attachments: [
+                {
+                  filename: "f.txt",
+                  contentType: "text/plain",
+                  contentId: null,
+                  disposition: "attachment",
+                  openStream: () => Readable.from(Buffer.from("orphan-bytes")),
+                },
+              ],
+            },
           },
+        ],
+        // No QRESYNC (getCapabilities returns an empty set) and uidvalidity is already known
+        // (set by passOneImap above) -> imapReconcile.ts's non-CONDSTORE fallback path, which
+        // diffs via fetchAllUids.
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => {
+          throw new Error("boom after the attachment was already written");
         },
-      ],
-      // No QRESYNC (getCapabilities returns an empty set) and uidvalidity is already known
-      // (set by passOneImap above) -> imapReconcile.ts's non-CONDSTORE fallback path, which
-      // diffs via fetchAllUids.
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => {
-        throw new Error("boom after the attachment was already written");
-      },
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
 
-    const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
+      const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
 
-    await expect(
-      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, trackingStorage),
-    ).rejects.toThrow("boom after the attachment was already written");
+      await expect(
+        handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, trackingStorage),
+      ).rejects.toThrow("boom after the attachment was already written");
 
-    expect(writtenKeys).toHaveLength(1);
-    expect(deletedKeys).toEqual(writtenKeys);
-    // The transaction rolled back, so no Files item or Email item exists for it either.
-    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
-    expect(rows[0].count).toBe("0");
-  });
+      expect(writtenKeys).toHaveLength(1);
+      expect(deletedKeys).toEqual(writtenKeys);
+      // The transaction rolled back, so no Files item or Email item exists for it either.
+      const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
+      expect(rows[0].count).toBe("0");
+    },
+  );
 
-  it("sets Mailbox.syncStatus to 'ok' after a completed sync pass", async () => {
+  tenantIt("sets Mailbox.syncStatus to 'ok' after a completed sync pass", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -2312,6 +3335,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2320,6 +3344,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
 
@@ -2341,6 +3366,415 @@ describe("mail sync job error handling (issue #26)", () => {
     );
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
+
+  it.each(["list", "select", "fetch", "download"] as const)(
+    "sanitizes a secret-bearing IMAP %s library failure at the client boundary",
+    async (stage) => {
+      const connection = new ImapFlow({
+        host: "unused.example.test",
+        port: 993,
+        secure: true,
+        auth: { user: "unused", pass: "unused" },
+        logger: false,
+      });
+      const secret = "IMAP-PRIVATE-SENTINEL";
+      const original = Object.assign(new Error(secret), { name: secret, code: secret });
+      vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+        path: "INBOX",
+        delimiter: "/",
+        flags: new Set(),
+        uidValidity: 1n,
+        uidNext: 2,
+        exists: 1,
+      });
+      if (stage === "list") vi.spyOn(connection, "list").mockRejectedValue(original);
+      if (stage === "select") vi.spyOn(connection, "mailboxOpen").mockRejectedValue(original);
+      if (stage === "fetch")
+        vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+          yield await Promise.reject(original);
+        });
+      if (stage === "download") {
+        vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+          yield { seq: 1, uid: 1, bodyStructure: { type: "text/plain", part: "1" } };
+        });
+        vi.spyOn(connection, "download").mockRejectedValue(original);
+      }
+      const client = new ImapFlowMailClient(connection);
+      const work =
+        stage === "list"
+          ? client.listFolders()
+          : stage === "select"
+            ? client.selectFolder("INBOX")
+            : client.fetchMessagesSince("INBOX", 1);
+      const result = await work.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      if (!(result instanceof Error)) throw new Error("Missing IMAP provider failure");
+      expect(result.message).toBe("IMAP provider operation failed unexpectedly");
+      expect(result).not.toHaveProperty("cause");
+      expect(`${result.stack} ${JSON.stringify(result)}`).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it.each([
+    ["undefined", undefined],
+    ["object", { secret: "IMAP-PRIVATE-SENTINEL" }],
+    ["aggregate", new AggregateError([new Error("IMAP-PRIVATE-SENTINEL")], "IMAP-PRIVATE-SENTINEL")],
+  ])("sanitizes a nonstandard %s IMAP library rejection", async (_name, original) => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    const list = vi.spyOn(connection, "list").mockRejectedValue(original);
+    const outcome = await new ImapFlowMailClient(connection).listFolders().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing IMAP provider failure");
+    expect(outcome.message).toBe("IMAP provider operation failed unexpectedly");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("IMAP-PRIVATE-SENTINEL");
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a failed IMAP fetch and its independent iterator cleanup failure without exposing either", async () => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    const primary = new Error("IMAP-PRIMARY-PRIVATE-SENTINEL");
+    const cleanup = new Error("IMAP-CLEANUP-PRIVATE-SENTINEL");
+    const iterator = (async function* (): AsyncGenerator<FetchMessageObject, void, unknown> {})();
+    let observedPrimary: unknown;
+    let observedCleanup: unknown;
+    const next = vi.spyOn(iterator, "next").mockImplementation(async () => {
+      observedPrimary = primary;
+      throw primary;
+    });
+    const close = vi.spyOn(iterator, "return").mockImplementation(async () => {
+      observedCleanup = cleanup;
+      throw cleanup;
+    });
+    vi.spyOn(connection, "fetch").mockReturnValue(iterator);
+    const warn = vi.spyOn(logger, "warn");
+    const outcome = await new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(observedPrimary).toBe(primary);
+    expect(observedCleanup).toBe(cleanup);
+    expect(next).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing IMAP provider failure");
+    expect(outcome.message).toBe("IMAP provider operation failed unexpectedly");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(warn.mock.calls)}`).not.toContain("PRIVATE-SENTINEL");
+    expect(
+      warn.mock.calls.some(
+        ([fields]) => typeof fields === "object" && fields !== null && Reflect.get(fields, "stage") === "stream_close",
+      ),
+    ).toBe(true);
+  });
+
+  tenantIt("preserves a non-network storage failure identity through an IMAP sync", async () => {
+    const moduleIds = {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      filesDatabaseId: await databaseIdFor("files"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fixture" }),
+    );
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "list").mockResolvedValue([
+      {
+        path: "INBOX",
+        pathAsListed: "INBOX",
+        name: "INBOX",
+        delimiter: "/",
+        parent: [],
+        parentPath: "",
+        flags: new Set(),
+        listed: true,
+        subscribed: true,
+      },
+    ]);
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+      yield {
+        seq: 1,
+        uid: 1,
+        envelope: { messageId: "<privacy-storage@example.test>" },
+        bodyStructure: { type: "application/pdf", part: "1", disposition: "attachment" },
+      };
+    });
+    vi.spyOn(connection, "download").mockResolvedValue({
+      meta: { expectedSize: 3, contentType: "application/pdf" },
+      content: Readable.from([Buffer.from("pdf")]),
+    });
+    vi.spyOn(connection, "logout").mockResolvedValue(undefined);
+    vi.spyOn(connection, "close").mockImplementation(() => {});
+    const original = new Error("storage failure sentinel");
+    const storage: BlobStorageWriter = {
+      ...noopStorage,
+      writeStream: async () => {
+        throw original;
+      },
+    };
+    const outcome = await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => new ImapFlowMailClient(connection) },
+      moduleIds,
+      storage,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBe(original);
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state?.lastError).toBe("storage failure sentinel");
+  });
+
+  tenantIt("stores and returns a safe IMAP provider failure after the actual job closes its client", async () => {
+    const moduleIds = {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      filesDatabaseId: await databaseIdFor("files"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, {
+        itemId: mailbox.id,
+        credentialType: "app_password",
+        plaintext: "IMAP-PRIVATE-SENTINEL",
+      }),
+    );
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    const providerFailure = Object.assign(new Error("IMAP-PRIVATE-SENTINEL"), {
+      name: "IMAP-PRIVATE-SENTINEL",
+      code: "IMAP-PRIVATE-SENTINEL",
+    });
+    const list = vi.spyOn(connection, "list").mockRejectedValue(providerFailure);
+    vi.spyOn(connection, "logout").mockResolvedValue(undefined);
+    const close = vi.spyOn(connection, "close").mockImplementation(() => {});
+    const adapter = new ImapFlowMailClient(connection);
+    try {
+      const result = await handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        { createImapClient: async () => adapter },
+        moduleIds,
+        noopStorage,
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      if (!(result instanceof Error)) throw new Error("Missing sync failure");
+      expect(result.message).toBe("IMAP provider operation failed unexpectedly");
+      expect(result).not.toHaveProperty("cause");
+      expect(`${result.stack} ${JSON.stringify(result)}`).not.toContain("IMAP-PRIVATE-SENTINEL");
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+      expect(state?.lastError).toBe("IMAP provider operation failed unexpectedly");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  tenantIt(
+    "records successful Gmail and Graph activity after a failure without resetting initial completion",
+    async () => {
+      const mailboxesId = await databaseIdFor("mailboxes");
+      for (const mode of ["gmail", "graph"] as const) {
+        const mailbox = await withTransaction(pool, (client) =>
+          createItemWithClient(client, { databaseId: mailboxesId, properties: { name: mode } }),
+        );
+        await withTransaction(pool, (client) =>
+          ensureMailAccountSyncState(client, {
+            itemId: mailbox.id,
+            syncMode: mode === "gmail" ? "gmail_api" : "graph_api",
+          }),
+        );
+        const success = () =>
+          withTransaction(pool, (client) =>
+            mode === "gmail"
+              ? recordGmailActivity(client, { itemId: mailbox.id, historyId: "1", nextExpectedActivityAt: new Date() })
+              : recordGraphActivity(client, {
+                  itemId: mailbox.id,
+                  deltaLink: "delta",
+                  nextExpectedActivityAt: new Date(),
+                }),
+          );
+        const read = () => withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+        await success();
+        const first = await read();
+        expect(first?.initialSyncCompletedAt).toBe(first?.lastSuccessfulSyncAt);
+        expect(first?.initialSyncCompletedAt).toBeTruthy();
+        await withTransaction(pool, (client) => recordSyncError(client, mailbox.id, "failure", "other"));
+        const failed = await read();
+        expect(failed?.failingSince).toBeTruthy();
+        expect(failed?.lastFailureKind).toBe("other");
+        expect(failed?.lastSuccessfulSyncAt).toBe(first?.lastSuccessfulSyncAt);
+        await success();
+        const recovered = await read();
+        expect(recovered?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+        expect(recovered?.failingSince).toBeNull();
+        expect(recovered?.lastFailureKind).toBeNull();
+        expect(recovered?.lastError).toBeNull();
+        expect(recovered?.lastSuccessfulSyncAt).toBeTruthy();
+      }
+    },
+  );
+
+  tenantIt(
+    "tracks the last successful sync, the failure streak and its kind, and the initial sync across passes (issue #1497)",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
+      const moduleIds = {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      };
+
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
+      const readState = () => withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+      const readUpdatedAt = async () => {
+        const { rows } = await pool.query(`SELECT updated_at FROM items WHERE id = $1`, [mailbox.id]);
+        return rows[0].updated_at as Date;
+      };
+      const run = (adapters: MailSyncAdapterFactory) =>
+        handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, noopStorage);
+
+      const emptyImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+      const healthy: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
+      const failing = (error: Error): MailSyncAdapterFactory => ({
+        createImapClient: async () => {
+          throw error;
+        },
+      });
+
+      await run(healthy);
+      const first = await readState();
+      expect(first?.lastSuccessfulSyncAt).toBeTruthy();
+      expect(first?.initialSyncCompletedAt).toBe(first?.lastSuccessfulSyncAt);
+      expect(first?.failingSince).toBeNull();
+      expect(first?.lastFailureKind).toBeNull();
+
+      // A second identical pass moves the success timestamp, keeps the initial sync, and leaves
+      // the already-'ok' Mailboxes item untouched.
+      const updatedAfterFirst = await readUpdatedAt();
+      await run(healthy);
+      const second = await readState();
+      expect(new Date(second!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+        new Date(first!.lastSuccessfulSyncAt!).getTime(),
+      );
+      expect(second?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+      expect(await readUpdatedAt()).toEqual(updatedAfterFirst);
+
+      await expect(run(failing(new Error("boom")))).rejects.toThrow("boom");
+      const afterFirstFailure = await readState();
+      expect(afterFirstFailure?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+      expect(afterFirstFailure?.failingSince).toBeTruthy();
+      expect(afterFirstFailure?.lastFailureKind).toBe("other");
+
+      await expect(run(failing(new MailReauthorizationRequiredError("revoked")))).rejects.toThrow();
+      const afterReauth = await readState();
+      expect(afterReauth?.failingSince).toBe(afterFirstFailure?.failingSince);
+      expect(afterReauth?.lastFailureKind).toBe("reauthorization");
+      expect(afterReauth?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+
+      await run(failing(new MailConnectionLimitError("Too many simultaneous connections.")));
+      const afterLimit = await readState();
+      expect(afterLimit?.failingSince).toBe(afterFirstFailure?.failingSince);
+      expect(afterLimit?.lastFailureKind).toBe("connectionLimit");
+
+      await run(healthy);
+      const recovered = await readState();
+      expect(recovered?.failingSince).toBeNull();
+      expect(recovered?.lastFailureKind).toBeNull();
+      expect(recovered?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+      expect(new Date(recovered!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+        new Date(second!.lastSuccessfulSyncAt!).getTime(),
+      );
+    },
+  );
 
   it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential, without writing a mail_sync_error notification (issue #149)", async () => {
     const emailsId = await databaseIdFor("emails");
@@ -2560,6 +3994,7 @@ describe("mail sync job error handling (issue #26)", () => {
     await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2568,6 +4003,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2598,6 +4034,7 @@ describe("mail sync job error handling (issue #26)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2606,6 +4043,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2625,6 +4063,238 @@ describe("mail sync job error handling (issue #26)", () => {
     ).resolves.toBeUndefined();
 
     expect(createImapClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
+  interface MailProblemRow {
+    category: string;
+    kind: string;
+    severity: string;
+    source_table: string;
+    source_id: string;
+    occurrence_count: number;
+    first_seen_at: Date;
+    resolved_at: Date | null;
+    resolution_kind: string | null;
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function createOwner(): Promise<void> {
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
+  }
+
+  async function seededModuleIds(): Promise<MailModuleIds> {
+    return {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      filesDatabaseId: await databaseIdFor("files"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+  }
+
+  /** A Mailbox with its sync state and, when `withCredential`, a stored app password. */
+  async function createMailbox(withCredential: boolean): Promise<string> {
+    const { mailboxesDatabaseId } = await seededModuleIds();
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    if (withCredential) {
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
+    }
+    return mailbox.id;
+  }
+
+  async function syncPass(
+    mailboxItemId: string,
+    adapters: MailSyncAdapterFactory,
+    jobId: string = randomUUID(),
+  ): Promise<void> {
+    await handleSyncMailAccountTask(pool, { mailboxItemId }, adapters, await seededModuleIds(), noopStorage, {
+      job: { id: jobId },
+    });
+  }
+
+  async function mailProblems(mailboxItemId: string): Promise<MailProblemRow[]> {
+    const { rows } = await pool.query<MailProblemRow>(
+      `SELECT category, kind, severity, source_table, source_id, occurrence_count, first_seen_at, resolved_at, resolution_kind
+         FROM semp_problems WHERE dedupe_key = $1 ORDER BY first_seen_at`,
+      [mailProblemKey(mailboxItemId)],
+    );
+    return rows;
+  }
+
+  const completingImap: ImapMailClient = {
+    appendMessage: async () => {},
+    getCapabilities: async () => new Set(),
+    listFolders: async () => [],
+    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+    fetchMessagesSince: async () => [],
+    fetchVanishedSince: async () => [],
+    fetchAllUids: async () => [],
+    fetchFlagsChangedSince: async () => [],
+    setMessageFlag: async () => {},
+    close: async () => {},
+  };
+
+  const refusingImap: MailSyncAdapterFactory = {
+    createImapClient: async () => {
+      throw new Error("connection refused");
+    },
+  };
+
+  it("raises one warning problem per mailbox, merging every failing pass and counting a retry of the same job once", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(false);
+
+    // No stored credential: each pass fails before any provider call, with the default severity.
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-2")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+    // A redelivery of job-3 is the same report again.
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+
+    const problems = await mailProblems(mailboxId);
+    expect(problems).toMatchObject([
+      {
+        category: "mail",
+        kind: "mailSyncError",
+        severity: "warning",
+        source_table: "mail_account_sync_state",
+        source_id: mailboxId,
+        occurrence_count: 3,
+        resolved_at: null,
+      },
+    ]);
+    // The problem starts when the failure streak did, not when the last report arrived.
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailboxId));
+    expect(problems[0]!.first_seen_at.toISOString()).toBe(state!.failingSince);
+  });
+
+  it("raises the problem as critical when the token is revoked, and writes no mail_sync_error notification for it", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await expect(
+      syncPass(mailboxId, {
+        createImapClient: async () => {
+          throw new MailReauthorizationRequiredError("token revoked");
+        },
+      }),
+    ).rejects.toThrow("token revoked");
+
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { severity: "critical", occurrence_count: 1, resolved_at: null },
+    ]);
+    const { rows: notifications } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailboxId]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("does not count an older retried job after a different job reported the same failure", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(false);
+    const moduleIds = await seededModuleIds();
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let primary: { value: unknown } | undefined;
+    try {
+      await inTenantZero(async () => {
+        for (const jobId of ["job-a", "job-b", "job-a"]) {
+          await expect(
+            handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, {}, moduleIds, noopStorage, {
+              job: { id: jobId },
+            }),
+          ).rejects.toThrow("has no stored credential");
+        }
+        const result = await withTransaction(runtime, (client) =>
+          client.query<{ occurrence_count: number; resolved_at: Date | null }>(
+            "SELECT occurrence_count, resolved_at FROM semp_problems WHERE dedupe_key = $1",
+            [mailProblemKey(mailboxId)],
+          ),
+        );
+        expect(result.rows).toEqual([{ occurrence_count: 2, resolved_at: null }]);
+      });
+    } catch (error) {
+      primary = { value: error };
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      throw new AggregateError(primary ? [primary.value, error] : [error], "Runtime pool cleanup failed", {
+        cause: error,
+      });
+    }
+    if (primary) throw primary.value;
+  });
+
+  it("raises no problem before any user account exists", async () => {
+    const mailboxId = await createMailbox(false);
+
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  it("raises no problem when the sync state row disappears during the pass", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+    const vanishingState: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        // A removal racing the pass: the row the prologue read is gone when the failure is recorded.
+        await pool.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [mailboxId]);
+        throw new Error("boom");
+      },
+    };
+
+    await expect(syncPass(mailboxId, vanishingState)).rejects.toThrow("boom");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  tenantIt("resolves the problem in the pass that completes, and a later failure opens a new one", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    // A completed pass with no problem to resolve changes nothing.
+    await syncPass(mailboxId, { createImapClient: async () => completingImap });
+    expect(await mailProblems(mailboxId)).toEqual([]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-1")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([{ resolved_at: null, occurrence_count: 1 }]);
+
+    await syncPass(mailboxId, { createImapClient: async () => completingImap }, "job-2");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date), resolution_kind: "recovered" },
+    ]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-3")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date) },
+      { resolved_at: null, occurrence_count: 1 },
+    ]);
+  });
+
+  it("raises no problem for a connection-limit rejection on its own", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await syncPass(mailboxId, {
+      createImapClient: async () => {
+        throw new MailConnectionLimitError("Too many simultaneous connections.");
+      },
+    });
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
   });
 });
 
@@ -2810,43 +4480,46 @@ describe("deliveredToAddress persisted at ingest (issue #93)", () => {
     await seedSystem(pool);
   });
 
-  it("persists deliveredToAddress computed from multiple Delivered-To occurrences, not recomputed later", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
-    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-    const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "INBOX" } },
-        { allowedSystemKeys: ["name"] },
-      ),
-    );
+  tenantIt(
+    "persists deliveredToAddress computed from multiple Delivered-To occurrences, not recomputed later",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
 
-    const result = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<dta1@example.com>",
-        envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-        deliveredToHeaders: ["me+relay2@example.com", "me+relay1@example.com"],
-        mailboxAliases: ["me@example.com"],
-      }),
-    );
+      const result = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<dta1@example.com>",
+          envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+          deliveredToHeaders: ["me+relay2@example.com", "me+relay1@example.com"],
+          mailboxAliases: ["me@example.com"],
+        }),
+      );
 
-    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, result.itemId));
-    expect(meta?.deliveredToAddress).toBe("me+relay2@example.com");
-  });
+      const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, result.itemId));
+      expect(meta?.deliveredToAddress).toBe("me+relay2@example.com");
+    },
+  );
 
-  it("falls back through to the mailbox's registered alias when no delivery headers are present", async () => {
+  tenantIt("falls back through to the mailbox's registered alias when no delivery headers are present", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -2906,88 +4579,91 @@ describe("DSN/bounce detection (issue #93)", () => {
     await seedSystem(pool);
   });
 
-  it("a DSN threads onto its outgoing message's thread and is tagged messageKind:'dsn', distinct from a human reply", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
-    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-    const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "INBOX" } },
-        { allowedSystemKeys: ["name"] },
-      ),
-    );
+  tenantIt(
+    "a DSN threads onto its outgoing message's thread and is tagged messageKind:'dsn', distinct from a human reply",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
 
-    const outgoing = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<outgoing@example.com>",
-        subject: "Original",
-        envelope: { from: { address: "me@example.com" }, to: [{ address: "someone@example.com" }] },
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
-    );
-    const outgoingMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, outgoing.itemId));
+      const outgoing = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<outgoing@example.com>",
+          subject: "Original",
+          envelope: { from: { address: "me@example.com" }, to: [{ address: "someone@example.com" }] },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
+      const outgoingMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, outgoing.itemId));
 
-    const dsn = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<dsn1@mailer-daemon.example.com>",
-        subject: "Undelivered Mail Returned to Sender",
-        references: ["<outgoing@example.com>"],
-        envelope: { from: { address: "mailer-daemon@example.com" }, to: [{ address: "me@example.com" }] },
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-        isDsn: true,
-      }),
-    );
+      const dsn = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<dsn1@mailer-daemon.example.com>",
+          subject: "Undelivered Mail Returned to Sender",
+          references: ["<outgoing@example.com>"],
+          envelope: { from: { address: "mailer-daemon@example.com" }, to: [{ address: "me@example.com" }] },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+          isDsn: true,
+        }),
+      );
 
-    const reply = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<reply1@example.com>",
-        subject: "Re: Original",
-        inReplyTo: "<outgoing@example.com>",
-        references: ["<outgoing@example.com>"],
-        envelope: { from: { address: "someone@example.com" }, to: [{ address: "me@example.com" }] },
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
-    );
+      const reply = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<reply1@example.com>",
+          subject: "Re: Original",
+          inReplyTo: "<outgoing@example.com>",
+          references: ["<outgoing@example.com>"],
+          envelope: { from: { address: "someone@example.com" }, to: [{ address: "me@example.com" }] },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
 
-    const dsnMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, dsn.itemId));
-    const replyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, reply.itemId));
+      const dsnMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, dsn.itemId));
+      const replyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, reply.itemId));
 
-    expect(dsnMeta?.messageKind).toBe("dsn");
-    expect(dsnMeta?.dsnOriginalMessageId).toBe("<outgoing@example.com>");
-    expect(dsnMeta?.threadId).toBe(outgoingMeta?.threadId);
+      expect(dsnMeta?.messageKind).toBe("dsn");
+      expect(dsnMeta?.dsnOriginalMessageId).toBe("<outgoing@example.com>");
+      expect(dsnMeta?.threadId).toBe(outgoingMeta?.threadId);
 
-    // The ordinary reply is threaded the same way but must not itself be classified as a DSN.
-    expect(replyMeta?.messageKind).toBe("message");
-    expect(replyMeta?.dsnOriginalMessageId).toBeNull();
-    expect(replyMeta?.threadId).toBe(outgoingMeta?.threadId);
-  });
+      // The ordinary reply is threaded the same way but must not itself be classified as a DSN.
+      expect(replyMeta?.messageKind).toBe("message");
+      expect(replyMeta?.dsnOriginalMessageId).toBeNull();
+      expect(replyMeta?.threadId).toBe(outgoingMeta?.threadId);
+    },
+  );
 });
 
 describe("person <-> email linkage determinism (issue #93)", () => {
@@ -3037,188 +4713,203 @@ describe("legacy Emails migration (issue #93)", () => {
     return item.id;
   }
 
-  it("reconstructs envelope/threadId/messageId from legacy sender/recipients text and marks migrationStatus 'partial'", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, {
-      name: "Old subject",
-      sender: "Alice <alice@example.com>",
-      recipients: "Bob <bob@example.com>, carol@example.com",
-    });
+  tenantIt(
+    "reconstructs envelope/threadId/messageId from legacy sender/recipients text and marks migrationStatus 'partial'",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const legacyItemId = await createLegacyEmailItem(emailsId, {
+        name: "Old subject",
+        sender: "Alice <alice@example.com>",
+        recipients: "Bob <bob@example.com>, carol@example.com",
+      });
 
-    await runMailLegacyEmailMigrationJob(pool, emailsId);
+      await runMailLegacyEmailMigrationJob(pool, emailsId);
 
-    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
-    expect(meta).not.toBeNull();
-    expect(meta?.migrationStatus).toBe("partial");
-    expect(meta?.envelope.from).toEqual({ name: "Alice", address: "alice@example.com" });
-    expect(meta?.envelope.to?.map((a) => a.address)).toEqual(["bob@example.com", "carol@example.com"]);
-    expect(meta?.messageId).toBeTruthy();
-    expect(meta?.threadId).toBeTruthy();
+      const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      expect(meta).not.toBeNull();
+      expect(meta?.migrationStatus).toBe("partial");
+      expect(meta?.envelope.from).toEqual({ name: "Alice", address: "alice@example.com" });
+      expect(meta?.envelope.to?.map((a) => a.address)).toEqual(["bob@example.com", "carol@example.com"]);
+      expect(meta?.messageId).toBeTruthy();
+      expect(meta?.threadId).toBeTruthy();
 
-    // The row itself is preserved untouched, not replaced/deleted by the migration.
-    const item = await chokePoint.getItem(emailsId, legacyItemId);
-    expect(item?.properties.name).toBe("Old subject");
-  });
+      // The row itself is preserved untouched, not replaced/deleted by the migration.
+      const item = await chokePoint.getItem(emailsId, legacyItemId);
+      expect(item?.properties.name).toBe("Old subject");
+    },
+  );
 
-  it("parses raw MIME when the injected fetcher has it, marking migrationStatus 'done' and recovering real threading headers", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, {
-      name: "Old subject",
-      sender: "alice@example.com",
-      recipients: "bob@example.com",
-    });
+  tenantIt(
+    "parses raw MIME when the injected fetcher has it, marking migrationStatus 'done' and recovering real threading headers",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const legacyItemId = await createLegacyEmailItem(emailsId, {
+        name: "Old subject",
+        sender: "alice@example.com",
+        recipients: "bob@example.com",
+      });
 
-    const rawMime = Buffer.from(
-      [
-        "From: Alice <alice@example.com>",
-        "To: Bob <bob@example.com>",
-        "Subject: Hi",
-        "Message-ID: <raw1@example.com>",
-        "References: <parent@example.com>",
-        "In-Reply-To: <parent@example.com>",
-        "Content-Type: text/plain",
-        "",
-        "Hello",
-        "",
-      ].join("\r\n"),
-    );
-    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+      const rawMime = Buffer.from(
+        [
+          "From: Alice <alice@example.com>",
+          "To: Bob <bob@example.com>",
+          "Subject: Hi",
+          "Message-ID: <raw1@example.com>",
+          "References: <parent@example.com>",
+          "In-Reply-To: <parent@example.com>",
+          "Content-Type: text/plain",
+          "",
+          "Hello",
+          "",
+        ].join("\r\n"),
+      );
+      const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
 
-    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+      await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
 
-    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
-    expect(meta?.migrationStatus).toBe("done");
-    expect(meta?.messageId).toBe("<raw1@example.com>");
-    expect(meta?.inReplyTo).toBe("<parent@example.com>");
-    expect(meta?.references).toEqual(["<parent@example.com>"]);
-    expect(meta?.envelope.from?.address).toBe("alice@example.com");
-    expect(meta?.envelope.to?.[0]?.address).toBe("bob@example.com");
-  });
+      const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      expect(meta?.migrationStatus).toBe("done");
+      expect(meta?.messageId).toBe("<raw1@example.com>");
+      expect(meta?.inReplyTo).toBe("<parent@example.com>");
+      expect(meta?.references).toEqual(["<parent@example.com>"]);
+      expect(meta?.envelope.from?.address).toBe("alice@example.com");
+      expect(meta?.envelope.to?.[0]?.address).toBe("bob@example.com");
+    },
+  );
 
-  it("classifies a DSN recovered from raw MIME as messageKind 'dsn', linked to its original message, not an ordinary reply", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, {
-      name: "Undelivered Mail Returned to Sender",
-      sender: "mailer-daemon@example.com",
-      recipients: "",
-    });
+  tenantIt(
+    "classifies a DSN recovered from raw MIME as messageKind 'dsn', linked to its original message, not an ordinary reply",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const legacyItemId = await createLegacyEmailItem(emailsId, {
+        name: "Undelivered Mail Returned to Sender",
+        sender: "mailer-daemon@example.com",
+        recipients: "",
+      });
 
-    const rawMime = Buffer.from(
-      [
-        "From: Mail Delivery Subsystem <mailer-daemon@example.com>",
-        "To: me@example.com",
-        "Subject: Undelivered Mail Returned to Sender",
-        "Message-ID: <dsn-raw1@example.com>",
-        "References: <outgoing1@example.com>",
-        'Content-Type: multipart/report; report-type=delivery-status; boundary="b1"',
-        "",
-        "--b1",
-        "Content-Type: text/plain",
-        "",
-        "delivery failed",
-        "--b1--",
-        "",
-      ].join("\r\n"),
-    );
-    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+      const rawMime = Buffer.from(
+        [
+          "From: Mail Delivery Subsystem <mailer-daemon@example.com>",
+          "To: me@example.com",
+          "Subject: Undelivered Mail Returned to Sender",
+          "Message-ID: <dsn-raw1@example.com>",
+          "References: <outgoing1@example.com>",
+          'Content-Type: multipart/report; report-type=delivery-status; boundary="b1"',
+          "",
+          "--b1",
+          "Content-Type: text/plain",
+          "",
+          "delivery failed",
+          "--b1--",
+          "",
+        ].join("\r\n"),
+      );
+      const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
 
-    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+      await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
 
-    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
-    expect(meta?.migrationStatus).toBe("done");
-    expect(meta?.messageKind).toBe("dsn");
-    expect(meta?.dsnOriginalMessageId).toBe("<outgoing1@example.com>");
-  });
+      const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      expect(meta?.migrationStatus).toBe("done");
+      expect(meta?.messageKind).toBe("dsn");
+      expect(meta?.dsnOriginalMessageId).toBe("<outgoing1@example.com>");
+    },
+  );
 
-  it("falls back to its own synthetic id (migrationStatus 'partial') instead of stealing another item's mail_message_meta row when the recovered Message-ID collides", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
-    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-    const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "INBOX" } },
-        { allowedSystemKeys: ["name"] },
-      ),
-    );
+  tenantIt(
+    "falls back to its own synthetic id (migrationStatus 'partial') instead of stealing another item's mail_message_meta row when the recovered Message-ID collides",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
 
-    // A live-synced item already owns this exact Message-ID — plausible for pre-#26 legacy
-    // rows, which had no dedup at all.
-    const liveItem = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<dup1@example.com>",
-        envelope: { from: { address: "alice@example.com" } },
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
-    );
+      // A live-synced item already owns this exact Message-ID — plausible for pre-#26 legacy
+      // rows, which had no dedup at all.
+      const liveItem = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<dup1@example.com>",
+          envelope: { from: { address: "alice@example.com" } },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
 
-    const legacyItemId = await createLegacyEmailItem(emailsId, {
-      name: "Old subject",
-      sender: "alice@example.com",
-      recipients: "bob@example.com",
-    });
-    const rawMime = Buffer.from(
-      [
-        "From: Alice <alice@example.com>",
-        "To: Bob <bob@example.com>",
-        "Subject: Hi",
-        "Message-ID: <dup1@example.com>",
-        "",
-        "Hello",
-        "",
-      ].join("\r\n"),
-    );
-    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+      const legacyItemId = await createLegacyEmailItem(emailsId, {
+        name: "Old subject",
+        sender: "alice@example.com",
+        recipients: "bob@example.com",
+      });
+      const rawMime = Buffer.from(
+        [
+          "From: Alice <alice@example.com>",
+          "To: Bob <bob@example.com>",
+          "Subject: Hi",
+          "Message-ID: <dup1@example.com>",
+          "",
+          "Hello",
+          "",
+        ].join("\r\n"),
+      );
+      const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
 
-    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+      await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
 
-    const legacyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
-    const liveMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, liveItem.itemId));
+      const legacyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      const liveMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, liveItem.itemId));
 
-    // The legacy item gets its own row (never null — no infinite-reprocessing hazard) under a
-    // synthetic id, and the live item's own row/identity is completely untouched.
-    expect(legacyMeta).not.toBeNull();
-    expect(legacyMeta?.itemId).toBe(legacyItemId);
-    expect(legacyMeta?.messageId).not.toBe("<dup1@example.com>");
-    expect(legacyMeta?.migrationStatus).toBe("partial");
-    expect(liveMeta?.itemId).toBe(liveItem.itemId);
-    expect(liveMeta?.messageId).toBe("<dup1@example.com>");
+      // The legacy item gets its own row (never null — no infinite-reprocessing hazard) under a
+      // synthetic id, and the live item's own row/identity is completely untouched.
+      expect(legacyMeta).not.toBeNull();
+      expect(legacyMeta?.itemId).toBe(legacyItemId);
+      expect(legacyMeta?.messageId).not.toBe("<dup1@example.com>");
+      expect(legacyMeta?.migrationStatus).toBe("partial");
+      expect(liveMeta?.itemId).toBe(liveItem.itemId);
+      expect(liveMeta?.messageId).toBe("<dup1@example.com>");
 
-    // Idempotency check now succeeds for the legacy item too — a retry does not loop forever.
-    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
-    expect(rows[0].count).toBe("1");
-  });
+      // Idempotency check now succeeds for the legacy item too — a retry does not loop forever.
+      const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
+      expect(rows[0].count).toBe("1");
+    },
+  );
 
-  it("is resumable: re-running the job after a partial completion never reprocesses an already-migrated row", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, {
-      name: "Old subject",
-      sender: "alice@example.com",
-      recipients: "bob@example.com",
-    });
+  tenantIt(
+    "is resumable: re-running the job after a partial completion never reprocesses an already-migrated row",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const legacyItemId = await createLegacyEmailItem(emailsId, {
+        name: "Old subject",
+        sender: "alice@example.com",
+        recipients: "bob@example.com",
+      });
 
-    await runMailLegacyEmailMigrationJob(pool, emailsId);
-    const firstPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      await runMailLegacyEmailMigrationJob(pool, emailsId);
+      const firstPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
 
-    // Simulates a retry after a crash: the job runs again from scratch (no persisted cursor,
-    // same as propertyTypeMigration.ts) — the already-migrated row must be left exactly alone.
-    await runMailLegacyEmailMigrationJob(pool, emailsId);
-    const secondPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+      // Simulates a retry after a crash: the job runs again from scratch (no persisted cursor,
+      // same as propertyTypeMigration.ts) — the already-migrated row must be left exactly alone.
+      await runMailLegacyEmailMigrationJob(pool, emailsId);
+      const secondPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
 
-    expect(secondPassMeta).toEqual(firstPassMeta);
-    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
-    expect(rows[0].count).toBe("1");
-  });
+      expect(secondPassMeta).toEqual(firstPassMeta);
+      const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
+      expect(rows[0].count).toBe("1");
+    },
+  );
 
   it("is queueable via enqueueMailLegacyEmailMigration/runOnce, with a stable per-database jobKey", async () => {
     const emailsId = await databaseIdFor("emails");
@@ -3240,70 +4931,74 @@ describe("legacy Emails migration (issue #93)", () => {
     expect(meta?.migrationStatus).toBe("partial");
   });
 
-  it("fetches an item's raw MIME before opening that item's transaction, not from inside it (issue #267)", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const legacyItemId1 = await createLegacyEmailItem(emailsId, {
-      name: "First",
-      sender: "a@example.com",
-      recipients: "",
-    });
-    const legacyItemId2 = await createLegacyEmailItem(emailsId, {
-      name: "Second",
-      sender: "b@example.com",
-      recipients: "",
-    });
+  tenantIt(
+    "fetches an item's raw MIME before opening that item's transaction, not from inside it (issue #267)",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const legacyItemId1 = await createLegacyEmailItem(emailsId, {
+        name: "First",
+        sender: "a@example.com",
+        recipients: "",
+      });
+      const legacyItemId2 = await createLegacyEmailItem(emailsId, {
+        name: "Second",
+        sender: "b@example.com",
+        recipients: "",
+      });
 
-    // No pool-wrapper precedent exists in `backend/` to copy, and `withTransaction` is typed
-    // against `pg.Pool` — a `Proxy` over the real pool lets `connect()` be intercepted while
-    // everything else (including `pool.query` used elsewhere in this test) still goes straight
-    // through to the real pool.
-    const log: string[] = [];
-    // Postgres pooled clients are reused across separate `connect()` calls — re-wrapping
-    // `client.query` on every checkout (instead of once, tracked here) would stack a fresh
-    // logging layer on top of the previous checkout's, double- (or triple-) counting BEGIN/COMMIT.
-    const originalQueryByClient = new WeakMap<PoolClient, PoolClient["query"]>();
-    async function connectAndRecord(): Promise<PoolClient> {
-      const client = await pool.connect();
-      if (!originalQueryByClient.has(client)) {
-        originalQueryByClient.set(client, client.query.bind(client));
-        const originalQuery = originalQueryByClient.get(client)!;
-        (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
-          const text =
-            typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
-          if (text === "BEGIN" || text === "COMMIT") log.push(text);
-          return (originalQuery as (...a: unknown[]) => unknown)(...queryArgs);
-        };
+      // No pool-wrapper precedent exists in `backend/` to copy, and `withTransaction` is typed
+      // against `pg.Pool` — a `Proxy` over the real pool lets `connect()` be intercepted while
+      // everything else (including `pool.query` used elsewhere in this test) still goes straight
+      // through to the real pool.
+      const log: string[] = [];
+      // Postgres pooled clients are reused across separate `connect()` calls — re-wrapping
+      // `client.query` on every checkout (instead of once, tracked here) would stack a fresh
+      // logging layer on top of the previous checkout's, double- (or triple-) counting BEGIN/COMMIT.
+      const originalQueryByClient = new WeakMap<PoolClient, PoolClient["query"]>();
+      async function connectAndRecord(): Promise<PoolClient> {
+        const client = await pool.connect();
+        if (!originalQueryByClient.has(client)) {
+          originalQueryByClient.set(client, client.query.bind(client));
+          const originalQuery = originalQueryByClient.get(client)!;
+          (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
+            const text =
+              typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
+            if (text === "BEGIN" || text === "COMMIT") log.push(text);
+            return (originalQuery as (...a: unknown[]) => unknown)(...queryArgs);
+          };
+        }
+        return client;
       }
-      return client;
-    }
-    const recordingPool = new Proxy(pool, {
-      get(target, prop, receiver) {
-        if (prop === "connect") return connectAndRecord;
-        return Reflect.get(target, prop, receiver);
-      },
-    });
+      const recordingPool = new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") return connectAndRecord;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
 
-    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => {
-      log.push(`fetch:${itemId}`);
-      return null;
-    };
+      const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => {
+        log.push(`fetch:${itemId}`);
+        return null;
+      };
 
-    await runMailLegacyEmailMigrationJob(recordingPool, emailsId, fetchRawMime);
+      await runMailLegacyEmailMigrationJob(recordingPool, emailsId, fetchRawMime);
 
-    expect(log.filter((entry) => entry.startsWith("fetch:")).sort()).toEqual(
-      [`fetch:${legacyItemId1}`, `fetch:${legacyItemId2}`].sort(),
-    );
-    const beginIndices = log.reduce<number[]>((acc, entry, index) => (entry === "BEGIN" ? [...acc, index] : acc), []);
-    expect(beginIndices.length).toBeGreaterThanOrEqual(2);
-    // Every transaction's BEGIN is immediately preceded by that item's fetch marker — proving
-    // the fetch happened before the transaction opened, not from inside it.
-    for (const index of beginIndices) {
-      expect(log[index - 1]).toMatch(/^fetch:/);
-    }
-  });
+      expect(log.filter((entry) => entry.startsWith("fetch:")).sort()).toEqual(
+        [`fetch:${legacyItemId1}`, `fetch:${legacyItemId2}`].sort(),
+      );
+      const beginIndices = log.reduce<number[]>((acc, entry, index) => (entry === "BEGIN" ? [...acc, index] : acc), []);
+      expect(beginIndices.length).toBeGreaterThanOrEqual(2);
+      // Every transaction's BEGIN is immediately preceded by that item's fetch marker — proving
+      // the fetch happened before the transaction opened, not from inside it.
+      for (const index of beginIndices) {
+        expect(log[index - 1]).toMatch(/^fetch:/);
+      }
+    },
+  );
 });
 
 describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
+  afterEach(() => vi.restoreAllMocks());
   function fakeImapFlow(overrides: Partial<Record<string, unknown>> = {}): ImapFlow {
     const calls: string[] = [];
     return {
@@ -3372,6 +5067,86 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
       };
     })();
   }
+
+  it("keeps a secret-bearing lazy download failure out of serialized fallback diagnostics", async () => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    vi.spyOn(connection, "fetch").mockImplementation(attachmentFetch);
+    const original = Object.assign(new Error("IMAP-PRIVATE-SENTINEL"), { name: "IMAP-PRIVATE-SENTINEL" });
+    let emitted: unknown;
+    const source = Readable.from(
+      (async function* () {
+        yield Buffer.from("abc");
+        emitted = original;
+        throw original;
+      })(),
+    );
+    vi.spyOn(connection, "download").mockResolvedValue({
+      meta: { expectedSize: 6, contentType: "application/pdf" },
+      content: source,
+    });
+    vi.spyOn(connection, "fetchOne").mockResolvedValue({
+      seq: 1,
+      uid: 1,
+      bodyParts: new Map([["2", Buffer.from("def")]]),
+    });
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application log stream");
+    const previousStream: unknown = Reflect.get(logger, streamSymbol);
+    const previousLevel = logger.level;
+    const logs: string[] = [];
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logs.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    const failures: unknown[] = [];
+    try {
+      logger.level = "warn";
+      const stream = await attachmentStream(new ImapFlowMailClient(connection));
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).toString()).toBe("abcdef");
+      expect(emitted).toBe(original);
+      expect(source.destroyed).toBe(true);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).not.toContain("IMAP-PRIVATE-SENTINEL");
+      expect(JSON.parse(logs[0] ?? "null")).toMatchObject({ stage: "attachment_fallback" });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      logger.level = previousLevel;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, streamSymbol, previousStream))
+        throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP fallback diagnostic test and cleanup failed");
+  });
 
   it("replaces a failed attachment download with ordered bounded IMAP partial ranges", async () => {
     const ranges: Array<{ start: number; maxLength: number }> = [];
@@ -3719,7 +5494,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
-  it("routes a real IMAP connection attempt through the injected per-account connection limiter", async () => {
+  tenantIt("routes a real IMAP connection attempt through the injected per-account connection limiter", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -3736,6 +5511,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -3744,6 +5520,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -3772,169 +5549,183 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 5 }]); // Gmail's provider default
   });
 
-  it("uses Mailboxes.connectionLimit instead of the provider default when the user has configured one", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
+  tenantIt(
+    "uses Mailboxes.connectionLimit instead of the provider default when the user has configured one",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, {
-        databaseId: mailboxesId,
-        properties: { name: "M", provider: "gmail", connectionLimit: 1 },
-      }),
-    );
-    await withTransaction(pool, (client) =>
-      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
-    );
-    await withTransaction(pool, (client) =>
-      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
-    );
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, {
+          databaseId: mailboxesId,
+          properties: { name: "M", provider: "gmail", connectionLimit: 1 },
+        }),
+      );
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
 
-    const emptyImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [],
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
+      const emptyImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
 
-    const runCalls: Array<{ accountId: string; limit: number }> = [];
-    const recordingLimiter = {
-      run: <T>(accountId: string, limit: number, task: () => Promise<T>) => {
-        runCalls.push({ accountId, limit });
-        return task();
-      },
-    };
+      const runCalls: Array<{ accountId: string; limit: number }> = [];
+      const recordingLimiter = {
+        run: <T>(accountId: string, limit: number, task: () => Promise<T>) => {
+          runCalls.push({ accountId, limit });
+          return task();
+        },
+      };
 
-    await handleSyncMailAccountTask(
-      pool,
-      { mailboxItemId: mailbox.id },
-      { createImapClient: async () => emptyImap },
-      {
+      await handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        { createImapClient: async () => emptyImap },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
+        noopStorage,
+        undefined,
+        recordingLimiter,
+      );
+
+      expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 1 }]); // user override wins over Gmail's provider default of 5
+    },
+  );
+
+  tenantIt(
+    "holds no pooled database connection while a sync pass waits for an IMAP connection slot (issue #267)",
+    async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const mailboxesId = await databaseIdFor("mailboxes");
+      const moduleIds = {
         emailsDatabaseId: emailsId,
         filesDatabaseId: filesId,
         foldersDatabaseId: foldersId,
         mailboxesDatabaseId: mailboxesId,
-      },
-      noopStorage,
-      undefined,
-      recordingLimiter,
-    );
+      };
 
-    expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 1 }]); // user override wins over Gmail's provider default of 5
-  });
+      // connectionLimit: 1 forces genuine contention between two concurrent passes for this
+      // account — at the default limit of 2 (imapConnectionLimitForProvider) they never wait and
+      // this test would pass vacuously even on the unfixed code.
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", connectionLimit: 1 } }),
+      );
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
 
-  it("holds no pooled database connection while a sync pass waits for an IMAP connection slot (issue #267)", async () => {
-    const emailsId = await databaseIdFor("emails");
-    const foldersId = await databaseIdFor("folders");
-    const filesId = await databaseIdFor("files");
-    const mailboxesId = await databaseIdFor("mailboxes");
-    const moduleIds = {
-      emailsDatabaseId: emailsId,
-      filesDatabaseId: filesId,
-      foldersDatabaseId: foldersId,
-      mailboxesDatabaseId: mailboxesId,
-    };
+      // A real (not fake/recording) limiter — the point of this test is genuine queueing.
+      const limiter = createImapConnectionLimiter();
 
-    // connectionLimit: 1 forces genuine contention between two concurrent passes for this
-    // account — at the default limit of 2 (imapConnectionLimitForProvider) they never wait and
-    // this test would pass vacuously even on the unfixed code.
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", connectionLimit: 1 } }),
-    );
-    await withTransaction(pool, (client) =>
-      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
-    );
-    await withTransaction(pool, (client) =>
-      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
-    );
+      let releaseFirst: () => void = () => {};
+      let resolveFirstStarted: () => void = () => {};
+      const firstStarted = new Promise<void>((resolve) => {
+        resolveFirstStarted = resolve;
+      });
+      const blockingImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+        selectFolder: async () => {
+          resolveFirstStarted();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
+        },
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+      const emptyImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async () => [],
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
 
-    // A real (not fake/recording) limiter — the point of this test is genuine queueing.
-    const limiter = createImapConnectionLimiter();
+      // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
+      // with its write transaction's connection checked out) until `releaseFirst()` is called.
+      const firstPass = handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        { createImapClient: async () => blockingImap },
+        moduleIds,
+        noopStorage,
+        undefined,
+        limiter,
+      );
+      await firstStarted;
 
-    let releaseFirst: () => void = () => {};
-    let resolveFirstStarted: () => void = () => {};
-    const firstStarted = new Promise<void>((resolve) => {
-      resolveFirstStarted = resolve;
-    });
-    const blockingImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-      selectFolder: async () => {
-        resolveFirstStarted();
-        await new Promise<void>((resolve) => {
-          releaseFirst = resolve;
-        });
-        return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
-      },
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [],
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
-    const emptyImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [],
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
+      const checkedOut = () => pool.totalCount - pool.idleCount;
+      const baseline = checkedOut();
 
-    // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
-    // with its write transaction's connection checked out) until `releaseFirst()` is called.
-    const firstPass = handleSyncMailAccountTask(
-      pool,
-      { mailboxItemId: mailbox.id },
-      { createImapClient: async () => blockingImap },
-      moduleIds,
-      noopStorage,
-      undefined,
-      limiter,
-    );
-    await firstStarted;
+      const secondPass = handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        { createImapClient: async () => emptyImap },
+        moduleIds,
+        noopStorage,
+        undefined,
+        limiter,
+      );
 
-    const checkedOut = () => pool.totalCount - pool.idleCount;
-    const baseline = checkedOut();
+      // Waits until the second pass's own credential fetch (which happens before it ever calls
+      // the limiter) has been logged — proof it has run its prologue/credential work and is now
+      // either calling or blocked in `imapConnectionLimiter.run`, not still doing earlier work.
+      for (;;) {
+        const { rows } = await pool.query(`SELECT count(*) FROM credential_access_log WHERE item_id = $1`, [
+          mailbox.id,
+        ]);
+        if (Number(rows[0].count) >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call (and
+      // its internal queueing) has actually run.
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const secondPass = handleSyncMailAccountTask(
-      pool,
-      { mailboxItemId: mailbox.id },
-      { createImapClient: async () => emptyImap },
-      moduleIds,
-      noopStorage,
-      undefined,
-      limiter,
-    );
+      // The second pass is queued behind the first (limit 1, one already active) — it must not
+      // have checked out a database connection while it waits. On the unfixed code, the write
+      // transaction opened before the limiter wait, so this would be +1.
+      expect(checkedOut() - baseline).toBe(0);
 
-    // Waits until the second pass's own credential fetch (which happens before it ever calls
-    // the limiter) has been logged — proof it has run its prologue/credential work and is now
-    // either calling or blocked in `imapConnectionLimiter.run`, not still doing earlier work.
-    for (;;) {
-      const { rows } = await pool.query(`SELECT count(*) FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
-      if (Number(rows[0].count) >= 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call (and
-    // its internal queueing) has actually run.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    // The second pass is queued behind the first (limit 1, one already active) — it must not
-    // have checked out a database connection while it waits. On the unfixed code, the write
-    // transaction opened before the limiter wait, so this would be +1.
-    expect(checkedOut() - baseline).toBe(0);
-
-    releaseFirst();
-    await firstPass;
-    await secondPass;
-  });
+      releaseFirst();
+      await firstPass;
+      await secondPass;
+    },
+  );
 });
 
 describe("mail flag write-back (issue #251)", () => {
@@ -3945,126 +5736,131 @@ describe("mail flag write-back (issue #251)", () => {
     await seedSystem(pool);
   });
 
-  it("persists desired/current state, writes every IMAP folder copy for all four transitions, and does not echo a converged observation", async () => {
-    const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
-      databaseIdFor("emails"),
-      databaseIdFor("folders"),
-      databaseIdFor("files"),
-      databaseIdFor("mailboxes"),
-    ]);
-    const [emailProperties, folderProperties] = await Promise.all([
-      chokePoint.listProperties(emailsId),
-      chokePoint.listProperties(foldersId),
-    ]);
-    const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
-    );
-    const params = {
-      mailboxItemId: mailbox.id,
-      emailsDatabaseId: emailsId,
-      filesDatabaseId: filesId,
-      foldersDatabaseId: foldersId,
-      folderRelationPropertyId: emailProperties.find((property) => property.key === "folder")!.id,
-      mailboxFolderRelationPropertyId: folderProperties.find((property) => property.key === "mailbox")!.id,
-      attachmentsRelationPropertyId: emailProperties.find((property) => property.key === "attachments")!.id,
-      storage: noopStorage,
-      storageKeyPrefix: "test",
-    };
-    const message = {
-      messageId: "<writeback@x>",
-      envelope: {},
-      attachments: [],
-      flags: [],
-    };
-    const initial: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [
-        { path: "INBOX", specialUse: "\\Inbox" },
-        { path: "Archive", specialUse: "\\Archive" },
-      ],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
-      fetchVanishedSince: async () => [],
-      fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
-      fetchFlagsChangedSince: async () => [],
-      setMessageFlag: async () => {},
-    };
-    await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
+  tenantIt(
+    "persists desired/current state, writes every IMAP folder copy for all four transitions, and does not echo a converged observation",
+    async () => {
+      const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
+        databaseIdFor("emails"),
+        databaseIdFor("folders"),
+        databaseIdFor("files"),
+        databaseIdFor("mailboxes"),
+      ]);
+      const [emailProperties, folderProperties] = await Promise.all([
+        chokePoint.listProperties(emailsId),
+        chokePoint.listProperties(foldersId),
+      ]);
+      const mailbox = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+      );
+      const params = {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        folderRelationPropertyId: emailProperties.find((property) => property.key === "folder")!.id,
+        mailboxFolderRelationPropertyId: folderProperties.find((property) => property.key === "mailbox")!.id,
+        attachmentsRelationPropertyId: emailProperties.find((property) => property.key === "attachments")!.id,
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      };
+      const message = {
+        messageId: "<writeback@x>",
+        envelope: {},
+        attachments: [],
+        flags: [],
+      };
+      const initial: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [
+          { path: "INBOX", specialUse: "\\Inbox" },
+          { path: "Archive", specialUse: "\\Archive" },
+        ],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
+        fetchVanishedSince: async () => [],
+        fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
+        fetchFlagsChangedSince: async () => [],
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+      await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
 
-    const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [emailsId]);
-    const emailItemId = rows[0]!.id;
-    await chokePoint.updateItem({
-      databaseId: emailsId,
-      itemId: emailItemId,
-      propertiesPatch: { read: true, flagged: true },
-    });
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [emailsId]);
+      const emailItemId = rows[0]!.id;
+      await chokePoint.updateItem({
+        databaseId: emailsId,
+        itemId: emailItemId,
+        propertiesPatch: { read: true, flagged: true },
+      });
 
-    const writes: Array<{ path: string; flag: string; value: boolean }> = [];
-    const writingClient: ImapMailClient = {
-      ...initial,
-      fetchMessagesSince: async () => [],
-      setMessageFlag: async (path, _uid, flag, value) => {
-        writes.push({ path, flag, value });
-      },
-    };
-    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes).toHaveLength(4);
-    expect(writes).toEqual(
-      expect.arrayContaining([
-        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
-        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
-        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: true },
-        { path: "Archive", flag: IMAP_SEEN_FLAG, value: true },
-      ]),
-    );
+      const writes: Array<{ path: string; flag: string; value: boolean }> = [];
+      const writingClient: ImapMailClient = {
+        ...initial,
+        fetchMessagesSince: async () => [],
+        setMessageFlag: async (path, _uid, flag, value) => {
+          writes.push({ path, flag, value });
+        },
+      };
+      await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+      expect(writes).toHaveLength(4);
+      expect(writes).toEqual(
+        expect.arrayContaining([
+          { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+          { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+          { path: "INBOX", flag: IMAP_SEEN_FLAG, value: true },
+          { path: "Archive", flag: IMAP_SEEN_FLAG, value: true },
+        ]),
+      );
 
-    await chokePoint.updateItem({
-      databaseId: emailsId,
-      itemId: emailItemId,
-      propertiesPatch: { read: false, flagged: false },
-    });
-    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes.slice(4)).toHaveLength(4);
-    expect(writes.slice(4)).toEqual(
-      expect.arrayContaining([
-        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: false },
-        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: false },
-        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: false },
-        { path: "Archive", flag: IMAP_SEEN_FLAG, value: false },
-      ]),
-    );
+      await chokePoint.updateItem({
+        databaseId: emailsId,
+        itemId: emailItemId,
+        propertiesPatch: { read: false, flagged: false },
+      });
+      await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+      expect(writes.slice(4)).toHaveLength(4);
+      expect(writes.slice(4)).toEqual(
+        expect.arrayContaining([
+          { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: false },
+          { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: false },
+          { path: "INBOX", flag: IMAP_SEEN_FLAG, value: false },
+          { path: "Archive", flag: IMAP_SEEN_FLAG, value: false },
+        ]),
+      );
 
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
-    const observedConvergence: ImapMailClient = {
-      ...initial,
-      fetchMessagesSince: async (path) => [
-        { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
-      ],
-      setMessageFlag: async () => {
-        throw new Error("a provider observation matching desired state must not be echoed");
-      },
-    };
-    await withTransaction(pool, (client) => reconcileImapAccount(client, observedConvergence, params));
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+      const observedConvergence: ImapMailClient = {
+        ...initial,
+        fetchMessagesSince: async (path) => [
+          { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
+        ],
+        setMessageFlag: async () => {
+          throw new Error("a provider observation matching desired state must not be echoed");
+        },
+      };
+      await withTransaction(pool, (client) => reconcileImapAccount(client, observedConvergence, params));
 
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { flagged: true } });
-    const failingClient: ImapMailClient = {
-      ...writingClient,
-      setMessageFlag: async () => {
-        throw new Error("temporary IMAP failure");
-      },
-    };
-    await expect(
-      withTransaction(pool, (client) => reconcileImapAccount(client, failingClient, params)),
-    ).rejects.toThrow("temporary IMAP failure");
-    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes.slice(-2)).toHaveLength(2);
-    expect(writes.slice(-2)).toEqual(
-      expect.arrayContaining([
-        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
-        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
-      ]),
-    );
-  });
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { flagged: true } });
+      const failingClient: ImapMailClient = {
+        ...writingClient,
+        setMessageFlag: async () => {
+          throw new Error("temporary IMAP failure");
+        },
+      };
+      await expect(
+        withTransaction(pool, (client) => reconcileImapAccount(client, failingClient, params)),
+      ).rejects.toThrow("temporary IMAP failure");
+      await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+      expect(writes.slice(-2)).toHaveLength(2);
+      expect(writes.slice(-2)).toEqual(
+        expect.arrayContaining([
+          { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+          { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+        ]),
+      );
+    },
+  );
 });
 
 describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)", () => {
@@ -4144,6 +5940,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4156,6 +5953,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("write-back is out of scope for this test");
       },
+      close: async () => {},
       ...overrides,
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, firstPassImap, params));
@@ -4165,147 +5963,165 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     return rows[0]!.id;
   }
 
-  it("(a) an observation on a converged flag replaces the item's value and both state halves, leaving no pending write", async () => {
-    const { emailsId, mailbox, params } = await setUpFolder();
-    const emailItemId = await ingestFirstMessage(params);
+  tenantIt(
+    "(a) an observation on a converged flag replaces the item's value and both state halves, leaving no pending write",
+    async () => {
+      const { emailsId, mailbox, params } = await setUpFolder();
+      const emailItemId = await ingestFirstMessage(params);
 
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
-    await withTransaction(pool, (client) => recordConfirmedMailMessageFlag(client, emailItemId, "read", true));
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+      await withTransaction(pool, (client) => recordConfirmedMailMessageFlag(client, emailItemId, "read", true));
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
 
-    const secondPassImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => [1],
-      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread
-      setMessageFlag: async () => {
-        throw new Error("a converged observation must not be echoed as a write-back");
-      },
-    };
-    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+      const secondPassImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => [1],
+        fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread
+        setMessageFlag: async () => {
+          throw new Error("a converged observation must not be echoed as a write-back");
+        },
+        close: async () => {},
+      };
+      await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
-    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(false);
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: false, current_state: false });
+      expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(false);
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: false, current_state: false });
 
-    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
-    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
-    expect(
-      await listPendingImapFlagWrites(pool, {
-        folderRelationDefinitionId,
-        mailboxFolderRelationDefinitionId,
-        mailboxItemId: mailbox.id,
-      }),
-    ).toEqual([]);
-  });
+      const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+      const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+      expect(
+        await listPendingImapFlagWrites(pool, {
+          folderRelationDefinitionId,
+          mailboxFolderRelationDefinitionId,
+          mailboxItemId: mailbox.id,
+        }),
+      ).toEqual([]);
+    },
+  );
 
-  it("(b) an observation of the old value while a write is pending leaves the item and the pending write untouched", async () => {
-    const { emailsId, mailbox, params } = await setUpFolder();
-    const emailItemId = await ingestFirstMessage(params);
+  tenantIt(
+    "(b) an observation of the old value while a write is pending leaves the item and the pending write untouched",
+    async () => {
+      const { emailsId, mailbox, params } = await setUpFolder();
+      const emailItemId = await ingestFirstMessage(params);
 
-    // Marked read but never confirmed by write-back — desired true, current still false.
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+      // Marked read but never confirmed by write-back — desired true, current still false.
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
-    const secondPassImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => [1],
-      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread, the old value
-      setMessageFlag: async () => {
-        throw new Error("this pass must not attempt a write-back itself");
-      },
-    };
-    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+      const secondPassImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => [1],
+        fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread, the old value
+        setMessageFlag: async () => {
+          throw new Error("this pass must not attempt a write-back itself");
+        },
+        close: async () => {},
+      };
+      await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
-    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+      expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
-    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
-    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
-    expect(
-      await listPendingImapFlagWrites(pool, {
-        folderRelationDefinitionId,
-        mailboxFolderRelationDefinitionId,
-        mailboxItemId: mailbox.id,
-      }),
-    ).toEqual([{ messageItemId: emailItemId, propertyKey: "read", desiredState: true, folderPath: "INBOX", uid: 1 }]);
-  });
+      const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+      const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+      expect(
+        await listPendingImapFlagWrites(pool, {
+          folderRelationDefinitionId,
+          mailboxFolderRelationDefinitionId,
+          mailboxItemId: mailbox.id,
+        }),
+      ).toEqual([{ messageItemId: emailItemId, propertyKey: "read", desiredState: true, folderPath: "INBOX", uid: 1 }]);
+    },
+  );
 
-  it("(c) an observation equal to the pending desired value converges the row without patching the item", async () => {
-    const { emailsId, mailbox, params } = await setUpFolder();
-    const emailItemId = await ingestFirstMessage(params);
+  tenantIt(
+    "(c) an observation equal to the pending desired value converges the row without patching the item",
+    async () => {
+      const { emailsId, mailbox, params } = await setUpFolder();
+      const emailItemId = await ingestFirstMessage(params);
 
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
-    const secondPassImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => [1],
-      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [IMAP_SEEN_FLAG] }], // observed read, matching desired
-      setMessageFlag: async () => {
-        throw new Error("an observation matching desired state must not be echoed as a write-back");
-      },
-    };
-    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+      const secondPassImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => [1],
+        fetchFlagsChangedSince: async () => [{ uid: 1, flags: [IMAP_SEEN_FLAG] }], // observed read, matching desired
+        setMessageFlag: async () => {
+          throw new Error("an observation matching desired state must not be echoed as a write-back");
+        },
+        close: async () => {},
+      };
+      await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
-    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
-    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
+      expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
+      expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
 
-    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
-    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
-    expect(
-      await listPendingImapFlagWrites(pool, {
-        folderRelationDefinitionId,
-        mailboxFolderRelationDefinitionId,
-        mailboxItemId: mailbox.id,
-      }),
-    ).toEqual([]);
-  });
+      const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+      const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+      expect(
+        await listPendingImapFlagWrites(pool, {
+          folderRelationDefinitionId,
+          mailboxFolderRelationDefinitionId,
+          mailboxItemId: mailbox.id,
+        }),
+      ).toEqual([]);
+    },
+  );
 
-  it("a repeat ingest of an already-known message with a pending write-back leaves the item and desired_state untouched", async () => {
-    const { emailsId, params } = await setUpFolder();
-    const ingestArgs = {
-      emailsDatabaseId: params.emailsDatabaseId,
-      filesDatabaseId: params.filesDatabaseId,
-      folderRelationPropertyId: params.folderRelationPropertyId,
-      attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
-      folderItemId: params.folderItemId,
-      mailboxItemId: params.mailboxItemId,
-      folderUid: 1,
-      messageId: "<repeat-pending@x>",
-      envelope: {},
-      attachments: [],
-      storage: noopStorage,
-      storageKeyPrefix: "test",
-      flags: [], // unread on the provider
-    };
+  tenantIt(
+    "a repeat ingest of an already-known message with a pending write-back leaves the item and desired_state untouched",
+    async () => {
+      const { emailsId, params } = await setUpFolder();
+      const ingestArgs = {
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        folderItemId: params.folderItemId,
+        mailboxItemId: params.mailboxItemId,
+        folderUid: 1,
+        messageId: "<repeat-pending@x>",
+        envelope: {},
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        flags: [], // unread on the provider
+      };
 
-    const first = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
-    expect(first.created).toBe(true);
+      const first = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+      expect(first.created).toBe(true);
 
-    // Marked read but never confirmed by write-back — desired true, current still false.
-    await chokePoint.updateItem({ databaseId: emailsId, itemId: first.itemId, propertiesPatch: { read: true } });
-    expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
+      // Marked read but never confirmed by write-back — desired true, current still false.
+      await chokePoint.updateItem({ databaseId: emailsId, itemId: first.itemId, propertiesPatch: { read: true } });
+      expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
 
-    // A later fetchMessagesSince pass re-observes the same message, still carrying the old
-    // (unread) flag value the provider had before the pending write-back has had a chance to run.
-    const second = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
-    expect(second.created).toBe(false);
-    expect(second.itemId).toBe(first.itemId);
+      // A later fetchMessagesSince pass re-observes the same message, still carrying the old
+      // (unread) flag value the provider had before the pending write-back has had a chance to run.
+      const second = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+      expect(second.created).toBe(false);
+      expect(second.itemId).toBe(first.itemId);
 
-    expect((await chokePoint.getItem(emailsId, first.itemId))?.properties.read).toBe(true);
-    expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
-  });
+      expect((await chokePoint.getItem(emailsId, first.itemId))?.properties.read).toBe(true);
+      expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
+    },
+  );
 
   describe("applyObservedMailMessageFlags, called directly", () => {
     it("throws NotFoundError when the item does not exist", async () => {
@@ -4321,7 +6137,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       ).rejects.toThrow(NotFoundError);
     });
 
-    it("patches the item and creates a converged sync-state row when none exists yet", async () => {
+    tenantIt("patches the item and creates a converged sync-state row when none exists yet", async () => {
       const { emailsId, params } = await setUpFolder();
       const ingestArgs = {
         emailsDatabaseId: params.emailsDatabaseId,
@@ -4355,84 +6171,92 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: true });
     });
 
-    it("leaves a pending property untouched while converging a different, non-pending property in the same call", async () => {
-      const { emailsId, params } = await setUpFolder();
-      const ingestArgs = {
-        emailsDatabaseId: params.emailsDatabaseId,
-        filesDatabaseId: params.filesDatabaseId,
-        folderRelationPropertyId: params.folderRelationPropertyId,
-        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
-        folderItemId: params.folderItemId,
-        mailboxItemId: params.mailboxItemId,
-        folderUid: 1,
-        messageId: "<pending-plus-converge@x>",
-        envelope: {},
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-        flags: [], // unread, unflagged — seeds converged sync-state rows for both properties
-      };
-      const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
-
-      // Marked read but never confirmed by write-back — desired true, current still false.
-      await chokePoint.updateItem({ databaseId: emailsId, itemId, propertiesPatch: { read: true } });
-      expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
-      expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: false, current_state: false });
-
-      await withTransaction(pool, (client) =>
-        applyObservedMailMessageFlags(client, {
+    tenantIt(
+      "leaves a pending property untouched while converging a different, non-pending property in the same call",
+      async () => {
+        const { emailsId, params } = await setUpFolder();
+        const ingestArgs = {
           emailsDatabaseId: params.emailsDatabaseId,
-          messageItemId: itemId,
-          flags: [IMAP_FLAGGED_FLAG], // still unread (the old value) but now flagged
-        }),
-      );
+          filesDatabaseId: params.filesDatabaseId,
+          folderRelationPropertyId: params.folderRelationPropertyId,
+          attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+          folderItemId: params.folderItemId,
+          mailboxItemId: params.mailboxItemId,
+          folderUid: 1,
+          messageId: "<pending-plus-converge@x>",
+          envelope: {},
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+          flags: [], // unread, unflagged — seeds converged sync-state rows for both properties
+        };
+        const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
 
-      const item = await chokePoint.getItem(emailsId, itemId);
-      // The pending `read` write survives untouched...
-      expect(item?.properties.read).toBe(true);
-      expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
-      // ...while `flagged`, which had no pending write, converges to the observation — proof
-      // recordObservedMailMessageFlags ran for both properties in this one call, not just the
-      // one that happened to change the item.
-      expect(item?.properties.flagged).toBe(true);
-      expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: true, current_state: true });
-    });
+        // Marked read but never confirmed by write-back — desired true, current still false.
+        await chokePoint.updateItem({ databaseId: emailsId, itemId, propertiesPatch: { read: true } });
+        expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
+        expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: false, current_state: false });
+
+        await withTransaction(pool, (client) =>
+          applyObservedMailMessageFlags(client, {
+            emailsDatabaseId: params.emailsDatabaseId,
+            messageItemId: itemId,
+            flags: [IMAP_FLAGGED_FLAG], // still unread (the old value) but now flagged
+          }),
+        );
+
+        const item = await chokePoint.getItem(emailsId, itemId);
+        // The pending `read` write survives untouched...
+        expect(item?.properties.read).toBe(true);
+        expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
+        // ...while `flagged`, which had no pending write, converges to the observation — proof
+        // recordObservedMailMessageFlags ran for both properties in this one call, not just the
+        // one that happened to change the item.
+        expect(item?.properties.flagged).toBe(true);
+        expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: true, current_state: true });
+      },
+    );
   });
 
-  it("(d) fetchFlagsChangedSince is skipped on the initial sync, called with null without CONDSTORE, and with the stored highestmodseq with it", async () => {
-    const { params } = await setUpFolder();
-    const calls: Array<number | null> = [];
+  tenantIt(
+    "(d) fetchFlagsChangedSince is skipped on the initial sync, called with null without CONDSTORE, and with the stored highestmodseq with it",
+    async () => {
+      const { params } = await setUpFolder();
+      const calls: Array<number | null> = [];
 
-    await ingestFirstMessage(params, {
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
-      fetchFlagsChangedSince: async (_path, sinceModSeq) => {
-        calls.push(sinceModSeq);
-        return [];
-      },
-    });
-    // The very first sync of a folder never calls it: nothing has been observed as "known" yet.
-    expect(calls).toEqual([]);
+      await ingestFirstMessage(params, {
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+        fetchFlagsChangedSince: async (_path, sinceModSeq) => {
+          calls.push(sinceModSeq);
+          return [];
+        },
+      });
+      // The very first sync of a folder never calls it: nothing has been observed as "known" yet.
+      expect(calls).toEqual([]);
 
-    const noCondstoreImap: ImapMailClient = {
-      getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
-      fetchAllUids: async () => [1],
-      fetchFlagsChangedSince: async (_path, sinceModSeq) => {
-        calls.push(sinceModSeq);
-        return [];
-      },
-      setMessageFlag: async () => {},
-    };
-    await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstoreImap, params));
-    expect(calls).toEqual([null]);
+      const noCondstoreImap: ImapMailClient = {
+        appendMessage: async () => {},
+        getCapabilities: async () => new Set(),
+        listFolders: async () => [{ path: "INBOX" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => null,
+        fetchAllUids: async () => [1],
+        fetchFlagsChangedSince: async (_path, sinceModSeq) => {
+          calls.push(sinceModSeq);
+          return [];
+        },
+        setMessageFlag: async () => {},
+        close: async () => {},
+      };
+      await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstoreImap, params));
+      expect(calls).toEqual([null]);
 
-    const condstoreImap: ImapMailClient = { ...noCondstoreImap, getCapabilities: async () => new Set(["CONDSTORE"]) };
-    await withTransaction(pool, (client) => reconcileImapFolder(client, condstoreImap, params));
-    expect(calls).toEqual([null, 42]);
-  });
+      const condstoreImap: ImapMailClient = { ...noCondstoreImap, getCapabilities: async () => new Set(["CONDSTORE"]) };
+      await withTransaction(pool, (client) => reconcileImapFolder(client, condstoreImap, params));
+      expect(calls).toEqual([null, 42]);
+    },
+  );
 });
 
 describe("ImapFlowMailClient.fetchFlagsChangedSince (issue #681)", () => {
@@ -4471,4 +6295,338 @@ describe("ImapFlowMailClient.fetchFlagsChangedSince (issue #681)", () => {
 
 afterAll(async () => {
   await pool?.end();
+});
+
+describe("queued sync status forward repair (issue #1497)", () => {
+  let runtime: Pool;
+  let tenantA: string;
+  let tenantB: string;
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(pool);
+    await ensureQueueSchema(pool);
+    await grantQueueSchemaPrivileges(pool);
+    runtime = await createRuntimeRolePool(pool, "semprec_data");
+  });
+  afterEach(async () => {
+    await runtime?.end();
+  });
+
+  async function enqueueSweep() {
+    await runAsSystem("test sweep", () => enqueueJob(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP, {}));
+    await runOnce({ pgPool: runtime, taskList: createCoreTaskList(runtime, new Map()) });
+  }
+
+  it("skips locked rows and never overwrites competing success or known failure", async () => {
+    const success = randomUUID();
+    const failed = randomUUID();
+    const retry = randomUUID();
+    await runInTenant(tenantA, () =>
+      withTransaction(runtime, (client) =>
+        client.query(
+          `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
+       SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
+          [[success, failed, retry]],
+        ),
+      ),
+    );
+    let locked!: () => void;
+    let failedBeforeLock!: (error: unknown) => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      locked = resolve;
+      failedBeforeLock = reject;
+    });
+    const proceed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = runInTenant(tenantA, () =>
+      withTransaction(runtime, async (client) => {
+        await client.query("SELECT item_id FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[]) FOR UPDATE", [
+          [success, failed, retry],
+        ]);
+        locked();
+        await proceed;
+        await recordImapActivity(client, { itemId: success, nextExpectedActivityAt: new Date("2099-01-01") });
+        await recordSyncError(client, failed, "known failure", "reauthorization");
+      }),
+    );
+    const observedHolder = holder.then(
+      () => ({ ok: true as const }),
+      (error: unknown) => {
+        failedBeforeLock(error);
+        return { ok: false as const, error };
+      },
+    );
+    const failures: unknown[] = [];
+    try {
+      await ready;
+      await enqueueSweep();
+      const pending = await pool.query<{ last_failure_kind: string | null }>(
+        "SELECT last_failure_kind FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[])",
+        [[success, failed, retry]],
+      );
+      expect(pending.rows).toEqual([
+        { last_failure_kind: null },
+        { last_failure_kind: null },
+        { last_failure_kind: null },
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    const holderResult = await observedHolder;
+    if (!holderResult.ok && !failures.includes(holderResult.error)) failures.push(holderResult.error);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Sweep race and holder failed");
+    await enqueueSweep();
+    const rows = await pool.query<{ item_id: string; last_error: string | null; last_failure_kind: string | null }>(
+      "SELECT item_id, last_error, last_failure_kind FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[])",
+      [[success, failed, retry]],
+    );
+    const byId = new Map(rows.rows.map((row) => [row.item_id, row]));
+    expect(byId.get(success)).toMatchObject({ last_error: null, last_failure_kind: null });
+    expect(byId.get(failed)).toMatchObject({ last_error: "known failure", last_failure_kind: "reauthorization" });
+    expect(byId.get(retry)).toMatchObject({ last_error: "unclassified", last_failure_kind: "other" });
+  });
+
+  it("runs two queued sweeps while the first holds repair row locks", async () => {
+    const ids = Array.from({ length: 201 }, () => randomUUID()).sort();
+    const first = ids[0];
+    if (!first) throw new Error("Missing first repair row");
+    await runInTenant(tenantA, () =>
+      withTransaction(runtime, (client) =>
+        client.query(
+          `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
+       SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
+          [ids],
+        ),
+      ),
+    );
+    let release!: () => void;
+    let held!: (pid: number) => void;
+    let rejectHeld!: (reason: unknown) => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<number>((resolve, reject) => {
+      held = resolve;
+      rejectHeld = reject;
+    });
+    const participants: Promise<unknown>[] = [];
+    const failures: unknown[] = [];
+    let functionCreated = false;
+    let triggerCreated = false;
+    try {
+      // first comes exclusively from randomUUID() and contains only hexadecimal digits and hyphens.
+      await pool.query(`CREATE FUNCTION test_sync_repair_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.item_id = '${first}'::uuid THEN PERFORM pg_advisory_xact_lock(421305122); END IF; RETURN NEW; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE TRIGGER test_sync_repair_barrier BEFORE UPDATE ON mail_account_sync_state
+        FOR EACH ROW EXECUTE FUNCTION test_sync_repair_barrier()`);
+      triggerCreated = true;
+      const blocker = withTransaction(pool, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (!pid) throw new Error("Missing blocker PID");
+        await client.query("SELECT pg_advisory_xact_lock(421305122)");
+        held(pid);
+        await barrier;
+      });
+      participants.push(blocker);
+      blocker.catch(rejectHeld);
+      const blockerPid = await ready;
+      const firstSweep = enqueueSweep();
+      const firstObserved = firstSweep.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      participants.push(firstObserved);
+      let blockedPid: number | undefined;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const result = await pool.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           AND position('SELECT tenant_id, item_id FROM mail_account_sync_state' in query) > 0`,
+          [blockerPid],
+        );
+        blockedPid = result.rows[0]?.pid;
+        if (blockedPid) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blockedPid).toBeDefined();
+      await enqueueSweep();
+      const midway = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM mail_account_sync_state WHERE tenant_id = $1 AND last_failure_kind = 'other'",
+        [tenantA],
+      );
+      expect(Number(midway.rows[0]?.count)).toBeGreaterThan(0);
+      expect(Number(midway.rows[0]?.count)).toBeLessThanOrEqual(200);
+      release();
+      const firstResult = await firstObserved;
+      if (!firstResult.ok) throw firstResult.error;
+      const final = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM mail_account_sync_state WHERE tenant_id = $1 AND last_failure_kind = 'other'",
+        [tenantA],
+      );
+      expect(Number(final.rows[0]?.count)).toBe(201);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const result of await Promise.allSettled(participants)) {
+      if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+      if (
+        result.status === "fulfilled" &&
+        typeof result.value === "object" &&
+        result.value !== null &&
+        "ok" in result.value &&
+        result.value.ok === false &&
+        "error" in result.value &&
+        !failures.includes(result.value.error)
+      )
+        failures.push(result.value.error);
+    }
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_sync_repair_barrier ON mail_account_sync_state");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_sync_repair_barrier()");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Concurrent queued sweeps and cleanup failed");
+  }, 15_000);
+
+  it("keeps an earlier tenant page committed when a later tenant repair fails", async () => {
+    for (const tenant of [tenantA, tenantB]) {
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          client.query(
+            "INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at) VALUES ($1, 'imap', 'unclassified', '2099-01-01')",
+            [randomUUID()],
+          ),
+        ),
+      );
+    }
+    const failures: unknown[] = [];
+    let sequenceCreated = false;
+    let functionCreated = false;
+    let triggerCreated = false;
+    try {
+      await pool.query("CREATE SEQUENCE test_sync_repair_order");
+      sequenceCreated = true;
+      await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO semprec_data");
+      await pool.query(`CREATE FUNCTION test_sync_repair_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF nextval('test_sync_repair_order') > 1 THEN RAISE EXCEPTION 'test later tenant repair failure'; END IF;
+        RETURN NEW; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE TRIGGER test_sync_repair_failure BEFORE UPDATE ON mail_account_sync_state
+        FOR EACH ROW EXECUTE FUNCTION test_sync_repair_failure()`);
+      triggerCreated = true;
+      await enqueueSweep();
+      const rows = await pool.query<{ last_failure_kind: string | null }>(
+        "SELECT last_failure_kind FROM mail_account_sync_state ORDER BY last_failure_kind NULLS FIRST",
+      );
+      expect(rows.rows).toEqual([{ last_failure_kind: null }, { last_failure_kind: "other" }]);
+      const task = await pool.query<{ last_error: string | null }>(
+        `SELECT j.last_error FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = $1`,
+        [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP],
+      );
+      expect(task.rows).toHaveLength(1);
+      expect(task.rows[0]?.last_error).toContain("forEachActiveTenant: 1 of 2 tenants failed");
+      expect((await pool.query<{ last_value: string }>("SELECT last_value FROM test_sync_repair_order")).rows).toEqual([
+        { last_value: "2" },
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_sync_repair_failure ON mail_account_sync_state");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_sync_repair_failure()");
+      },
+      async () => {
+        if (sequenceCreated) await pool.query("DROP SEQUENCE test_sync_repair_order");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Tenant repair failure test and cleanup failed");
+  });
+
+  it("repairs at most 200 per active tenant per queued sweep, preserving exclusions and state", async () => {
+    for (const tenant of [tenantA, tenantB]) {
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          await client.query(`INSERT INTO mail_account_sync_state
+          (item_id, sync_mode, last_error, next_expected_activity_at)
+          SELECT gen_random_uuid(), 'imap', 'unclassified', '2099-01-01' FROM generate_series(1, 201)`);
+          await client.query(`INSERT INTO mail_account_sync_state
+          (item_id, sync_mode, last_error, last_activity_at, last_failure_kind, next_expected_activity_at)
+          VALUES (gen_random_uuid(), 'imap', 'known', NULL, 'reauthorization', '2099-01-01'),
+                 (gen_random_uuid(), 'imap', 'active', '2026-01-01', NULL, '2099-01-01'),
+                 (gen_random_uuid(), 'imap', NULL, NULL, NULL, '2099-01-01')`);
+        }),
+      );
+    }
+    const before = await pool.query<{ tenant_id: string; item_id: string; state: unknown }>(
+      `SELECT tenant_id, item_id, to_jsonb(s) - 'last_failure_kind' AS state FROM mail_account_sync_state s ORDER BY tenant_id, item_id`,
+    );
+    const itemsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM items");
+    const notificationsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM notifications");
+    await enqueueSweep();
+    const counts = () =>
+      pool.query<{ tenant_id: string; repaired: string; pending: string }>(
+        `SELECT tenant_id, count(*) FILTER (WHERE last_error = 'unclassified' AND last_failure_kind = 'other') AS repaired,
+       count(*) FILTER (WHERE last_error = 'unclassified' AND last_failure_kind IS NULL) AS pending
+       FROM mail_account_sync_state GROUP BY tenant_id ORDER BY tenant_id`,
+      );
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["200", "1"],
+      ["200", "1"],
+    ]);
+    await enqueueSweep();
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["201", "0"],
+      ["201", "0"],
+    ]);
+    const after = await pool.query<{ tenant_id: string; item_id: string; state: unknown }>(
+      `SELECT tenant_id, item_id, to_jsonb(s) - 'last_failure_kind' AS state FROM mail_account_sync_state s ORDER BY tenant_id, item_id`,
+    );
+    expect(after.rows).toEqual(before.rows);
+    const exclusions = await pool.query<{ last_error: string | null; last_failure_kind: string | null }>(
+      "SELECT last_error, last_failure_kind FROM mail_account_sync_state WHERE last_error IS DISTINCT FROM 'unclassified' ORDER BY last_error NULLS FIRST, tenant_id",
+    );
+    expect(exclusions.rows).toEqual([
+      { last_error: null, last_failure_kind: null },
+      { last_error: null, last_failure_kind: null },
+      { last_error: "active", last_failure_kind: null },
+      { last_error: "active", last_failure_kind: null },
+      { last_error: "known", last_failure_kind: "reauthorization" },
+      { last_error: "known", last_failure_kind: "reauthorization" },
+    ]);
+    expect((await pool.query("SELECT count(*) FROM items")).rows).toEqual(itemsBefore.rows);
+    expect((await pool.query("SELECT count(*) FROM notifications")).rows).toEqual(notificationsBefore.rows);
+    await enqueueSweep();
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["201", "0"],
+      ["201", "0"],
+    ]);
+  });
 });

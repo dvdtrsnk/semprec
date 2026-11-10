@@ -1,3 +1,5 @@
+import { ModuleRegistry } from "@semprec/module-registry";
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -20,6 +22,10 @@ import { createGenericOperationGateway } from "@semprec/application";
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -83,7 +89,7 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
   let headers: Record<string, string>;
   let userId: string;
   let agentActor: AuthenticatedActor;
-  const gateway = () => createGenericOperationGateway(pool);
+  const gateway = () => createGenericOperationGateway(pool, testMetadataResolver);
 
   async function listen(s: Server): Promise<string> {
     await new Promise<void>((resolve) => s.listen(0, resolve));
@@ -126,7 +132,9 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
       }),
     );
     baseUrl = await listen(server);
-    mcpServer = createServer(createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS)));
+    mcpServer = createServer(
+      await createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),
+    );
     mcpUrl = await listen(mcpServer);
   });
 

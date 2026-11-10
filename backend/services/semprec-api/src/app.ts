@@ -1,15 +1,25 @@
+import { createRecordingsRequestListener } from "./recordingsHandler.js";
+import { createCollectionMetadataResolver, resolveModuleRuleKinds } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
 import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
-import { mountCustomRoutes } from "./adapter/customRouteMount.js";
+import {
+  createCustomRouteDependencies,
+  mountCustomRoutes,
+  type CustomRouteDependencies,
+} from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
+import { createSempThreadRoutes } from "./sempThreadsHandler.js";
+import { createSempSpeechRequestListener, isMessageSpeechPath } from "./sempSpeechHandler.js";
+import type { HttpAiGatewayClientConfig } from "@semprec/ai-gateway-client";
 import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createItemRoutes } from "./itemsHandler.js";
+import { createPageChangesRoutes } from "./pageChangesHandler.js";
 import { createPropertyRoutes } from "./propertiesHandler.js";
 import { createViewRoutes } from "./viewsHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
@@ -18,11 +28,19 @@ import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
+import { createInvitationRequestListener } from "./invitationHandler.js";
 import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createServerInfoRequestListener } from "./serverInfoHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
+import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
+import {
+  createPageMarkdownRequestListener,
+  createPageInsertRequestListener,
+  isPageInsertPath,
+  isPageMarkdownPath,
+} from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { isAllowedOrigin } from "./originCheck.js";
@@ -41,10 +59,18 @@ export interface AppOptions {
   moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
   /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
   blobStorage: BlobStorageWriter;
+  /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
+  mailAttachmentStorage?: BlobStorageWriter;
+  speechGateway?: HttpAiGatewayClientConfig;
   /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
   /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
   trustProxy?: boolean;
+  /**
+   * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
+   * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
+   */
+  customRouteDependencies?: CustomRouteDependencies;
 }
 
 /**
@@ -68,18 +94,26 @@ export async function createDispatcher(
   options: AppOptions,
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
-  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions);
+  // Resolved per call, so a module activated or deactivated since the last request is reflected.
+  const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
+  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
+    ...(options.customRouteDependencies ?? createCustomRouteDependencies()),
+    heartbeatRuleKinds,
+  });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.
-  const genericApplicationService = createGenericApplicationService(pool);
+  const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
+  const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createAccountRoutes(pool, options),
+    ...createSempThreadRoutes(pool, heartbeatRuleKinds),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
-    ...createViewRoutes(genericApplicationService),
-    ...createItemRoutes(genericApplicationService, pool),
+    ...createViewRoutes(genericApplicationService, pool),
+    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
+    ...createPageChangesRoutes(genericApplicationService),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
@@ -87,10 +121,17 @@ export async function createDispatcher(
   // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
   // registered capabilities (an authenticated MCP session has no project to compute a per-run
   // manifest against, unlike an AgentTool run).
-  const mcpGateway = createGenericOperationGateway(pool);
+  const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
-  const mcpListener = createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities);
+  const mcpListener = await createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities, options.moduleRegistry);
+  // `page.insert` over HTTP also accepts a scoped run credential, through the same gateway and capability set as `/mcp`.
+  const pageInsertListener = createPageInsertRequestListener(
+    pool,
+    genericApplicationService,
+    mcpGateway,
+    mcpGrantedCapabilities,
+  );
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
@@ -101,6 +142,7 @@ export async function createDispatcher(
   });
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const invitationListener = createInvitationRequestListener(pool, { trustProxy: options.trustProxy ?? false });
   const healthzListener = createHealthzRequestListener(pool);
   const serverInfoListener = createServerInfoRequestListener();
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
@@ -108,7 +150,20 @@ export async function createDispatcher(
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
-  const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
+  const recordingsListener = createRecordingsRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobUploadListener = createBlobUploadRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobsListener = createBlobsRequestListener(pool, {
+    files: options.blobStorage,
+    mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
+  });
+  const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
+  const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
@@ -133,6 +188,18 @@ export async function createDispatcher(
     if (dispatchResourceRoute(req, res)) return;
 
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "POST" && isMessageSpeechPath(pathname)) {
+      speechListener(req, res);
+      return;
+    }
+    if (req.method === "GET" && isPageMarkdownPath(pathname)) {
+      pageMarkdownListener(req, res);
+      return;
+    }
+    if (req.method === "POST" && isPageInsertPath(pathname)) {
+      pageInsertListener(req, res);
+      return;
+    }
     if (pathname === "/healthz") {
       void healthzListener(req, res);
       return;
@@ -169,8 +236,20 @@ export async function createDispatcher(
       void setupListener(req, res);
       return;
     }
+    if (pathname === "/api/invitations/accept") {
+      void invitationListener(req, res);
+      return;
+    }
+    if (pathname === "/api/recordings" && req.method === "POST") {
+      recordingsListener(req, res);
+      return;
+    }
     if (pathname === "/api/files" && req.method === "POST") {
       void filesListener(req, res);
+      return;
+    }
+    if (pathname === "/api/blobs" && req.method === "POST") {
+      void blobUploadListener(req, res);
       return;
     }
     if (pathname.startsWith("/api/blobs/") && req.method === "GET") {

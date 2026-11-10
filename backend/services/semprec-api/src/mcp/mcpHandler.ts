@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import {
@@ -6,23 +7,35 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
-  resolveMcpRunCredential,
+  resolveModuleAgentToolsForRun,
 } from "@semprec/data";
 import {
-  CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   operationInputJsonSchema,
-  runAsSystem,
   runInTenant,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericOperationName,
 } from "@semprec/shared";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import type { GenericOperationGateway } from "@semprec/application";
 import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
 import { authenticateRequest } from "../authHandler.js";
+import { resolveRunCredentialCaller } from "./callerActor.js";
 import { logger } from "../logger.js";
+
+/** MCP protocol revisions `initialize` can agree on, newest first; the first is the fallback. */
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+
+/** The API service's own package version, reported as `serverInfo.version`. */
+const SERVER_VERSION = (() => {
+  const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof manifest.version !== "string") throw new Error("semprec-api package.json has no version string");
+  return manifest.version;
+})();
 
 const MCP_TOOL_PREFIX = "semprec.";
 
@@ -56,8 +69,8 @@ interface JsonRpcRequestBody {
 }
 
 /**
- * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `tools/list` and
- * `tools/call` over the same 29-operation generic catalog REST (#219) and the AgentTool
+ * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `initialize`, `tools/list` and
+ * `tools/call` over the same 30-operation generic catalog REST (#219) and the AgentTool
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
  * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
  *
@@ -81,36 +94,23 @@ interface JsonRpcRequestBody {
  * is intersected against it, so a credential can only ever narrow what a process already grants,
  * never widen it.
  */
-export function createMcpRequestListener(
+export async function createMcpRequestListener(
   pool: Pool,
   gateway: GenericOperationGateway,
   grantedCapabilities: ReadonlySet<CapabilityId>,
+  registry: ModuleRegistry,
 ) {
+  const activeNames = await registry.getActiveAgentToolNames();
+  const collision = activeNames.find((name) => (GENERIC_OPERATION_NAMES as readonly string[]).includes(name));
+  if (collision) throw new Error(`Module tool collides with generic operation: ${collision}`);
   async function resolveActor(
     req: IncomingMessage,
   ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId: string }> {
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
-    // The token is resolved to its tenant in the global plane before any tenant is known; the
-    // credential itself is then read under RLS inside that tenant (`resolveMcpRunCredential`).
-    const credential = await runAsSystem("mcp-run-credential-lookup", () => resolveMcpRunCredential(pool, bearerToken));
-    if (credential) {
-      const capabilities = new Set(
-        (CAPABILITY_IDS as readonly CapabilityId[]).filter(
-          (id) => credential.capabilities.includes(id) && grantedCapabilities.has(id),
-        ),
-      );
-      return {
-        actor: {
-          userId: credential.actorUserId,
-          runId: credential.runId,
-          agentProjectItemId: credential.agentProjectItemId,
-        },
-        capabilities,
-        tenantId: credential.tenantId,
-      };
-    }
+    const credentialCaller = await resolveRunCredentialCaller(pool, bearerToken, grantedCapabilities);
+    if (credentialCaller) return credentialCaller;
 
     const identity = await authenticateRequest(pool, req);
     return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities, tenantId: identity.tenantId };
@@ -118,7 +118,7 @@ export function createMcpRequestListener(
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
-      sendJson(res, 404, { error: "Not found" });
+      sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
       return;
     }
 
@@ -148,11 +148,51 @@ export function createMcpRequestListener(
           return;
         }
 
+        // A JSON-RPC notification (no `id`) is acknowledged with an empty 202, whatever its method.
+        if (rpc.id === undefined) {
+          res.writeHead(202, { "Cache-Control": "no-store" });
+          res.end();
+          return;
+        }
+
+        if (rpc.method === "initialize") {
+          const params = rpc.params as { protocolVersion?: unknown } | null | undefined;
+          if (typeof params !== "object" || params === null || typeof params.protocolVersion !== "string") {
+            sendJson(res, 200, rpcError(rpcId, -32602, "initialize requires params.protocolVersion"));
+            return;
+          }
+          const requested = params.protocolVersion;
+          const protocolVersion =
+            SUPPORTED_PROTOCOL_VERSIONS.find((version) => version === requested) ?? SUPPORTED_PROTOCOL_VERSIONS[0];
+          sendJson(
+            res,
+            200,
+            rpcResult(rpcId, {
+              protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: "semprec", version: SERVER_VERSION },
+            }),
+          );
+          return;
+        }
+
         if (rpc.method === "tools/list") {
           const tools = gateway.listOperations(effectiveCapabilities).map((operation) => ({
             name: toMcpToolName(operation),
             inputSchema: operationInputJsonSchema(operation),
           }));
+          if (actor.runId && actor.agentProjectItemId) {
+            const modules = await resolveModuleAgentToolsForRun(
+              pool,
+              registry,
+              actor.runId,
+              actor.agentProjectItemId,
+              effectiveCapabilities,
+            );
+            tools.push(
+              ...modules.map((tool) => ({ name: `${MCP_TOOL_PREFIX}${tool.name}`, inputSchema: tool.argumentSchema })),
+            );
+          }
           sendJson(res, 200, rpcResult(rpcId, { tools }));
           return;
         }
@@ -161,13 +201,33 @@ export function createMcpRequestListener(
           const params = rpc.params as { name?: unknown; arguments?: unknown } | undefined;
           const toolName = typeof params?.name === "string" ? params.name : undefined;
           const operation = toolName !== undefined ? fromMcpToolName(toolName) : null;
-          if (operation === null) {
-            sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
-            return;
-          }
           try {
-            const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
-            sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+            if (operation !== null) {
+              const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
+              sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+            } else {
+              const modules =
+                actor.runId && actor.agentProjectItemId
+                  ? await resolveModuleAgentToolsForRun(
+                      pool,
+                      registry,
+                      actor.runId,
+                      actor.agentProjectItemId,
+                      effectiveCapabilities,
+                    )
+                  : [];
+              const tool = modules.find((entry) => `${MCP_TOOL_PREFIX}${entry.name}` === toolName);
+              if (!tool) {
+                sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
+                return;
+              }
+              const output = await tool.invoke(params?.arguments ?? {});
+              sendJson(
+                res,
+                200,
+                rpcResult(rpcId, { content: [{ type: "text", text: output.result }], isError: output.error }),
+              );
+            }
           } catch (err) {
             if (err instanceof NotFoundError) {
               sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName}'`));

@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildBinaryFrame, decodeDocId, encodeDocId, parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
+import * as encoding from "lib0/encoding";
+import * as decoding from "lib0/decoding";
+import {
+  appendClientUpdateId,
+  buildBinaryFrame,
+  decodeDocId,
+  encodeDocId,
+  isClientUpdateId,
+  parseBinaryFrame,
+  parseInboundFrame,
+  readClientUpdateId,
+} from "../protocolV1.js";
 import {
   parseAgentStreamEnvelope,
   parseAgentStreamMessage,
@@ -128,6 +139,31 @@ describe("parseAgentStreamMessage (issue #163)", () => {
 });
 
 describe("parseRealtimeMessage (issue #163)", () => {
+  it("validates every relation invalidation field", () => {
+    const valid = {
+      type: "invalidation",
+      scope: "relation",
+      databaseId: RUN_ID,
+      itemId: RUN_ID,
+      propertyKey: "project",
+      op: "put",
+      userId: RUN_ID,
+    };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    expect(parseRealtimeMessage({ ...valid, propertyKey: null, op: "metadata" })).toMatchObject({
+      propertyKey: null,
+      op: "metadata",
+    });
+    for (const malformed of [
+      { databaseId: "bad" },
+      { itemId: null },
+      { propertyKey: 3 },
+      { propertyKey: undefined },
+      { op: "update" },
+      { userId: "bad" },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
   it("rejects an agent-run reference with a malformed eventId", () => {
     expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });
@@ -170,5 +206,63 @@ describe("parseRealtimeEnvelope / parseAgentStreamEnvelope (issue #1025)", () =>
     ["the bare pre-envelope message", streamMessage],
   ])("rejects %s on the agent stream channel", (_label, raw) => {
     expect(parseAgentStreamEnvelope(raw)).toBeNull();
+  });
+});
+
+describe("client update id helpers (issue #1362)", () => {
+  function updateMessage(): Uint8Array {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 2);
+    encoding.writeVarUint8Array(encoder, new Uint8Array([1, 2, 3]));
+    return encoding.toUint8Array(encoder);
+  }
+
+  function readAfterUpdate(payload: Uint8Array): string | null {
+    const decoder = decoding.createDecoder(payload);
+    decoding.readVarUint(decoder);
+    decoding.readVarUint8Array(decoder);
+    return readClientUpdateId(decoder);
+  }
+
+  it("round-trips an id appended after the update bytes", () => {
+    expect(readAfterUpdate(appendClientUpdateId(updateMessage(), "edit_1-A"))).toBe("edit_1-A");
+  });
+
+  it("keeps the leading message readable by a reader that ignores the id", () => {
+    const decoder = decoding.createDecoder(appendClientUpdateId(updateMessage(), "x"));
+    expect(decoding.readVarUint(decoder)).toBe(2);
+    expect(Array.from(decoding.readVarUint8Array(decoder))).toEqual([1, 2, 3]);
+  });
+
+  it("returns null when nothing follows the update bytes", () => {
+    expect(readAfterUpdate(updateMessage())).toBeNull();
+  });
+
+  it.each([
+    ["empty", ""],
+    ["over 64 characters", "a".repeat(65)],
+    ["other characters", "has space"],
+    ["non-ASCII", "idé"],
+  ])("treats an id that is %s as no id", (_label, id) => {
+    expect(readAfterUpdate(appendClientUpdateId(updateMessage(), id))).toBeNull();
+  });
+
+  it("returns null instead of throwing on a truncated trailing varString", () => {
+    const payload = appendClientUpdateId(updateMessage(), "abcdef");
+    expect(readAfterUpdate(payload.subarray(0, payload.length - 3))).toBeNull();
+  });
+
+  it("returns null on a trailing varString length that is not a valid varint", () => {
+    const payload = Uint8Array.from([...updateMessage(), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    expect(readAfterUpdate(payload)).toBeNull();
+  });
+
+  it("accepts exactly 1 to 64 characters of [A-Za-z0-9_-]", () => {
+    expect(isClientUpdateId("a")).toBe(true);
+    expect(isClientUpdateId("a".repeat(64))).toBe(true);
+    expect(isClientUpdateId("a".repeat(65))).toBe(false);
+    expect(isClientUpdateId("")).toBe(false);
+    expect(isClientUpdateId("a.b")).toBe(false);
+    expect(isClientUpdateId(5)).toBe(false);
   });
 });

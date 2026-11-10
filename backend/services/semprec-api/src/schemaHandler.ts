@@ -1,5 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { withTransaction, ChokePointError, generateSchemaProjection, toManifestLocale } from "@semprec/data";
+import {
+  withTransaction,
+  ChokePointError,
+  generateSchemaProjection,
+  resolveDatabaseAreaFilters,
+  toManifestLocale,
+} from "@semprec/data";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
@@ -43,10 +49,22 @@ export function createSchemaRequestListener(
 
         const locale = toManifestLocale(identity.user.locale);
 
-        const projection = await withTransaction(pool, (client) =>
-          generateSchemaProjection(client, moduleRegistry, { locale }),
-        );
-        sendJson(res, 200, projection);
+        // Issue #1597: each system database's declared area filter template, so a client substitutes an
+        // area id instead of assembling the per-database rule itself. A template is published only once the
+        // filter compiler accepted it against this tenant's schema, in the projection's own transaction; a
+        // refused one fails the whole request (500) rather than being published or silently dropped.
+        // Omitted for a database without one.
+        const { projection, areaFilters } = await withTransaction(pool, async (client) => ({
+          projection: await generateSchemaProjection(client, moduleRegistry, { locale }),
+          areaFilters: await resolveDatabaseAreaFilters(client, await moduleRegistry.getDatabases()),
+        }));
+        sendJson(res, 200, {
+          ...projection,
+          databases: projection.databases.map((db) => {
+            const areaFilter = db.key === null ? undefined : areaFilters.get(db.key);
+            return areaFilter === undefined ? db : { ...db, areaFilter };
+          }),
+        });
       });
     } catch (err) {
       if (err instanceof ChokePointError) {

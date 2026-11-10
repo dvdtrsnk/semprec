@@ -1,11 +1,20 @@
 import type { PoolClient } from "pg";
+import { z } from "zod";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
+import {
+  transcriptSpeakerCardContextSchema,
+  type TranscriptSpeakerCardContext,
+} from "./transcriptSpeakerCardContext.js";
+import { getTenantUserLocale } from "../auth/usersStore.js";
+import { getSelfPersonId } from "../selfPerson.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
+import { aiProposalPatch, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError } from "../errors.js";
@@ -16,17 +25,28 @@ import { listTranscriptSpeakers, TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "./tran
 export interface SpeakerSuggestionCandidate {
   id: string;
   name: string;
+  title: string | null;
+  invitationStatus: TranscriptSpeakerCardContext["alternatives"][number]["invitationStatus"];
 }
 
 /** What the speaker-suggestion step asks the model about: the still-unmapped keys and the not-yet-mapped participants. */
 export interface SpeakerSuggestionContext {
   unmappedSpeakers: string[];
+  locale: string;
   candidates: SpeakerSuggestionCandidate[];
+  details: Array<{
+    speaker: string;
+    ordinal: number;
+    quotes: TranscriptSpeakerCardContext["quotes"];
+    firstStartsAt: number;
+  }>;
+  source: TranscriptSpeakerCardContext["source"];
 }
 
 export interface SpeakerMappingSuggestion {
   speaker: string;
-  personId: string;
+  personId: string | null;
+  reason: string;
 }
 
 async function requireDatabaseId(client: PoolClient, moduleId: string): Promise<string> {
@@ -48,54 +68,92 @@ function speakerSuggestionIdempotencyKey(transcriptId: string, speaker: string):
   return `transcript-speaker-suggestion:${transcriptId}:${speaker}`;
 }
 
-/**
- * What a speaker-mapping suggestion for this transcript could be about (issue #185), or `null`
- * when there is nothing to ask: the transcript has no linked Event, the Event has no named
- * participant who is not already mapped, or every speaker key is already mapped. Candidates are
- * the Event's `people` only — never anyone else in People — and a participant without a name is
- * left out, since nothing in the transcript can address them.
- */
+/** Reads unmapped speakers, eligible participants and the tenant's own person. */
 export async function readSpeakerSuggestionContext(
   client: PoolClient,
   transcriptId: string,
 ): Promise<SpeakerSuggestionContext | null> {
-  const speakers = await listTranscriptSpeakers(client, transcriptId);
-  const unmappedSpeakers = speakers.filter((entry) => entry.person === null).map((entry) => entry.speaker);
-  if (unmappedSpeakers.length === 0) return null;
-  const mappedPersonIds = new Set(speakers.flatMap((entry) => (entry.person ? [entry.person.id] : [])));
-
   const transcriptsDatabaseId = await requireDatabaseId(client, TRANSCRIPTS_MODULE_ID);
+  const transcript = await itemsStore.getItemById(client, transcriptsDatabaseId, transcriptId);
+  if (!transcript || transcript.deletedAt) throw new NotFoundError("Transcript not found");
+  const segments = z
+    .array(z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }))
+    .parse(transcript.computed.segments ?? []);
+  const properties = z.object({ name: z.string().nullish(), date: z.string().nullish() }).parse(transcript.properties);
+  const speakers = await listTranscriptSpeakers(client, transcriptId, transcript);
+  const unmapped = speakers.filter((entry) => entry.person === null);
+  if (unmapped.length === 0) return null;
+  const mappedPersonIds = new Set(speakers.flatMap((entry) => (entry.person ? [entry.person.id] : [])));
   const eventRelationId = await requireRelationDefinitionId(client, transcriptsDatabaseId, "event");
   const [eventEdge] = await relationsStore.listRelationsForItem(client, eventRelationId, transcriptId);
-  if (!eventEdge) return null;
-  const eventId = relationsStore.otherSide(eventEdge, transcriptId);
-
-  const eventsDatabaseId = await requireDatabaseId(client, EVENTS_MODULE_ID);
-  const peopleRelationId = await requireRelationDefinitionId(client, eventsDatabaseId, "people");
-  const participantEdges = await relationsStore.listRelationsForItem(client, peopleRelationId, eventId);
-  const participants = await itemsStore.getItemsByIds(
-    client,
-    participantEdges.map((edge) => relationsStore.otherSide(edge, eventId)),
-  );
-  const candidates = participants.flatMap((person) => {
-    const name = person.properties.name;
-    return typeof name === "string" && name.length > 0 && !mappedPersonIds.has(person.id)
-      ? [{ id: person.id, name }]
-      : [];
+  const linkedEventId = eventEdge ? relationsStore.otherSide(eventEdge, transcriptId) : null;
+  const event = linkedEventId
+    ? await itemsStore.getItemById(client, await requireDatabaseId(client, EVENTS_MODULE_ID), linkedEventId)
+    : null;
+  const eventId = event && !event.deletedAt ? event.id : null;
+  const participantEdges =
+    eventId === null
+      ? []
+      : await relationsStore.listRelationsForItem(
+          client,
+          await requireRelationDefinitionId(client, await requireDatabaseId(client, EVENTS_MODULE_ID), "people"),
+          eventId,
+        );
+  const invitation = z.object({
+    invitation: z.object({ status: z.enum(["pending", "accepted", "tentative", "declined"]) }),
   });
-  if (candidates.length === 0) return null;
-  return { unmappedSpeakers, candidates };
+  const statuses = new Map<string, SpeakerSuggestionCandidate["invitationStatus"]>();
+  if (eventId !== null)
+    for (const edge of participantEdges) {
+      const parsed = invitation.safeParse(edge.metadata);
+      statuses.set(relationsStore.otherSide(edge, eventId), parsed.success ? parsed.data.invitation.status : null);
+    }
+  const ownPersonId = await getSelfPersonId(client);
+  const ids = new Set(statuses.keys());
+  if (ownPersonId) ids.add(ownPersonId);
+  const participants = await itemsStore.getItemsByIds(client, [...ids]);
+  const candidates = participants.flatMap((person) => {
+    const rawName = person.properties.name;
+    const name = typeof rawName === "string" ? rawName : "";
+    if (mappedPersonIds.has(person.id) || (person.id !== ownPersonId && name.length === 0)) return [];
+    return [
+      {
+        id: person.id,
+        name,
+        title: null,
+        invitationStatus: statuses.get(person.id) ?? null,
+      },
+    ];
+  });
+  const details = unmapped.map(({ speaker, ordinal }) => {
+    const utterances = segments.flatMap((segment, segmentIndex) =>
+      segment.speaker === speaker ? [{ ...segment, segmentIndex }] : [],
+    );
+    const first = utterances[0];
+    if (!first) throw new Error("Speaker has no segment");
+    const quotes = utterances
+      .filter((segment) => segment.text.trim().split(/\s+/).filter(Boolean).length >= 6)
+      .sort((a, b) => b.text.length - a.text.length || a.segmentIndex - b.segmentIndex)
+      .slice(0, 3)
+      .sort((a, b) => a.segmentIndex - b.segmentIndex)
+      .map(({ segmentIndex, text }) => ({ segmentIndex, text: text.slice(0, 140) }));
+    return { speaker, ordinal, firstStartsAt: first.startsAt, quotes };
+  });
+  return {
+    unmappedSpeakers: unmapped.map((entry) => entry.speaker),
+    candidates,
+    details,
+    source: { transcriptName: properties.name ?? null, date: properties.date ?? null },
+    locale: (await getTenantUserLocale(client)) ?? "cs",
+  };
 }
 
 /**
- * Creates one `kind = 'transcript'` Processing proposal card per suggested mapping (issue #185):
- * a `'relation'` envelope linking the transcript to the person through `speakers` with
- * `{ speaker }` as the edge metadata, plus the card's `sourceTranscript` edge. No mapping is
- * written — it exists only once a human confirms the card. Row-locks the transcript and re-reads
- * the suggestion context inside the caller's transaction, so a suggestion is dropped when its key
- * or person was mapped, or its person stopped being a participant, since the model was asked; a
- * key or person suggested twice keeps its first suggestion. A key that already has a card (from an
- * earlier run, whatever that card's status) gets no second one. Returns the keys that got a card.
+ * Creates a card for every still-unmapped speaker. Eligible model matches become relation
+ * proposals; missing, repeated or no-longer-eligible matches become clarification cards.
+ * The source transcript is locked and eligibility is re-read in the supplied transaction.
+ * Existing idempotency keys suppress duplicate cards, regardless of their status. No speaker
+ * mapping is written until a user confirms a proposal.
  */
 export async function proposeSpeakerMappings(
   client: PoolClient,
@@ -122,22 +180,44 @@ export async function proposeSpeakerMappings(
     throw new NotFoundError(`Property 'sourceTranscript' not found on Processing proposals`);
 
   const candidateIds = new Set(context.candidates.map((candidate) => candidate.id));
-  const openSpeakers = new Set(context.unmappedSpeakers);
+  const catalogs = await loadModuleCatalogs(import.meta.url);
+  const fallback = (key: string) =>
+    resolveCatalogLabel(null, catalogs[toManifestLocale(context.locale)], catalogs.en, key);
   const proposed: string[] = [];
-  for (const suggestion of input.suggestions) {
-    if (!openSpeakers.has(suggestion.speaker) || !candidateIds.has(suggestion.personId)) continue;
-    openSpeakers.delete(suggestion.speaker);
-    candidateIds.delete(suggestion.personId);
-
-    const idempotencyKey = speakerSuggestionIdempotencyKey(input.transcriptId, suggestion.speaker);
+  for (const detail of context.details) {
+    const idempotencyKey = speakerSuggestionIdempotencyKey(input.transcriptId, detail.speaker);
     if (await itemsStore.findIdempotentReplay(client, processingProposalsDatabaseId, idempotencyKey)) continue;
-
-    const envelope: ProposalEnvelope = {
-      entityKind: "relation",
-      target: suggestion.personId,
-      properties: { propertyKey: TRANSCRIPT_SPEAKERS_PROPERTY_KEY, metadata: { speaker: suggestion.speaker } },
-    };
-    await assertValidProposalEnvelope(client, envelope);
+    const suggestion = input.suggestions.find((entry) => entry.speaker === detail.speaker);
+    const personId = suggestion?.personId && candidateIds.has(suggestion.personId) ? suggestion.personId : null;
+    const reason =
+      personId && suggestion?.reason.trim()
+        ? suggestion.reason
+        : fallback(
+            context.candidates.length === 0
+              ? "transcript.speaker.noCandidatesReason"
+              : "transcript.speaker.uncertainReason",
+          );
+    if (personId) candidateIds.delete(personId);
+    const envelope: ProposalEnvelope | null = personId
+      ? {
+          entityKind: "relation",
+          target: personId,
+          properties: { propertyKey: TRANSCRIPT_SPEAKERS_PROPERTY_KEY, metadata: { speaker: detail.speaker } },
+        }
+      : null;
+    if (envelope) await assertValidProposalEnvelope(client, envelope);
+    const cardContext = transcriptSpeakerCardContextSchema.parse({
+      role: "speaker",
+      ...detail,
+      source: context.source,
+      reason,
+      alternatives: context.candidates.map((candidate) => ({
+        personId: candidate.id,
+        name: candidate.name,
+        title: candidate.title,
+        invitationStatus: candidate.invitationStatus,
+      })),
+    });
     const card = await createItemWithClient(
       client,
       {
@@ -146,21 +226,19 @@ export async function proposeSpeakerMappings(
         properties: {
           kind: "transcript",
           proposal: envelope,
-          history: appendHistoryEntry(
-            [],
-            `Suggested from the linked Event's participants and how they are addressed in the transcript.`,
-          ),
-          status: "proposed",
+          ...aiProposalPatch({}, envelope),
+          context: cardContext,
+          status: envelope ? "proposed" : "needsClarification",
         },
       },
-      { allowedSystemKeys: ["kind", "proposal", "history", "status"] },
+      { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "context", "status"] },
     );
     await createRelationWithClient(
       client,
       { relationPropertyId: sourceTranscriptProperty.id, callerItemId: card.id, targetItemId: input.transcriptId },
       PROCESSING_PROPOSALS_RELATION_CONTEXT,
     );
-    proposed.push(suggestion.speaker);
+    proposed.push(detail.speaker);
   }
   return proposed;
 }

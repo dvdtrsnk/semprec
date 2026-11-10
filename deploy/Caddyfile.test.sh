@@ -37,7 +37,11 @@ readonly SUFFIX="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 readonly QUERY_SECRET="QUERY-SECRET-$SUFFIX"
 readonly REFERER_SECRET="REFERER-SECRET-$SUFFIX"
 
-SEMPREC_DOMAIN="http://127.0.0.1:$PORT" caddy run --config "$TEST_ROOT/Caddyfile" \
+mkdir -p "$TEST_ROOT/aasa-present" "$TEST_ROOT/aasa-absent"
+readonly AASA_BODY='{"applinks":{"details":[{"appIDs":["TEAMTEST.test.bundle"]}]}}'
+printf '%s\n' "$AASA_BODY" > "$TEST_ROOT/aasa-present/apple-app-site-association"
+
+SEMPREC_DOMAIN="http://127.0.0.1:$PORT" SEMPREC_AASA_DIR="$TEST_ROOT/aasa-present" caddy run --config "$TEST_ROOT/Caddyfile" \
   --adapter caddyfile 2> "$LOG_FILE" &
 CADDY_PID=$!
 
@@ -59,6 +63,51 @@ curl -s -o /dev/null \
   -H "Referer: http://127.0.0.1:$PORT/?page=setup&token=$REFERER_SECRET" \
   "http://127.0.0.1:$PORT/reset-password?token=$QUERY_SECRET"
 
+AASA_URL="http://127.0.0.1:$PORT/.well-known/apple-app-site-association"
+AASA_STATUS="$(curl -s -o "$TEST_ROOT/aasa.body" -D "$TEST_ROOT/aasa.headers" -w '%{http_code}' "$AASA_URL")"
+if [[ "$AASA_STATUS" != "200" ]]; then
+  echo "FAIL: association file answered $AASA_STATUS, expected 200" >&2
+  exit 1
+fi
+if ! tr -d '\r' < "$TEST_ROOT/aasa.headers" | grep -qi '^content-type: application/json$'; then
+  echo "FAIL: association file is not served as application/json" >&2
+  cat "$TEST_ROOT/aasa.headers" >&2
+  exit 1
+fi
+if [[ "$(cat "$TEST_ROOT/aasa.body")" != "$AASA_BODY" ]]; then
+  echo "FAIL: association file body is not the rendered file" >&2
+  exit 1
+fi
+
+kill "$CADDY_PID"
+wait "$CADDY_PID" 2>/dev/null || true
+CADDY_PID=""
+
+# Second run without a rendered file: the path must be a 404, not the SPA fallback.
+SEMPREC_DOMAIN="http://127.0.0.1:$PORT" SEMPREC_AASA_DIR="$TEST_ROOT/aasa-absent" caddy run \
+  --config "$TEST_ROOT/Caddyfile" --adapter caddyfile 2> "$TEST_ROOT/caddy-absent.log" &
+CADDY_PID=$!
+ready=0
+for _ in $(seq 1 100); do
+  if curl -s -o /dev/null "http://127.0.0.1:$PORT/"; then
+    ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$ready" -ne 1 ]]; then
+  echo "caddy did not answer on port $PORT within 10s (no association file)" >&2
+  exit 1
+fi
+ABSENT_STATUS="$(curl -s -o "$TEST_ROOT/aasa-absent.body" -w '%{http_code}' "$AASA_URL")"
+if [[ "$ABSENT_STATUS" != "404" ]]; then
+  echo "FAIL: missing association file answered $ABSENT_STATUS, expected 404" >&2
+  exit 1
+fi
+if grep -qi '<html' "$TEST_ROOT/aasa-absent.body"; then
+  echo "FAIL: missing association file answered the web app's HTML" >&2
+  exit 1
+fi
 kill "$CADDY_PID"
 wait "$CADDY_PID" 2>/dev/null || true
 CADDY_PID=""
@@ -77,4 +126,4 @@ for secret in "$QUERY_SECRET" "$REFERER_SECRET"; do
   fi
 done
 
-echo "PASS: access log keeps method, path and status, and holds no query string or Referer"
+echo "PASS: association file is 200 application/json, or 404 without it; access log keeps method, path and status, and holds no query string or Referer"

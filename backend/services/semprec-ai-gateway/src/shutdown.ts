@@ -28,6 +28,11 @@ export interface CreateGracefulShutdownOptions {
   pool: Pool;
   heartbeat: ProcessHeartbeatHandle;
   logger: Logger;
+  /**
+   * Ends the long-lived WebSocket streams (which `server.close()` would otherwise wait on until the
+   * drain bound) and resolves once their budget rows are settled or failed, so it runs before the pool ends.
+   */
+  closeStreams?: () => Promise<void>;
   /** Defaults to `SHUTDOWN_DRAIN_TIMEOUT_MS`; exists only so a test can shrink the drain bound below `vitest.integration.config.ts`'s 30 s `testTimeout`. */
   drainTimeoutMs?: number;
 }
@@ -110,6 +115,11 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-ai-gateway shutting down");
 
+    if (options.closeStreams !== undefined) {
+      await options.closeStreams().catch((err: unknown) => {
+        logger.error({ err, signal }, "Closing the speech-to-text streams failed");
+      });
+    }
     const timedOut = await drainServer(server, drainTimeoutMs, logger, signal);
 
     heartbeat.stop();

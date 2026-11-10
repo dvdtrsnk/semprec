@@ -1,11 +1,16 @@
 import { createServer, type Server } from "node:http";
+import { WebSocket } from "ws";
+import { z } from "zod";
 import { randomBytes, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { logger } from "../logger.js";
+import { Pool, type PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
+  fingerprintGuidanceDriftSubject,
   GENERIC_OPERATION_NAMES,
   runAsSystem,
   runInTenant,
@@ -16,34 +21,61 @@ import {
   createTestModuleItem,
   createTestProjectItem,
   createTestTenant,
+  ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  reconcileGmailAccount,
   resetDatabase,
+  storeCredential,
+  type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
+  agentGuidanceDriftFindingsStore,
   createActionRegistry,
+  coreAgentRunAction,
+  CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
   createHeartbeat,
+  createInvite,
   createItemWithClient,
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
+  transcriptionSourceLink,
+  TRANSCRIPTION_OWNER_PROCESS,
+  getOrCreateJournalItem,
   hashPassword,
+  handleObservabilityCheckSystemTask,
+  handleAgentRunEventsRetentionTask,
   insertAgentRunEvent,
+  insertValueLink,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
+  listAgentRunsByHeartbeat,
   LocalFsBlobStorageWriter,
   provisionTenant,
+  raiseProblem,
+  recordTokenGatewayCall,
+  reserveGatewayCall,
+  resolveMailModuleIds,
+  resolveNotificationsBySource,
+  settleAudioGatewayCall,
+  storeMessageSpeech,
+  setSempThreadInvalidationHook,
+  setInvalidationHook,
+  type InvalidationEvent,
+  revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
   withTransaction,
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
+import { createVoiceChannel, type VoiceIdentity } from "../voiceChannel.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
 
@@ -124,6 +156,7 @@ interface TenantFixture {
   fileItemId: string;
   /** The uploaded file's bytes, unique to this tenant. */
   fileContent: string;
+  recordingContent: string;
   blobId: string;
   /** The blob's content hash, the value its ETag is derived from. */
   blobContentHash: string;
@@ -131,6 +164,7 @@ interface TenantFixture {
   heartbeatId: string;
   notificationId: string;
   agentRunId: string;
+  sempThreadId: string;
   /** A bigint, so it is not in `ids`: as a substring it would match any digit. */
   agentRunEventId: string;
   approvalRequestId: string;
@@ -138,6 +172,8 @@ interface TenantFixture {
   mcpToolRegistrationId: string;
   transcriptItemId: string;
   proposalItemId: string;
+  /** A Mailboxes item of the tenant, the target of the removal-impact route (issue gh-1501). */
+  mailboxItemId: string;
   pushSubscriptionId: string;
   pushDeviceToken: string;
   exportId: string;
@@ -186,6 +222,28 @@ function readIdArray(text: string, field: string): string[] {
 /** Test SQL inside `tenantId`'s scope on the runtime-role pool, which strict enforcement requires. */
 function inTenantTransaction<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(pool, fn));
+}
+
+/** The raw token of an invitation created and revoked through the production functions; invitations are global, so no tenant scope applies. */
+function revokedInvitationToken(invitedBy: string): Promise<string> {
+  return runAsSystem("isolation test invitation", () =>
+    withTransaction(pool, async (client) => {
+      const created = await createInvite(client, {
+        email: `${randomUUID()}@example.test`,
+        invitedBy,
+        appBaseUrl: "https://app.example.test",
+        mailer: null,
+      });
+      await revokeInvite(client, created.invite.id);
+      return new URL(created.inviteUrl).hash.replace("#token=", "");
+    }),
+  );
+}
+
+/** The number of tenant rows, read as the superuser so the count sees every tenant. */
+async function tenantCount(): Promise<number> {
+  const { rows } = await adminPool.query<{ n: number }>("SELECT count(*)::int AS n FROM tenants");
+  return rows[0]?.n ?? -1;
 }
 
 async function send(caller: Caller | null, request: Request): Promise<Answer> {
@@ -288,7 +346,10 @@ function aStateReads(): Request[] {
     { method: "GET", path: "/api/approval-requests" },
     { method: "GET", path: `/api/agent-runs/${a.agentRunId}` },
     { method: "GET", path: `/api/projects/${a.projectItemId}/mcp-grants` },
+    { method: "GET", path: `/api/mail/mailboxes` },
+    { method: "GET", path: `/api/mail/mailboxes/${a.mailboxItemId}` },
     { method: "GET", path: `/api/transcripts/${a.transcriptItemId}/speakers` },
+    { method: "GET", path: `/api/transcripts/${a.transcriptItemId}` },
     { method: "GET", path: "/api/account/exports" },
   ];
 }
@@ -485,7 +546,8 @@ async function seedTenant(): Promise<TenantFixture> {
   // Re-read after the relation write, which may have bumped the item's version.
   const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "updatedAt");
 
-  const fileContent = `audio of ${randomUUID()}`;
+  // Starts with an ID3 tag so content detection treats the upload as audio.
+  const fileContent = `ID3 audio of ${randomUUID()}`;
   const fileItemId = readString(
     await sendOk(member, {
       method: "POST",
@@ -506,6 +568,13 @@ async function seedTenant(): Promise<TenantFixture> {
     return { id: row.id, contentHash: row.content_hash };
   });
   const blobId = blob.id;
+  const recordingContent = `ID3 recording of ${randomUUID()}`;
+  await sendOk(member, {
+    method: "POST",
+    path: "/api/files",
+    body: recordingContent,
+    headers: { "Content-Type": "audio/mpeg", "X-Filename": "recording-probe.mp3" },
+  });
   await sendOk(member, { method: "POST", path: "/api/transcriptions", body: { fileItemId } });
   const transcriptItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "transcripts"));
   const proposalItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "processingProposals"));
@@ -575,6 +644,14 @@ async function seedTenant(): Promise<TenantFixture> {
     };
   });
 
+  const sempThreadId = await inTenantTransaction(tenantId, async (client) => {
+    const { rows } = await client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const row = rows[0];
+    if (!row) throw new Error("Thread insert returned no row");
+    await client.query("INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'isolation')", [row.id]);
+    return row.id;
+  });
+
   const pushDeviceToken = randomBytes(32).toString("hex");
   const pushSubscriptionId = readString(
     await sendOk(member, {
@@ -631,6 +708,7 @@ async function seedTenant(): Promise<TenantFixture> {
     scoped.mcpServerItemId,
     scoped.mcpToolRegistrationId,
     scoped.agentRunId,
+    sempThreadId,
     scoped.approvalRequestId,
     ...listedDatabaseIds,
   ];
@@ -654,12 +732,15 @@ async function seedTenant(): Promise<TenantFixture> {
     trashedItemId: trashedItem.id,
     fileItemId,
     fileContent,
+    recordingContent,
     blobId,
     blobContentHash: blob.contentHash,
     projectItemId,
     ...scoped,
+    sempThreadId,
     transcriptItemId,
     proposalItemId,
+    mailboxItemId,
     pushSubscriptionId,
     pushDeviceToken,
     exportId,
@@ -740,7 +821,273 @@ async function createInviteAsAdmin(): Promise<string> {
   return readString(text, "invite", "id");
 }
 
+/** Ingests one Gmail message for the fixture's tenant through the real reconcile path; returns its thread id. */
+/** `providerId` names the provider's message; a second seed in one tenant needs its own, or it converges on the first. */
+function seedMailThread(
+  fixture: TenantFixture,
+  messageId: string,
+  providerId = "message",
+  providerThreadId = "thread",
+): Promise<string> {
+  return runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const cp = createChokePoint(pool);
+      const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+      const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+      const find = (properties: typeof emailProperties, key: string) => {
+        const property = properties.find((entry) => entry.key === key);
+        if (!property) throw new Error(`Missing ${key}`);
+        return property.id;
+      };
+      const mailbox = await createItemWithClient(client, {
+        databaseId: ids.mailboxesDatabaseId,
+        properties: { name: "Mailbox", provider: "gmail" },
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+      const gmail: GmailMailClient = {
+        getCurrentHistoryId: async () => "1",
+        listHistorySince: async () => ({
+          invalidated: false,
+          newHistoryId: "2",
+          changedMessageIds: [],
+          removedMessageIds: [],
+        }),
+        listAllMessageIds: async () => [providerId],
+        listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+        fetchMessage: async () => ({
+          id: providerId,
+          threadId: providerThreadId,
+          labelIds: ["INBOX"],
+          message: {
+            messageId,
+            subject: "Isolation",
+            envelope: { from: { address: "sender@example.test" } },
+            attachments: [],
+          },
+        }),
+        modifyMessageLabels: async () => undefined,
+      };
+      await reconcileGmailAccount(client, gmail, {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        foldersDatabaseId: ids.foldersDatabaseId,
+        folderRelationPropertyId: find(emailProperties, "folder"),
+        attachmentsRelationPropertyId: find(emailProperties, "attachments"),
+        mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
+        storage: filesStorage,
+        storageKeyPrefix: "thread-isolation",
+      });
+      const result = await client.query<{ thread_id: string }>(
+        "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
+        [mailbox.id],
+      );
+      if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
+      return result.rows[0].thread_id;
+    }),
+  );
+}
+
+/** A dated Tasks item of `tenant`, created through the choke point, for the recurrence routes (issue #1665). */
+async function datedTask(tenant: TenantFixture): Promise<string> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const tasks = await getDatabaseByModuleId(client, "tasks");
+    if (!tasks) throw new Error("Tasks not seeded");
+    return (
+      await createItemWithClient(client, { databaseId: tasks.id, properties: { name: "Weekly", date: "2026-10-22" } })
+    ).id;
+  });
+}
+
+interface TaskItemSnapshot {
+  properties: unknown;
+  updated_at: string;
+}
+
+interface TaskRecurrenceSnapshot {
+  series_id: string;
+  mode: string;
+  rule: unknown;
+  active: boolean;
+  anchor_date: string | null;
+}
+
+/** A task's stored properties and its `task_recurrence` row, read in its own tenant. */
+async function recurrenceState(tenant: TenantFixture, taskId: string): Promise<unknown> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const item = await client.query<TaskItemSnapshot>("SELECT properties, updated_at::text FROM items WHERE id = $1", [
+      taskId,
+    ]);
+    const series = await client.query<TaskRecurrenceSnapshot>(
+      "SELECT series_id::text, mode, rule, active, anchor_date::text FROM task_recurrence WHERE item_id = $1",
+      [taskId],
+    );
+    return { item: item.rows, series: series.rows };
+  });
+}
+
+/** A series' stored `template`, read in its own tenant. */
+async function seriesTemplate(tenant: TenantFixture, seriesId: string): Promise<Array<{ template: unknown }>> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const { rows } = await client.query<{ template: unknown }>(
+      "SELECT template FROM task_recurrence WHERE series_id = $1::uuid",
+      [seriesId],
+    );
+    return rows;
+  });
+}
+
 const ROUTE_CASES: Record<string, RouteCase> = {
+  "project guidance read": async () => {
+    const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` });
+    expect(own).toContain('"sections"');
+    const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/agent-guidance`,
+    }));
+    expect(result.status).toBe(404);
+  },
+  "project guidance save": () =>
+    leavesAUnchanged(async () => {
+      const body = {
+        sections: { purpose: "Isolation", allowed: "", notAllowed: "", generalInstructions: "" },
+        expectedUpdatedAt: null,
+      };
+      const own = await sendOk(b.member, {
+        method: "PUT",
+        path: `/api/projects/${b.projectItemId}/agent-guidance`,
+        body,
+      });
+      expect(own).toContain("Isolation");
+      const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+        method: "PUT",
+        path: `/api/projects/${id}/agent-guidance`,
+        body,
+      }));
+      expect(result.status).toBe(404);
+    }),
+  // Each tenant's project gets one active finding through the findings store; B's list must show
+  // only its own, and A's project id must answer exactly like a random id.
+  "project guidance drift read": async () => {
+    const findingIds: string[] = [];
+    for (const fixture of [a, b]) {
+      const subject = { operation: "items.delete", databaseId: null };
+      const finding = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          agentGuidanceDriftFindingsStore.upsertActive(client, {
+            projectItemId: fixture.projectItemId,
+            fingerprint: fingerprintGuidanceDriftSubject(fixture.projectItemId, "permission", subject),
+            payload: {
+              kind: "permission",
+              subject,
+              claim: "Guidance allows deleting tasks",
+              guidanceExcerpt: "Delete tasks freely",
+              manifestFacts: ["items.delete is not granted"],
+              severity: "blocking",
+            },
+            seenAt: new Date("2026-10-01T08:00:00.000Z"),
+          }),
+        ),
+      );
+      findingIds.push(finding.finding.id);
+    }
+    // R1 F4: a project lists its findings only once it has guidance, so B saves its guidance through
+    // the real route first, against its current version (an earlier case may already have saved one).
+    const current: unknown = JSON.parse(
+      await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` }),
+    );
+    const expectedUpdatedAt = isRecord(current) && typeof current.updatedAt === "string" ? current.updatedAt : null;
+    await sendOk(b.member, {
+      method: "PUT",
+      path: `/api/projects/${b.projectItemId}/agent-guidance`,
+      body: { sections: { purpose: "Drift", allowed: "", notAllowed: "", generalInstructions: "" }, expectedUpdatedAt },
+    });
+    const own = await sendOk(b.member, {
+      method: "GET",
+      path: `/api/projects/${b.projectItemId}/agent-guidance/drift`,
+    });
+    expect(own).toContain(findingIds[1]);
+    expect(own).not.toContain(findingIds[0]);
+    const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/agent-guidance/drift`,
+    }));
+    expect(result.status).toBe(404);
+    expect(result.text).not.toContain(findingIds[0]);
+  },
+  "guidance drift resolve": async () => {
+    const subject = { operation: "items.delete", databaseId: null };
+    const finding = await runInTenant(a.tenantId, () =>
+      withTransaction(pool, (client) =>
+        agentGuidanceDriftFindingsStore.upsertActive(client, {
+          projectItemId: a.projectItemId,
+          fingerprint: fingerprintGuidanceDriftSubject(a.projectItemId, "permission", subject),
+          payload: {
+            kind: "permission",
+            subject,
+            claim: "Claim",
+            guidanceExcerpt: "Excerpt",
+            manifestFacts: ["Fact"],
+            severity: "blocking",
+          },
+          seenAt: new Date("2026-10-01T08:00:00.000Z"),
+        }),
+      ),
+    );
+    const state = () =>
+      runInTenant(a.tenantId, async () => ({
+        finding: (
+          await pool.query<{
+            id: string;
+            status: string;
+            resolved_by: string | null;
+            resolution_choice: string | null;
+            resolved_at: Date | null;
+          }>(
+            "SELECT id, status, resolved_by, resolution_choice, resolved_at FROM agent_guidance_drift_findings WHERE id = $1",
+            [finding.finding.id],
+          )
+        ).rows,
+        guidance: (
+          await pool.query<{ project_item_id: string; markdown: string; updated_at: Date }>(
+            "SELECT project_item_id, markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+            [a.projectItemId],
+          )
+        ).rows,
+        notifications: (
+          await pool.query<{ id: string; payload: unknown }>(
+            "SELECT id, payload FROM notifications WHERE source_id = $1 ORDER BY id",
+            [finding.finding.id],
+          )
+        ).rows,
+      }));
+    const before = await state();
+    const jobs = await adminPool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const result = await expectForeignLikeRandom(b.member, [finding.finding.id], ([id]) => ({
+        method: "POST",
+        path: `/api/agent-guidance-drift/${id}/resolve`,
+        body: { choice: "dismiss", expectedGuidanceUpdatedAt: null },
+      }));
+      expect(result.status).toBe(404);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(await state()).toEqual(before);
+    expect(
+      (
+        await adminPool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        )
+      ).rows,
+    ).toEqual(jobs.rows);
+    expect(events).toEqual([]);
+  },
   "server identity": async () => {
     const answer = await send(null, { method: "GET", path: "/api/server-info" });
     expect(answer.status).toBe(200);
@@ -808,6 +1155,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(masked(known, [a.member.email])).toEqual(masked(unknown, [unknownEmail]));
   },
+  "accept invitation": async () => {
+    // A revoked invitation's token stands in for a foreign one: it must answer exactly like a random token,
+    // and no tenant may be created by either request.
+    const revokedToken = await revokedInvitationToken(a.member.userId);
+    const tenantsBefore = await tenantCount();
+    await expectForeignLikeRandom(null, [revokedToken], ([token]) => ({
+      method: "POST",
+      path: "/api/invitations/accept",
+      body: { token, password: "accepted-password" },
+    }));
+    expect(await tenantCount()).toBe(tenantsBefore);
+  },
   "Microsoft Graph mail webhook": async () => {
     await expectForeignLikeRandom(null, [a.graphSubscriptionId], ([subscriptionId]) => ({
       method: "POST",
@@ -824,6 +1183,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectNoneOf(answer.text, a.ids, "logout");
     await expectAAccountActive();
   },
+  "list sessions": async () => {
+    const own = await send(b.member, { method: "GET", path: "/api/auth/sessions" });
+    expect(own.status).toBe(200);
+    expect(own.text).toContain(b.member.sessionId);
+    expectNoneOf(own.text, [a.member.sessionId, a.secondSession.sessionId], "list sessions");
+    await expectAAccountActive();
+  },
   "revoke session": async () => {
     await expectForeignLikeRandom(b.member, [a.secondSession.sessionId], ([id]) => ({
       method: "POST",
@@ -831,6 +1197,42 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       body: {},
     }));
     await expectAAccountActive();
+  },
+  "revoke other sessions": async () => {
+    // A member of a third tenant calls it: B's own sessions are fixtures the cases after this one use.
+    const caller = await signUp(await createTestTenant(adminPool), "member");
+    const second = await signIn(caller.email, caller.password, "ios");
+    const answer = await send(caller, { method: "POST", path: "/api/auth/sessions/revoke-others", body: {} });
+    expect(answer.status, answer.text).toBe(200);
+    expect(answer.text).toBe(JSON.stringify({ revokedCount: 1 }));
+    expect((await send(second, { method: "GET", path: "/api/auth/session" })).status).toBe(401);
+    expectNoneOf(answer.text, a.ids, "revoke other sessions");
+    await expectAAccountActive();
+  },
+  "set self person": async () => {
+    const person = async (fixture: TenantFixture) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const people = await getDatabaseByModuleId(client, "people");
+        if (!people) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: people.id, properties: { name: "Self" } });
+      });
+    const ownA = await person(a);
+    const ownB = await person(b);
+    const set = (personId: string | null): Request => ({
+      method: "PUT",
+      path: "/api/auth/self-person",
+      body: { personId },
+    });
+    expect((await send(a.member, set(ownA.id))).status).toBe(200);
+    const foreign = await send(b.member, set(ownA.id));
+    const missing = await send(b.member, set(randomUUID()));
+    expect(foreign.status).toBe(404);
+    expect(foreign).toEqual(missing);
+    expect((await send(b.member, set(ownB.id))).status).toBe(200);
+    const sessionB = await send(b.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionB.text, "user", "personId")).toBe(ownB.id);
+    const sessionA = await send(a.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionA.text, "user", "personId")).toBe(ownA.id);
   },
   "current session": async () => {
     for (const session of [b.member, b.webSession]) {
@@ -881,6 +1283,40 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "unread notifications": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/notifications/unread" }, [b.notificationId]);
   },
+  "resolved notifications": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const id = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: fixture.projectItemId,
+            name: "Resolved",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: "noop",
+          });
+          const sourceId = heartbeat.id;
+          const notification = await writeNotification(client, {
+            userId: fixture.member.userId,
+            kind: "heartbeat_error",
+            titleParams: { name: "Resolved" },
+            linkHref: null,
+            sourceTable: "project_heartbeats",
+            sourceId,
+            transitionInstance: randomUUID(),
+          });
+          await resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId });
+          return notification;
+        }),
+      );
+      ids.push(id);
+    }
+    const answer = await expectExcludesA(
+      b.member,
+      { method: "GET", path: "/api/notifications/resolved?since=2020-01-01T00%3A00%3A00Z" },
+      [ids[1]!],
+    );
+    expect(answer.text).not.toContain(ids[0]);
+  },
   "visit notification": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.notificationId], ([id]) => ({
@@ -895,14 +1331,219 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         b.notificationId,
       ]);
     }),
+  // Preferences hold no ids, so these cases compare values: A stores values away from the defaults,
+  // and B must read its own defaults and change only its own row (issue #1441).
+  "get notification preferences": async () => {
+    await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: true } });
+    try {
+      const own: unknown = JSON.parse(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" }));
+      expect(own).toMatchObject({ badgeInbox: true });
+      const foreign = await expectExcludesA(b.member, { method: "GET", path: "/api/notification-preferences" });
+      const foreignBody: unknown = JSON.parse(foreign.text);
+      expect(foreignBody).toMatchObject({ approvals: true, badgeInbox: false });
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: false } });
+    }
+  },
+  "patch notification preferences": async () => {
+    const aBefore = await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" });
+    try {
+      const own: unknown = JSON.parse(
+        await sendOk(b.member, {
+          method: "PATCH",
+          path: "/api/notification-preferences",
+          body: { approvals: false, badgeApprovals: false },
+        }),
+      );
+      expect(own).toMatchObject({ approvals: false, badgeApprovals: false });
+      expect(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" })).toEqual(aBefore);
+    } finally {
+      await sendOk(b.member, {
+        method: "PATCH",
+        path: "/api/notification-preferences",
+        body: { approvals: true, badgeApprovals: true },
+      });
+    }
+  },
+  // A's heartbeat answers B exactly as a random id does (issue #1453): the lookup is tenant-scoped,
+  // and a refused trigger writes nothing, so A's state is compared before and after.
+  "trigger heartbeat": () =>
+    leavesAUnchanged(async () => {
+      await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+        method: "POST",
+        path: entryPath("trigger heartbeat", id!),
+        body: {},
+      }));
+    }),
+  "set heartbeat enabled": () =>
+    leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+        method: "PATCH",
+        path: entryPath("set heartbeat enabled", id!),
+        body: { enabled: false },
+      }));
+      expect(answer.status).toBe(404);
+    }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
+  },
+  "semp status": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const result = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: fixture.member.userId,
+            category: "agents",
+            kind: "agentHeartbeat",
+            severity: "warning",
+            sourceTable: "project_heartbeats",
+            sourceId: fixture.heartbeatId,
+            dedupeKey: `agents:heartbeat:${fixture.heartbeatId}`,
+          }),
+        ),
+      );
+      ids.push(result.problemId);
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" }, [ids[1]!]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    expect(answer.text).not.toContain(ids[0]);
+  },
+  // Each tenant gets one critical agents problem, its banner candidate; B's banner and count must be
+  // B's own only.
+  "semp status summary": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const result = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: fixture.member.userId,
+            category: "agents",
+            kind: "processStale",
+            severity: "critical",
+            sourceTable: "project_heartbeats",
+            sourceId: fixture.heartbeatId,
+            dedupeKey: `agents:summary:${fixture.heartbeatId}`,
+          }),
+        ),
+      );
+      ids.push(result.problemId);
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status/summary" }, [ids[1]!]);
+    expect(answer.text).not.toContain(ids[0]);
+    const body: unknown = JSON.parse(answer.text);
+    expect(body).toMatchObject({ banner: { problemId: ids[1], instanceId: ids[1] } });
   },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },
+  // A's spend goes through the gateway's own accounting writer, so B's summary must show none of it:
+  // B has no spend of its own in this fixture, and its figures stay at zero.
+  "ai usage summary": async () => {
+    await runInTenant(a.tenantId, () =>
+      recordTokenGatewayCall(pool, {
+        provider: "anthropic",
+        model: "isolation-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 7,
+      }),
+    );
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage/summary" });
+    expect(JSON.parse(answer.text)).toMatchObject({ spentTodayUsd: 0, spentMonthUsd: 0 });
+  },
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
+  },
+  // A's mailbox answers B exactly as a random id does, and both answers are the 404 of an unknown mailbox (issue gh-1501).
+  "mail contacts": async () => {
+    async function person(tenantId: string, email: string) {
+      return inTenantTransaction(tenantId, async (client) => {
+        const db = await getDatabaseByModuleId(client, "people");
+        if (!db) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: db.id, properties: { name: "Contact", emails: email } });
+      });
+    }
+    const foreign = await person(a.tenantId, "foreign-contact@example.com");
+    const own = await person(b.tenantId, "own-contact@example.com");
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/contacts?q=contact" }, [own.id]);
+    expect(answer.text).not.toContain(foreign.id);
+    expect(answer.text).not.toContain("foreign-contact@example.com");
+  },
+  "mail threads": async () => {
+    const seed = (fixture: TenantFixture) => seedMailThread(fixture, `<${fixture.tenantId}@example.test>`);
+    const first = await seed(a);
+    const second = await seed(b);
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/threads" }, [second]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    expect(answer.text).not.toContain(first);
+  },
+  "mail thread detail": async () => {
+    const foreign = await seedMailThread(
+      a,
+      `<${randomUUID()}@example.test>`,
+      `detail-${randomUUID()}`,
+      `thread-${randomUUID()}`,
+    );
+    const own = await seedMailThread(
+      b,
+      `<${randomUUID()}@example.test>`,
+      `detail-${randomUUID()}`,
+      `thread-${randomUUID()}`,
+    );
+    const answer = await expectExcludesA(b.member, { method: "GET", path: `/api/mail/threads/${own}` }, [own]);
+    expect(answer.text).not.toContain(foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+      method: "GET",
+      path: `/api/mail/threads/${id}`,
+    }));
+    expect(result.status).toBe(404);
+  },
+  // No writer of the grant exists by design (issue #1635 is read only): both tenants' projects get
+  // `emailSendAutonomous` by direct SQL, as the server operator would set it.
+  "mail autonomous send projects": async () => {
+    for (const fixture of [a, b]) {
+      await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query(
+          "UPDATE items SET properties = properties || '{\"emailSendAutonomous\": true}'::jsonb WHERE tenant_id = app_tenant_default() AND id = $1",
+          [fixture.projectItemId],
+        ),
+      );
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/autonomous-send-projects" }, [
+      b.projectItemId,
+    ]);
+    expect(answer.text).not.toContain(a.projectItemId);
+    const mailboxes = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/mailboxes" }, [
+      b.mailboxItemId,
+    ]);
+    expect(mailboxes.text).toContain('"autonomousSendProjectCount":1');
+  },
+  "mailbox list": async () => {
+    await expectExcludesA(b.member, { method: "GET", path: "/api/mail/mailboxes" }, [b.mailboxItemId]);
+  },
+  "mailbox detail": async () => {
+    const own = await send(b.member, { method: "GET", path: `/api/mail/mailboxes/${b.mailboxItemId}` });
+    expect(own.status).toBe(200);
+    const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/mail/mailboxes/${id}`,
+    }));
+    expect(answer.status).toBe(404);
+  },
+  "mailbox removal impact": async () => {
+    const own = await send(b.member, {
+      method: "GET",
+      path: entryPath("mailbox removal impact", b.mailboxItemId),
+    });
+    expect(own.status).toBe(200);
+    const ownBody: unknown = JSON.parse(own.text);
+    expect(ownBody).toEqual({ messages: 0, drafts: 0, threads: 0, attachmentsKept: 0 });
+    const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
+      method: "GET",
+      path: entryPath("mailbox removal impact", id!),
+    }));
+    expect(answer.status).toBe(404);
   },
   "confirm proposal": () =>
     leavesAUnchanged(async () => {
@@ -912,6 +1553,92 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "task recurrence set": async () => {
+    const [own, foreign] = [await datedTask(b), await datedTask(a)];
+    const request = (id: string) => ({
+      method: "PUT",
+      path: `/api/tasks/${id}/recurrence`,
+      body: { preset: "weekly" },
+    });
+    const answer = await sendOk(b.member, request(own));
+    expect(readString(answer, "properties", "seriesId")).toMatch(/^[0-9a-f-]{36}$/);
+    const before = await recurrenceState(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
+    expect(result.status).toBe(404);
+    expect(await recurrenceState(a, foreign)).toEqual(before);
+  },
+  "task series edit": async () => {
+    const seriesOf = async (tenant: TenantFixture): Promise<string> => {
+      const task = await datedTask(tenant);
+      const answer = await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/tasks/${task}/recurrence`,
+        body: { preset: "daily" },
+      });
+      return readString(answer, "properties", "seriesId");
+    };
+    const [own, foreign] = [await seriesOf(b), await seriesOf(a)];
+    const request = (id: string) => ({ method: "PATCH", path: `/api/tasks/series/${id}`, body: { timeFrom: "08:00" } });
+    const answer = await sendOk(b.member, request(own));
+    expect(readString(answer, "seriesId")).toBe(own);
+    const before = await seriesTemplate(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => request(id!));
+    expect(result.status).toBe(404);
+    expect(await seriesTemplate(a, foreign)).toEqual(before);
+  },
+  "task recurrence clear": async () => {
+    const [own, foreign] = [await datedTask(b), await datedTask(a)];
+    const path = (id: string) => `/api/tasks/${id}/recurrence`;
+    await sendOk(b.member, { method: "PUT", path: path(own), body: { preset: "weekly" } });
+    await sendOk(a.member, { method: "PUT", path: path(foreign), body: { preset: "weekly" } });
+    const cleared = await sendOk(b.member, { method: "DELETE", path: path(own) });
+    expect(JSON.parse(cleared)).toMatchObject({ properties: { seriesId: null, recurrence: null } });
+    const before = await recurrenceState(a, foreign);
+    const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+      method: "DELETE",
+      path: path(id!),
+    }));
+    expect(result.status).toBe(404);
+    expect(await recurrenceState(a, foreign)).toEqual(before);
+  },
+  "journal period ensure": async () => {
+    const request = { method: "PUT", path: "/api/journal/periods/day/2032-08-15/doc", body: {} };
+    const owner = await sendOk(a.member, request);
+    const [other, repeat] = await Promise.all([sendOk(b.member, request), sendOk(b.member, request)]);
+    expect(readString(other, "itemId")).toBe(readString(repeat, "itemId"));
+    expect(readString(other, "docId")).toBe(readString(repeat, "docId"));
+    expect(readString(other, "itemId")).not.toBe(readString(owner, "itemId"));
+    expect(readString(other, "docId")).not.toBe(readString(owner, "docId"));
+    const counts = await inTenantTransaction(b.tenantId, async (client) => {
+      const journal = await getDatabaseByModuleId(client, "journal");
+      if (!journal) throw new Error("Journal not seeded");
+      return client.query<{ items: number; docs: number }>(
+        `SELECT (SELECT count(*)::int FROM items WHERE database_id = $1 AND properties ->> 'type' = 'day' AND properties ->> 'period' = $2 AND deleted_at IS NULL) AS items,
+                (SELECT count(*)::int FROM docs WHERE item_id = $3) AS docs`,
+        [journal.id, "2032-08-15", readString(other, "itemId")],
+      );
+    });
+    expect(counts.rows).toEqual([{ items: 1, docs: 1 }]);
+    const invalid = await send(b.member, { method: "PUT", path: "/api/journal/periods/week/2027-W53/doc", body: {} });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  "journal period read": async () => {
+    const createPeriod = async (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const journal = await getDatabaseByModuleId(client, "journal");
+        if (!journal) throw new Error("Journal not seeded");
+        return getOrCreateJournalItem(client, journal.id, "day", new Date("2026-10-16T12:00:00Z"), "Europe/Prague");
+      });
+    const ownA = await createPeriod(a);
+    const ownB = await createPeriod(b);
+    const response = await sendOk(b.member, { method: "GET", path: "/api/journal/periods/day/2026-10-16" });
+    expect(readString(response, "item", "id")).toBe(ownB.id);
+    expect(response).not.toContain(ownA.id);
+    const invalid = await send(b.member, { method: "GET", path: "/api/journal/periods/week/2027-W53" });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
   "create transcription": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.fileItemId], ([fileItemId]) => ({
@@ -928,6 +1655,69 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "transcript list": async () => {
+    await expectExcludesA(b.member, { method: "GET", path: "/api/transcripts" }, [b.transcriptItemId]);
+    // A foreign filter id narrows to nothing, exactly like a random one.
+    for (const field of ["eventId", "personId", "projectId"]) {
+      const answer = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+        method: "GET",
+        path: `/api/transcripts?${field}=${id}`,
+      }));
+      expect(answer.status).toBe(200);
+      expect(answer.text).toBe('{"transcripts":[],"nextCursor":null}');
+    }
+  },
+  // B deletes its own recording through the route and restores it through the generic Trash route;
+  // A's transcript answers like a random id and A's rows stay as A reads them.
+  "transcript delete": () =>
+    leavesAUnchanged(async () => {
+      const fileId = readString(
+        await sendOk(b.member, {
+          method: "POST",
+          path: "/api/files",
+          body: `ID3 audio of ${randomUUID()}`,
+          headers: { "Content-Type": "audio/mpeg", "X-Filename": "delete.mp3" },
+        }),
+        "id",
+      );
+      const transcriptId = await runInTenant(b.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const transcripts = await getDatabaseByModuleId(client, "transcripts");
+          if (!transcripts) throw new Error("Missing transcripts");
+          // The link only the transcription process writes, as its step 0 writes it.
+          const item = await createItemWithClient(
+            client,
+            { databaseId: transcripts.id, properties: { name: "Delete me", link: transcriptionSourceLink(fileId) } },
+            { allowedSystemKeys: ["link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          return item.id;
+        }),
+      );
+      const deleted = await sendOk(b.member, { method: "DELETE", path: `/api/transcripts/${transcriptId}` });
+      expect(deleted).toContain(fileId);
+      const trashed = () =>
+        inTenantTransaction(b.tenantId, async (client) => {
+          const { rows } = await client.query<{ id: string; trashed: boolean }>(
+            "SELECT id, deleted_at IS NOT NULL AS trashed FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+            [[fileId, transcriptId]],
+          );
+          return rows.map((row) => row.trashed);
+        });
+      expect(await trashed()).toEqual([true, true]);
+      await sendOk(b.member, { method: "POST", path: `/api/items/${transcriptId}/restore`, body: {} });
+      expect(await trashed()).toEqual([false, false]);
+      const result = await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
+        method: "DELETE",
+        path: `/api/transcripts/${id}`,
+      }));
+      expect(result.status).toBe(404);
+    }),
+  "transcript detail": async () => {
+    await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/transcripts/${id}`,
+    }));
+  },
   "transcript speakers": async () => {
     await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
       method: "GET",
@@ -968,6 +1758,98 @@ const ROUTE_CASES: Record<string, RouteCase> = {
           params: { name: "semprec.item.get", arguments: { itemId } },
         },
       }));
+    }),
+  "semp thread detail": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}`,
+    }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}` });
+  },
+  "semp thread create message": () =>
+    leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: "/api/semp/threads",
+        body: { text: "Question", subject: { inboxItemId: id } },
+      }));
+      expect(answer.status).toBe(400);
+      const own = await send(b.member, { method: "POST", path: "/api/semp/threads", body: { text: "Question" } });
+      expect(own.status).toBe(202);
+    }),
+  "semp thread send message": () =>
+    leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+        method: "POST",
+        path: `/api/semp/threads/${id}/messages`,
+        body: { text: "Question" },
+      }));
+      expect(answer.status).toBe(404);
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages`,
+        body: { text: "Question" },
+      });
+      expect(own.status).toBe(202);
+    }),
+  "semp thread messages": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}/messages`,
+    }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}/messages` });
+  },
+  "semp message speech": () =>
+    leavesAUnchanged(async () => {
+      const created = await sendOk(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages`,
+        body: { text: "Speech isolation" },
+      });
+      const ownMessageId = readString(created, "messageId");
+      const foreignMessage = await inTenantTransaction(a.tenantId, async (client) => {
+        const result = await client.query<{ id: string }>("SELECT id FROM semp_messages WHERE thread_id = $1 LIMIT 1", [
+          a.sempThreadId,
+        ]);
+        if (!result.rows[0]) throw new Error("Missing foreign message");
+        return result.rows[0].id;
+      });
+      const key = `${b.tenantId}/blobs/${randomUUID()}`;
+      await filesStorage.writeStream(key, Readable.from([Buffer.from("AB")]), { maxBytes: 2 });
+      await inTenantTransaction(b.tenantId, (client) =>
+        storeMessageSpeech(client, {
+          threadId: b.sempThreadId,
+          messageId: ownMessageId,
+          voice: "alloy",
+          text: "Speech isolation",
+          storageKey: key,
+          byteSize: 2,
+        }),
+      );
+      const response = await expectForeignLikeRandom(
+        b.member,
+        [a.sempThreadId, foreignMessage],
+        ([thread, message]) => ({
+          method: "POST",
+          path: `/api/semp/threads/${thread}/messages/${message}/speech`,
+        }),
+      );
+      expect(response.status).toBe(404);
+      const wrongThread = await send(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages/${foreignMessage}/speech`,
+      });
+      expect(wrongThread.status).toBe(404);
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/semp/threads/${b.sempThreadId}/messages/${ownMessageId}/speech`,
+      });
+      expect(own.status).toBe(200);
+      expect(own.text).toBe("AB");
     }),
   "agent run detail": async () => {
     await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
@@ -1045,6 +1927,26 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: "/api/databases",
         body: { name: "Child of a foreign item", parentItemId },
       }));
+      const footprint = () =>
+        runInTenant(b.tenantId, () =>
+          pool.query<{ databases: number; properties: number; partitions: number }>(
+            "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+          ),
+        );
+      const before = (await footprint()).rows;
+      const foreignAnswer = await expectForeignLikeRandom(b.member, [a.targetDatabaseId], ([targetDatabaseId]) => ({
+        method: "POST",
+        path: "/api/databases",
+        body: {
+          name: "Foreign target",
+          properties: [
+            { key: "target", name: "Target", type: "relation", targetDatabaseId, cardinality: "many_to_many" },
+          ],
+        },
+      }));
+      expect(foreignAnswer.status).toBeGreaterThanOrEqual(400);
+      expect(foreignAnswer.status).toBeLessThan(500);
+      expect((await footprint()).rows).toEqual(before);
     }),
   "database detail": async () => {
     await expectForeignLikeRandom(b.member, [a.databaseId], ([id]) => ({
@@ -1246,12 +2148,182 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       // Metadata A's existing edge does not carry, so a foreign replace that landed changes it.
       await relationCases("PUT", { metadata: { writtenBy: "B" } });
     }),
+  "set relation": () =>
+    leavesAUnchanged(async () => {
+      const key = `single${randomUUID().replaceAll("-", "")}`;
+      await sendOk(b.member, {
+        method: "POST",
+        path: `/api/databases/${b.databaseId}/properties`,
+        body: {
+          key,
+          name: "Single link",
+          type: "relation",
+          targetDatabaseId: b.targetDatabaseId,
+          cardinality: "one_to_one",
+          locked: false,
+        },
+      });
+      await sendOk(b.member, {
+        method: "PUT",
+        path: `/api/items/${b.itemId}/relations/${key}`,
+        body: { targetItemId: b.targetItemId },
+      });
+      const before = await sendOk(b.member, {
+        method: "GET",
+        path: `/api/items/${b.itemId}/relations?propertyKey=${key}`,
+      });
+      await expectForeignLikeRandom(b.member, [a.targetItemId], ([targetItemId]) => ({
+        method: "PUT",
+        path: `/api/items/${b.itemId}/relations/${key}`,
+        body: { targetItemId },
+      }));
+      expect(
+        await sendOk(b.member, { method: "GET", path: `/api/items/${b.itemId}/relations?propertyKey=${key}` }),
+      ).toBe(before);
+      await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "PUT",
+        path: `/api/items/${id}/relations/${key}`,
+        body: { targetItemId: b.targetItemId },
+      }));
+    }),
+  "unlink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/unlink`,
+    }));
+  },
+  "relink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/relink`,
+    }));
+  },
   "delete relation": () =>
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
     }),
+  "list relations": async () => {
+    // A foreign item answers exactly as a random one does, with or without the `propertyKey` filter.
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations`,
+    }));
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations?propertyKey=${a.relationPropertyKey}`,
+    }));
+  },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
+  "ensure page": async () => {
+    const before = await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` });
+    expect(before.status).toBe(200);
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "PUT",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect(await send(a.member, { method: "GET", path: `/api/items/${a.itemId}/page` })).toEqual(before);
+    const own = await send(b.member, { method: "PUT", path: `/api/items/${b.itemId}/page` });
+    expect(own.status).toBe(200);
+  },
+  "get page": async () => {
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page`,
+    }));
+    expect(refused.status).toBe(404);
+    expect((await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page` })).status).toBe(200);
+  },
+  "list page changes": async () => {
+    const since = encodeURIComponent(new Date(Date.now() - 1_000).toISOString());
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page/changes?since=${since}`,
+    }));
+    expect(refused.status).toBe(404);
+    // The allowed side: B lists the changes of an item of its own that has no page, an empty list.
+    const created = await send(b.member, {
+      method: "POST",
+      path: `/api/databases/${b.databaseId}/items`,
+      body: { properties: {} },
+    });
+    expect(created.status, created.text).toBe(201);
+    const fresh = z.object({ id: z.string() }).parse(JSON.parse(created.text)).id;
+    const own = await send(b.member, { method: "GET", path: `/api/items/${fresh}/page/changes?since=${since}` });
+    expect(own.status, own.text).toBe(200);
+    expect(JSON.parse(own.text)).toEqual([]);
+  },
+  "read page markdown": async () => {
+    const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/page.md`,
+    }));
+    expect(refused.status).toBe(404);
+    // The allowed side: B reads its own page, whose body and token carry none of A's ids.
+    const own = await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page.md` });
+    expect(own.status, own.text).toBe(200);
+    expectNoneOf(own.text, a.ids, "B's own page.md");
+  },
+  "insert page markdown": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/insert`,
+        body: { placement: "end", markdown: "Foreign text" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B inserts into its own page.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/insert`,
+        body: { placement: "end", markdown: "Own text" },
+      });
+      expect(own.status, own.text).toBe(200);
+      expectNoneOf(own.text, a.ids, "B's own insert");
+    }),
+  "create subpage": () =>
+    leavesAUnchanged(async () => {
+      // A foreign parent answers exactly as a random one does, and nothing of A's is written.
+      const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/subpages`,
+        body: { title: "Foreign subpage" },
+      }));
+      expect(refused.status).toBe(404);
+      // The allowed side: B creates one under B's own item.
+      const own = await send(b.member, {
+        method: "POST",
+        path: `/api/items/${b.itemId}/page/subpages`,
+        body: { title: "Own subpage" },
+      });
+      expect(own.status, own.text).toBe(201);
+      expectNoneOf(own.text, a.ids, "B's own subpage");
+    }),
+  "restore page version": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/restore`,
+        body: { at: new Date(Date.now() - 60 * 1000).toISOString() },
+      }));
+    }),
+  "recording upload": () =>
+    leavesAUnchanged(async () => {
+      const upload = (content: string): Request => ({
+        method: "POST",
+        path: "/api/recordings",
+        body: content,
+        headers: { "Content-Type": "audio/mpeg", "X-Filename": "recording.mp3" },
+      });
+      const foreign = await send(b.member, upload(a.recordingContent));
+      expectNoneOf(foreign.text, a.ids, "recording upload of A's bytes");
+      const random = await expectExcludesA(b.member, upload(`ID3 recording ${randomUUID()}`));
+      expect(foreign.status).toBe(random.status);
+      expect(random.status).toBe(201);
+    }),
   "upload file": () =>
     leavesAUnchanged(async () => {
       // The bodies differ by the created ids, so the statuses are compared: B uploading bytes A
@@ -1264,9 +2336,39 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
       const foreign = await send(b.member, upload(a.fileContent));
       expectNoneOf(foreign.text, a.ids, "upload of A's bytes");
-      const random = await expectExcludesA(b.member, upload(`audio of ${randomUUID()}`));
+      const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
+      // Issue #1645: A's project as B's attach target answers exactly like a random id, before B's body is read.
+      const attach = ([target]: readonly string[]): Request => ({
+        method: "POST",
+        path: "/api/files",
+        body: `ID3 attached audio of ${randomUUID()}`,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "X-Filename": "b.mp3",
+          "X-Attach-To-Item": target!,
+          "X-Attach-Relation": "projects",
+        },
+      });
+      const attached = await expectForeignLikeRandom(b.member, [a.projectItemId], attach);
+      expect(attached.status, attached.text).toBe(404);
+    }),
+  "upload blob": () =>
+    leavesAUnchanged(async () => {
+      // B uploading bytes A already stored must never be handed A's blob. The status is not
+      // compared: an earlier case may already have stored the same bytes in B.
+      const upload = (content: string): Request => ({
+        method: "POST",
+        path: "/api/blobs",
+        body: content,
+        headers: { "Content-Type": "image/png" },
+      });
+      const foreign = await send(b.member, upload(a.fileContent));
+      expectNoneOf(foreign.text, a.ids, "blob upload of A's bytes");
+      const random = await expectExcludesA(b.member, upload(`image bytes of ${randomUUID()}`));
+      expect(random.status).toBe(201);
+      expect(foreign.text).not.toContain(a.blobId);
     }),
   "download blob": async () => {
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({ method: "GET", path: `/api/blobs/${id}` }));
@@ -1411,6 +2513,13 @@ function ownerProbes(): OwnerProbe[] {
     return (values: readonly string[]): Request => ({ method, path: path(values), body });
   };
   return [
+    { label: "mailbox detail", ids: [a.mailboxItemId], build: get(([id]) => `/api/mail/mailboxes/${id}`), status: 200 },
+    {
+      label: "mailbox removal impact",
+      ids: [a.mailboxItemId],
+      build: get(([id]) => `/api/mail/mailboxes/${id}/removal-impact`),
+      status: 200,
+    },
     { label: "database detail", ids: [a.databaseId], build: get(([id]) => `/api/databases/${id}`), status: 200 },
     {
       label: "archived database detail",
@@ -1436,6 +2545,13 @@ function ownerProbes(): OwnerProbe[] {
     { label: "view detail", ids: [a.viewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "curated view detail", ids: [a.curatedViewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "item detail", ids: [a.itemId], build: get(([id]) => `/api/items/${id}?include=path`), status: 200 },
+    {
+      label: "list relations",
+      ids: [a.itemId],
+      build: get(([id]) => `/api/items/${id}/relations`),
+      status: 200,
+      contains: [a.targetItemId],
+    },
     {
       label: "query database",
       ids: [a.databaseId],
@@ -1494,6 +2610,11 @@ function ownerProbes(): OwnerProbe[] {
       build: get(([id]) => `/api/projects/${id}/mcp-grants`),
       status: 200,
       contains: [a.mcpToolRegistrationId, '"granted":true'],
+    },
+    {
+      label: "transcript detail",
+      ids: [a.transcriptItemId],
+      build: get(([id]) => `/api/transcripts/${id}`),
     },
     {
       label: "transcript speakers",
@@ -1713,6 +2834,45 @@ const MCP_CASES = {
       targetItemId,
     }));
   },
+  "relation.set": async (p) => {
+    const key = `single${randomUUID().replaceAll("-", "")}`;
+    const propertyId = readString(
+      await sendOk(b.member, {
+        method: "POST",
+        path: `/api/databases/${b.databaseId}/properties`,
+        body: {
+          key,
+          name: "Single link",
+          type: "relation",
+          targetDatabaseId: b.targetDatabaseId,
+          cardinality: "one_to_one",
+          locked: false,
+        },
+      }),
+      "id",
+    );
+    await p.excludesA({ relationPropertyId: propertyId, callerItemId: b.itemId, targetItemId: b.targetItemId }, [
+      b.itemId,
+      b.targetItemId,
+    ]);
+    const before = await sendOk(b.member, {
+      method: "GET",
+      path: `/api/items/${b.itemId}/relations?propertyKey=${key}`,
+    });
+    await p.foreignLikeRandom([a.targetItemId], ([targetItemId]) => ({
+      relationPropertyId: propertyId,
+      callerItemId: b.itemId,
+      targetItemId,
+    }));
+    expect(await sendOk(b.member, { method: "GET", path: `/api/items/${b.itemId}/relations?propertyKey=${key}` })).toBe(
+      before,
+    );
+    await p.foreignLikeRandom([a.relationPropertyId, a.itemId], ([relationPropertyId, callerItemId]) => ({
+      relationPropertyId,
+      callerItemId,
+      targetItemId: b.targetItemId,
+    }));
+  },
   "relation.delete": async (p) => {
     await p.foreignLikeRandom(
       [a.relationPropertyId, a.itemId, a.targetItemId],
@@ -1722,6 +2882,41 @@ const MCP_CASES = {
       relationPropertyId: b.relationPropertyId,
       callerItemId: b.itemId,
       targetItemId,
+    }));
+  },
+  "relation.list": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+  },
+  "link.unlink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
+  "link.relink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
+  "page.ensure": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+    await p.excludesA({ itemId: b.itemId }, []);
+  },
+  "page.createSubpage": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ parent: { itemId }, title: "Foreign subpage" }));
+    await p.excludesA({ parent: { itemId: b.itemId }, title: "Own subpage" }, []);
+  },
+  "page.insert": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, placement: "end", markdown: "Foreign insert" }));
+    await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
+  },
+  "page.changes": async (p) => {
+    // The probe instant: after every page document of the fixtures exists and not in the future.
+    const since = new Date().toISOString();
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, since }));
+    await p.excludesA({ itemId: b.itemId, since }, []);
+  },
+  "page.get": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "summary" }));
+    await p.excludesA({ itemId: b.itemId, format: "summary" }, []);
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, format: "markdown" }));
+    await p.excludesA({ itemId: b.itemId, format: "markdown" }, []);
+  },
+  "page.restoreVersion": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
+      itemId,
+      at: new Date(Date.now() - 60 * 1000).toISOString(),
     }));
   },
 } satisfies Record<GenericOperationName, McpCase>;
@@ -1763,6 +2958,12 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     adminPool = getTestPool();
     await resetDatabase(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
     const dispatch = await createDispatcher(pool, {
       passwordResetMailer: noopMailer,
       appBaseUrl: "https://app.example.test",
@@ -1799,6 +3000,146 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     else process.env.SEMPREC_TENANT_SCOPE = originalScopeMode;
   });
 
+  it("serves durable thread headers and complete cursor pages", async () => {
+    const fixture = await inTenantTransaction(a.tenantId, async (client) => {
+      const threads = await client.query<{ id: string; kind: string }>(
+        `INSERT INTO semp_threads (kind, subject_inbox_item_id, heartbeat_id, title)
+         VALUES ('chat', NULL, NULL, 'A chat'), ('item', $1, NULL, NULL), ('tick', NULL, $2, NULL)
+         RETURNING id, kind`,
+        [a.itemId, a.heartbeatId],
+      );
+      const chat = threads.rows.find((row) => row.kind === "chat");
+      if (!chat) throw new Error("Missing chat fixture");
+      const messages = await client.query<{ id: string }>(
+        `INSERT INTO semp_messages (thread_id, role, text, created_at)
+         SELECT $1, 'user', 'history', '2020-01-01T00:00:00.123456Z'::timestamptz
+         FROM generate_series(1, 5) RETURNING id`,
+        [chat.id],
+      );
+      return { threads: threads.rows, ids: messages.rows.map((row) => row.id), chatId: chat.id };
+    });
+    await runAsSystem("test:retention", () => handleAgentRunEventsRetentionTask(pool));
+    for (const thread of fixture.threads) {
+      const answer = await send(a.member, { method: "GET", path: `/api/semp/threads/${thread.id}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({
+        id: thread.id,
+        kind: thread.kind,
+        subject: thread.kind === "item" ? { inboxItemId: a.itemId, proposalId: null } : null,
+      });
+      expect(body).toHaveProperty("createdAt");
+      expect(body).toHaveProperty("lastActivityAt");
+      if (!isRecord(body)) throw new Error("Invalid thread response");
+      if (thread.kind === "tick") {
+        // Issue #1562: the tick thread's own heartbeat header, and no active run (the fixture's run is the user's).
+        expect({ heartbeat: body.heartbeat, activeRun: body.activeRun }).toEqual({
+          heartbeat: {
+            id: a.heartbeatId,
+            name: "Isolation heartbeat",
+            rule: { kind: "interval", minutes: 5 },
+            enabled: true,
+            projectItemId: a.projectItemId,
+            projectName: null,
+            canTrigger: true,
+          },
+          activeRun: null,
+        });
+      } else {
+        expect(body).not.toHaveProperty("heartbeat");
+        expect(body).not.toHaveProperty("activeRun");
+      }
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const suffix = cursor === null ? "" : `&before=${encodeURIComponent(cursor)}`;
+      const answer = await send(a.member, {
+        method: "GET",
+        path: `/api/semp/threads/${fixture.chatId}/messages?limit=2${suffix}`,
+      });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.rows) ||
+        !(body.nextCursor === null || typeof body.nextCursor === "string")
+      )
+        throw new Error("Invalid message response");
+      for (const row of body.rows) {
+        if (!isRecord(row) || typeof row.id !== "string") throw new Error("Invalid message row");
+        expect(row).toMatchObject({
+          role: "user",
+          text: "history",
+          system: null,
+          context: [],
+          replyToMessageId: null,
+          agentRunId: null,
+          eventFromId: null,
+          status: null,
+        });
+        seen.push(row.id);
+      }
+      cursor = body.nextCursor;
+    } while (cursor !== null && seen.length <= 5);
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen)).toEqual(new Set(fixture.ids));
+    for (const query of ["before=garbage", "limit=0", "limit=101", "limit=1.5"]) {
+      expect(
+        (await send(a.member, { method: "GET", path: `/api/semp/threads/${fixture.chatId}/messages?${query}` })).status,
+      ).toBe(400);
+    }
+  });
+
+  it("isolates voice identities and deactivation across tenants", async () => {
+    const identities: VoiceIdentity[] = [];
+    const voice = createVoiceChannel(pool, {
+      handler: {
+        onStart(identity, _frame, sender) {
+          identities.push(identity);
+          sender.sendControl({ type: "ready" });
+        },
+        onAudio() {},
+        onControl() {},
+        onClose() {},
+      },
+    });
+    const voiceHttp = createServer((_req, res) => res.writeHead(404).end());
+    voiceHttp.on("upgrade", (req, socket, head) => voice.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => voiceHttp.listen(0, "127.0.0.1", resolve));
+    const address = voiceHttp.address();
+    if (!address || typeof address === "string") throw new Error("Missing voice address");
+    const open = async (member: Member) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/voice`, { headers: member.headers });
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+      const ready = new Promise<void>((resolve) => ws.once("message", () => resolve()));
+      ws.send(JSON.stringify({ type: "start", language: "en" }));
+      await ready;
+      return ws;
+    };
+    try {
+      const first = await open(a.member),
+        second = await open(b.member);
+      expect(identities).toMatchObject([
+        { tenantId: a.tenantId, userId: a.member.userId },
+        { tenantId: b.tenantId, userId: b.member.userId },
+      ]);
+      const firstClosed = new Promise<number>((resolve) => first.once("close", resolve));
+      voice.closeTenant(a.tenantId);
+      expect(await firstClosed).toBe(4401);
+      expect(second.readyState).toBe(WebSocket.OPEN);
+      const secondClosed = new Promise<void>((resolve) => second.once("close", () => resolve()));
+      second.close();
+      await secondClosed;
+    } finally {
+      await voice.close();
+      await new Promise<void>((resolve) => voiceHttp.close(() => resolve()));
+    }
+  });
+
   it("has exactly one case per surface: api entry", () => {
     const entryNames = new Set(API_ENTRIES.map((route) => route.name));
     const missing = [...entryNames].filter((name) => !(name in ROUTE_CASES));
@@ -1821,12 +3162,908 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(adminMismatch).toEqual([]);
   });
 
+  it("refuses user PATCHes of every proposal card-state key while allowing the owner's user property", async () => {
+    const path = `/api/items/${a.proposalItemId}`;
+    const before = await sendOk(a.member, { method: "GET", path });
+    const version = readString(before, "updatedAt");
+    const values: Record<string, unknown> = {
+      aiProposal: {},
+      userOverrides: {},
+      userEditedKeys: [],
+      aiVersion: 1,
+      reason: "reason",
+      recognizedTypeId: "type",
+      typeCandidates: [],
+      candidates: [],
+      invalidReason: {},
+      referencedItemIds: [],
+      results: [],
+      context: {},
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const response = await send(a.member, {
+        method: "PATCH",
+        path,
+        body: { properties: { [key]: value }, ifVersion: version },
+      });
+      expect(response.status, key).toBe(403);
+      expect(await sendOk(a.member, { method: "GET", path }), key).toBe(before);
+    }
+    const foreign = await send(b.member, {
+      method: "PATCH",
+      path,
+      body: { properties: { reason: "foreign" }, ifVersion: version },
+    });
+    expect(foreign.status).toBe(404);
+    expect(await sendOk(a.member, { method: "GET", path })).toBe(before);
+
+    const created = await sendOk(a.member, {
+      method: "POST",
+      path: `/api/databases/${a.databaseId}/items`,
+      body: { properties: {} },
+    });
+    const ownPath = `/api/items/${readString(created, "id")}`;
+    const changed = await sendOk(a.member, {
+      method: "PATCH",
+      path: ownPath,
+      body: {
+        properties: { [a.propertyKey]: "allowed" },
+        ifVersion: readString(created, "updatedAt"),
+      },
+    });
+    const parsed: unknown = JSON.parse(changed);
+    expect(parsed).toMatchObject({ properties: { [a.propertyKey]: "allowed" } });
+  });
+
+  it("returns flat confirmed results and an unchanged replay through authenticated HTTP", async () => {
+    const proposalId = await runInTenant(a.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const proposals = await getDatabaseByModuleId(client, "processingProposals");
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!proposals || !tasks) throw new Error("Missing proposal or task database");
+        const item = await createItemWithClient(
+          client,
+          {
+            databaseId: proposals.id,
+            properties: {
+              status: "proposed",
+              kind: "inbox",
+              proposal: { entityKind: "database", target: tasks.id, properties: { name: "Confirmed task" } },
+            },
+          },
+          { allowedSystemKeys: ["status", "kind", "proposal"] },
+        );
+        return item.id;
+      }),
+    );
+    const path = `/api/proposals/${proposalId}/confirm`;
+    const foreign = await expectForeignLikeRandom(b.member, [proposalId], ([id]) => ({
+      method: "POST",
+      path: `/api/proposals/${id}/confirm`,
+      body: {},
+    }));
+    expect(foreign.status).toBe(404);
+    const first = await send(a.member, { method: "POST", path, body: {} });
+    expect(first.status).toBe(200);
+    const firstBody: unknown = JSON.parse(first.text);
+    expect(firstBody).toMatchObject({
+      id: proposalId,
+      properties: { status: "confirmed" },
+      results: [{ ref: "primary", databaseKey: "tasks", role: "primary", followUp: null, blockIds: [] }],
+    });
+    expect(firstBody).not.toHaveProperty("item");
+    const replay = await send(a.member, { method: "POST", path, body: {} });
+    expect(replay.status).toBe(200);
+    const replayBody: unknown = JSON.parse(replay.text);
+    expect(replayBody).toEqual(firstBody);
+  });
+
   it("lists A's own approval request and unread notification for A", async () => {
     expect(readIdArray(await sendOk(a.member, { method: "GET", path: "/api/approval-requests" }), "rows")).toEqual([
       a.approvalRequestId,
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("projects a safe mailbox stall notification through authenticated tenant-scoped HTTP", async () => {
+    const fixtures = [];
+    for (let i = 0; i < 2; i++) {
+      const tenantId = await createTestTenant(adminPool);
+      await provisionTenant(pool, tenantId);
+      const member = await signUp(tenantId, "member");
+      const mailboxItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "mailboxes"));
+      await inTenantTransaction(tenantId, async (client) => {
+        await ensureMailAccountSyncState(client, { itemId: mailboxItemId, syncMode: "imap" });
+        await storeCredential(client, {
+          itemId: mailboxItemId,
+          credentialType: "app_password",
+          plaintext: "fake-password",
+        });
+        await enqueueJob(client, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC, { mailboxItemId }, { maxAttempts: 1 });
+      });
+      fixtures.push({ tenantId, member, mailboxItemId });
+    }
+    const [owner, foreign] = fixtures;
+    if (!owner || !foreign) throw new Error("Expected two mailbox fixtures");
+    const marker = `synthetic-provider-error-${randomUUID()}`;
+    for (const fixture of fixtures) {
+      await inTenantTransaction(fixture.tenantId, (client) =>
+        writeNotification(client, {
+          userId: fixture.member.userId,
+          kind: "mail_sync_stalled",
+          linkHref: null,
+          sourceTable: "tenant_observability_checks",
+          sourceId: randomUUID(),
+          transitionInstance: "legacy",
+          payload: { mailboxItemId: fixture.mailboxItemId, lastError: marker },
+        }),
+      );
+    }
+    const tasks = createCoreTaskList(pool, createActionRegistry(), undefined, {
+      createImapClient: async () => {
+        throw new Error(marker);
+      },
+    });
+    const sync = tasks[CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC];
+    if (!sync) throw new Error("Missing mail sync task");
+    await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: sync } });
+    for (const fixture of fixtures) {
+      const state = await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query<{ last_error: string | null }>(
+          "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+          [fixture.mailboxItemId],
+        ),
+      );
+      expect(state.rows).toEqual([{ last_error: marker }]);
+    }
+    await runAsSystem("mail-stall-http-test", () =>
+      handleObservabilityCheckSystemTask(pool, { job: { id: randomUUID() } }),
+    );
+    for (const [fixture, other] of [
+      [owner, foreign],
+      [foreign, owner],
+    ] as const) {
+      const response = await sendOk(fixture.member, { method: "GET", path: "/api/notifications/unread" });
+      expect(response).not.toContain(marker);
+      expect(response).not.toContain(other.mailboxItemId);
+      const body: unknown = JSON.parse(response);
+      expect(body).toMatchObject({
+        notifications: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "mail_sync_stalled",
+            payload: { mailboxItemId: fixture.mailboxItemId, reason: "other" },
+          }),
+        ]),
+      });
+      const storedLegacy = await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query<{ payload: unknown }>(
+          "SELECT payload FROM notifications WHERE kind = 'mail_sync_stalled' AND transition_instance = 'legacy'",
+        ),
+      );
+      expect(storedLegacy.rows).toEqual([{ payload: { mailboxItemId: fixture.mailboxItemId, lastError: marker } }]);
+    }
+  }, 120_000);
+
+  it("returns localized active Inbox type fields over authenticated HTTP", async () => {
+    for (const [locale, targetLabel] of [
+      ["cs", "Úkoly"],
+      ["en", "Tasks"],
+    ] as const) {
+      const tenantId = await createTestTenant(adminPool);
+      await provisionTenant(pool, tenantId);
+      const typesId = await databaseIdFor(tenantId, "inboxItemTypes");
+      const fixture = await inTenantTransaction(tenantId, async (client) => {
+        const create = (properties: Record<string, unknown>) =>
+          createItemWithClient(client, { databaseId: typesId, properties });
+        const task = await create({
+          name: "Task",
+          emoji: "☑️",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        });
+        const note = await create({ name: "Note", emoji: "📝", status: "active", processingMethod: "pageContent" });
+        const unknown = await create({
+          name: "Old",
+          emoji: "❔",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        });
+        const archived = await create({
+          name: "Archived",
+          emoji: "🗑️",
+          status: "archived",
+          processingMethod: "pageContent",
+        });
+        // Older generic writes accepted arbitrary select values; this reproduces a legacy target.
+        const changed = await client.query<{ id: string }>(
+          "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
+          [typesId, unknown.id, "legacyUnknown"],
+        );
+        expect(changed.rows).toHaveLength(1);
+        return { task, note, unknown, archived };
+      });
+      const email = `${randomUUID()}@example.test`;
+      const password = `pw-${randomUUID()}`;
+      const passwordHash = await hashPassword(password);
+      await runAsSystem("inbox-type-http-fixture", () =>
+        createUser(adminPool, { tenantId, email, passwordHash, locale }),
+      );
+      const caller = await signIn(email, password, "ios");
+      const body: unknown = JSON.parse(await sendOk(caller, { method: "GET", path: "/api/inbox-types" }));
+      expect(body).toMatchObject({
+        types: expect.arrayContaining([
+          {
+            id: fixture.task.id,
+            emoji: "☑️",
+            label: "Task",
+            processingMethod: "database",
+            targetDatabaseKey: "tasks",
+            targetLabel,
+          },
+          {
+            id: fixture.note.id,
+            emoji: "📝",
+            label: "Note",
+            processingMethod: "pageContent",
+            targetDatabaseKey: null,
+            targetLabel: null,
+          },
+          {
+            id: fixture.unknown.id,
+            emoji: "❔",
+            label: "Old",
+            processingMethod: "database",
+            targetDatabaseKey: "legacyUnknown",
+            targetLabel: "legacyUnknown",
+          },
+        ]),
+      });
+      expect(readIdArray(JSON.stringify(body), "types")).not.toContain(fixture.archived.id);
+    }
+  });
+
+  it("returns localized model and operation breakdowns over authenticated HTTP", async () => {
+    for (const [locale, expectedModel, expectedOperation] of [
+      ["cs", "Diarizace", "Rozpoznání mluvčích"],
+      ["en", "Diarization", "Speaker recognition"],
+    ] as const) {
+      const tenantId = await createTestTenant(adminPool);
+      const email = `${randomUUID()}@example.test`;
+      const password = `pw-${randomUUID()}`;
+      const passwordHash = await hashPassword(password);
+      await runAsSystem("usage-http-fixture", () => createUser(adminPool, { tenantId, email, passwordHash, locale }));
+      const caller = await signIn(email, password, "ios");
+      await runInTenant(tenantId, async () => {
+        const invocation = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "invocation" });
+        const session = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "session" });
+        for (const run of [invocation, session]) {
+          await recordTokenGatewayCall(pool, {
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 1,
+            agentRunId: run.id,
+            operation: "agent_turn",
+          });
+        }
+        const audio = await reserveGatewayCall(pool, {
+          provider: "pyannoteai",
+          model: "pyannote-3",
+          estimatedCostUsd: 1,
+          operation: "transcription_diarize",
+        });
+        await settleAudioGatewayCall(pool, audio.id, { audioSeconds: 60, costUsd: 1 });
+      });
+      const clock = await adminPool.query<{ now: Date }>("SELECT now() AS now");
+      const instant = clock.rows[0]?.now.getTime();
+      if (instant === undefined) throw new Error("Missing database time");
+      const range = new URLSearchParams({
+        from: new Date(instant - 86_400_000).toISOString(),
+        to: new Date(instant + 86_400_000).toISOString(),
+      });
+      const answer = await send(caller, { method: "GET", path: `/api/ai-usage?${range.toString()}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.byModel) ||
+        !Array.isArray(body.byOperation) ||
+        !Array.isArray(body.rows)
+      )
+        throw new Error("Invalid usage response");
+      expect(body).toMatchObject({ totalCostUsd: 3, estimated: false });
+      expect(body.byModel).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            displayName: "Claude Sonnet",
+            callCount: 2,
+            inputTokens: 20,
+            outputTokens: 10,
+            audioSeconds: null,
+            costUsd: 2,
+            operations: ["agent_turn"],
+          }),
+          expect.objectContaining({
+            provider: "pyannoteai",
+            model: "pyannote-3",
+            displayName: expectedModel,
+            callCount: 1,
+            inputTokens: null,
+            outputTokens: null,
+            audioSeconds: 60,
+            costUsd: 1,
+            operations: ["transcription_diarize"],
+          }),
+        ]),
+      );
+      expect(body.byModel).toHaveLength(2);
+      expect(body.byModel.every((entry: unknown) => isRecord(entry) && !("runUnit" in entry))).toBe(true);
+      expect(body.byOperation).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            operation: "transcription_diarize",
+            label: expectedOperation,
+            costUsd: 1,
+            callCount: 1,
+          }),
+        ]),
+      );
+      expect(body.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "invocation", callCount: 1 }),
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "session", callCount: 1 }),
+          expect.objectContaining({ model: "pyannote-3", nativeUnit: "audio_seconds", audioSeconds: 60 }),
+        ]),
+      );
+    }
+  });
+
+  it("triggers an automation over authenticated HTTP and rejects a second request while its worker runs", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Manual worker evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "manual evidence" },
+        }),
+      ),
+    );
+    const path = `/api/heartbeats/${heartbeat.id}/trigger`;
+    const first = await send(b.member, { method: "POST", path, body: {} });
+    expect(first.status).toBe(202);
+    const firstBody: unknown = JSON.parse(first.text);
+    if (!isRecord(firstBody) || typeof firstBody.jobKey !== "string") throw new Error("Missing job key");
+    expect(firstBody.activeRun).toBeNull();
+    let releaseRun: () => void = () => {};
+    let signalStarted: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const workerPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    workerPool.options.max = 5;
+    workerPool.options.connectionTimeoutMillis = 2000;
+    workerPool.options.statement_timeout = 3000;
+    workerPool.options.query_timeout = 4000;
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(workerPool, async () => {
+        signalStarted();
+        await gate;
+        return { result: "done" };
+      }),
+    );
+    const task = createCoreTaskList(workerPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    if (!task) {
+      const failure = new Error("Missing heartbeat worker task");
+      let cleanupFailure: { error: unknown } | undefined;
+      try {
+        await workerPool.end();
+      } catch (cleanup) {
+        cleanupFailure = { error: cleanup };
+      }
+      if (cleanupFailure)
+        throw new AggregateError([failure, cleanupFailure.error], "Worker setup cleanup failed", { cause: failure });
+      throw failure;
+    }
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
+    const invalidations: Array<{ tenantId: string; threadId: string }> = [];
+    setSempThreadInvalidationHook((event) => invalidations.push(event));
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    let runningFailureObserved = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      runner = await runWorker({
+        pgPool: workerPool,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const startOutcome = await Promise.race([
+        started.then(() => ({ kind: "started" as const })),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Worker did not start")), 5000);
+        }),
+        running.then((result) => ({ kind: "settled" as const, result })),
+      ]);
+      if (startOutcome.kind === "settled") {
+        if (!startOutcome.result.ok) {
+          runningFailureObserved = true;
+          throw startOutcome.result.error;
+        }
+        throw new Error("Worker stopped before start");
+      }
+      const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ status: "running", actorUserId: b.member.userId, parentRunId: null });
+      expect(invalidations).toEqual([{ tenantId: b.tenantId, threadId: runs[0]?.threadId }]);
+      const second = await send(b.member, { method: "POST", path, body: {} });
+      expect(second.status).toBe(409);
+      const body: unknown = JSON.parse(second.text);
+      expect(body).toMatchObject({
+        error: {
+          code: "heartbeat_running",
+          details: {
+            activeRun: {
+              id: runs[0]?.id,
+              status: "running",
+              triggeredBy: "heartbeat",
+              threadId: runs[0]?.threadId,
+            },
+          },
+        },
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    releaseRun();
+    const cleanupErrors: unknown[] = [];
+    try {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const job = await observer.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [firstBody.jobKey],
+        );
+        if (job.rows[0]?.count === 0) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not finish publishing its job outcome");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok && !runningFailureObserved) cleanupErrors.push(result.error);
+      }
+    }
+    try {
+      await workerPool.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    setSempThreadInvalidationHook(() => {});
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "HTTP worker cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+    const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "done",
+      parentRunId: null,
+      actorUserId: b.member.userId,
+      heartbeatOccurrenceId: null,
+      retryOfRunId: null,
+      attempt: 1,
+    });
+  });
+
+  it("drains an owned worker when heartbeat setup fails before the action", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Pre-action failure",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "not invoked" },
+        }),
+      ),
+    );
+    const answer = await send(b.member, { method: "POST", path: `/api/heartbeats/${heartbeat.id}/trigger`, body: {} });
+    expect(answer.status).toBe(202);
+    const body: unknown = JSON.parse(answer.text);
+    if (!isRecord(body) || typeof body.jobKey !== "string") throw new Error("Missing job key");
+    const owned = await createRuntimeRolePool(adminPool, "semprec_data");
+    owned.options.max = 5;
+    owned.options.connectionTimeoutMillis = 2000;
+    owned.options.statement_timeout = 3000;
+    owned.options.query_timeout = 4000;
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
+    let signalFailure: () => void = () => {};
+    const observed = new Promise<void>((resolve) => {
+      signalFailure = resolve;
+    });
+    const injected = new Error("pre-action connection failure");
+    let injectedOnce = false;
+    const actionPool = new Proxy(owned, {
+      get(target, property, receiver) {
+        if (property === "connect" && !injectedOnce)
+          return () => {
+            injectedOnce = true;
+            signalFailure();
+            return Promise.reject(injected);
+          };
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let invoked = false;
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(actionPool, async () => {
+        invoked = true;
+        return { result: "unexpected" };
+      }),
+    );
+    const task = createCoreTaskList(actionPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (!task) throw new Error("Missing heartbeat worker task");
+      runner = await runWorker({
+        pgPool: owned,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await Promise.race([
+        observed,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Pre-action failure did not occur")), 5000);
+        }),
+      ]);
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const row = await observer.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [body.jobKey],
+        );
+        if (row.rows[0]?.last_error?.includes(injected.message)) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not publish its setup failure");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    const errors: unknown[] = [];
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok) errors.push(result.error);
+      }
+    }
+    try {
+      await owned.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Pre-action worker cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    expect(invoked).toBe(false);
+    expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+    const row = await adminPool.query<{ last_error: string | null }>(
+      "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+      [body.jobKey],
+    );
+    expect(row.rows[0]?.last_error).toContain(injected.message);
+  });
+
+  it("bounds the owned job observer when its database read is blocked", async () => {
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 2,
+      connectionTimeoutMillis: 1000,
+      statement_timeout: 400,
+      query_timeout: 1500,
+    });
+    let release: () => void = () => {};
+    let announce: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    const holder = runInTenant(b.tenantId, () =>
+      withTransaction(observer, async (client) => {
+        await client.query("LOCK TABLE graphile_worker._private_jobs IN ACCESS EXCLUSIVE MODE");
+        announce();
+        await gate;
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let holderFailureObserved = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        locked.then(() => ({ kind: "locked" as const })),
+        holder.then((outcome) => ({ kind: "settled" as const, outcome })),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Observer lock did not start")), 2000);
+        }),
+      ]);
+      if (result.kind === "settled") {
+        if (!result.outcome.ok) {
+          holderFailureObserved = true;
+          throw result.outcome.error;
+        }
+        throw new Error("Observer lock ended too early");
+      }
+      let refusal: unknown;
+      try {
+        await observer.query("SELECT count(*) FROM graphile_worker.jobs");
+        throw new Error("Blocked observer unexpectedly completed");
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toMatchObject({ code: "57014" });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    release();
+    const held = await holder;
+    const errors: unknown[] = [];
+    if (!held.ok && !holderFailureObserved) errors.push(held.error);
+    try {
+      const result = await observer.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs");
+      expect(result.rows[0]?.count).toEqual(expect.any(Number));
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Observer cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+  });
+
+  it("refuses disabled and item-event automations over authenticated HTTP", async () => {
+    const heartbeats = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const disabled = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Disabled manual evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          enabled: false,
+        });
+        const event = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Event manual evidence",
+          rule: { kind: "onItemEvent", databaseId: b.databaseId, event: "create" },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+        });
+        return { disabled, event };
+      }),
+    );
+    for (const [heartbeat, code] of [
+      [heartbeats.disabled, "heartbeat_disabled"],
+      [heartbeats.event, "heartbeat_event_triggered"],
+    ] as const) {
+      const answer = await send(b.member, {
+        method: "POST",
+        path: `/api/heartbeats/${heartbeat.id}/trigger`,
+        body: {},
+      });
+      expect(answer.status).toBe(409);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ error: { code } });
+      expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+      const jobs = await runInTenant(b.tenantId, () =>
+        pool.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1", [
+          `heartbeat-fire:manual:${heartbeat.id}`,
+        ]),
+      );
+      expect(jobs.rows[0]?.count).toBe(0);
+    }
+  });
+
+  it("validates notification preferences over HTTP without changing stored values", async () => {
+    const path = "/api/notification-preferences";
+    const beforeText = await sendOk(a.member, { method: "GET", path });
+    const before: unknown = JSON.parse(beforeText);
+    if (!isRecord(before) || typeof before.approvals !== "boolean") throw new Error("Invalid preferences response");
+    try {
+      const changed: unknown = JSON.parse(
+        await sendOk(a.member, { method: "PATCH", path, body: { approvals: false } }),
+      );
+      expect(changed).toMatchObject({ approvals: false });
+      const persisted = await sendOk(a.member, { method: "GET", path });
+      expect(JSON.parse(persisted)).toEqual(changed);
+      for (const [body, field] of [
+        [{ problemsLevel: "invalid" }, "problemsLevel"],
+        [{ approvals: true, "private-key-sentinel": "private-value-sentinel" }, "body"],
+      ] as const) {
+        const errorLog = vi.spyOn(logger, "error");
+        const warnLog = vi.spyOn(logger, "warn");
+        let answer: Awaited<ReturnType<typeof send>>;
+        try {
+          answer = await send(a.member, { method: "PATCH", path, body });
+          expect(errorLog).not.toHaveBeenCalled();
+          expect(warnLog).not.toHaveBeenCalled();
+        } finally {
+          errorLog.mockRestore();
+          warnLog.mockRestore();
+        }
+        expect(answer.status).toBe(400);
+        const response: unknown = JSON.parse(answer.text);
+        expect(response).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(answer.text).not.toContain("private-key-sentinel");
+        expect(answer.text).not.toContain("private-value-sentinel");
+        expect(await sendOk(a.member, { method: "GET", path })).toBe(persisted);
+      }
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path, body: { approvals: before.approvals } });
+    }
+  });
+
+  it("omits a historical foreign blob from an authenticated item envelope", async () => {
+    const path = `/api/items/${a.fileItemId}`;
+    const ownText = await sendOk(a.member, { method: "GET", path });
+    const own: unknown = JSON.parse(ownText);
+    if (!isRecord(own) || !isRecord(own.properties)) throw new Error("expected item properties");
+    expect(own).toHaveProperty("blobs.file.blobId", a.blobId);
+    const original = own.properties;
+    const historical = { ...original, file: { blobId: b.blobId } };
+    // Historical invalid JSONB predates the blob-reference guard; the fixture is tenant-scoped.
+    async function replaceProperties(properties: Record<string, unknown>) {
+      await inTenantTransaction(a.tenantId, async (client) => {
+        const result = await client.query("UPDATE items SET properties = $3::jsonb WHERE tenant_id = $1 AND id = $2", [
+          a.tenantId,
+          a.fileItemId,
+          JSON.stringify(properties),
+        ]);
+        expect(result.rowCount).toBe(1);
+      });
+    }
+    try {
+      await replaceProperties(historical);
+      const answer = await send(a.member, { method: "GET", path });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ properties: historical });
+      expect(body).not.toHaveProperty("blobs");
+    } finally {
+      await replaceProperties(original);
+    }
+  });
+
+  it("isolates link operations through HTTP and MCP on the runtime role", async () => {
+    const cp = createChokePoint(pool);
+    const setup = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const database = await cp.createDatabase({ name: "Link isolation" });
+        await cp.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+        const source = await cp.createItem({ databaseId: database.id, properties: { note: "source" } });
+        const target = await cp.createItem({ databaseId: database.id, properties: { note: "target" } });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: target.id,
+            propertyKey: "note",
+            ruleKey: "test",
+            sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "note" }],
+          }),
+        );
+        return target.id;
+      });
+    const foreign = await setup(a.tenantId);
+    const own = await setup(b.tenantId);
+    const readForeign = () => send(a.member, { method: "GET", path: `/api/items/${foreign}?include=links` });
+    const before = await readForeign();
+    expect(before.status).toBe(200);
+    for (const action of ["unlink", "relink"]) {
+      const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/links/note/${action}`,
+      }));
+      expect(refused.status).toBe(404);
+      expect((await send(b.member, { method: "POST", path: `/api/items/${own}/links/note/${action}` })).status).toBe(
+        200,
+      );
+      expect(await readForeign()).toEqual(before);
+    }
+    for (const caller of [b.member, mcpRunCredential]) {
+      for (const action of ["unlink", "relink"] as const) {
+        const operation: GenericOperationName = action === "unlink" ? "link.unlink" : "link.relink";
+        const refused = await expectForeignLikeRandom(caller, [foreign], ([itemId]) =>
+          mcpCall(operation, { itemId, propertyKey: "note" }),
+        );
+        expect(refused.status).toBe(200);
+        expect(refused.text).toContain('"error"');
+        const allowed = await send(caller, mcpCall(operation, { itemId: own, propertyKey: "note" }));
+        expect(allowed.status).toBe(200);
+        expect(allowed.text).not.toContain('"error"');
+        expect(await readForeign()).toEqual(before);
+      }
+    }
   });
 
   it("answers A's own ids differently from random ids on every probed route, so a foreign answer is a real refusal", async () => {

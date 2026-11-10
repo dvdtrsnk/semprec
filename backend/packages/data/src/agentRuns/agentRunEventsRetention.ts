@@ -14,10 +14,21 @@ export const AGENT_RUN_EVENTS_RETENTION_DAYS = 30;
 /** Rows deleted per transaction, so one sweep never holds a lock or a transaction open over an unbounded row count. */
 const RETENTION_DELETE_BATCH_SIZE = 1000;
 
-/** One conversation (grouping key) that has ever produced a `compaction` checkpoint, and the id of its latest one. */
+/**
+ * SQL predicate (alias `r`) for the main conversation of a thread (#1560), grouped by `thread_id`
+ * rather than by project item. A delegated session inherits `thread_id` but has a `parent_run_id`,
+ * so it falls under the generic grouping instead.
+ */
+const THREAD_MAIN_CONVERSATION = `(r.thread_id IS NOT NULL AND r.triggered_by = 'user' AND r.parent_run_id IS NULL)`;
+
+/**
+ * One conversation (grouping key) that has ever produced a `compaction` checkpoint, and the id of its latest one.
+ * A thread's main conversation has `thread_id` set and the other key columns null; any other has `thread_id` null.
+ */
 type CompactedConversationRow = {
+  thread_id: string | null;
   project_item_id: string | null;
-  triggered_by: string;
+  triggered_by: string | null;
   parent_run_id: string | null;
   compaction_id: string;
 };
@@ -43,11 +54,15 @@ type CompactedConversationRow = {
  */
 async function deleteExpiredRunEventsInScope(pool: Pool): Promise<number> {
   const { rows: conversations } = await pool.query<CompactedConversationRow>(
-    `SELECT r.project_item_id, r.triggered_by, r.parent_run_id, max(e.id) AS compaction_id
+    `SELECT CASE WHEN ${THREAD_MAIN_CONVERSATION} THEN r.thread_id END AS thread_id,
+            CASE WHEN ${THREAD_MAIN_CONVERSATION} THEN NULL ELSE r.project_item_id END AS project_item_id,
+            CASE WHEN ${THREAD_MAIN_CONVERSATION} THEN NULL ELSE r.triggered_by END AS triggered_by,
+            CASE WHEN ${THREAD_MAIN_CONVERSATION} THEN NULL ELSE r.parent_run_id END AS parent_run_id,
+            max(e.id) AS compaction_id
      FROM agent_run_events e
      JOIN agent_runs r ON r.id = e.agent_run_id
      WHERE e.kind = 'compaction' AND r.unit = 'session'
-     GROUP BY 1, 2, 3`,
+     GROUP BY 1, 2, 3, 4`,
   );
 
   let deleted = 0;
@@ -60,15 +75,20 @@ async function deleteExpiredRunEventsInScope(pool: Pool): Promise<number> {
              JOIN agent_runs r ON r.id = e.agent_run_id
              WHERE r.unit = 'session'
                AND r.status <> 'running'
-               AND r.project_item_id IS NOT DISTINCT FROM $1
-               AND r.triggered_by = $2
-               AND r.parent_run_id IS NOT DISTINCT FROM $3
-               AND e.id < $4
-               AND e.at < now() - make_interval(days => $5)
+               AND (
+                 ($1::uuid IS NOT NULL AND ${THREAD_MAIN_CONVERSATION} AND r.thread_id = $1::uuid)
+                 OR ($1::uuid IS NULL AND NOT ${THREAD_MAIN_CONVERSATION}
+                     AND r.project_item_id IS NOT DISTINCT FROM $2
+                     AND r.triggered_by = $3
+                     AND r.parent_run_id IS NOT DISTINCT FROM $4)
+               )
+               AND e.id < $5
+               AND e.at < now() - make_interval(days => $6)
              ORDER BY e.id
-             LIMIT $6
+             LIMIT $7
            )`,
           [
+            conversation.thread_id,
             conversation.project_item_id,
             conversation.triggered_by,
             conversation.parent_run_id,

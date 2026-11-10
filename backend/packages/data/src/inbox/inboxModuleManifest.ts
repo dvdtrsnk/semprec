@@ -7,6 +7,7 @@ import {
 } from "../seed/inboxPipelineKeys.js";
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
+export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inboxAgentTools.js";
 export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "./inboxRouteHandlers.js";
 
 /**
@@ -23,7 +24,7 @@ export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from 
  * this module contributes, so it is not declared under `heartbeatRuleKinds` either. There is
  * no dedicated agent tool for confirm/reject/revise (issue #105) — those go through the
  * generic item-update choke point, the same "single path" every other module uses — so
- * `agentTools` stays empty. Authoring this manifest changes no behavior.
+ * the read-only `inbox.proposal.get` tool is limited to the calling run's own thread.
  *
  * Ownership handoff for Processing proposals
  * (`docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md`, superseding
@@ -45,7 +46,15 @@ export const manifest: ModuleManifest = {
     { key: PROCESSING_PROPOSALS_MODULE_ID, name: "Processing proposals" },
   ],
   capabilities: [],
-  agentTools: [],
+  agentTools: [
+    {
+      name: "inbox.proposal.get",
+      handlerExport: "createInboxProposalGetTool",
+      argumentSchemaExport: "inboxProposalGetArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+  ],
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
   heartbeatActions: [SEMPREC_TICK_ACTION_ID],
   migrations: ["0010_inbox_type_processing.sql"],
@@ -70,4 +79,67 @@ export const manifest: ModuleManifest = {
       justification: "single-consumer-read",
     },
   ],
+  // The MCP server card's editor (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`).
+  // This Inbox manifest carries it until an MCP module manifest exists. Declaring it changes no
+  // behaviour: nothing evaluates `required`, `when` or `timeHiddenWhen` until #1928 and #1934.
+  editorSchemas: {
+    mcp: {
+      groups: [
+        {
+          key: "server",
+          fields: [
+            {
+              key: "name",
+              control: "text",
+              labelKey: "editor.mcp.name.label",
+              placeholderKey: "editor.mcp.name.placeholder",
+              required: true,
+            },
+            {
+              key: "transport",
+              control: "seg",
+              options: ["http", "stdio"],
+              labelKey: "editor.mcp.transport.label",
+            },
+            {
+              key: "url",
+              control: "text",
+              inputType: "url",
+              labelKey: "editor.mcp.url.label",
+              placeholderKey: "editor.mcp.url.placeholder",
+              required: true,
+              when: { field: "transport", equals: "http" },
+            },
+            {
+              key: "command",
+              control: "text",
+              labelKey: "editor.mcp.command.label",
+              placeholderKey: "editor.mcp.command.placeholder",
+              required: true,
+              when: { field: "transport", equals: "stdio" },
+            },
+            {
+              key: "credential",
+              control: "secret",
+              labelKey: "editor.mcp.credential.label",
+              placeholderKey: "editor.mcp.credential.placeholder",
+              required: true,
+              when: { field: "transport", equals: "http" },
+            },
+          ],
+        },
+        {
+          key: "projects",
+          fields: [
+            {
+              key: "mcpProjects",
+              control: "multi",
+              labelKey: "editor.mcp.mcpProjects.label",
+              optionsSource: "mcpProjects",
+            },
+          ],
+        },
+      ],
+    },
+  },
 };

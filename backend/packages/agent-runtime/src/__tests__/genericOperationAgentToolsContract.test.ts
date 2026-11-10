@@ -1,9 +1,21 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import { randomUUID } from "node:crypto";
+import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  insertValueLink,
+  createUser as createPersistedUser,
   createChokePoint,
+  createDocStore,
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
@@ -13,8 +25,21 @@ import {
   type ViewRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, type GenericOperationName } from "@semprec/shared";
-import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
+import {
+  GENERIC_OPERATION_NAMES,
+  OPERATION_METADATA,
+  runAsSystem,
+  runInTenant,
+  type GenericOperationName,
+} from "@semprec/shared";
+import {
+  createGenericOperationAgentTools,
+  listGrantedGenericOperationAgentTools,
+} from "../tools/generic/genericOperationAgentTools.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -49,6 +74,8 @@ interface Fixtures {
   targetDatabase: { id: string };
   targetItem: ItemRow;
   relationProperty: PropertyRow;
+  singleRelationProperty: PropertyRow;
+  secondTarget: ItemRow;
 }
 
 /**
@@ -76,6 +103,7 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
 
   const targetDatabase = await chokePoint.createDatabase({ name: "AgentTools Contract Targets" });
   const targetItem = await chokePoint.createItem({ databaseId: targetDatabase.id, properties: {} });
+  const secondTarget = await chokePoint.createItem({ databaseId: targetDatabase.id, properties: {} });
   const { property: relationProperty } = await chokePoint.createRelationProperty({
     sourceDatabaseId: database.id,
     key: "assignedTo",
@@ -88,8 +116,32 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
     callerItemId: itemA.id,
     targetItemId: targetItem.id,
   });
+  const { property: singleRelationProperty } = await chokePoint.createRelationProperty({
+    sourceDatabaseId: database.id,
+    key: "singleTarget",
+    name: "Single target",
+    targetDatabaseId: targetDatabase.id,
+    cardinality: "one_to_one",
+  });
+  await chokePoint.createRelation({
+    relationPropertyId: singleRelationProperty.id,
+    callerItemId: itemB.id,
+    targetItemId: targetItem.id,
+  });
 
-  return { database, property, itemA, itemB, view, viewActor, targetDatabase, targetItem, relationProperty };
+  return {
+    database,
+    property,
+    itemA,
+    itemB,
+    view,
+    viewActor,
+    targetDatabase,
+    targetItem,
+    relationProperty,
+    singleRelationProperty,
+    secondTarget,
+  };
 }
 
 interface Case {
@@ -99,7 +151,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 29-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 39-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -141,7 +193,13 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "item.get": { args: (fx) => ({ itemId: fx.itemA.id }) },
-  "item.create": { args: (fx) => ({ databaseId: fx.database.id, properties: { title: "Contract Item" } }) },
+  "item.create": {
+    args: (fx) => ({
+      databaseId: fx.database.id,
+      properties: { title: "Contract Item" },
+      relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
+    }),
+  },
   "item.patch": {
     args: (fx) => ({ itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.updatedAt }),
   },
@@ -160,6 +218,13 @@ const CASES: Record<GenericOperationName, Case> = {
       targetItemId: fx.targetItem.id,
     }),
   },
+  "relation.set": {
+    args: (fx) => ({
+      relationPropertyId: fx.singleRelationProperty.id,
+      callerItemId: fx.itemB.id,
+      targetItemId: fx.secondTarget.id,
+    }),
+  },
   "relation.delete": {
     args: (fx) => ({
       relationPropertyId: fx.relationProperty.id,
@@ -167,9 +232,83 @@ const CASES: Record<GenericOperationName, Case> = {
       targetItemId: fx.targetItem.id,
     }),
   },
+  "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "link.unlink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "link.relink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
+  "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
+  "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
+  "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
+  "page.restoreVersion": {
+    // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
+    args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
+    prepare: async (fx) => {
+      await createDocStore(pool).putBlock(
+        fx.itemA.id,
+        { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+        "user",
+      );
+      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+        fx.itemA.id,
+      ]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+    },
+  },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
+  it("sanitizes Emails.body on the agent item.get tool", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, "emails");
+      if (!database) throw new Error("Emails not seeded");
+      return createItemWithClient(
+        client,
+        { databaseId: database.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"] },
+      );
+    });
+
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read email" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    const result = await tools["item.get"](run.id, { itemId: item.id });
+    expect(result.error).toBeFalsy();
+    expect(result.result).toContain("safe");
+    expect(result.result).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+  });
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -182,8 +321,322 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("does not discover or invoke page operations through a persisted project agent", async () => {
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
+    for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"] as const) {
+      expect(discovered).not.toContain(name);
+      const args =
+        name === "page.restoreVersion"
+          ? { itemId: projectItemId, at: new Date().toISOString() }
+          : { itemId: projectItemId };
+      const outcome = await tools[name](run.id, args);
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("Unknown operation");
+      expect(outcome.approvalRequestId).toBeUndefined();
+    }
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [projectItemId])).rows).toHaveLength(0);
+    expect((await pool.query("SELECT id FROM approval_requests WHERE agent_run_id = $1", [run.id])).rows).toHaveLength(
+      0,
+    );
+  });
+
+  it("validates Areas writes through the actual agent tools", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!database) throw new Error("Areas not seeded");
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "validate Areas" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const result = await tools["item.create"](run.id, {
+        databaseId: database.id,
+        properties: { name: "Invalid", [field]: value },
+      });
+      expect(result.error).toBe(true);
+      expect(result.result).toContain(field);
+    }
+    const result = await tools["item.create"](run.id, {
+      databaseId: database.id,
+      properties: { name: "Valid", icon: "briefcase", color: "#5856D6" },
+    });
+    expect(result.error).toBeFalsy();
+  });
+
+  it("refuses deletion of the system area and filters it through actual agent tools", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:system-area-agent", () =>
+        createPersistedUser(pool, {
+          tenantId: tenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      await runInTenant(tenant, async () => {
+        await seedSystem(runtime, createViewTypeRegistry());
+        const cp = createChokePoint(runtime);
+        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!areas || !projects) throw new Error("System databases missing");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
+        const run = await createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "query Areas",
+        });
+        const system = (await cp.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
+        if (!system) throw new Error("System area missing");
+        const userArea = await cp.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+        const query = await tools["database.query"](run.id, {
+          databaseId: areas.id,
+          filter: { type: "is_empty", property: "systemActive" },
+        });
+        expect(query.error).toBe(false);
+        const result: unknown = JSON.parse(query.result);
+        expect(result).toMatchObject({ items: [expect.objectContaining({ id: userArea.id })] });
+        expect(query.result).not.toContain(system.id);
+        const refused = await tools["item.delete"](run.id, { itemId: system.id });
+        expect(refused.error).toBe(true);
+        expect(refused.result).toMatch(/^forbidden:.*system-active/);
+        expect(refused.approvalRequestId).toBeUndefined();
+        expect(await cp.getItem(areas.id, system.id)).toEqual(system);
+        const approvals = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1",
+          [run.id],
+        );
+        expect(approvals.rows[0]?.count).toBe(0);
+      });
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("System area agent fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
+  });
+
+  it("validates Areas item.patch through the AgentTool under tenant RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-area-agent", () =>
+        createPersistedUser(pool, {
+          tenantId: tenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      await runInTenant(tenant, async () => {
+        await seedSystem(runtime, createViewTypeRegistry());
+        const cp = createChokePoint(runtime);
+        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!areas || !projects) throw new Error("System databases missing");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
+        const run = await createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "update Areas",
+        });
+        const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
+        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+        const patch = async (properties: Record<string, unknown>) => {
+          const current = await cp.getItem(areas.id, item.id);
+          if (!current) throw new Error("Area missing");
+          return tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: current.updatedAt });
+        };
+        expect((await patch({ icon: "briefcase", color: "#5856D6" })).error).toBe(false);
+        const before = await cp.getItem(areas.id, item.id);
+        expect(before?.properties).toMatchObject({ icon: "briefcase", color: "#5856D6" });
+        for (const [field, value] of [
+          ["icon", "rocket123"],
+          ["color", "#123456"],
+        ] as const) {
+          const outcome = await patch({ [field]: value });
+          expect(outcome.error).toBe(true);
+          expect(outcome.result).toContain(field);
+          expect(await cp.getItem(areas.id, item.id)).toEqual(before);
+        }
+        expect((await patch({ icon: null, color: null })).error).toBe(false);
+        expect((await cp.getItem(areas.id, item.id))?.properties).toMatchObject({ icon: null, color: null });
+      });
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("Area AgentTool fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
+  });
+
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
+  });
+
+  it("executes relation.set and item.create through AgentTools under tenant RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-agent-user", () =>
+        createPersistedUser(pool, {
+          tenantId: ownTenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      const cp = createChokePoint(runtime);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const source = await cp.createDatabase({ name: "Runtime source" });
+          const target = await cp.createDatabase({ name: "Runtime target" });
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: "link",
+            name: "Link",
+            cardinality: "one_to_one",
+          });
+          const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+          const first = await cp.createItem({ databaseId: target.id, properties: {} });
+          const second = await cp.createItem({ databaseId: target.id, properties: {} });
+          const third = await cp.createItem({ databaseId: target.id, properties: {} });
+          await cp.setRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id });
+          return { source, property, caller, first, second, third };
+        });
+      }
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const run = await runInTenant(ownTenant, async () => {
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!projects) throw new Error("Missing projects database");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Runtime agent" } });
+        return createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "runtime contract",
+        });
+      });
+      const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+      await runInTenant(ownTenant, async () => {
+        const moved = await tools["relation.set"](run.id, {
+          relationPropertyId: own.property.id,
+          callerItemId: own.caller.id,
+          targetItemId: own.second.id,
+        });
+        expect(moved.error).toBe(false);
+        expect(moved.approvalRequestId).toBeUndefined();
+        expect(await cp.listItemRelations(own.caller.id, own.property.id)).toMatchObject([
+          { targetItemId: own.second.id },
+        ]);
+        const created = await tools["item.create"](run.id, {
+          databaseId: own.source.id,
+          properties: {},
+          relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
+        });
+        expect(created.error).toBe(false);
+        expect(created.approvalRequestId).toBeUndefined();
+        const parsed: unknown = JSON.parse(created.result);
+        if (typeof parsed !== "object" || parsed === null || !("id" in parsed) || typeof parsed.id !== "string")
+          throw new Error("Missing created item id");
+        expect(await cp.listItemRelations(parsed.id, own.property.id)).toMatchObject([{ targetItemId: own.third.id }]);
+      });
+      async function snapshot(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const items = await runtime.query<{
+            id: string;
+            database_id: string;
+            properties: unknown;
+            computed: unknown;
+            deleted_at: Date | null;
+            updated_at: Date;
+          }>("SELECT id, database_id, properties, computed, deleted_at, updated_at FROM items ORDER BY id");
+          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          );
+          const approvals = await runtime.query<{ id: string; status: string }>(
+            "SELECT id, status FROM approval_requests ORDER BY id",
+          );
+          return { items: items.rows, edges: edges.rows, approvals: approvals.rows };
+        });
+      }
+      const ownBefore = await snapshot(ownTenant);
+      const foreignBefore = await snapshot(foreignTenant);
+      const missing = randomUUID();
+      for (const operation of ["relation.set", "item.create"] as const) {
+        const call = (targetItemId: string) =>
+          operation === "relation.set"
+            ? tools[operation](run.id, {
+                relationPropertyId: own.property.id,
+                callerItemId: own.caller.id,
+                targetItemId,
+              })
+            : tools[operation](run.id, {
+                databaseId: own.source.id,
+                properties: {},
+                relations: [{ propertyKey: "link", targetItemIds: [targetItemId] }],
+              });
+        const denied = await runInTenant(ownTenant, () => call(foreign.third.id));
+        const absent = await runInTenant(ownTenant, () => call(missing));
+        expect(denied.error).toBe(true);
+        expect(absent.error).toBe(true);
+        expect(denied.result.replaceAll(foreign.third.id, "<target>")).toBe(
+          absent.result.replaceAll(missing, "<target>"),
+        );
+        expect(await snapshot(ownTenant)).toEqual(ownBefore);
+        expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      }
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("AgentTool runtime fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
   });
 
   for (const operation of GENERIC_OPERATION_NAMES) {
@@ -195,14 +648,25 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         triggeredBy: "user",
         task: `contract test ${operation}`,
       });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      expect(Object.keys(tools)).toContain("relation.set");
       const fx = await buildFixtures(projectItemId);
       const testCase = CASES[operation];
       await testCase.prepare?.(fx);
 
       const outcome = await tools[operation](run.id, testCase.args(fx));
 
-      if (isDestructive) {
+      if (
+        operation === "page.get" ||
+        operation === "page.ensure" ||
+        operation === "page.restoreVersion" ||
+        operation === "page.insert" ||
+        operation === "page.changes"
+      ) {
+        expect(outcome.error).toBe(true);
+        expect(outcome.approvalRequestId).toBeUndefined();
+        expect(outcome.result).toContain("Unknown operation");
+      } else if (isDestructive) {
         expect(outcome.error).toBe(false);
         expect(outcome.result).toContain("requires human approval");
         const { rows } = await pool.query<{ count: number }>(
@@ -212,6 +676,38 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         expect(rows[0]!.count).toBe(1);
       } else {
         expect(outcome.error).toBe(false);
+        if (operation === "relation.set") {
+          const relations = await chokePoint.listItemRelations(fx.itemB.id, fx.singleRelationProperty.id);
+          expect(relations).toMatchObject([{ targetItemId: fx.secondTarget.id }]);
+        }
+        if (operation === "page.createSubpage") {
+          // The agent's call is a direct write attributed to the agent: the parent's page document gets one update
+          // authored `ai_agent`, and no approval request exists (checked below with every non-destructive call).
+          const { rows } = await pool.query<{ created_by: string }>(
+            `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
+             WHERE d.item_id = $1 ORDER BY u.id`,
+            [fx.itemA.id],
+          );
+          expect(rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
+        }
+        if (operation === "item.create") {
+          const { rows } = await pool.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND properties->>'title' = $2",
+            [fx.database.id, "Contract Item"],
+          );
+          expect(rows).toHaveLength(1);
+          const created = rows[0];
+          if (!created) throw new Error("Expected created item");
+          expect(await chokePoint.listItemRelations(created.id, fx.relationProperty.id)).toMatchObject([
+            { targetItemId: fx.targetItem.id },
+          ]);
+        }
+        // A non-destructive call runs without an approval request (docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md).
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1`,
+          [run.id],
+        );
+        expect(rows[0]!.count).toBe(0);
       }
     });
   }
@@ -227,7 +723,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("surfaces database_archived (issue #83) as a ChokePointError-shaped result for a write against an archived database", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "archived db write" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
       await chokePoint.archiveDatabase(fx.database.id);
 
@@ -243,7 +739,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.type on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -258,7 +754,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.config on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -273,7 +769,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects a non-relation property id supplied directly as relationPropertyId — contrast with REST's key-based route resolution", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "bad relation id" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       // REST resolves a relation route's `:propertyKey` segment against the caller item's own

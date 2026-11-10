@@ -1,10 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { runModuleDataMigration } from "../migrationJob/moduleDataMigration.js";
+import { logger } from "../migrationJob/logger.js";
+import { DEFAULT_TIMEZONE } from "../systemSettings.js";
 import type { ItemRow } from "../types.js";
 
 let pool: Pool;
@@ -27,6 +29,10 @@ describe("module data migration", () => {
     await resetDatabase(pool);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterAll(async () => {
     await pool?.end();
   });
@@ -40,6 +46,16 @@ describe("module data migration", () => {
     }
     itemIds.sort();
     return { databaseId: db.id, itemIds };
+  }
+
+  /** Seeds the tenant's system settings database with one settings item carrying `timezone`. */
+  async function seedTimezone(timezone: string): Promise<void> {
+    const settings = await chokePoint.createDatabase({
+      name: "System settings",
+      ownerModuleId: "systemSettings",
+      system: true,
+    });
+    await itemsStore.insertItem(pool, { databaseId: settings.id, properties: { timezone } });
   }
 
   async function getItem(databaseId: string, itemId: string): Promise<ItemRow> {
@@ -162,7 +178,7 @@ describe("module data migration", () => {
   });
 
   it("is a no-op once the transition is already recorded", async () => {
-    await seedDatabaseWithItems(2);
+    const { databaseId, itemIds } = await seedDatabaseWithItems(2);
     const converter = vi.fn(markConverted);
 
     const params = {
@@ -174,9 +190,11 @@ describe("module data migration", () => {
     };
     await runModuleDataMigration(pool, params);
     expect(converter).toHaveBeenCalledTimes(4); // two items, two passes
+    const before = await getUpdatedAts(databaseId, itemIds);
 
     await runModuleDataMigration(pool, params);
     expect(converter).toHaveBeenCalledTimes(4); // no additional calls — already recorded, straight no-op
+    expect(await getUpdatedAts(databaseId, itemIds)).toEqual(before);
     expect(await countModuleMigrationRows()).toBe(1);
   });
 
@@ -398,5 +416,96 @@ describe("module data migration", () => {
     expect(await getUpdatedAts(databaseId, itemIds)).toEqual(updatedAts);
     expect(await getProgress()).toBeNull();
     expect(await countModuleMigrationRows()).toBe(1);
+  });
+
+  it("passes each converter the tenant's time zone and the id of the item it converts", async () => {
+    await seedTimezone("America/New_York");
+    const { itemIds } = await seedDatabaseWithItems(3);
+    const seen: Array<{ timezone: string; itemId: string }> = [];
+
+    await runModuleDataMigration(pool, {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter: (properties, context) => {
+        seen.push({ timezone: context.timezone, itemId: context.itemId });
+        return markConverted(properties);
+      },
+    });
+
+    // Pass 1 and pass 2 each visit the items in id order.
+    expect(seen).toEqual([...itemIds, ...itemIds].map((itemId) => ({ timezone: "America/New_York", itemId })));
+  });
+
+  it("falls back to the default time zone when no settings database is seeded", async () => {
+    await seedDatabaseWithItems(1);
+    const seen: string[] = [];
+
+    await runModuleDataMigration(pool, {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter: (properties, context) => {
+        seen.push(context.timezone);
+        return markConverted(properties);
+      },
+    });
+
+    // One item, two passes.
+    expect(seen).toEqual([DEFAULT_TIMEZONE, DEFAULT_TIMEZONE]);
+  });
+
+  it("writes a converter's log call as one entry holding the item id and the reason, never a property value", async () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const { databaseId } = await seedDatabaseWithItems(0);
+    const secret = "property-value-that-must-not-be-logged";
+    const item = await itemsStore.insertItem(pool, { databaseId, properties: { note: secret } });
+
+    await runModuleDataMigration(pool, {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter: (properties, context) => {
+        context.log("unparseable_time");
+        return properties;
+      },
+    });
+
+    // Pass 1 and pass 2 each call the converter once, for the one item.
+    const entry = { itemId: item.id, reason: "unparseable_time" };
+    expect(info.mock.calls).toEqual([
+      [entry, expect.any(String)],
+      [entry, expect.any(String)],
+    ]);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(secret);
+  });
+
+  it("writes no row and leaves updated_at alone when a second transition converts already-converted rows", async () => {
+    const { databaseId, itemIds } = await seedDatabaseWithItems(3);
+    await runModuleDataMigration(pool, {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter: markConverted,
+    });
+    const updatedAts = await getUpdatedAts(databaseId, itemIds);
+
+    // The same transition is a no-op once recorded, so the second run is a second transition
+    // whose idempotent converter sees rows that already hold its output.
+    const converter = vi.fn(markConverted);
+    await runModuleDataMigration(pool, {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: "3.0.0",
+      converter,
+    });
+
+    expect(converter).toHaveBeenCalledTimes(6);
+    expect(await getUpdatedAts(databaseId, itemIds)).toEqual(updatedAts);
   });
 });

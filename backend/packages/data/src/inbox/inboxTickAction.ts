@@ -1,23 +1,87 @@
-import type { Pool, PoolClient } from "pg";
+import {
+  withStepRef,
+  existingItemRelations,
+  assertStepDatabaseWritable,
+  assertUpdateStepShape,
+} from "./proposalEnvelopeValidation.js";
+import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
+import { prepareComputedUpdates, readProposalTimezone } from "./proposalComputedUpdates.js";
+import {
+  buildProposalEnvelope,
+  resolveModelPagePlacement,
+  type TickSnapshot,
+  type ProposalComputationResult,
+  type ComputeSemprecProposalFn,
+} from "./inboxTickSnapshot.js";
+export type {
+  ProposalComputationInput,
+  ProposalComputationResult,
+  ComputeSemprecProposalFn,
+} from "./inboxTickSnapshot.js";
+import { listActiveInboxTypes } from "./inboxTypesStore.js";
+import {
+  validRecognitionTypes,
+  recognitionClarificationPatch,
+  recognitionChangedReason,
+  RECOGNITION_CONFIDENCE_THRESHOLD,
+  RECOGNITION_CARD_KEYS,
+} from "./inboxRecognition.js";
+import { aiProposalPatch } from "./proposalEnvelope.js";
+export { aiProposalPatch, readAiProposal } from "./proposalEnvelope.js";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
-import { createLogger, type Logger } from "@semprec/shared";
-import { withTransaction } from "../db/pool.js";
+import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+import {
+  assertValidEnvelopeRelations,
+  assertValidV2PageContent,
+  assertWritableProposalPropertyKeys,
+  requireProposalPageTarget,
+} from "./proposalEnvelopeValidation.js";
+import {
+  proposalEnvelopeSchema,
+  type ComputedProposalEntityKind,
+  type ProposalStep,
+  type ProposalEnvelope,
+} from "./proposalEnvelope.js";
+export {
+  proposalEnvelopeSchema,
+  unknownStoredEntityKind,
+  parseStoredProposalEnvelope,
+  type ProposalEntityKind,
+  type ProposalStep,
+  type ProposalEnvelope,
+  type UnknownKindProposalEnvelope,
+} from "./proposalEnvelope.js";
+import { isDeepStrictEqual } from "node:util";
+import type { Pool, PoolClient } from "pg";
+import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@semprec/shared";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
-import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
-import { computeInboxFingerprint } from "./fingerprint.js";
+import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
+import { computeInboxFingerprintV2, isFingerprintCurrent } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
-import { ValidationError } from "../errors.js";
+import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
+import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
+import { appendHistoryEntry } from "./proposalHistory.js";
+import { isSerializationFailure, isTickWriteTransaction } from "./tickTransaction.js";
+import { withTickTransaction, withTickWriteTransaction } from "./tickTransaction.js";
+import { tryLockInboxType, resolveBoundRecognition } from "./inboxSourceGuard.js";
+import { CardinalityViolationError, ValidationError } from "../errors.js";
+import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+
+export { selectActiveSteps } from "./proposalStepGraph.js";
 
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
@@ -28,108 +92,6 @@ const logger: Logger = createLogger("inbox-tick");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
-
-/** `action_config` is a raw JSONB column (a module boundary) — validated, not just cast. */
-export const semprecTickActionConfigSchema = z.object({
-  inboxDatabaseId: z.string().uuid(),
-  inboxItemTypesDatabaseId: z.string().uuid(),
-  processingProposalsDatabaseId: z.string().uuid(),
-});
-
-export type SemprecTickActionConfig = z.infer<typeof semprecTickActionConfigSchema>;
-
-/**
- * The generic proposal envelope (issue #100/#223): exactly `entityKind`, `target`, `properties`.
- * `'relation'` (issue #184) links the card's source item to the existing item `target` through the
- * relation property named by `properties.propertyKey`, with `properties.metadata` (optional) as
- * the edge's metadata — never computed by the Inbox tick. A transcript card reaches the
- * Event-link shape only through a human `revise`; its speaker-mapping shape (issue #185) is
- * proposed by the transcription pipeline.
- */
-export type ProposalEntityKind = "pageContent" | "database" | "relation";
-
-/** The entity kinds the Inbox tick itself computes, one per `processingMethod`. */
-type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
-
-export const proposalEnvelopeSchema = z.object({
-  entityKind: z.enum(["pageContent", "database", "relation"]),
-  target: z.string().min(1),
-  properties: z.record(z.string(), z.unknown()),
-});
-
-export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;
-
-/**
- * Parses a Processing proposal's stored `proposal` JSONB property: `null`/`undefined` (no
- * envelope computed yet) → `null`; anything that is not a well-formed envelope throws.
- */
-export function parseStoredProposalEnvelope(value: unknown, proposalId: string): ProposalEnvelope | null {
-  if (value === null || value === undefined) return null;
-  const parsed = proposalEnvelopeSchema.safeParse(value);
-  if (!parsed.success) throw new Error(`Malformed proposal envelope on proposal ${proposalId}`);
-  return parsed.data;
-}
-
-export interface ProposalComputationInput {
-  /** The Inbox item the proposal is for. */
-  sourceItem: ItemRow;
-  /** The Inbox item's resolved, recognized type. */
-  type: ItemRow;
-  entityKind: ComputedProposalEntityKind;
-  /** Resolved target database id for `entityKind: 'database'`; absent for `'pageContent'`, where the target page is itself part of the content decision. */
-  targetDatabaseId?: string;
-}
-
-export interface ProposalComputationResult {
-  /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
-  target?: string;
-  properties: Record<string, unknown>;
-}
-
-/**
- * The content-level decision (issue #223): which project/page an Inbox source becomes,
- * or which property values fill its target database row. Backed by an LLM call — prompt
- * engineering is out of this issue's scope, so this is a pluggable/injected function, the
- * same shape as `scheduler/actions.ts`'s `RunAgentFn`/`coreAgentRunAction`. Must never
- * write to any target database or page itself (issue #223's "no target write" guarantee)
- * — it only computes values in memory; `createSemprecTickAction` is solely responsible
- * for writing the resulting envelope into `processingProposals`.
- */
-export type ComputeSemprecProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
-
-async function getRelationDefinitionByKey(client: PoolClient, databaseId: string, key: string) {
-  const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
-  if (!property) return null;
-  return relationsStore.getRelationDefinitionByPropertyId(client, property.id);
-}
-
-/**
- * Resolves the Inbox item's linked, recognized type (issue #223's "recognized type" gate):
- * `null` for any case `createSemprecTickAction` below turns into `needsClarification`
- * (issue #104) — no `type` relation, a dangling/deleted target, or a type missing a valid
- * `processingMethod`.
- */
-async function resolveRecognizedType(
-  client: PoolClient,
-  config: SemprecTickActionConfig,
-  item: ItemRow,
-): Promise<{ type: ItemRow; processingMethod: ProcessingMethod } | null> {
-  const typeRelationDefinition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
-  if (!typeRelationDefinition) return null;
-
-  const edges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, item.id);
-  const edge = edges[0];
-  if (!edge) return null;
-
-  const typeItemId = relationsStore.otherSide(edge, item.id);
-  const type = await itemsStore.getItemById(client, config.inboxItemTypesDatabaseId, typeItemId);
-  if (!type || type.deletedAt) return null;
-
-  const processingMethod = type.properties.processingMethod;
-  if (!(PROCESSING_METHODS as readonly unknown[]).includes(processingMethod)) return null;
-
-  return { type, processingMethod: processingMethod as ProcessingMethod };
-}
 
 /**
  * The existing Processing proposal row for a source Inbox item, if any (issue #223's
@@ -171,11 +133,9 @@ async function findExistingProposal(
  * same `updatedAt`. Anything else — a confirm/reject or any other write that committed since
  * the snapshot — is logged with its reason and returns `null`, and the caller skips its write.
  *
- * Both of the tick's transactions run at `repeatable read`, where `FOR UPDATE` on a row another
- * transaction wrote after this one's snapshot fails with a serialization error rather than
- * returning the newer row. That is the same "a write committed since the snapshot" outcome, so
- * it is skipped as `changed` too; the savepoint keeps the rest of the transaction usable after
- * the failed statement. Any other error from the lock propagates.
+ * The initial repeatable-read phase skips a serialization conflict as changed. The post-model
+ * phase uses a nonblocking lock so a confirmation holding the card cannot wait on the source
+ * while this transaction waits on that card. The savepoint keeps either skip transaction usable.
  */
 async function lockUnlockedProposal(
   client: PoolClient,
@@ -185,13 +145,16 @@ async function lockUnlockedProposal(
   await client.query("SAVEPOINT lock_unlocked_proposal");
   let locked: ItemRow | null;
   try {
-    locked = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
+    locked = isTickWriteTransaction(client)
+      ? await itemsStore.lockItemByIdNowait(client, config.processingProposalsDatabaseId, snapshot.id)
+      : await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
     await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
   } catch (err) {
-    if (!isSerializationFailure(err)) throw err;
+    const busy = typeof err === "object" && err !== null && "code" in err && err.code === "55P03";
+    if (!isSerializationFailure(err) && !busy) throw err;
     await client.query("ROLLBACK TO SAVEPOINT lock_unlocked_proposal");
     await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
-    logger.info({ proposalId: snapshot.id, reason: "changed" }, "Skipping proposal write");
+    logger.info({ proposalId: snapshot.id, reason: busy ? "busy" : "changed" }, "Skipping proposal write");
     return null;
   }
   let reason: "gone" | "deleted" | "locked" | "changed" | null = null;
@@ -208,65 +171,132 @@ async function lockUnlockedProposal(
   return locked;
 }
 
-/** True when `err` is Postgres' `serialization_failure` (SQLSTATE 40001). */
-function isSerializationFailure(err: unknown): boolean {
-  return typeof err === "object" && err !== null && "code" in err && err.code === "40001";
-}
+// The proposal history block (kinds, entry schema, `appendHistoryEntry`) lives in `proposalHistory.ts`;
+// re-exported here so existing importers keep their path (issue #1485 size cap, no behaviour change).
+export { appendHistoryEntry, type ProposalHistoryEntry, type ProposalHistoryKind } from "./proposalHistory.js";
 
 /**
- * Everything the tick's non-transactional `computeProposal` call and its post-call write need,
- * captured by the read transaction (`docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md`).
- * `targetDatabaseId` is resolved here — not re-derived after the call — so the write transaction's
- * staleness check is exactly "does the source item still match", not "does the target database
- * still exist"; a `processingMethod: 'database'` type's target is part of the type, not the source.
+ * Validates a `fileFromAttachment` step (issue #1703): it names neither a `databaseKey` nor an `itemId`,
+ * its properties are exactly the allowed fields, and its relations are checked as a create step's are.
+ * The attachment itself is checked at confirm, where the proposal's source Inbox item is known.
  */
-interface TickSnapshot {
-  item: ItemRow;
-  type: ItemRow;
-  processingMethod: ProcessingMethod;
-  entityKind: ComputedProposalEntityKind;
-  targetDatabaseId?: string;
-  existingProposal: ItemRow | null;
-  fingerprint: string;
-}
-
-/** Combines the external call's result with the snapshot into a stored envelope — no I/O. */
-function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
-  if (snapshot.entityKind === "database") {
-    if (!snapshot.targetDatabaseId)
-      throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'database') has no targetDatabaseId`);
-    return { entityKind: "database", target: snapshot.targetDatabaseId, properties: result.properties };
-  }
-  if (!result.target)
-    throw new Error(
-      `Proposal computation for Inbox item ${snapshot.item.id} (entityKind 'pageContent') did not return a 'target'`,
+async function assertValidFileFromAttachmentStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
+  if (step.databaseKey !== undefined)
+    throw stepError(step, "a fileFromAttachment step cannot name a databaseKey", "databaseKey");
+  if (step.itemId !== undefined) throw stepError(step, "a fileFromAttachment step cannot name an itemId", "itemId");
+  parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
+  const database = assertStepDatabaseWritable(
+    step,
+    await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID),
+    "properties",
+  );
+  await withStepRef(step.ref, async () => {
+    const byKey = new Map(
+      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
     );
-  return { entityKind: "pageContent", target: result.target, properties: result.properties };
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
+  });
+  return database;
 }
 
-/** A Processing proposal's chat + decision log entry (issue #104). */
-const proposalHistoryEntrySchema = z.object({
-  author: z.enum(["ai", "user"]),
-  message: z.string(),
-  at: z.string(),
-});
+/** Validates one active step as a single-step envelope would be; resolves to the database the step writes to. */
+async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
+  const properties = step.properties ?? {};
+  if (step.op === "fileFromAttachment") return assertValidFileFromAttachmentStep(client, step);
+  if (step.op === "create") {
+    if (step.itemId !== undefined) throw stepError(step, "a create step cannot name an itemId", "itemId");
+    if (step.databaseKey === undefined) throw stepError(step, "a create step needs a databaseKey", "databaseKey");
+    const database = assertStepDatabaseWritable(
+      step,
+      await databasesStore.getDatabaseByKey(client, step.databaseKey),
+      "databaseKey",
+    );
+    await withStepRef(step.ref, async () => {
+      if (database.ownerModuleId === MCP_SERVERS_MODULE_ID) assertValidMcpServerProposalProperties(properties);
+      const byKey = new Map(
+        (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [
+          property.key,
+          property,
+        ]),
+      );
+      assertWritableProposalPropertyKeys(properties, byKey, database.id);
+      await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
+    });
+    return database;
+  }
 
-export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
+  if (step.databaseKey !== undefined)
+    throw stepError(step, `an ${step.op} step cannot name a databaseKey`, "databaseKey");
+  if (step.itemId === undefined || !UUID_RE.test(step.itemId)) {
+    throw stepError(step, `an ${step.op} step needs an itemId`, "itemId");
+  }
+  const [item] = await itemsStore.getItemsByIds(client, [step.itemId]);
+  if (!item) throw stepError(step, `item '${step.itemId}' does not exist`, "itemId");
+  const database = assertStepDatabaseWritable(
+    step,
+    await databasesStore.getDatabase(client, item.databaseId),
+    "itemId",
+  );
+  if (step.op === "link" && Object.keys(properties).length > 0) {
+    throw stepError(step, "a link step cannot write properties", "properties");
+  }
+  await withStepRef(step.ref, async () => {
+    const databaseProperties = await propertiesStore.listPropertiesByDatabase(client, database.id);
+    const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
+    assertWritableProposalPropertyKeys(properties, byKey, database.id);
+    if (step.op === "update") {
+      // The tenant zone the preparation needs, read and validated in this transaction; an invalid stored zone
+      // propagates instead of refusing the proposal (readProposalTimezone).
+      const zone = Object.keys(properties).length > 0 ? await readProposalTimezone(client) : null;
+      const prepared = zone
+        ? await prepareUserItemPatch(databaseProperties, properties, database, item, zone)
+        : { patch: {}, deferredKeys: [] };
+      assertUpdateStepShape(step, prepared, item, byKey);
+    }
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step), item.id);
+  });
+  return database;
+}
 
 /**
- * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
- * stored value as empty. Defaults to `author: 'ai'` for this module's own tick-driven
- * entries; inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
- * confirm/reject/revise's own log entries.
+ * Validates the `operations` of a multi-step envelope: refs unique, one primary that mirrors the
+ * top level, same-proposal acyclic refs, and every active step valid on its own (disabled and
+ * unreferenced optional steps are skipped). Failures carry `details: { ref, field }`.
  */
-export function appendHistoryEntry(
-  history: unknown,
-  message: string,
-  author: "ai" | "user" = "ai",
-): ProposalHistoryEntry[] {
-  const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
-  const existing = parsed.success ? parsed.data : [];
-  return [...existing, { author, message, at: new Date().toISOString() }];
+async function assertValidEnvelopeOperations(
+  client: PoolClient,
+  envelope: ProposalEnvelope,
+  steps: ProposalStep[],
+): Promise<void> {
+  if (envelope.entityKind !== "database") {
+    throw new ValidationError("Proposal envelope operations are only valid for entityKind 'database'", {
+      field: "operations",
+    });
+  }
+  if (steps.length === 0)
+    throw new ValidationError("Proposal envelope operations must not be empty", { field: "operations" });
+
+  const activeSteps = selectActiveSteps(steps);
+  assertNoRefCycle(activeSteps);
+  for (const step of activeSteps) {
+    const database = await assertValidStep(client, step);
+    if (step.role !== "primary") continue;
+    if (step.op === "link") throw stepError(step, "the primary step cannot be a link step", "op");
+    // The envelope's top-level `properties` mirror the primary step and are checked against the target
+    // database's own properties; a file step's `attachmentId` is not one of them.
+    if (step.op === "fileFromAttachment")
+      throw stepError(step, "the primary step cannot be a fileFromAttachment step", "op");
+    if (database.id !== envelope.target) {
+      throw stepError(
+        step,
+        "its database differs from the envelope target",
+        step.op === "create" ? "databaseKey" : "itemId",
+      );
+    }
+    if (!isDeepStrictEqual(step.properties ?? {}, envelope.properties)) {
+      throw stepError(step, "its properties differ from the envelope properties", "properties");
+    }
+  }
 }
 
 /**
@@ -290,6 +320,10 @@ export async function assertValidProposalEnvelope(
     throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, {
       field: "entityKind",
     });
+  }
+
+  if (envelope.operations !== undefined) {
+    await assertValidEnvelopeOperations(client, envelope, envelope.operations);
   }
 
   if (envelope.entityKind === "database") {
@@ -325,25 +359,17 @@ export async function assertValidProposalEnvelope(
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
     const byKey = new Map(targetProperties.map((property) => [property.key, property]));
-    for (const key of Object.keys(envelope.properties)) {
-      const property = byKey.get(key);
-      if (!property) {
-        throw new ValidationError(
-          `Proposal properties reference unknown property '${key}' on target database ${targetDatabase.id}`,
-          { field: key },
-        );
-      }
-      if (property.type === "relation") {
-        throw new ValidationError(`Proposal properties cannot set relation property '${key}' directly`, { field: key });
-      }
-      if (property.type === "rollup") {
-        throw new ValidationError(`Proposal properties cannot set read-only rollup property '${key}'`, { field: key });
-      }
-      if (property.owner === "system") {
-        throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
-      }
+    assertWritableProposalPropertyKeys(envelope.properties, byKey, targetDatabase.id);
+    if (envelope.relations !== undefined) {
+      await assertValidEnvelopeRelations(client, targetDatabase.id, byKey, envelope.relations);
     }
     return targetDatabase;
+  }
+
+  if (envelope.relations !== undefined) {
+    throw new ValidationError(`Proposal envelope relations are only valid for entityKind 'database'`, {
+      field: "relations",
+    });
   }
 
   if (envelope.entityKind === "relation") {
@@ -364,14 +390,10 @@ export async function assertValidProposalEnvelope(
     return null;
   }
 
-  if (!UUID_RE.test(envelope.target)) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a page id`, { field: "target" });
-  }
-  const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
-  if (!targetPage) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, {
-      field: "target",
-    });
+  const targetPage = await requireProposalPageTarget(client, envelope.target);
+  if (Object.hasOwn(envelope.properties, "markdown")) {
+    await assertValidV2PageContent(client, targetPage, envelope.properties);
+    return null;
   }
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
     throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", {
@@ -436,6 +458,7 @@ async function writeNeedsClarification(
   existingProposal: ItemRow | null,
   message: string,
   fingerprint: string | null = null,
+  clarificationPatch: Record<string, unknown> = {},
 ): Promise<void> {
   if (existingProposal) {
     const status = existingProposal.properties.status;
@@ -444,6 +467,8 @@ async function writeNeedsClarification(
 
     const locked = await lockUnlockedProposal(client, config, existingProposal);
     if (!locked) return;
+    // A card that leaves `invalid` here drops its reason in the same write, as a revise does (issue #1604).
+    const clearedReason = locked.properties.status === "invalid" ? { invalidReason: null } : {};
     await updateItemWithClient(
       client,
       {
@@ -453,12 +478,28 @@ async function writeNeedsClarification(
         propertiesPatch: {
           fingerprint,
           proposal: null,
+          reason: null,
+          ...clarificationPatch,
+          ...aiProposalPatch(locked.properties, null),
           status: "needsClarification",
+          ...clearedReason,
           history: appendHistoryEntry(locked.properties.history, message),
         },
       },
-      { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
+      {
+        allowedSystemKeys: [
+          ...RECOGNITION_CARD_KEYS,
+          "fingerprint",
+          "proposal",
+          "aiProposal",
+          "aiVersion",
+          "status",
+          "invalidReason",
+          "history",
+        ],
+      },
     );
+    await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
     return;
   }
 
@@ -470,34 +511,103 @@ async function writeNeedsClarification(
         kind: "inbox",
         fingerprint,
         proposal: null,
+        reason: null,
+        ...clarificationPatch,
+        ...aiProposalPatch({}, null),
         history: appendHistoryEntry([], message),
         status: "needsClarification",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+    {
+      allowedSystemKeys: [
+        ...RECOGNITION_CARD_KEYS,
+        "kind",
+        "fingerprint",
+        "proposal",
+        "aiProposal",
+        "aiVersion",
+        "history",
+        "status",
+      ],
+    },
   );
   await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
+  await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
+}
+
+/**
+ * Why a Processing proposal is `invalid` (issue #1482), stored in its `invalidReason` system
+ * property. `sourceDeleted` is final for revise: the card can only be discarded, or reopened when
+ * its source is restored from the trash (issue #1604). `targetArchived` and `targetDeleted` are
+ * fixable: revising the card to a valid target returns it to `proposed`.
+ * `field` is the editor field concerned (empty for the source), `itemId` the item that caused
+ * it, and `label` that item's name when the reason was written. The warning sentence is not
+ * stored; `renderInvalidReason` renders it from the code and the label.
+ */
+export const invalidReasonSchema = z.object({
+  code: z.enum(["sourceDeleted", "targetArchived", "targetDeleted"]),
+  field: z.string(),
+  itemId: z.string().min(1),
+  label: z.string(),
+});
+
+export type InvalidReason = z.infer<typeof invalidReasonSchema>;
+
+/**
+ * True when a Processing proposal is `invalid` for a reason no revise can repair: its source Inbox
+ * item was deleted (issue #1482). A legacy `invalid` card with no `invalidReason` is not final, so
+ * it stays revisable.
+ */
+export function isFinalInvalid(properties: Record<string, unknown>): boolean {
+  if (properties.status !== "invalid") return false;
+  const parsed = invalidReasonSchema.safeParse(properties.invalidReason);
+  return parsed.success && parsed.data.code === "sourceDeleted";
+}
+
+/** The most characters (code points, not UTF-16 units) an `invalidReason` label keeps, ellipsis included. */
+const INVALID_REASON_LABEL_MAX = 80;
+
+/**
+ * The source Inbox item's text as an `invalidReason` label (issue #1482): its first line, trimmed,
+ * and at most `INVALID_REASON_LABEL_MAX` characters, a longer one ending with an ellipsis. Cut by
+ * code point, so an emoji is never split. An item with no text, or none at all (a hard-deleted
+ * source), gives the empty label.
+ */
+function invalidReasonLabel(item: ItemRow | null): string {
+  const text = typeof item?.properties.text === "string" ? item.properties.text : "";
+  const characters = Array.from((text.split("\n")[0] ?? "").trim());
+  return characters.length > INVALID_REASON_LABEL_MAX
+    ? `${characters.slice(0, INVALID_REASON_LABEL_MAX - 1).join("")}…`
+    : characters.join("");
 }
 
 /**
  * Puts an unlocked proposal into `invalid` (issue #104) when its source Inbox item no longer
- * exists. A locked (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is
- * left untouched — per the epic's "a locked card is never recomputed again" rule and because
- * there is nothing to invalidate. A no-op if already `invalid`, so a source deleted more than
- * once (e.g. soft-deleted, then its delete event re-fires) doesn't spam history.
+ * exists, and stores why as the `sourceDeleted` `invalidReason` (issue #1482). A locked
+ * (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is left untouched — per
+ * the epic's "a locked card is never recomputed again" rule and because there is nothing to
+ * invalidate. A card already invalid for this deleted source is left untouched, so repeated delete
+ * events do not add history; other invalid reasons are superseded by the deleted source.
  */
 async function invalidateProposalForDeletedSource(
   client: PoolClient,
   config: SemprecTickActionConfig,
   existingProposal: ItemRow | null,
+  sourceItemId: string,
+  sourceItem: ItemRow | null,
 ): Promise<void> {
   if (!existingProposal) return;
-  const status = existingProposal.properties.status;
-  if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
-  if (status === "invalid") return;
-
   const locked = await lockUnlockedProposal(client, config, existingProposal);
   if (!locked) return;
+  const existingReason = invalidReasonSchema.safeParse(locked.properties.invalidReason);
+  if (isFinalInvalid(locked.properties) && existingReason.success && existingReason.data.itemId === sourceItemId)
+    return;
+  const invalidReason: InvalidReason = {
+    code: "sourceDeleted",
+    field: "",
+    itemId: sourceItemId,
+    label: invalidReasonLabel(sourceItem),
+  };
   await updateItemWithClient(
     client,
     {
@@ -506,19 +616,93 @@ async function invalidateProposalForDeletedSource(
       ifVersion: locked.updatedAt,
       propertiesPatch: {
         status: "invalid",
-        history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted."),
+        reason: null,
+        invalidReason,
+        history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted.", "ai", {
+          kind: "invalidated",
+        }),
       },
     },
-    { allowedSystemKeys: ["status", "history"] },
+    { allowedSystemKeys: [...RECOGNITION_CARD_KEYS, "status", "invalidReason", "history"] },
+  );
+}
+
+/**
+ * True when a card's stored `proposal` envelope passes the check the tick applies to a computed
+ * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
+ * that no longer parses or violates relation cardinality, does not pass. Other errors propagate.
+ */
+async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
+  const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
+  if (!parsed.success) return false;
+  try {
+    await assertValidProposalEnvelope(client, parsed.data);
+    return true;
+  } catch (err) {
+    if (err instanceof ValidationError || err instanceof CardinalityViolationError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Brings a `sourceDeleted` card back once its source Inbox item has been restored from the trash
+ * (issue #1604), inside the read transaction and before the fingerprint gate. A card whose stored
+ * envelope still validates goes to `proposed`. One whose envelope no longer validates goes to
+ * `needsClarification` as `writeNeedsClarification` writes it, keeping the stored fingerprint. In
+ * both cases `invalidReason` is cleared. Returns the card as it now stands, or `null` when the
+ * lock refuses it because it changed since the tick read it, which ends the tick.
+ */
+async function reopenRestoredSourceProposal(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  invalidCard: ItemRow,
+  sourceItemId: string,
+): Promise<ItemRow | null> {
+  const locked = await lockUnlockedProposal(client, config, invalidCard);
+  if (!locked) return null;
+
+  if (!(await storedEnvelopeStillValid(client, locked))) {
+    const fingerprint = typeof locked.properties.fingerprint === "string" ? locked.properties.fingerprint : null;
+    await writeNeedsClarification(
+      client,
+      config,
+      sourceItemId,
+      locked,
+      "Source item was restored, but its stored proposal no longer validates; needs clarification.",
+      fingerprint,
+    );
+    return findExistingProposal(client, config, sourceItemId);
+  }
+
+  return updateItemWithClient(
+    client,
+    {
+      databaseId: config.processingProposalsDatabaseId,
+      itemId: locked.id,
+      ifVersion: locked.updatedAt,
+      propertiesPatch: {
+        status: "proposed",
+        invalidReason: null,
+        history: appendHistoryEntry(
+          locked.properties.history,
+          "Source item was restored; the proposal is proposed again.",
+          "ai",
+          { kind: "reopened" },
+        ),
+      },
+    },
+    { allowedSystemKeys: [...RECOGNITION_CARD_KEYS, "status", "invalidReason", "history"] },
   );
 }
 
 /**
  * The tick's read phase: everything up to and including the fingerprint gate, run in one
- * transaction. The outcomes that need no LLM call (deleted source, unrecognized type, a locked
+ * transaction. The outcomes that need no LLM call (deleted or empty source, a locked
  * or unchanged-fingerprint existing proposal) are written here and end the tick (`null`
- * return). Otherwise resolves the `processingMethod: 'database'` target database here too — so
- * it never needs to be re-derived — and returns a snapshot for the external call and the write
+ * return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
+ * `needsClarification` (issue #1604), and the gate then applies to the card as it now stands.
+ * Otherwise enters recognition for an untyped source, or resolves the `processingMethod: 'database'` target database here too — so it never
+ * needs to be re-derived — and returns a snapshot for the external call and the write
  * transaction that follows it.
  */
 async function readTickSnapshot(
@@ -527,58 +711,106 @@ async function readTickSnapshot(
   sourceItemId: string,
 ): Promise<TickSnapshot | null> {
   const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
-  const existingProposal = await findExistingProposal(client, config, sourceItemId);
+  let existingProposal = await findExistingProposal(client, config, sourceItemId);
 
   // Issue #106: this fires on every create/update/delete tick (issue #103's onItemEvent
   // heartbeats), so it is the one trigger point that covers a property edit (text/date/
-  // time) on an existing Inbox item — capture already enqueues its own recompute
-  // (inboxStore.ts), so this is redundant-but-harmless there. It also covers deletion:
+  // time) on an existing Inbox item — the create hook (inboxCreateHook.ts) already enqueues
+  // its own recompute, so this is redundant-but-harmless there. It also covers deletion:
   // the item's `journalDay` edge (set once at capture) still resolves after a soft
   // delete, since deleting an item never removes its relation edges, and the deleted
   // item is then excluded from the recomputed list by `getItemsByIds`'s deleted_at filter.
   if (item) await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 
   if (!item || item.deletedAt) {
-    await invalidateProposalForDeletedSource(client, config, existingProposal);
+    await invalidateProposalForDeletedSource(client, config, existingProposal, sourceItemId, item);
     return null;
   }
 
   const recognized = await resolveRecognizedType(client, config, item);
-  if (!recognized) {
-    await writeNeedsClarification(
-      client,
-      config,
-      item.id,
-      existingProposal,
-      "Source item has no recognized type; needs clarification.",
-    );
-    return null;
-  }
-  const { type, processingMethod } = recognized;
+  const type = recognized?.type ?? null;
+  const processingMethod = recognized?.processingMethod ?? "pageContent";
+  const definition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
+  const edges = definition ? await relationsStore.listRelationsForItem(client, definition.id, item.id) : [];
+  const sourceTypeId = edges[0] ? relationsStore.otherSide(edges[0], item.id) : null;
+  const emoji = typeof type?.properties.emoji === "string" ? type.properties.emoji : "";
+  const v2Input = await inboxFingerprintInput(client, item, type);
+  const fingerprint = computeInboxFingerprintV2(v2Input);
 
-  const emoji = typeof type.properties.emoji === "string" ? type.properties.emoji : "";
-  const text = typeof item.properties.text === "string" ? item.properties.text : "";
-  const fingerprint = computeInboxFingerprint(emoji, text);
+  // The source was restored: the card leaves `invalid` before the fingerprint gate, so an unchanged
+  // fingerprint does not hide the change of state (issue #1604).
+  if (existingProposal && isFinalInvalid(existingProposal.properties)) {
+    existingProposal = await reopenRestoredSourceProposal(client, config, existingProposal, item.id);
+    if (!existingProposal) return null;
+  }
 
   if (existingProposal) {
     const status = existingProposal.properties.status;
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return null;
-    if (existingProposal.properties.fingerprint === fingerprint) return null;
+    if (
+      isFingerprintCurrent(existingProposal.properties.fingerprint, {
+        v2Input,
+        legacyEmoji: emoji,
+        legacyText: v2Input.text,
+      })
+    )
+      return null;
   }
 
+  if (!type) {
+    if (!v2Input.text.trim()) {
+      await writeNeedsClarification(
+        client,
+        config,
+        item.id,
+        existingProposal,
+        "Source item has no content to recognize.",
+        fingerprint,
+      );
+      return null;
+    }
+    return {
+      item,
+      type: null,
+      processingMethod,
+      entityKind: "pageContent",
+      existingProposal,
+      fingerprint,
+      locale: (await getTenantUserLocale(client)) ?? "cs",
+      sourceTypeId,
+      recognition: true,
+      activeTypes: validRecognitionTypes(await listActiveInboxTypes(client, config.inboxItemTypesDatabaseId)),
+    };
+  }
   const entityKind: ComputedProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
   let targetDatabaseId: string | undefined;
+  let targetModuleId: string | undefined;
   if (entityKind === "database") {
-    const targetModuleId = type.properties.targetDatabase;
-    if (typeof targetModuleId !== "string") {
+    const typeTarget = type.properties.targetDatabase;
+    if (typeof typeTarget !== "string") {
       throw new Error(`Inbox item type ${type.id} has processingMethod 'database' but no 'targetDatabase'`);
     }
-    const targetDatabase = await databasesStore.getDatabaseByModuleId(client, targetModuleId);
-    if (!targetDatabase) throw new Error(`No database seeded for owner_module_id '${targetModuleId}'`);
+    const targetDatabase = await databasesStore.getDatabaseByModuleId(client, typeTarget);
+    if (!targetDatabase) throw new Error(`No database seeded for owner_module_id '${typeTarget}'`);
     targetDatabaseId = targetDatabase.id;
+    targetModuleId = typeTarget;
   }
 
-  return { item, type, processingMethod, entityKind, targetDatabaseId, existingProposal, fingerprint };
+  // `cs` is the `users.locale` column default, used when the tenant has no bound user.
+  const locale = (await getTenantUserLocale(client)) ?? "cs";
+
+  return {
+    item,
+    type,
+    sourceTypeId,
+    processingMethod,
+    entityKind,
+    targetDatabaseId,
+    targetModuleId,
+    existingProposal,
+    fingerprint,
+    locale,
+  };
 }
 
 /** Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. */
@@ -586,8 +818,11 @@ async function reviseProposal(
   client: PoolClient,
   config: SemprecTickActionConfig,
   existing: ItemRow,
+  sourceItemId: string,
   fingerprint: string,
   envelope: ProposalEnvelope,
+  reason: string | null,
+  recognitionPatch: Record<string, unknown> = {},
 ): Promise<void> {
   const locked = await lockUnlockedProposal(client, config, existing);
   if (!locked) return;
@@ -600,53 +835,91 @@ async function reviseProposal(
       propertiesPatch: {
         fingerprint,
         proposal: envelope,
+        reason,
+        ...recognitionPatch,
+        ...aiProposalPatch(locked.properties, envelope),
         status: "proposed",
         history: appendHistoryEntry(locked.properties.history, "Revised the proposal after the source item changed."),
       },
     },
-    { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
+    {
+      allowedSystemKeys: [
+        ...RECOGNITION_CARD_KEYS,
+        "fingerprint",
+        "proposal",
+        "aiProposal",
+        "aiVersion",
+        "status",
+        "history",
+      ],
+    },
   );
+  await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
+}
+
+/**
+ * The source-item re-checks a write transaction runs before it writes anything for `snapshot`:
+ * the item must still exist, undeleted, with the same source type edge and the same fingerprint.
+ * Returns the item and its current fingerprint, or `null` after logging why the write is stale.
+ * Shared by `writeTickResult` and `writeComputeFailure` (issue #1485).
+ */
+async function currentSourceFingerprint(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  snapshot: TickSnapshot,
+): Promise<{ item: ItemRow; fingerprint: string } | null> {
+  const item = await itemsStore.lockItemById(client, config.inboxDatabaseId, snapshot.item.id);
+  if (!item || item.deletedAt) {
+    logger.info({ sourceItemId: snapshot.item.id, reason: "sourceDeleted" }, "Skipping stale tick write");
+    return null;
+  }
+
+  const definition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
+  const edges = definition ? await relationsStore.listRelationsForItem(client, definition.id, item.id) : [];
+  const sourceTypeId = edges[0] ? relationsStore.otherSide(edges[0], item.id) : null;
+  if (sourceTypeId && !(await tryLockInboxType(client, config.inboxItemTypesDatabaseId, sourceTypeId))) return null;
+  const recognized = await resolveRecognizedType(client, config, item);
+  if (sourceTypeId !== snapshot.sourceTypeId || (!snapshot.recognition && recognized?.type.id !== snapshot.type?.id))
+    return null;
+  // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
+  const fingerprint = computeInboxFingerprintV2(
+    await inboxFingerprintInput(client, item, snapshot.recognition ? null : (recognized?.type ?? null)),
+  );
+  if (fingerprint !== snapshot.fingerprint) {
+    logger.info({ sourceItemId: snapshot.item.id, reason: "fingerprintChanged" }, "Skipping stale tick write");
+    return null;
+  }
+  return { item, fingerprint };
 }
 
 /**
  * The tick's write phase, run in its own transaction after the non-transactional
  * `computeProposal` call has returned. Re-validates every field `snapshot` was staked on before
- * writing anything: the source item must still exist, undeleted, with the same recognized type
- * and the same fingerprint. A mismatch means the edit that changed it has already enqueued a
- * newer tick (the heartbeat-fire job key's replace semantics), so this one logs why it is
- * skipping and writes nothing rather than persisting a result computed against a state that has
- * moved on.
+ * writing anything: the source item must still exist, undeleted, with the same source type edge
+ * and the same fingerprint. A mismatch skips the stale result; dispatch ownership is unchanged.
  */
 async function writeTickResult(
   client: PoolClient,
   config: SemprecTickActionConfig,
   snapshot: TickSnapshot,
-  envelope: ProposalEnvelope,
+  envelope: ProposalEnvelope | null,
+  reason: string | null,
+  recognitionPatch: Record<string, unknown> = {},
+  invalidProposal = false,
 ): Promise<void> {
-  const item = await itemsStore.getItemById(client, config.inboxDatabaseId, snapshot.item.id);
-  if (!item || item.deletedAt) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "sourceDeleted" }, "Skipping stale tick write");
-    return;
-  }
-
-  const recognized = await resolveRecognizedType(client, config, item);
-  if (!recognized) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "unrecognizedType" }, "Skipping stale tick write");
-    return;
-  }
-
-  const emoji = typeof recognized.type.properties.emoji === "string" ? recognized.type.properties.emoji : "";
-  const text = typeof item.properties.text === "string" ? item.properties.text : "";
-  const fingerprint = computeInboxFingerprint(emoji, text);
-  if (fingerprint !== snapshot.fingerprint) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "fingerprintChanged" }, "Skipping stale tick write");
-    return;
-  }
+  const current = await currentSourceFingerprint(client, config, snapshot);
+  if (!current) return;
+  const { item, fingerprint } = current;
+  const missingTarget = envelope === null;
 
   try {
+    if (!envelope) throw new ValidationError("Page target needs clarification");
+    if (invalidProposal) throw new ValidationError("Proposal needs clarification");
+    envelope = await resolveModelPagePlacement(client, envelope);
+    envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
-    if (!(err instanceof ValidationError)) throw err;
+    if (!(err instanceof ValidationError) && !(err instanceof CardinalityViolationError)) throw err;
     // Same race as below: another tick may have created a proposal for this source while this
     // one waited on the AI call, so a null `snapshot.existingProposal` doesn't mean there is
     // still nothing to revise — re-check before falling through to `writeNeedsClarification`'s
@@ -659,20 +932,16 @@ async function writeTickResult(
       existingForClarification,
       `Computed proposal failed validation: ${err.message}`,
       fingerprint,
+      missingTarget ? { reason: await recognitionChangedReason(toManifestLocale(snapshot.locale)) } : {},
     );
-    return;
-  }
-
-  if (snapshot.existingProposal) {
-    await reviseProposal(client, config, snapshot.existingProposal, fingerprint, envelope);
     return;
   }
 
   // Another tick may have created a proposal for this source while this one waited on the AI
   // call — revise that one through the guarded path instead of creating a duplicate.
-  const raceProposal = await findExistingProposal(client, config, item.id);
-  if (raceProposal) {
-    await reviseProposal(client, config, raceProposal, fingerprint, envelope);
+  const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
+  if (existing) {
+    await reviseProposal(client, config, existing, item.id, fingerprint, envelope, reason, recognitionPatch);
     return;
   }
 
@@ -684,35 +953,97 @@ async function writeTickResult(
         kind: "inbox",
         fingerprint,
         proposal: envelope,
+        reason,
+        ...recognitionPatch,
+        ...aiProposalPatch({}, envelope),
         history: appendHistoryEntry([], "Created a proposal for the source item."),
         status: "proposed",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+    {
+      allowedSystemKeys: [
+        ...RECOGNITION_CARD_KEYS,
+        "kind",
+        "fingerprint",
+        "proposal",
+        "aiProposal",
+        "aiVersion",
+        "history",
+        "status",
+      ],
+    },
   );
 
   await linkSourceInboxRelation(client, config, proposal.id, item.id);
+  await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 }
 
 /**
- * Registered as an `onItemEvent` ('create'/'update'/'delete') heartbeat action on the Inbox
- * database (issue #103): re-reads the item by id at run time — never trusting anything about
- * its content from the job payload — so when several rapid edits collapse onto one pending
- * job (the heartbeat-fire job key's replace semantics), the single tick that eventually runs
- * reflects whatever state is current at that moment, not a stale snapshot from whichever edit
- * enqueued it.
+ * The write phase of a failed `computeProposal` call (issue #1485), run in its own transaction
+ * after the call has thrown an `AiGatewayFailedError`. It applies the same source re-checks as
+ * `writeTickResult`, so an edit or deletion during the call writes nothing. It then stores the
+ * card as `computeFailed` with a cleared fingerprint, so
+ * the next tick computes again instead of skipping on an unchanged fingerprint. An existing
+ * `proposal` stays stored as it was; a locked card is never touched; a card is created only when
+ * none exists, with the `sourceInbox` edge to the source item.
+ */
+async function writeComputeFailure(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  snapshot: TickSnapshot,
+  reason: AiGatewayFailureReason,
+): Promise<void> {
+  const current = await currentSourceFingerprint(client, config, snapshot);
+  if (!current) return;
+  const { item } = current;
+  // The message carries the reason code only: the provider's own text never reaches the card.
+  const message = `Computing the proposal failed: ${reason}.`;
+
+  // Another tick may have created a proposal for this source while this one waited on the AI call,
+  // so a null `snapshot.existingProposal` does not mean there is nothing to update.
+  const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
+  if (existing) {
+    const locked = await lockUnlockedProposal(client, config, existing);
+    if (!locked) return;
+    const history = appendHistoryEntry(locked.properties.history, message);
+    await updateItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        itemId: locked.id,
+        ifVersion: locked.updatedAt,
+        propertiesPatch: { fingerprint: null, status: "computeFailed", history },
+      },
+      { allowedSystemKeys: ["fingerprint", "status", "history"] },
+    );
+  } else {
+    const history = appendHistoryEntry([], message);
+    const proposal = await createItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        properties: { kind: "inbox", fingerprint: null, history, status: "computeFailed" },
+      },
+      { allowedSystemKeys: ["kind", "fingerprint", "history", "status"] },
+    );
+    await linkSourceInboxRelation(client, config, proposal.id, item.id);
+  }
+  await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
+}
+
+/**
+ * The Inbox `onItemEvent` heartbeat re-reads the item by id, including when rapid edits coalesce.
  *
  * Runs in three phases, per `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md`:
- * a read transaction (`readTickSnapshot`) that either resolves the tick with no AI call (deleted
- * source → `invalid`, unrecognized type → `needsClarification`, a locked or unchanged-fingerprint
- * existing proposal → no-op) or returns a snapshot; the injected, LLM-backed `computeProposal`
- * call outside any transaction; and a write transaction (`writeTickResult`) that re-validates the
- * snapshot against the source item's current state before writing — a `confirmed`/`rejected`
- * (locked) proposal is never recomputed, and a source that changed while the call was in flight
- * makes this tick write nothing (the next tick, already enqueued, produces the up-to-date card).
- * A computed envelope that fails destination validation lands in `needsClarification` rather
- * than being stored as `proposed`. Every create, revise, or status change appends one
- * `{ author: 'ai', message, at }` history entry (issue #104).
+ * a read transaction resolves no-call cases or returns a snapshot; the model call runs outside a
+ * transaction; the write transaction revalidates the source and preserves locked cards. A changed
+ * source causes a nonwrite. Invalid envelopes become `needsClarification`; card changes append AI history.
+ *
+ * A gateway failure (`AiGatewayFailedError`) from `computeProposal` is recorded on the card as
+ * `computeFailed` (issue #1485) when its reason is `budget_exceeded` or the call is the final queue
+ * attempt (`context.isFinalAttempt === true`), unless the source changed during the call or the card
+ * is locked, in which case nothing is written. Any other gateway failure is rethrown, so the queue
+ * retries the job. Every other error from `computeProposal` propagates unchanged.
  */
 export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemprecProposalFn): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -722,21 +1053,96 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     const config = semprecTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
 
-    const snapshot = await withTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId), {
-      isolation: "repeatable_read",
-    });
+    const snapshot = await withTickTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId));
     if (!snapshot) return;
 
-    const result = await computeProposal({
-      sourceItem: snapshot.item,
-      type: snapshot.type,
-      entityKind: snapshot.entityKind,
-      targetDatabaseId: snapshot.targetDatabaseId,
-    });
-    const envelope = buildProposalEnvelope(snapshot, result);
+    let result: ProposalComputationResult;
+    try {
+      result = await computeProposal({
+        recognition: snapshot.recognition,
+        activeTypes: snapshot.activeTypes,
+        sourceItem: snapshot.item,
+        type: snapshot.type,
+        entityKind: snapshot.entityKind,
+        targetDatabaseId: snapshot.targetDatabaseId,
+        targetModuleId: snapshot.targetModuleId,
+        locale: snapshot.locale,
+        projectItemId: context.projectItemId,
+      });
+    } catch (err) {
+      if (!(err instanceof AiGatewayFailedError)) throw err;
+      const reason = err.reason;
+      // A budget rejection is not worth retrying, and the final queue attempt has no retry left: both
+      // are recorded on the card. Any other gateway failure on a non-final attempt is rethrown, so the
+      // queue retries the job.
+      if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
+      logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
+      try {
+        await withTickWriteTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
+      } catch (writeError) {
+        // Both caught errors are preserved in the aggregate; its cause identifies the failed write.
+        throw new AggregateError([err, writeError], "Proposal computation and failure recording both failed", {
+          cause: writeError,
+        });
+      }
+      return;
+    }
+    if (snapshot.recognition) {
+      await withTickWriteTransaction(pool, async (client) => {
+        if (!(await currentSourceFingerprint(client, config, snapshot))) return;
+        const selection = await resolveBoundRecognition(client, config.inboxItemTypesDatabaseId, snapshot, result);
+        if (!selection) return;
+        const { best, choices, selected, database, targetModule, changed } = selection;
+        if (!best || best.confidence < RECOGNITION_CONFIDENCE_THRESHOLD || changed) {
+          const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, snapshot.item.id));
+          const patch = await recognitionClarificationPatch(
+            toManifestLocale(snapshot.locale),
+            choices,
+            changed,
+            result.reason,
+          );
+          await writeNeedsClarification(
+            client,
+            config,
+            snapshot.item.id,
+            existing,
+            "Recognition needs clarification.",
+            snapshot.fingerprint,
+            patch,
+          );
+          return;
+        }
+        const resolved = {
+          ...snapshot,
+          entityKind: selected?.processingMethod === "pageContent" ? ("pageContent" as const) : ("database" as const),
+          targetDatabaseId: database?.id,
+          targetModuleId: targetModule ?? undefined,
+        };
+        await writeTickResult(
+          client,
+          config,
+          resolved,
+          buildProposalEnvelope(resolved, result),
+          result.reason?.trim().slice(0, 500) || null,
+          { recognizedTypeId: selected?.id ?? null, typeCandidates: [] },
+          result.invalidProposal !== undefined,
+        );
+      });
+      return;
+    }
+    const envelope =
+      snapshot.entityKind === "pageContent" && !result.target ? null : buildProposalEnvelope(snapshot, result);
 
-    await withTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope), {
-      isolation: "repeatable_read",
-    });
+    await withTickWriteTransaction(pool, (client) =>
+      writeTickResult(
+        client,
+        config,
+        snapshot,
+        envelope,
+        result.reason?.trim().slice(0, 500) || null,
+        {},
+        result.invalidProposal !== undefined,
+      ),
+    );
   };
 }

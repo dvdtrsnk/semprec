@@ -1,4 +1,4 @@
-import type { ChokePointError, ItemRow } from "@semprec/data";
+import type { ActiveHeartbeatRunSummary, ChokePointError, ItemRow } from "@semprec/data";
 import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
 
 /**
@@ -15,12 +15,20 @@ export const ITEM_ERROR_CODES = [
   "schema_locked",
   "property_locked",
   "version_conflict",
+  "value_link_conflict",
+  "proposal_locked",
   "validation_failed",
   "not_found",
   "approval_required",
   "heartbeat_event_triggered",
+  "heartbeat_disabled",
+  "heartbeat_running",
   "cardinality_violation",
   "database_archived",
+  "mail_auth_failed",
+  "mail_app_password_required",
+  "mail_server_unreachable",
+  "mail_tls_failed",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -40,12 +48,20 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   schema_locked: 403,
   property_locked: 403,
   version_conflict: 409,
+  value_link_conflict: 409,
+  proposal_locked: 409,
   validation_failed: 400,
   not_found: 404,
   approval_required: 403,
   heartbeat_event_triggered: 409,
+  heartbeat_disabled: 409,
+  heartbeat_running: 409,
   cardinality_violation: 409,
   database_archived: 403,
+  mail_auth_failed: 400,
+  mail_app_password_required: 400,
+  mail_server_unreachable: 400,
+  mail_tls_failed: 400,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {
@@ -91,6 +107,33 @@ export interface VersionConflictDetails {
   currentItem: ItemEnvelope;
 }
 
+/** `heartbeat_running`'s `details.activeRun` is the running run's summary, or `null` while only a fire job is waiting (issue #1453). */
+export interface HeartbeatRunningDetails {
+  activeRun: ActiveHeartbeatRunSummary | null;
+}
+
+function isActiveRunSummary(value: unknown): value is ActiveHeartbeatRunSummary {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "status" in value &&
+    typeof value.status === "string" &&
+    "triggeredBy" in value &&
+    typeof value.triggeredBy === "string" &&
+    "startedAt" in value &&
+    typeof value.startedAt === "string" &&
+    "threadId" in value &&
+    (value.threadId === null || typeof value.threadId === "string")
+  );
+}
+
+function isHeartbeatRunningDetails(details: unknown): details is HeartbeatRunningDetails {
+  if (typeof details !== "object" || details === null || !("activeRun" in details)) return false;
+  return details.activeRun === null || isActiveRunSummary(details.activeRun);
+}
+
 /**
  * `details` is `unknown` on `ChokePointError`, so nothing here stops a future call site — a
  * `SchemaLockedError`/`PropertyLockedError`/`HeartbeatEventTriggeredError` thrown with a raw
@@ -114,12 +157,29 @@ export function publicErrorDetails(details: unknown): Record<string, string | nu
  * defined by issue #238's error contract — no route handler builds this shape itself.
  * `version_conflict`'s `details.currentItem` is the one code whose wire shape isn't just the
  * choke-point error's own `details` verbatim: the choke-point raises it with `{ current }` (an
- * `ItemRow`), and this is where that gets projected onto the public item envelope. Every other
- * code's `details` passes through `publicErrorDetails` rather than verbatim.
+ * `ItemRow`), and this is where that gets projected onto the public item envelope. `heartbeat_running`'s
+ * `details.activeRun` is a nested object, which `publicErrorDetails` would drop, so it is projected
+ * here field by field. Every other code's `details` passes through `publicErrorDetails` rather than verbatim.
  */
 export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
   if (err.code === "version_conflict" && isVersionConflictDetails(err.details)) {
     const details: VersionConflictDetails = { currentItem: toItemEnvelope(err.details.current) };
+    return { error: { code: err.code, details } };
+  }
+  if (err.code === "heartbeat_running" && isHeartbeatRunningDetails(err.details)) {
+    const run = err.details.activeRun;
+    const details: HeartbeatRunningDetails = {
+      activeRun:
+        run === null
+          ? null
+          : {
+              id: run.id,
+              status: run.status,
+              triggeredBy: run.triggeredBy,
+              startedAt: run.startedAt,
+              threadId: run.threadId,
+            },
+    };
     return { error: { code: err.code, details } };
   }
   return { error: { code: err.code, details: publicErrorDetails(err.details) } };

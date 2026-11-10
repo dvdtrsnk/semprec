@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
+import { z } from "zod";
 import {
   ChokePointError,
   MaxBytesExceededError,
@@ -7,13 +8,15 @@ import {
   withTransaction,
   getDatabaseByModuleId,
   FILES_MODULE_ID,
-  ingestUploadedFile,
+  attachUploadedFileWithClient,
+  ingestUploadedFileWithTransaction,
+  resolveUploadAttachTarget,
   type BlobStorageWriter,
 } from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
-import { requireHeader } from "./adapter/requestValidation.js";
-import { toItemEnvelope } from "./adapter/itemEnvelope.js";
+import { optionalHeader, requireHeader } from "./adapter/requestValidation.js";
+import { toItemEnvelopeWithBlobs } from "./adapter/itemEnvelope.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
@@ -25,6 +28,28 @@ import { logger } from "./logger.js";
  * rejects here rather than surfacing as an `ENAMETOOLONG` 500 once it reaches the filesystem.
  */
 const MAX_FILENAME_BYTES = 200;
+
+/**
+ * Issue #1645's optional attach headers: both or neither. One without the other names the missing
+ * header; a target id that is not a UUID names `X-Attach-To-Item`. Read before the body.
+ */
+function readAttachHeaders(req: IncomingMessage): { targetItemId: string; relationKey: string } | null {
+  const targetItemId = optionalHeader(req, "X-Attach-To-Item");
+  const relationKey = optionalHeader(req, "X-Attach-Relation");
+  if (targetItemId === undefined && relationKey === undefined) return null;
+  if (targetItemId === undefined) {
+    throw new ValidationError("'X-Attach-To-Item' is required with 'X-Attach-Relation'", { field: "X-Attach-To-Item" });
+  }
+  if (relationKey === undefined) {
+    throw new ValidationError("'X-Attach-Relation' is required with 'X-Attach-To-Item'", {
+      field: "X-Attach-Relation",
+    });
+  }
+  if (!z.uuid().safeParse(targetItemId).success) {
+    throw new ValidationError("'X-Attach-To-Item' must be an item id", { field: "X-Attach-To-Item" });
+  }
+  return { targetItemId, relationKey };
+}
 
 export interface FilesRequestListenerOptions {
   storage: BlobStorageWriter;
@@ -41,10 +66,21 @@ export interface FilesRequestListenerOptions {
  * (`authenticateRequest`), maps a `ChokePointError` through the same `errorContract.ts` this
  * adapter's other routes use, just without the JSON-body step.
  *
+ * A form that delays filing until Save can instead upload bytes with `POST /api/blobs`, then
+ * create a Files item through the generic item-create operation with `file: { blobId }` and
+ * initial relations. Cancelling after upload creates no Files item; unreferenced blobs are
+ * collected after their grace period. Reusing a deduplicated blob creates a separate item.
+ *
  * `maxFileSizeMb` is enforced twice, per the issue's Task: first cheaply from `Content-Length`
  * when the client sent one (rejecting before a single byte of the body is read), and always
- * through `ingestUploadedFile`'s streaming byte counter — a missing, chunked, or dishonest
- * `Content-Length` can only ever under-enforce the header check, never bypass the counter.
+ * through the ingest's streaming byte counter (`ingestUploadedFileWithTransaction`) — a missing,
+ * chunked, or dishonest `Content-Length` can only ever under-enforce the header check, never bypass
+ * the counter.
+ *
+ * The optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645) link the uploaded
+ * file to an item in the same request: the target is resolved before the body is read
+ * (`resolveUploadAttachTarget`) and linked in the ingest transaction (`attachUploadedFileWithClient`),
+ * so the file and its edge commit together. Without them the route behaves as it did before.
  */
 export function createFilesRequestListener(pool: Pool, options: FilesRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -70,20 +106,44 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
           });
         }
 
-        const filesDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
-        if (!filesDatabase) throw new Error("The 'files' system database is missing");
+        const attach = readAttachHeaders(req);
 
-        const { item, created } = await ingestUploadedFile(pool, {
-          filesDatabaseId: filesDatabase.id,
-          filename,
-          contentType,
-          source: req,
-          storageKeyPrefix: "files",
-          maxBytes: options.maxFileSizeBytes,
-          storage: options.storage,
+        // Read-only, before a byte of the body is read: an unknown, trashed or foreign target answers the
+        // same 404, and an invalid relation key 400, with nothing streamed or stored (issue #1645).
+        const { filesDatabaseId, target } = await withTransaction(pool, async (client) => {
+          const filesDatabase = await getDatabaseByModuleId(client, FILES_MODULE_ID);
+          if (!filesDatabase) throw new Error("The 'files' system database is missing");
+          return {
+            filesDatabaseId: filesDatabase.id,
+            target:
+              attach && (await resolveUploadAttachTarget(client, { filesDatabaseId: filesDatabase.id, ...attach })),
+          };
         });
 
-        sendJson(res, created ? 201 : 200, toItemEnvelope(item));
+        // The edge is written in the ingest transaction, so a failure rolls the new file back and its
+        // streamed bytes are deleted; an identical upload reuses its Files item and only gains the edge.
+        const { result } = await ingestUploadedFileWithTransaction(
+          pool,
+          {
+            filesDatabaseId,
+            filename,
+            contentType,
+            source: req,
+            storageKeyPrefix: "files",
+            maxBytes: options.maxFileSizeBytes,
+            storage: options.storage,
+          },
+          async (client, file) => {
+            if (target) {
+              await attachUploadedFileWithClient(client, target, file.item.id, file.blob.id, {
+                writer: { writerKind: "user" },
+                actingUserId: identity.user.id,
+              });
+            }
+          },
+        );
+
+        sendJson(res, result.created ? 201 : 200, await toItemEnvelopeWithBlobs(pool, result.item));
       });
     } catch (err) {
       if (err instanceof MaxBytesExceededError) {

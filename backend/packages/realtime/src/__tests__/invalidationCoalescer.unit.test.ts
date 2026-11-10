@@ -25,6 +25,29 @@ function fakeSocket(): WebSocket & { bufferedAmount: number; sent: string[] } {
 }
 
 describe("createInvalidationCoalescer (issue #242)", () => {
+  it("coalesces relation keys independently from item frames and keeps the last operation", async () => {
+    const coalescer = createInvalidationCoalescer(10);
+    const client = fakeSocket();
+    client.bufferedAmount = 100;
+    const relation = {
+      type: "invalidate",
+      scope: "relation",
+      databaseId: "db-1",
+      itemId: "item-1",
+      propertyKey: "project",
+      op: "put",
+    } as const;
+    coalescer.enqueue(client, itemFrame("item-1", "2026-01-01T00:00:00.000Z"));
+    coalescer.enqueue(client, relation);
+    coalescer.enqueue(client, { ...relation, op: "delete" });
+    coalescer.enqueue(client, { ...relation, propertyKey: null });
+    client.bufferedAmount = 0;
+    await vi.waitFor(() => expect(client.sent).toHaveLength(3));
+    const frames: unknown[] = client.sent.map((payload) => JSON.parse(payload));
+    expect(frames).toContainEqual(itemFrame("item-1", "2026-01-01T00:00:00.000Z"));
+    expect(frames).toContainEqual({ ...relation, op: "delete" });
+    expect(frames).toContainEqual({ ...relation, propertyKey: null });
+  });
   it("sends immediately when the socket has nothing queued and is fully drained", () => {
     const coalescer = createInvalidationCoalescer();
     const client = fakeSocket();

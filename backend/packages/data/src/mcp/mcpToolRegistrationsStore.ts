@@ -10,8 +10,8 @@ import { ValidationError } from "../errors.js";
  *
  * `upsertMcpToolRegistration` is the sync-facing write (issue #125, "Synchronize tools only
  * on human request", owns calling it): it snapshots the tool's name/schema/description/active
- * state from a live MCP `tools/list` call. It never touches `requires_approval` or
- * `risk_class` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
+ * state from a live MCP `tools/list` call. It never touches `requires_approval`,
+ * `risk_class` or `display_label` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
  * re-sync untouched.
  *
  * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`,
@@ -20,6 +20,12 @@ import { ValidationError } from "../errors.js";
  * package) has no importable path to them at all, per this issue's "agents have no write path
  * to grants" acceptance criterion.
  */
+/** User-owned localized label; each locale is optional. */
+export interface McpToolDisplayLabel {
+  cs?: string;
+  en?: string;
+}
+
 export interface McpToolRegistration {
   id: string;
   mcpServerItemId: string;
@@ -29,6 +35,7 @@ export interface McpToolRegistration {
   active: boolean;
   requiresApproval: boolean;
   riskClass: string;
+  displayLabel: McpToolDisplayLabel | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,8 +49,22 @@ export interface McpToolRegistrationRow {
   active: boolean;
   requires_approval: boolean;
   risk_class: string;
+  display_label: unknown;
   created_at: string;
   updated_at: string;
+}
+
+export function parseStoredMcpToolDisplayLabel(value: unknown): McpToolDisplayLabel | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid stored MCP tool display label");
+  const result: McpToolDisplayLabel = {};
+  for (const [key, label] of Object.entries(value)) {
+    if ((key !== "cs" && key !== "en") || typeof label !== "string" || !label.trim() || label.length > 120) {
+      throw new Error("Invalid stored MCP tool display label");
+    }
+    result[key] = label;
+  }
+  return result;
 }
 
 /** Exported for `mcpGrantsAdminStore.ts` only — not part of this package's public `index.ts` surface. */
@@ -57,6 +78,7 @@ export function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistrat
     active: row.active,
     requiresApproval: row.requires_approval,
     riskClass: row.risk_class,
+    displayLabel: parseStoredMcpToolDisplayLabel(row.display_label),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -107,6 +129,16 @@ export async function getMcpToolRegistration(client: Queryable, id: string): Pro
     id,
   ]);
   return rows[0] ? rowToRegistration(rows[0]) : null;
+}
+
+/** Batched `getMcpToolRegistration`: the rows that exist for `ids`, in no particular order. */
+export async function getMcpToolRegistrationsByIds(client: Queryable, ids: string[]): Promise<McpToolRegistration[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<McpToolRegistrationRow>(
+    `SELECT * FROM mcp_tool_registrations WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return rows.map(rowToRegistration);
 }
 
 export async function listMcpToolRegistrationsForServer(

@@ -1,6 +1,15 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage, AgentSession, CreateAgentSession, ToolEventMetadata } from "@semprec/agent-runtime";
+import type {
+  AgentImage,
+  AgentMessage,
+  AgentSession,
+  CreateAgentSession,
+  ToolEventMetadata,
+  UserTurnContextRef,
+} from "@semprec/agent-runtime";
+import { AgentRunError, AiBudgetExceededError } from "@semprec/data";
+import { labeledSempMessageRefSchema } from "@semprec/shared";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -8,9 +17,17 @@ export interface PiAgentSessionFactoryOptions {
   model: Model<Api>;
   streamFn: StreamFn;
   tools: AgentTool[];
+  moduleToolNames?: ReadonlySet<string>;
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
+  /**
+   * Pending system messages of the thread since the last turn (approval outcomes), prepended to
+   * the next prompt text. Called once per turn; absent means none.
+   */
+  pendingSystemMessages?: () => readonly string[];
+  /** Whether a failed assistant message came from a call the gateway refused for the budget. */
+  isBudgetRefusal?: (message: AssistantMessage) => boolean;
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
@@ -27,13 +44,14 @@ function assistantText(message: AssistantMessage): string {
 /**
  * Maps one pi-agent-core `AgentEvent` onto the runtime's `AgentMessage` vocabulary, or `null` for
  * an event the run log does not record: agent/message start markers, a tool's partial progress,
- * and every non-assistant `message_end` — the prompt is already `agent_runs.task`, and a tool
+ * and every non-assistant `message_end` — a user message is persisted by `promptMessages` itself, and a tool
  * result message duplicates the `tool_result` its `tool_execution_end` produced.
  */
 function toAgentMessage(
   event: AgentEvent,
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   targets: Map<string, { targetDatabaseId?: string; targetItemId?: string }>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
 ): AgentMessage | null {
   switch (event.type) {
     // The turn's assistant message and tool results are already their own `message`/`tool_result`
@@ -51,6 +69,16 @@ function toAgentMessage(
     case "message_end": {
       const message = event.message;
       if (!isAssistantMessage(message)) return null;
+      if (message.stopReason === "error" && isBudgetRefusal?.(message)) {
+        return {
+          kind: "message",
+          role: message.role,
+          text: "",
+          content: [],
+          stopReason: "error",
+          errorMessage: "AI budget exceeded",
+        };
+      }
       return {
         kind: "message",
         role: message.role,
@@ -104,11 +132,15 @@ function toAgentMessage(
  * pi reports a failed or aborted model call as a final assistant message rather than a rejected
  * `prompt()`; turn that into a thrown error so the caller closes the run as `error`.
  */
-function assertModelSucceeded(agent: Agent): void {
+function assertModelSucceeded(
+  agent: Agent,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
+): void {
   const last = agent.state.messages.at(-1);
   if (!isAssistantMessage(last)) return;
   if (last.stopReason === "error" || last.stopReason === "aborted") {
-    throw new Error(last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
+    if (isBudgetRefusal?.(last)) throw new AiBudgetExceededError();
+    throw new AgentRunError("modelError", last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
   }
 }
 
@@ -121,10 +153,20 @@ function assertModelSucceeded(agent: Agent): void {
 async function* promptMessages(
   agent: Agent,
   task: string,
+  context: readonly UserTurnContextRef[],
+  images: readonly AgentImage[],
+  pendingSystemMessages: (() => readonly string[]) | undefined,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
+  signal?.throwIfAborted();
+  const parsed = labeledSempMessageRefSchema.array().safeParse(context);
+  if (!parsed.success) throw new Error("Invalid user turn context");
+  const promptText = [...(pendingSystemMessages?.() ?? []), task].join("\n\n");
+  // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
+  yield { kind: "user_message", text: task, context: parsed.data };
   signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
@@ -136,12 +178,12 @@ async function* promptMessages(
 
   const targets = new Map<string, { targetDatabaseId?: string; targetItemId?: string }>();
   const unsubscribe = agent.subscribe((event) => {
-    const message = toAgentMessage(event, toolEventMetadata, targets);
+    const message = toAgentMessage(event, toolEventMetadata, targets, isBudgetRefusal);
     if (!message) return;
     queue.push(message);
     notify();
   });
-  const prompt = agent.prompt(task).finally(() => {
+  const prompt = agent.prompt(promptText, [...images]).finally(() => {
     settled = true;
     notify();
   });
@@ -171,15 +213,15 @@ async function* promptMessages(
       agent.abort();
       try {
         await prompt;
-      } catch (err) {
+      } catch {
         // The consumer's own failure is what propagates; this one is only evidence.
-        logger.error({ err }, "pi agent prompt failed after its consumer stopped reading");
+        logger.error("pi agent prompt failed after its consumer stopped reading");
       }
     }
   }
 
   if (toolFailure.error) throw toolFailure.error;
-  assertModelSucceeded(agent);
+  assertModelSucceeded(agent, isBudgetRefusal);
 }
 
 /**
@@ -214,6 +256,20 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     const piAgent = new Agent({
       streamFn: options.streamFn,
+      afterToolCall: async (context) => {
+        const details: unknown = context.result.details;
+        if (
+          !context.isError &&
+          options.moduleToolNames?.has(context.toolCall.name) &&
+          typeof details === "object" &&
+          details !== null &&
+          "error" in details &&
+          details.error === true
+        ) {
+          return { isError: true };
+        }
+        return undefined;
+      },
       initialState: {
         systemPrompt: sessionOptions.systemPromptOverride?.(options.systemPrompt) ?? options.systemPrompt,
         model: options.model,
@@ -224,12 +280,26 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     // Each prompt starts with no recorded tool failure; only one runs at a time (pi refuses a
     // second `prompt()` while one is active).
-    const prompt = (task: string): AsyncIterable<AgentMessage> => {
+    const prompt = (
+      task: string,
+      context: readonly UserTurnContextRef[] = [],
+      images: readonly AgentImage[] = [],
+    ): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      return promptMessages(piAgent, task, toolFailure, options.toolEventMetadata, sessionOptions.signal);
+      return promptMessages(
+        piAgent,
+        task,
+        context,
+        images,
+        options.pendingSystemMessages,
+        toolFailure,
+        options.toolEventMetadata,
+        options.isBudgetRefusal,
+        sessionOptions.signal,
+      );
     };
     const session: AgentSession = {
-      messages: () => prompt(sessionOptions.task),
+      messages: () => prompt(sessionOptions.task, sessionOptions.context, sessionOptions.images),
       send: prompt,
     };
     return session;

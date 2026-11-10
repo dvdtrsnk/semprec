@@ -1,8 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createLogger } from "@semprec/shared";
@@ -17,9 +18,14 @@ import {
   type OutboundHttp,
 } from "../net/outboundAddressPolicy.js";
 import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
-import { McpConnectionError } from "./mcpConnectionError.js";
+import {
+  McpConnectionAuthenticationError,
+  McpConnectionError,
+  MCP_DEFAULT_CONNECT_TIMEOUT_MS,
+} from "./mcpConnectionError.js";
 import { SandboxedStdioClientTransport } from "./sandboxedStdioTransport.js";
 import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
+import { createMcpHttpFailureObserver, type McpHttpObservation } from "./mcpHttpFailureObservation.js";
 
 /**
  * The single MCP client connection factory (issue #231): opens a connection for a stored
@@ -40,6 +46,7 @@ import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
  */
 export interface McpClientHandle {
   readonly client: Client;
+  beginHttpObservation?(): McpHttpObservation;
   close(): Promise<void>;
 }
 
@@ -55,7 +62,7 @@ export interface ConnectMcpServerOptions {
 const logger = createLogger("mcp");
 const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
 /** A misbehaving server can accept a TCP/SSE/HTTP connection or spawn cleanly and then never answer `initialize` — `mcpClient.connect()` has no timeout of its own for that, so this factory imposes one. */
-const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = MCP_DEFAULT_CONNECT_TIMEOUT_MS;
 
 /**
  * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
@@ -68,8 +75,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
  * connection.
  * `sse`/`http` requests go through the current outbound address policy's `fetch`
  * (`net/outboundAddressPolicy.ts`): a host resolving to a denied address maps to
- * `address_not_allowed`, any other transport connect/handshake failure (including one that times
- * out — see `DEFAULT_CONNECT_TIMEOUT_MS`) to `handshake_failed`, both after releasing whatever the
+ * `address_not_allowed`, a connect timeout to `connect_timeout`, and other transport
+ * connect/handshake failures to `handshake_failed`, after releasing whatever the
  * transport had opened. A transient DB failure while resolving the credential propagates as-is
  * rather than being reported as a credential problem.
  */
@@ -95,17 +102,42 @@ export async function connectMcpServer(
   const credential = await resolveCredential(client, mcpServerItem.id, options);
   const outbound = config.transport === "stdio" ? null : createOutboundHttp(policy);
   const refusal = { seen: false };
-  const fetch = outbound === null ? undefined : recordAddressRefusal(outbound.fetch, refusal);
+  const observer = config.transport === "sse" ? createMcpHttpFailureObserver(credential !== null) : undefined;
+  const policyFetch = outbound === null ? undefined : recordAddressRefusal(outbound.fetch, refusal);
+  const fetch = policyFetch && observer ? observer.wrapFetch(policyFetch) : policyFetch;
   const { transport, afterConnect } = buildTransport(config, credential, fetch, stdioLaunchSocket);
+  observer?.install(transport);
 
   const mcpClient = new Client(CLIENT_INFO, { capabilities: {} });
+  const observation = observer?.begin();
   try {
-    await withTimeout(mcpClient.connect(transport), options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
-  } catch {
+    const connect = () => mcpClient.connect(transport);
+    await withTimeout(
+      observation ? observation.run(connect) : connect(),
+      options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+    );
+  } catch (err) {
+    const observedStatus = observation?.status(err);
+    observation?.close();
     await safeCloseTransport(transport);
     await safeCloseOutbound(outbound);
     if (refusal.seen) throw addressNotAllowed(config.transport);
-    throw new McpConnectionError("handshake_failed", `Failed to connect to MCP server (transport=${config.transport})`);
+    if (err instanceof ConnectTimeoutError) {
+      throw new McpConnectionError(
+        "connect_timeout",
+        `Timed out connecting to MCP server (transport=${config.transport})`,
+      );
+    }
+    if (err instanceof UnauthorizedError) {
+      throw new McpConnectionAuthenticationError(`Failed to connect to MCP server (transport=${config.transport})`);
+    }
+    throw new McpConnectionError(
+      "handshake_failed",
+      `Failed to connect to MCP server (transport=${config.transport})`,
+      authRejectionStatus(err) ?? observedStatus,
+    );
+  } finally {
+    observation?.close();
   }
   // The transport has already used the credential to spawn/authenticate; scrub any copy it kept
   // as a plain, JSON-serializable property so `handle.client`'s serializable state never carries it.
@@ -113,6 +145,7 @@ export async function connectMcpServer(
 
   return {
     client: mcpClient,
+    ...(observer ? { beginHttpObservation: observer.begin } : {}),
     close: async () => {
       try {
         await mcpClient.close();
@@ -166,11 +199,24 @@ function recordAddressRefusal(fetch: FetchLike, refusal: { seen: boolean }): Fet
  * (the caller's very next step) makes the original `connect()` reject with nothing else
  * listening, which without this would crash the process as an unhandled rejection.
  */
+class ConnectTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Timed out after ${timeoutMs}ms`);
+    this.name = "ConnectTimeoutError";
+  }
+}
+
+/** The 401/403 status an HTTP transport reported for a rejected connect, or `undefined` for any other failure. */
+function authRejectionStatus(err: unknown): number | undefined {
+  if (!(err instanceof StreamableHTTPError || err instanceof SseError)) return undefined;
+  return err.code === 401 || err.code === 403 ? err.code : undefined;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   promise.catch(() => {});
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer = setTimeout(() => reject(new ConnectTimeoutError(timeoutMs)), timeoutMs);
   });
   try {
     return await Promise.race([promise, timeout]);

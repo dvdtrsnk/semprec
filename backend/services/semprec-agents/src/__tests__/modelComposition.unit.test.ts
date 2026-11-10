@@ -2,7 +2,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createGatewayModel } from "../modelComposition.js";
+import { boundGatewayImagePayload, createGatewayModel } from "../modelComposition.js";
 
 const COMPLETE_ENV = {
   AI_GATEWAY_BASE_URL: "http://127.0.0.1:1/internal/pi",
@@ -18,6 +18,10 @@ afterEach(async () => {
 });
 
 describe("createGatewayModel (issue #647)", () => {
+  it("declares both text and image input to pi", () => {
+    expect(createGatewayModel(COMPLETE_ENV).model.input).toEqual(["text", "image"]);
+  });
+
   it.each(["AI_GATEWAY_BASE_URL", "AI_GATEWAY_INTERNAL_TOKEN", "AGENT_MODEL"])(
     "refuses to build without %s",
     (name) => {
@@ -146,5 +150,117 @@ describe("createGatewayModel (issue #647)", () => {
       });
       expect(headers).not.toHaveProperty("x-semprec-tenant-id");
     });
+  });
+
+  describe("budget refusal capture", () => {
+    const REQUEST = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+
+    async function listenWith(handler: (url: string, res: import("node:http").ServerResponse) => void) {
+      server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => handler(req.headers["x-case"] as string, res));
+      });
+      await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      return createGatewayModel({ ...COMPLETE_ENV, AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi` });
+    }
+
+    const refuse =
+      (status: number, headers: Record<string, string>) => (_c: string, res: import("node:http").ServerResponse) => {
+        res.writeHead(status, { "content-type": "application/json", ...headers });
+        res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
+      };
+
+    async function finalMessage(gateway: Awaited<ReturnType<typeof listenWith>>, headers: Record<string, string> = {}) {
+      const reply = await gateway.streamFn(gateway.model, REQUEST, { headers, maxRetries: 0 });
+      return reply.result();
+    }
+
+    it("recognizes a 403 with the budget header, compared case-insensitively", async () => {
+      const gateway = await listenWith(refuse(403, { "X-Semprec-Error-Code": "budget_exceeded" }));
+      const message = await finalMessage(gateway);
+      expect(message.stopReason).toBe("error");
+      expect(gateway.isBudgetRefusal(message)).toBe(true);
+    });
+
+    it.each([
+      ["a 403 without the header", 403, {}],
+      ["a 403 with another code", 403, { "x-semprec-error-code": "other" }],
+      ["a 400 with the budget header", 400, { "x-semprec-error-code": "budget_exceeded" }],
+      ["a 500", 500, {}],
+    ])("does not recognize %s", async (_name, status, headers) => {
+      const gateway = await listenWith(refuse(status, headers));
+      const message = await finalMessage(gateway);
+      expect(message.stopReason).toBe("error");
+      expect(gateway.isBudgetRefusal(message)).toBe(false);
+    });
+
+    it("marks only the refused call when two run concurrently", async () => {
+      const pending: { which: string; res: import("node:http").ServerResponse }[] = [];
+      const gateway = await listenWith((which, res) => {
+        const deadline = setTimeout(() => res.destroy(), 3000);
+        res.once("close", () => clearTimeout(deadline));
+        pending.push({ which, res });
+        if (pending.length !== 2) return;
+        for (const request of pending) {
+          if (request.which === "refuse") {
+            refuse(403, { "x-semprec-error-code": "budget_exceeded" })("", request.res);
+          } else {
+            refuse(500, {})("", request.res);
+          }
+        }
+      });
+      const [refused, failed] = await Promise.all([
+        finalMessage(gateway, { "x-case": "refuse" }),
+        finalMessage(gateway, { "x-case": "fail" }),
+      ]);
+      expect(pending.map(({ which }) => which).sort()).toEqual(["fail", "refuse"]);
+      expect(gateway.isBudgetRefusal(refused)).toBe(true);
+      expect(gateway.isBudgetRefusal(failed)).toBe(false);
+    });
+  });
+});
+
+describe("serialized gateway image budget", () => {
+  it("replaces the oldest image first without mutating the original or unrelated payload", () => {
+    const first = { type: "image", data: "a".repeat(2_100_000), mimeType: "image/jpeg" };
+    const second = { type: "image", data: "b".repeat(2_100_000), mimeType: "image/jpeg" };
+    const input = {
+      model: "test",
+      context: {
+        systemPrompt: "System",
+        tools: [{ name: "tool" }],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "First" }, first] },
+          { role: "user", content: [{ type: "text", text: "Second" }, second] },
+        ],
+      },
+      options: { temperature: 0.2 },
+    };
+    const output = boundGatewayImagePayload(input);
+    expect(output).toEqual({
+      ...input,
+      context: {
+        ...input.context,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "First" },
+              { type: "text", text: "[image omitted: request size limit]" },
+            ],
+          },
+          input.context.messages[1],
+        ],
+      },
+    });
+    expect(input.context.messages[0]?.content[1]).toBe(first);
+    expect(Buffer.byteLength(JSON.stringify(output), "utf8")).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it("refuses an oversized non-image body using UTF-8 bytes", () => {
+    expect(() =>
+      boundGatewayImagePayload({ context: { messages: [{ role: "user", content: "😀".repeat(1_048_576) }] } }),
+    ).toThrow("Gateway request exceeds the size limit");
   });
 });

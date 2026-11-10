@@ -3,12 +3,22 @@ import type { Queryable } from "../db/pool.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import type { DocKind, DocRow } from "../types.js";
+import type { CreatedBy, DocKind, DocRow } from "../types.js";
 
 const DOC_KIND_VALUES: readonly DocKind[] = ["page", "canvas"];
 
 /** The raw `docs` row shape this module reads back from Postgres. */
-type DocDbRow = { id: string; item_id: string; kind: string; created_at: Date };
+type DocDbRow = {
+  id: string;
+  item_id: string;
+  kind: string;
+  created_at: Date;
+  last_edited_at: Date | null;
+  last_edited_by: string | null;
+};
+
+const DOC_COLUMNS = "id, item_id, kind, created_at, last_edited_at, last_edited_by";
+const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
 
 function mapDocRow(row: DocDbRow): DocRow {
   return {
@@ -16,20 +26,21 @@ function mapDocRow(row: DocDbRow): DocRow {
     itemId: row.item_id,
     kind: assertKnownValue(DOC_KIND_VALUES, row.kind, "doc kind"),
     createdAt: row.created_at.toISOString(),
+    lastEditedAt: (row.last_edited_at ?? row.created_at).toISOString(),
+    lastEditedBy:
+      row.last_edited_by === null
+        ? null
+        : assertKnownValue(CREATED_BY_VALUES, row.last_edited_by, "doc last edited by"),
   };
 }
 
 export async function getDocByItemId(client: Queryable, itemId: string): Promise<DocRow | null> {
-  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE item_id = $1`, [
-    itemId,
-  ]);
+  const { rows } = await client.query<DocDbRow>(`SELECT ${DOC_COLUMNS} FROM docs WHERE item_id = $1`, [itemId]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
 export async function getDocById(client: Queryable, docId: string): Promise<DocRow | null> {
-  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE id = $1`, [
-    docId,
-  ]);
+  const { rows } = await client.query<DocDbRow>(`SELECT ${DOC_COLUMNS} FROM docs WHERE id = $1`, [docId]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
@@ -68,7 +79,7 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
 
   const { rows } = await client.query<DocDbRow & { history_available_from: Date }>(
     `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
-     ON CONFLICT DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
+     ON CONFLICT DO NOTHING RETURNING ${DOC_COLUMNS}, history_available_from`,
     [itemId, kind],
   );
   if (rows[0]) {
@@ -114,4 +125,70 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
  */
 export async function deleteDocByItemId(client: Queryable, itemId: string): Promise<void> {
   await client.query(`DELETE FROM docs WHERE item_id = $1`, [itemId]);
+}
+
+export interface PageStateRead {
+  itemId: string;
+  snapshot: Buffer | null;
+  updates: Buffer[];
+}
+
+/** Reads item-backed documents and their state in a single non-compacting statement. */
+export async function readRefDocumentStates(client: Queryable, itemIds: string[]): Promise<PageStateRead[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<{ item_id: string; kind: number; bytes: unknown }>(
+    `WITH selected AS (
+       SELECT d.id, d.item_id FROM docs d
+       JOIN items i ON i.tenant_id = d.tenant_id AND i.id = d.item_id
+       WHERE d.item_id = ANY($1::uuid[])
+     )
+     SELECT selected.item_id, 0 AS kind, 0::bigint AS seq, s.state AS bytes
+     FROM selected LEFT JOIN doc_snapshots s ON s.doc_id = selected.id
+     UNION ALL
+     SELECT selected.item_id, 1 AS kind, u.id AS seq, u.update AS bytes
+     FROM selected JOIN doc_updates u ON u.doc_id = selected.id
+     ORDER BY item_id, kind, seq`,
+    [itemIds],
+  );
+  const documents = new Map<string, PageStateRead>();
+  for (const row of rows) {
+    if (row.bytes !== null && !Buffer.isBuffer(row.bytes)) throw new Error("Invalid document state bytes");
+    let document = documents.get(row.item_id);
+    if (!document) {
+      document = { itemId: row.item_id, snapshot: null, updates: [] };
+      documents.set(row.item_id, document);
+    }
+    if (row.kind === 0) document.snapshot = row.bytes;
+    else if (row.kind === 1 && row.bytes !== null) document.updates.push(row.bytes);
+    else throw new Error("Invalid document state row");
+  }
+  return [...documents.values()];
+}
+
+/** Reads selected page snapshots and updates in one statement without compaction. */
+export async function readPageStatesForItems(client: Queryable, itemIds: string[]): Promise<PageStateRead[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<{ item_id: string; kind: number; bytes: unknown }>(
+    `WITH selected AS (SELECT d.id, d.item_id FROM docs d WHERE d.item_id = ANY($1::uuid[]) AND d.kind = 'page')
+     SELECT selected.item_id, 0 AS kind, 0::bigint AS seq, s.state AS bytes
+     FROM selected LEFT JOIN doc_snapshots s ON s.doc_id = selected.id
+     UNION ALL
+     SELECT selected.item_id, 1 AS kind, u.id AS seq, u.update AS bytes
+     FROM selected JOIN doc_updates u ON u.doc_id = selected.id
+     ORDER BY item_id, kind, seq`,
+    [itemIds],
+  );
+  const pages = new Map<string, PageStateRead>();
+  for (const row of rows) {
+    if (row.bytes !== null && !Buffer.isBuffer(row.bytes)) throw new Error("Invalid page state bytes");
+    let page = pages.get(row.item_id);
+    if (!page) {
+      page = { itemId: row.item_id, snapshot: null, updates: [] };
+      pages.set(row.item_id, page);
+    }
+    if (row.kind === 0) page.snapshot = row.bytes;
+    else if (row.kind === 1 && row.bytes !== null) page.updates.push(row.bytes);
+    else throw new Error("Invalid page state row");
+  }
+  return [...pages.values()];
 }

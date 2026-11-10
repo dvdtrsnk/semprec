@@ -38,7 +38,7 @@ interface AdminAccountRow {
 
 const ACCOUNT_SELECT = `SELECT u.id AS user_id, u.email, u.role, t.status, u.created_at, max(s.last_seen_at) AS last_seen_at
        FROM users u
-       JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+       JOIN tenants t ON t.id = u.tenant_id
        LEFT JOIN sessions s ON s.user_id = u.id`;
 const ACCOUNT_GROUP = "GROUP BY u.id, u.email, u.role, t.status, u.created_at";
 
@@ -54,8 +54,7 @@ function toAccountSummary(row: AdminAccountRow): AdminAccountSummary {
 }
 
 /**
- * Every account, oldest first. A user without `tenant_id` binds to the sole tenant, the same
- * fallback as `getUserTenantBinding`.
+ * Every account, oldest first. Each account's status is that of the tenant its `users.tenant_id` names.
  */
 export async function listAccounts(client: Queryable): Promise<AdminAccountSummary[]> {
   const { rows } = await client.query<AdminAccountRow>(
@@ -129,7 +128,7 @@ export async function assertAnotherActiveAdminRemains(client: PoolClient, userId
   const { rows } = await client.query<{ remaining: string }>(
     `SELECT count(*) AS remaining
        FROM users u
-       JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+       JOIN tenants t ON t.id = u.tenant_id
       WHERE u.role = 'admin' AND t.status = 'active' AND u.id <> $1`,
     [userId],
   );
@@ -155,7 +154,7 @@ async function lockTarget(client: PoolClient, targetUserId: string): Promise<Loc
   const { rows } = await client.query<{ tenant_id: string; role: string; status: string }>(
     `SELECT t.id AS tenant_id, u.role, t.status
        FROM users u
-       JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+       JOIN tenants t ON t.id = u.tenant_id
       WHERE u.id = $1
         FOR UPDATE OF u`,
     [targetUserId],

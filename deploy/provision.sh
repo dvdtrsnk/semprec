@@ -389,6 +389,36 @@ install_caddy_config() {
     "$CADDY_UNIT_DROPIN_DIR/semprec.conf"
 }
 
+# Renders the Apple App Site Association file Caddy serves at
+# /.well-known/apple-app-site-association. Only the key names are ever printed, never a value.
+render_apple_app_site_association() {
+  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
+  local target="$CADDY_CONFIG_DIR/apple-app-site-association"
+  local team_id bundle_id missing=0
+  team_id="$(sed -n 's/^SEMPREC_APPLE_TEAM_ID=//p' "$monitor_env" | tail -n 1)"
+  bundle_id="$(sed -n 's/^SEMPREC_IOS_BUNDLE_ID=//p' "$monitor_env" | tail -n 1)"
+
+  if [[ -z "$team_id" ]]; then
+    echo "SEMPREC_APPLE_TEAM_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
+    missing=1
+  fi
+  if [[ -z "$bundle_id" ]]; then
+    echo "SEMPREC_IOS_BUNDLE_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
+    missing=1
+  fi
+  if [[ "$missing" -eq 1 ]]; then
+    rm -f "$target"
+    return 0
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  printf '{"applinks":{"details":[{"appIDs":["%s.%s"],"components":[{"/":"/","?":{"page":"password-reset"},"comment":"Password-reset link"}]}]}}\n' \
+    "$team_id" "$bundle_id" > "$tmp_file"
+  install -o root -g root -m 0644 "$tmp_file" "$target"
+  rm -f "$tmp_file"
+}
+
 render_caddy_environment() {
   local domain
   local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
@@ -501,6 +531,7 @@ main() {
   enable_timers
   enable_mcp_launch_socket
   install_caddy_config
+  render_apple_app_site_association
   render_caddy_environment
   check_outbound_link_settings
   install_nftables_config

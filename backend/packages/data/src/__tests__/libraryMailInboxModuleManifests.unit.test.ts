@@ -4,7 +4,12 @@ import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import {
+  EMAILS_MODULE_ID,
+  FOLDERS_MODULE_ID,
+  MAILBOXES_MODULE_ID,
+  THREADS_MODULE_ID,
+} from "../seed/emailModuleKeys.js";
 import {
   INBOX_ITEM_TYPES_MODULE_ID,
   INBOX_MODULE_ID,
@@ -41,6 +46,16 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     await Promise.all([LIBRARY_PATH, MAIL_PATH, INBOX_PATH].map((path) => import(path)));
   }, 30_000);
 
+  it("loads Czech and English labels for Books publication year and ISBN", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(LIBRARY_PATH);
+    const catalogs = await registry.getCatalogs("library");
+    expect(catalogs?.cs["property.books.year.name"]).toBe("Rok");
+    expect(catalogs?.en["property.books.year.name"]).toBe("Year");
+    expect(catalogs?.cs["property.books.isbn.name"]).toBe("ISBN");
+    expect(catalogs?.en["property.books.isbn.name"]).toBe("ISBN");
+  });
+
   it("loads the library manifest with Books/Movies and the library-grid view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(LIBRARY_PATH);
@@ -48,6 +63,20 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(moduleId).toBe("library");
     const databases = await registry.getDatabases();
     expect(databases.map((db) => db.key).sort()).toEqual([BOOKS_MODULE_ID, MOVIES_MODULE_ID].sort());
+    expect(databases.find((db) => db.key === BOOKS_MODULE_ID)).toMatchObject({
+      icon: "book-open",
+      color: "#A2845E",
+      overviewOrder: 7,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    expect(databases.find((db) => db.key === MOVIES_MODULE_ID)).toMatchObject({
+      icon: "film",
+      color: "#FF6482",
+      overviewOrder: 8,
+      switcherOrder: null,
+      clientVisible: true,
+    });
     expect(await registry.getViewTypes()).toEqual([LIBRARY_GRID_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
     expect(await registry.getTasks()).toEqual([]);
@@ -61,8 +90,23 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(moduleId).toBe("mailSync");
     const databases = await registry.getDatabases();
     expect(databases.map((db) => db.key).sort()).toEqual(
-      [EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID].sort(),
+      [EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID].sort(),
     );
+    expect(databases.find((db) => db.key === EMAILS_MODULE_ID)).toMatchObject({
+      icon: "envelope",
+      color: "#007AFF",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    for (const key of [MAILBOXES_MODULE_ID, FOLDERS_MODULE_ID, THREADS_MODULE_ID]) {
+      const db = databases.find((d) => d.key === key)!;
+      expect(db.icon).toBeUndefined();
+      expect(db.color).toBeUndefined();
+      expect(db.overviewOrder).toBeUndefined();
+      expect(db.switcherOrder).toBeUndefined();
+      expect(db.clientVisible).toBeUndefined();
+    }
     expect(await registry.getViewTypes()).toEqual([MAILBOX_CLIENT_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([
       MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
@@ -77,6 +121,20 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       { moduleId: "mailSync", migration: "0006_mail_sync.sql" },
       { moduleId: "mailSync", migration: "0007_mail_delivered_to_and_dsn.sql" },
     ]);
+  });
+
+  it("loads the Threads database and property labels in both locales", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(MAIL_PATH);
+    const catalogs = await registry.getCatalogs("mailSync");
+    expect(catalogs?.en["database.threads.name"]).toBe("Threads");
+    expect(catalogs?.cs["database.threads.name"]).toBe("Vlákna");
+    expect(catalogs?.en["property.threads.name.name"]).toBe("Name");
+    expect(catalogs?.cs["property.threads.name.name"]).toBe("Název");
+    expect(catalogs?.en["property.threads.project.name"]).toBe("Project");
+    expect(catalogs?.cs["property.threads.project.name"]).toBe("Projekt");
+    expect(catalogs?.en["property.threads.company.name"]).toBe("Company");
+    expect(catalogs?.cs["property.threads.company.name"]).toBe("Firma");
   });
 
   it("loads the Inbox pipeline manifest with Inbox/Inbox item types/Processing proposals, semprec.tick, and journal-inbox", async () => {
@@ -104,6 +162,6 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     await registry.loadModule(INBOX_PATH);
 
     expect(registry.listModuleIds().sort()).toEqual(["inboxPipeline", "library", "mailSync"]);
-    expect((await registry.getDatabases()).length).toBe(8);
+    expect((await registry.getDatabases()).length).toBe(9);
   });
 });

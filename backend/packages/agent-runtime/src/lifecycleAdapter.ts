@@ -1,11 +1,17 @@
 import { Pool, type PoolClient } from "pg";
 import {
+  agentRunErrorCodeOf,
   createAgentRun,
   finishAgentRun,
   finishAgentRunWithErrorNotification,
   getAgentRun,
   insertAndNotifyAgentRunEvent,
+  listAgentRunEvents,
+  requireManagedTransaction,
+  markManagedTransactionRollbackOnly,
+  type AgentRunErrorCode,
   type AgentRunEventKind,
+  type AgentRunEventRow,
   type AgentRunRow,
   type AgentRunUnit,
   type TriggeredBy,
@@ -15,6 +21,7 @@ import { publishAgentRunDelta } from "@semprec/realtime";
 import { withTraceContext } from "@semprec/shared";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
+import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_start",
@@ -23,6 +30,7 @@ const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "tool_result",
   "turn_end",
   "run_status",
+  "user_message",
 ]);
 
 /** Resolves the abort race in `runAgentTurn`. */
@@ -47,8 +55,11 @@ export interface RunAgentSessionInput {
 
 /** Thrown by `runAgentTurn` once its signal aborts; the run then closes as `error` like any failed turn. */
 export class AgentRunCancelledError extends Error {
+  readonly agentRunErrorCode: AgentRunErrorCode;
+
   constructor() {
     super("account deactivated");
+    this.agentRunErrorCode = "cancelled";
     this.name = "AgentRunCancelledError";
   }
 }
@@ -68,25 +79,32 @@ async function recordPersistentEvent(
   agentRunId: string,
   kind: AgentRunEventKind,
   payload: unknown,
-): Promise<void> {
-  await insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
+): Promise<AgentRunEventRow> {
+  return insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
 }
 
 /** Best-effort: a lost typing delta affects animation only; the completed message is durable. */
-async function pushLiveDelta(client: Pool | PoolClient, agentRunId: string, delta: AgentMessage): Promise<void> {
+async function pushLiveDelta(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  delta: AgentMessage,
+  sempMessageId?: string,
+  afterEventId?: string,
+  deltaSequence?: number,
+): Promise<void> {
   try {
-    await publishAgentRunDelta(client, agentRunId, delta);
+    await publishAgentRunDelta(client, agentRunId, delta, sempMessageId, afterEventId, deltaSequence);
   } catch (err) {
     logger.error({ err, agentRunId, kind: delta.kind }, "Failed to publish agent_run_delta realtime message");
   }
 }
 
-export function pushRunStatus(
+export async function pushRunStatus(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "running" | "done" | "error",
 ): Promise<void> {
-  return recordPersistentEvent(client, agentRunId, "run_status", { kind: "run_status", status });
+  await recordPersistentEvent(client, agentRunId, "run_status", { kind: "run_status", status });
 }
 
 /**
@@ -96,7 +114,9 @@ export function pushRunStatus(
  * Returns the turn's last
  * `message`-kind event, or null if it never produced one. An aborted `signal` (already aborted, or
  * aborting while the loop waits for or records a message) ends the session through its iterator's
- * `return()` and throws `AgentRunCancelledError`.
+ * `return()` and throws `AgentRunCancelledError`. `onFirstEvent` is awaited once, with the row id
+ * of the first event this call stores, right after its insert; a throw there ends the turn like
+ * any failed step.
  *
  * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
  * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
@@ -109,8 +129,13 @@ export async function runAgentTurn(
   messages: AsyncIterable<AgentMessage>,
   onEvent?: (message: AgentMessage) => void,
   signal?: AbortSignal,
+  onFirstEvent?: (eventId: string) => Promise<void> | void,
+  sempMessageId?: string,
 ): Promise<AgentMessage | null> {
+  let firstEventReported = false;
   let lastMessage: AgentMessage | null = null;
+  let lastPersistedId: string | undefined;
+  let deltaSequence = 0;
   const iterator = messages[Symbol.asyncIterator]();
   let finished = false;
   let cancelled = false;
@@ -152,10 +177,24 @@ export async function runAgentTurn(
       // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
       // a missed message_update is deliberately lost, same as a dropped WS typing frame.
       if (message.kind === "message_update") {
-        await pushLiveDelta(client, agentRunId, message);
+        deltaSequence++;
+        await pushLiveDelta(
+          client,
+          agentRunId,
+          message,
+          sempMessageId,
+          sempMessageId === undefined ? undefined : lastPersistedId,
+          sempMessageId === undefined ? undefined : deltaSequence,
+        );
       } else {
         if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-          await recordPersistentEvent(client, agentRunId, message.kind, message);
+          const stored = await recordPersistentEvent(client, agentRunId, message.kind, message);
+          lastPersistedId = stored.id;
+          deltaSequence = 0;
+          if (!firstEventReported) {
+            firstEventReported = true;
+            await onFirstEvent?.(stored.id);
+          }
         }
         if (message.kind === "message") lastMessage = message;
       }
@@ -222,6 +261,51 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
   });
 }
 
+/** Pairs dangling calls and closes the failed run in one managed transaction. */
+export async function closeFailedAgentRun(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  failure: unknown,
+): Promise<void> {
+  try {
+    const close = async (c: PoolClient): Promise<void> => {
+      const run = await getAgentRun(c, agentRunId, true);
+      if (!run || run.status !== "running") return;
+      const dangling = findDanglingToolUses(await listAgentRunEvents(c, agentRunId));
+      const reason = agentRunErrorCodeOf(failure) === "cancelled" ? "cancelled" : "failed";
+      for (const toolUse of dangling) {
+        await recordPersistentEvent(
+          c,
+          agentRunId,
+          "tool_result",
+          syntheticToolResult(toolUse, `Turn ${reason} before this tool call completed.`),
+        );
+      }
+      const closed = await finishAgentRunWithErrorNotification(
+        c,
+        agentRunId,
+        failure instanceof Error ? failure.message : String(failure),
+        agentRunErrorCodeOf(failure),
+      );
+      if (closed) await pushRunStatus(c, agentRunId, "error");
+    };
+    if (client instanceof Pool) await withTransaction(client, close);
+    else {
+      requireManagedTransaction(client);
+      try {
+        await close(client);
+      } catch (error) {
+        markManagedTransactionRollbackOnly(client, error);
+        throw error;
+      }
+    }
+  } catch (secondary) {
+    // The recovery ADR requires the original failure as cause and retains the caught error in errors[1].
+    // eslint-disable-next-line preserve-caught-error
+    throw new AggregateError([failure, secondary], "Failed to recover agent run", { cause: failure });
+  }
+}
+
 /**
  * Runs `close` atomically: a bare `Pool` gets one transaction for the whole close, while a
  * caller-supplied `PoolClient` is reused as is, so the caller's own transaction decides.
@@ -260,24 +344,7 @@ export async function runAgentSessionForRun(
         await pushRunStatus(c, run.id, "done");
       });
     } catch (err) {
-      try {
-        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
-        // both back together. A `false` close means another closer already decided the outcome,
-        // so this session writes no terminal event of its own.
-        await closeAtomically(client, async (c) => {
-          const closed = await finishAgentRunWithErrorNotification(
-            c,
-            run.id,
-            err instanceof Error ? err.message : String(err),
-          );
-          if (!closed) return;
-          await pushRunStatus(c, run.id, "error");
-        });
-      } catch (finishErr) {
-        // Preserve the session failure for the caller, but do not erase evidence that the
-        // secondary lifecycle close failed and left the row running.
-        logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
-      }
+      await closeFailedAgentRun(client, run.id, err);
       throw err;
     }
 

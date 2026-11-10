@@ -12,7 +12,16 @@ import { createPropertyOps } from "./propertyOps.js";
 import { createRelationPropertyOps } from "./relationPropertyOps.js";
 import { createRelationOps } from "./relationOps.js";
 import { createItemWriteOps } from "./itemWrites.js";
+import { createItemWithRelationsOps } from "./itemCreateWithRelations.js";
+import { createValueLinkOps } from "./valueLinkOps.js";
 import { createItemTrashOps } from "./itemTrash.js";
+import { getValueLinksForItems } from "./valueLinkReads.js";
+import { listItemRelationsWithClient } from "./relationReads.js";
+import { withTransaction } from "../db/pool.js";
+import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
+import { runAutomationBatchReader } from "./hooks.js";
+import type { ItemAutomationReadPort } from "@semprec/shared";
+import { getItemsByIds } from "./itemsStore.js";
 
 export function createChokePoint(
   pool: Pool,
@@ -27,10 +36,36 @@ export function createChokePoint(
     createRelationPropertyOps(deps),
     createRelationOps(deps),
     createItemWriteOps(deps),
+    createItemWithRelationsOps(deps),
     createItemReadOps(deps),
     createItemTrashOps(deps),
+    createValueLinkOps(deps),
     createViewOps(deps),
     createViewQueryOps(deps),
+    {
+      /** The value links of a set of items for `include=links` (issue #1403), in one transaction. */
+      async getValueLinksForItems(
+        itemIds: string[],
+        includeDerived = false,
+        preloadedDerived?: Parameters<typeof getValueLinksForItems>[3],
+      ) {
+        return withTransaction(pool, (client) =>
+          getValueLinksForItems(client, itemIds, includeDerived, preloadedDerived),
+        );
+      },
+      async readAutomationForItems(itemIds: string[]): ReturnType<ItemAutomationReadPort["readAutomationForItems"]> {
+        return withTransaction(pool, (client) => runAutomationBatchReader(client, itemIds));
+      },
+      async getDerivedValuesForItems(itemIds: string[]) {
+        return withTransaction(pool, async (client) =>
+          getDerivedValuesForItems(client, await getItemsByIds(client, itemIds)),
+        );
+      },
+      /** The live relation edges of one item from its own side (issue #1404), in one transaction; `null` when the item is not found. */
+      async listItemRelations(itemId: string, relationPropertyId?: string) {
+        return withTransaction(pool, (client) => listItemRelationsWithClient(client, itemId, relationPropertyId));
+      },
+    },
   );
 }
 

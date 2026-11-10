@@ -12,6 +12,7 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
@@ -36,6 +37,8 @@ async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
 /** One errored `item_automation` row on a fresh Tasks item in `tenantId`; returns the item's database id. */
 async function seedAutomationError(tenantId: string): Promise<string | undefined> {
   return runInTenant(tenantId, async () => {
+    // A Tasks item needs the seeded Tasks catalog: its pre-write transform stores the derived `time` key.
+    await seedSystem(runtimePool);
     const itemId = await createTestModuleItem(runtimePool, TASKS_MODULE_ID);
     // Raw insert: no production writer sets an `item_automation` error on a fixture item.
     await runtimePool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'boom')`, [
@@ -184,6 +187,23 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     expect(JSON.stringify(reportB)).not.toContain(databaseIdA);
   });
 
+  it("does not count an item in Trash in itemAutomationErrorsByDatabase", async () => {
+    const a = await seedTenant();
+    const databaseId = await seedAutomationError(a.tenantId);
+    const trashedDatabaseId = await seedAutomationError(a.tenantId);
+    if (!databaseId || databaseId !== trashedDatabaseId) throw new Error("fixtures must share a database");
+    // Raw update: soft-deleting through the choke point is not what this query is being tested for.
+    await pool.query(
+      `UPDATE items SET deleted_at = now()
+       WHERE id = (SELECT item_id FROM item_automation WHERE tenant_id = $1 ORDER BY item_id LIMIT 1)`,
+      [a.tenantId],
+    );
+
+    const report = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
+
+    expect(report.itemAutomationErrorsByDatabase).toEqual([{ databaseId, errorCount: 1 }]);
+  });
+
   it("narrows the explicitly guarded sections by tenant even on a pool that bypasses row-level security", async () => {
     const a = await seedTenant();
     const b = await seedTenant();
@@ -191,7 +211,7 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     if (!databaseIdA) throw new Error("fixture item has no database");
     await runInTenant(a.tenantId, async () => {
       const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
-      await finishAgentRun(runtimePool, run.id, "error", "boom");
+      await finishAgentRun(runtimePool, run.id, "error", "boom", "internal");
     });
     // Raw insert: alerting rows are written by the observability system task, not a choke-point API.
     await pool.query(
@@ -216,9 +236,9 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     const mailboxA = await createMailbox(a.tenantId);
     await runInTenant(a.tenantId, async () => {
       await ensureMailAccountSyncState(runtimePool, { itemId: mailboxA, syncMode: "imap" });
-      await recordSyncError(runtimePool, mailboxA, "connection refused");
+      await recordSyncError(runtimePool, mailboxA, "connection refused", "other");
       const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
-      await finishAgentRun(runtimePool, run.id, "error", "boom");
+      await finishAgentRun(runtimePool, run.id, "error", "boom", "internal");
     });
 
     const reportA = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
@@ -240,10 +260,10 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
         task: "recent",
         unit: "invocation",
       });
-      await finishAgentRun(runtimePool, recentErrorRun.id, "error", "boom");
+      await finishAgentRun(runtimePool, recentErrorRun.id, "error", "boom", "internal");
 
       const oldErrorRun = await createAgentRun(runtimePool, { triggeredBy: "user", task: "old", unit: "invocation" });
-      await finishAgentRun(runtimePool, oldErrorRun.id, "error", "boom");
+      await finishAgentRun(runtimePool, oldErrorRun.id, "error", "boom", "internal");
       await pool.query(`UPDATE agent_runs SET started_at = now() - interval '8 days' WHERE id = $1`, [oldErrorRun.id]);
 
       const doneRun = await createAgentRun(runtimePool, { triggeredBy: "user", task: "fine", unit: "invocation" });

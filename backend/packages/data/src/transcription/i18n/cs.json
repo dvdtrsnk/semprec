@@ -1,3 +1,6 @@
 {
-  "transcript.speaker.unmappedLabel": "Mluvčí {ordinal}"
+  "transcript.speaker.unmappedLabel": "Mluvčí {ordinal}",
+  "transcript.speaker.genericLabel": "Mluvčí",
+  "transcript.speaker.noCandidatesReason": "Nejsou k dispozici žádné odpovídající osoby.",
+  "transcript.speaker.uncertainReason": "Mluvčího se nepodařilo spolehlivě určit."
 }

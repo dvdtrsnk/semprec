@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-19
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-29-item-pre-write-transforms-per-module-registry
 ---
 
 # Derived system-owned properties are computed inline in the choke-point, keyed by module ownership

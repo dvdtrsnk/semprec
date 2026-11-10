@@ -1,3 +1,4 @@
+import { normalizeWhisperLanguage } from "@semprec/shared";
 import {
   AudioProviderCallError,
   type TranscriptionProvider,
@@ -13,7 +14,7 @@ function parseResponse(value: unknown): TranscriptionResult {
   if (!isObject(value) || typeof value.text !== "string") {
     throw new AudioProviderCallError("DeepInfra response did not match the expected shape");
   }
-  if (value.language !== undefined && typeof value.language !== "string") {
+  if (value.language !== undefined && value.language !== null && typeof value.language !== "string") {
     throw new AudioProviderCallError("DeepInfra response language did not match the expected shape");
   }
   if (!Array.isArray(value.segments)) {
@@ -32,7 +33,7 @@ function parseResponse(value: unknown): TranscriptionResult {
     }
     return { start: segment.start, end: segment.end, text: segment.text };
   });
-  return { text: value.text, language: value.language ?? null, segments };
+  return { text: value.text, language: normalizeWhisperLanguage(value.language), segments };
 }
 
 /** DeepInfra's OpenAI-compatible Whisper large-v3 adapter. */

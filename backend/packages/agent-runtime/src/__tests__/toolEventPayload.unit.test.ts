@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GENERIC_OPERATION_NAMES } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, parseToolEventPayload as sharedParser } from "@semprec/shared";
 import { parseToolEventPayload } from "../toolEventPayload.js";
 
 const use = { toolCallId: "call-1", name: "item_patch", arguments: { itemId: "item-1" } };
@@ -7,6 +7,9 @@ const result = { toolCallId: "call-1", name: "item_patch", result: { content: []
 const mcp = { toolRegistrationId: "reg-1", serverItemId: "server-1", serverName: "Server", toolName: "search" };
 
 describe("parseToolEventPayload", () => {
+  it("uses the same shared parser through the runtime compatibility export", () => {
+    expect(parseToolEventPayload).toBe(sharedParser);
+  });
   it.each(GENERIC_OPERATION_NAMES)("accepts the canonical operation %s", (operation) => {
     expect(parseToolEventPayload("tool_use", { ...use, operation })).toEqual({ ...use, operation });
   });
@@ -68,5 +71,37 @@ describe("parseToolEventPayload", () => {
 
   it("rejects a non-tool kind", () => {
     expect(parseToolEventPayload("message", use)).toBeNull();
+  });
+});
+
+describe("parseToolEventPayload result details (issue #1527)", () => {
+  it("reads approvalRequestId and changes from the stored result details", () => {
+    const changes = [{ key: "due", before: "a", after: "b" }, { key: "body" }];
+    const stored = {
+      ...result,
+      result: { content: [], details: { error: false, approvalRequestId: "req-1", changes } },
+    };
+    expect(parseToolEventPayload("tool_result", stored)).toEqual({
+      ...stored,
+      details: { approvalRequestId: "req-1", changes },
+    });
+  });
+
+  it("drops a malformed changes entry and ignores a malformed id instead of throwing", () => {
+    const stored = {
+      ...result,
+      result: { details: { approvalRequestId: 5, changes: [{ key: 1 }, "x", null, { key: "k", after: 2 }] } },
+    };
+    expect(parseToolEventPayload("tool_result", stored)).toEqual({
+      ...stored,
+      details: { changes: [{ key: "k", after: 2 }] },
+    });
+  });
+
+  it("has no details for a result without them", () => {
+    expect(parseToolEventPayload("tool_result", { ...result, result: { details: { error: false } } })).toEqual({
+      ...result,
+      result: { details: { error: false } },
+    });
   });
 });

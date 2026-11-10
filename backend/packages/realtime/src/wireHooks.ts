@@ -6,8 +6,10 @@ import {
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
+  setSempThreadInvalidationHook,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
+import { runInTenant } from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /**
@@ -57,6 +59,12 @@ export function wireRealtimeHooks(pool: Pool): void {
   setSessionRevokedHook((event) => {
     publishRealtimeMessage(pool, { type: "session_revoked", ...event }).catch((err: unknown) => {
       logger.error({ err }, "Failed to publish session_revoked realtime message");
+    });
+  });
+  setSempThreadInvalidationHook((event) => {
+    const message = { type: "invalidation", scope: "sempThread", threadId: event.threadId } as const;
+    runInTenant(event.tenantId, () => publishRealtimeMessage(pool, message)).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish sempThread invalidation realtime message");
     });
   });
   setAgentRunEventHook(enqueueAgentRunEvent);

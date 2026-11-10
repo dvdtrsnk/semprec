@@ -8,10 +8,12 @@ import { getTenantZeroId, resetDatabase, tenantForNextTestUser } from "@semprec/
 import {
   createPool,
   createUser,
+  createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  seedSystem,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { runInTenant, TenantScopeConflictError } from "@semprec/shared";
@@ -87,9 +89,10 @@ describe("tenant scope on the real dispatcher", () => {
     await pool?.end();
   });
 
-  async function newSession(): Promise<{ token: string; sessionId: string }> {
+  async function newSession(): Promise<{ token: string; sessionId: string; tenantId: string }> {
+    const tenantId = await tenantForNextTestUser(pool);
     const user = await createUser(pool, {
-      tenantId: await tenantForNextTestUser(pool),
+      tenantId,
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
     });
@@ -99,7 +102,7 @@ describe("tenant scope on the real dispatcher", () => {
       platform: "ios",
       ip: "127.0.0.1",
     });
-    return { token, sessionId: session.id };
+    return { token, sessionId: session.id, tenantId };
   }
 
   async function lastSeenAt(sessionId: string): Promise<string> {
@@ -134,7 +137,8 @@ describe("tenant scope on the real dispatcher", () => {
 
     async function statuses(mode: "warn" | "strict"): Promise<Record<string, number>> {
       await resetDatabase(pool);
-      const { token } = await newSession();
+      const { token, tenantId } = await newSession();
+      await runInTenant(tenantId, () => seedSystem(pool, createViewTypeRegistry()));
       return withScopeMode(mode, async () => {
         const result: Record<string, number> = {};
         for (const route of routes) {

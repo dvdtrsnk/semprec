@@ -7,7 +7,9 @@ import { generateOpaqueToken, hashToken } from "./token.js";
 import { anyUserExists, createUser, getUserById } from "./usersStore.js";
 import {
   createSession,
+  type CreateSessionInput,
   getActiveSessionByTokenHash,
+  revokeOtherSessionsForUser,
   revokeSession,
   revokeSessionForUser,
   touchSessionLastSeen,
@@ -23,9 +25,19 @@ import {
   lockUserTenantBinding,
 } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
+import { seedAccountSystemProjectGuidance } from "../projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 
-/** How long a freshly-issued session stays valid without further activity. */
-export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const SECONDS_PER_DAY = 60 * 60 * 24;
+
+/** How long a session stays valid without further activity; each authenticated request slides expiry forward by this much. */
+export const SESSION_IDLE_TTL_SECONDS_BY_PLATFORM: Record<SessionPlatform, number> = {
+  ios: 90 * SECONDS_PER_DAY,
+  macos: 90 * SECONDS_PER_DAY,
+  web: 30 * SECONDS_PER_DAY,
+};
+
+/** Absolute ceiling: a session never outlives `created_at` plus this, however actively it is used. */
+export const SESSION_MAX_LIFETIME_SECONDS = 365 * SECONDS_PER_DAY;
 
 /** `UserRow` minus `passwordHash` — the shape safe to hand back to a caller or attach to a request. */
 export type PublicUser = Omit<UserRow, "passwordHash">;
@@ -43,6 +55,8 @@ export const MIN_PASSWORD_LENGTH = 8;
 interface CreateAccountInput {
   email: string;
   password: string;
+  /** Already validated by `normalizeDisplayName`; `null` or omitted stores NULL. */
+  displayName?: string | null;
   tenantId: string;
   role: UserRole;
 }
@@ -50,7 +64,8 @@ interface CreateAccountInput {
 /**
  * Turns an email/password pair into a `users` row for `bootstrapFirstAccount` (#233).
  * Normalizes the email (see `normalizeEmail`), validates both fields, and hashes the password
- * with Argon2id (`hashPassword`) before handing off to `createUser`.
+ * with Argon2id (`hashPassword`) before handing off to `createUser`. The display name arrives
+ * already validated (issue #1513) and is stored as given.
  */
 async function createAccount(client: Pool | PoolClient, input: CreateAccountInput): Promise<PublicUser> {
   const email = normalizeEmail(input.email);
@@ -62,7 +77,13 @@ async function createAccount(client: Pool | PoolClient, input: CreateAccountInpu
   }
 
   const passwordHash = await hashPassword(input.password);
-  const user = await createUser(client, { email, passwordHash, tenantId: input.tenantId, role: input.role });
+  const user = await createUser(client, {
+    email,
+    passwordHash,
+    tenantId: input.tenantId,
+    role: input.role,
+    displayName: input.displayName ?? undefined,
+  });
   return toPublicUser(user);
 }
 
@@ -79,12 +100,21 @@ export interface LoginInput {
   platform: SessionPlatform;
   ip: string;
   userAgent?: string | null;
+  /** Already-validated device identity of the logging-in client; omitted leaves the session's device columns NULL. */
+  device?: LoginDevice;
 }
+
+export type LoginDevice = Pick<
+  CreateSessionInput,
+  "deviceId" | "deviceName" | "deviceKind" | "osVersion" | "appVersion"
+>;
 
 export interface LoginResult {
   token: string;
   session: SessionRow;
   user: PublicUser;
+  /** The user's role in their tenant, read by the same locked query that re-checks the tenant (#1387). */
+  role: UserRole;
 }
 
 /**
@@ -110,7 +140,8 @@ export interface LoginResult {
  * never engage. Only the success path — the new session row and the streak-resetting success
  * row — runs in one `withTransaction`, so those two still commit or roll back together. That
  * transaction re-reads the tenant status through `lockUserTenantBinding`, so a session is never
- * created for a tenant a concurrent suspension has already left non-active.
+ * created for a tenant a concurrent suspension has already left non-active. The `role` in the result
+ * is read by that same locked query.
  */
 export async function login(pool: Pool, input: LoginInput): Promise<LoginResult> {
   const email = normalizeEmail(input.email);
@@ -138,8 +169,8 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
   }
 
   const { token, tokenHash } = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
-  const session = await withTransaction(pool, async (client) => {
+  const expiresAt = new Date(Date.now() + SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[input.platform] * 1000);
+  const granted = await withTransaction(pool, async (client) => {
     // Re-checked under lock: a suspension that committed after the read above is seen here, and
     // one that has not yet locked the user waits for this commit and then revokes this session.
     const locked = await lockUserTenantBinding(client, user.id);
@@ -150,16 +181,17 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
       platform: input.platform,
       expiresAt,
       userAgent: input.userAgent,
+      ...input.device,
     });
     await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
-    return created;
+    return { session: created, role: locked.role };
   });
-  if (!session) {
+  if (!granted) {
     await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
 
-  return { token, session, user: toPublicUser(user) };
+  return { token, session: granted.session, user: toPublicUser(user), role: granted.role };
 }
 
 /**
@@ -179,6 +211,8 @@ function tokensMatch(provided: string, expected: string): boolean {
 export interface BootstrapFirstAccountInput {
   email: string;
   password: string;
+  /** Already validated by `normalizeDisplayName` at the setup route (issue #1513); `null` or omitted stores NULL. */
+  displayName?: string | null;
 }
 
 /**
@@ -195,6 +229,10 @@ export interface BootstrapFirstAccountInput {
  * actual decision runs inside a transaction holding `SETUP_ADVISORY_LOCK_KEY` for its duration —
  * concurrent callers queue on that lock, and every one after the first to commit re-checks
  * `anyUserExists` and finds it `true`, so exactly one call ever reaches `createAccount`.
+ *
+ * After that commit the tenant's system projects get their agent guidance rows (issue #1449), in the
+ * tenant's own scope: the setup route calls this under the system scope, whose transactions cannot read
+ * the tenant's system databases. A failure there rethrows after the account has been created.
  */
 export async function bootstrapFirstAccount(
   pool: Pool,
@@ -204,15 +242,24 @@ export async function bootstrapFirstAccount(
 ): Promise<PublicUser> {
   if (await anyUserExists(pool)) throw new NotFoundError("Not found");
 
-  return withTransaction(pool, async (client) => {
+  const created = await withTransaction(pool, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock($1)", [SETUP_ADVISORY_LOCK_KEY]);
 
     if (await anyUserExists(client)) throw new NotFoundError("Not found");
     if (!tokensMatch(providedToken, expectedToken)) throw new NotFoundError("Not found");
 
     const tenantId = await getSoleTenantId(client);
-    return createAccount(client, { email: input.email, password: input.password, tenantId, role: "admin" });
+    const user = await createAccount(client, {
+      email: input.email,
+      password: input.password,
+      displayName: input.displayName,
+      tenantId,
+      role: "admin",
+    });
+    return { tenantId, user };
   });
+  await seedAccountSystemProjectGuidance(pool, created.tenantId, created.user.id);
+  return created.user;
 }
 
 export interface AuthenticatedIdentity {
@@ -239,7 +286,11 @@ export async function verifySessionToken(client: Pool | PoolClient, token: strin
   const binding = await getUserTenantBinding(client, user.id);
   if (!binding || binding.status !== "active") throw new UnauthorizedError();
 
-  await touchSessionLastSeen(client, session.id);
+  await touchSessionLastSeen(client, {
+    id: session.id,
+    idleSeconds: SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[session.platform],
+    maxLifetimeSeconds: SESSION_MAX_LIFETIME_SECONDS,
+  });
   return { session, user: toPublicUser(user), tenantId: binding.tenantId, role: binding.role };
 }
 
@@ -269,4 +320,21 @@ export async function revokeUserSession(
   const revoked = await revokeSessionForUser(client, sessionId, userId);
   if (revoked) await revokePushSubscriptionsForSession(client, sessionId);
   return revoked;
+}
+
+/**
+ * "Sign out all other devices" (issue #1650): revokes every other active session of `userId`, keeping
+ * `keepSessionId`, then each revoked session's push registrations, on the same client, and returns how
+ * many sessions it revoked. Registrations without a session (`session_id` NULL) belong to no device being
+ * signed out and are left alone. Run it in one transaction so the sessions, their registrations and the
+ * post-commit socket closes hold together.
+ */
+export async function revokeOtherUserSessions(
+  client: Pool | PoolClient,
+  userId: string,
+  keepSessionId: string,
+): Promise<number> {
+  const revoked = await revokeOtherSessionsForUser(client, userId, keepSessionId);
+  for (const sessionId of revoked) await revokePushSubscriptionsForSession(client, sessionId);
+  return revoked.length;
 }

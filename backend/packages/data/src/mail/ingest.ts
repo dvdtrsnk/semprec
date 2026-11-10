@@ -1,9 +1,11 @@
+import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
-import sanitizeHtml from "sanitize-html";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
+import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import {
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
@@ -15,6 +17,8 @@ import {
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
+import { buildMailSearchText } from "./mailSearchText.js";
+import { detectBulkMail, type BulkMailHeaders } from "./bulkMail.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
 import { messageFlagProperties } from "./messageFlags.js";
 import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
@@ -29,11 +33,6 @@ export function formatAddressList(list: MailEnvelopeAddress[] | undefined): stri
   return (list ?? []).map(formatAddress).join(", ");
 }
 
-/** Plain-text approximation of an HTML-only body for the search index (search.ts) — an HTML-only message has no `bodyText` at all, so indexing only the subject would silently miss every word that's only in the visible body. */
-function htmlToSearchText(html: string): string {
-  return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} });
-}
-
 /** The Emails properties the sync worker mirrors from the real mailbox are `owner: 'system'` (see seedEmailModule.ts) — not user-editable, hence written through this escape hatch. `read`/`flagged` are deliberately absent: those two are owner:'user' (issue #97) and need no exemption. */
 export const EMAIL_INGEST_ALLOWED_SYSTEM_KEYS = ["name", "sender", "recipients", "body", "date"];
 
@@ -45,6 +44,7 @@ export interface IngestEmailMessageInput {
   folderItemId: string;
   /** The Mailbox item being synced — the dedup scope: the same `Message-ID` in two mailboxes is two items. */
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
   /** IMAP adapter only — the UID this message has *in this folder*; lives on the relation edge, not the item (see the migration's header note). */
   folderUid?: number;
   messageId: string;
@@ -66,6 +66,8 @@ export interface IngestEmailMessageInput {
   deliveredToHeaders?: string[];
   xOriginalTo?: string | null;
   envelopeTo?: string | null;
+  /** The raw bulk-mail headers — see FetchedMessage.bulkHeaders (providerTypes.ts). */
+  bulkHeaders?: BulkMailHeaders;
   /** True for a multipart/report;report-type=delivery-status DSN/bounce (mail/dsn.ts) — distinguished from an ordinary human reply. */
   isDsn?: boolean;
   /** The message's IMAP flags, when the adapter reports them — see FetchedMessage.flags (providerTypes.ts). */
@@ -95,6 +97,7 @@ export async function ingestEmailMessage(
   client: PoolClient,
   input: IngestEmailMessageInput,
 ): Promise<IngestEmailMessageResult> {
+  await lockMailThreadMutation(client);
   const existing = await getMailMessageMetaByMailboxAndMessageId(client, input.mailboxItemId, input.messageId);
   let itemId: string;
   let created = false;
@@ -171,7 +174,12 @@ export async function ingestEmailMessage(
         envelope: input.envelope,
         deliveredToAddress: deliveredToAddress ?? null,
         messageKind: input.isDsn ? "dsn" : "message",
+        // Computed only on this first-ingest path: the upsert's DO UPDATE never touches is_bulk, so a
+        // later pass over the same message keeps the stored value.
+        isBulk: detectBulkMail({ ...input.bulkHeaders, senderAddress: input.envelope.from?.address }),
         dsnOriginalMessageId,
+        previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
+        ingestedAt: new Date(),
       });
 
       const { extractedTexts } = await ingestAttachments(client, {
@@ -187,11 +195,17 @@ export async function ingestEmailMessage(
       // folded into the owning message's own search text rather than indexed as a separate
       // item — there is no per-attachment search surface in this issue's scope, only "search my
       // mail," which a PDF invoice's contents should still match.
-      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
       await reindexItemSearch(client, {
         itemId,
         databaseId: input.emailsDatabaseId,
-        text: [input.subject ?? "", bodyForSearch, ...extractedTexts].join("\n\n"),
+        text: buildMailSearchText({
+          subject: input.subject,
+          senderName: input.envelope.from?.name,
+          senderAddress: input.envelope.from?.address,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml,
+          extractedTexts,
+        }),
       });
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
@@ -208,6 +222,9 @@ export async function ingestEmailMessage(
       created = false;
     }
   }
+
+  if (!created && (input.protectedMoveMessageIds?.has(itemId) || (await hasUnsettledMailMove(client, itemId))))
+    return { itemId, created };
 
   // Provider observations establish current state but deliberately never replace a desired
   // user value already awaiting write-back. A newly created IMAP message gets matching desired

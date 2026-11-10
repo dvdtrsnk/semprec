@@ -1,0 +1,296 @@
+import type { PoolClient } from "pg";
+import * as Y from "yjs";
+import { z } from "zod";
+import { currentTenantScope, type SempMessageRef } from "@semprec/shared";
+import { requireManagedTransaction } from "../db/pool.js";
+import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
+import { projectItemsForRead } from "../chokePoint/itemReadProjection.js";
+import { getDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
+import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
+import { getBlock, listBlocks } from "../docs/blocks.js";
+import { readRefDocumentStates } from "../docs/docsStore.js";
+import { getAgentRun } from "../agentRuns/agentRunsStore.js";
+import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
+import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import { getBlob } from "../blobs/blobsStore.js";
+import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
+import { listTranscriptSpeakers } from "../transcription/transcriptionSpeakerEdges.js";
+import type { BlobRow, ItemRow } from "../types.js";
+
+/** Ephemeral tenant-scoped data; never persist this projection in a run or event. */
+export interface SempRefContext {
+  label: string;
+  state: "active" | "trashed";
+  details: unknown;
+  blob: { id: string; storageKey: string; mimeType: string; byteSize: string } | null;
+}
+
+const segmentsSchema = z.array(
+  z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
+);
+const RELATED_KEYS = new Set(["project", "projects", "company", "companies", "people", "sourceInbox", "proposals"]);
+/** A task's attachments are its `files` relation (issue #1771); other databases keep the common set. */
+const TASK_RELATED_KEYS = new Set([...RELATED_KEYS, "files"]);
+const MAX_RELATION_TARGETS = 200;
+
+function blobProjection(blob: BlobRow | null): SempRefContext["blob"] {
+  return blob ? { id: blob.id, storageKey: blob.storageKey, mimeType: blob.mimeType, byteSize: blob.byteSize } : null;
+}
+
+async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {
+  const title = (await listPropertiesByDatabase(client, item.databaseId)).find((property) => property.type === "title");
+  const value = title ? item.properties[title.key] : null;
+  return typeof value === "string" ? value.slice(0, 500) : "";
+}
+
+async function relatedNames(client: PoolClient, item: ItemRow, keys: ReadonlySet<string> = RELATED_KEYS) {
+  const result: Record<string, { names: string[]; truncated: boolean }> = {};
+  for (const property of await listPropertiesByDatabase(client, item.databaseId)) {
+    if (property.type !== "relation" || !keys.has(property.key)) continue;
+    const definition = await getRelationDefinitionByPropertyId(client, property.id);
+    if (!definition) continue;
+    const { rows } = await client.query<{ item_a: string; item_b: string }>(
+      `SELECT item_a, item_b FROM item_relations WHERE relation_definition_id = $1 AND (item_a = $2 OR item_b = $2)
+       ORDER BY id LIMIT $3`,
+      [definition.id, item.id, MAX_RELATION_TARGETS + 1],
+    );
+    const targets = await getItemsByIds(
+      client,
+      rows.slice(0, MAX_RELATION_TARGETS).map((edge) => (edge.item_a === item.id ? edge.item_b : edge.item_a)),
+    );
+    result[property.key] = {
+      names: await Promise.all(targets.map((target) => itemTitle(client, target))),
+      truncated: rows.length > MAX_RELATION_TARGETS,
+    };
+  }
+  return result;
+}
+
+async function inboxRelatedItems(client: PoolClient, item: ItemRow, owner: string | null) {
+  if (owner !== "inbox" && owner !== "processingProposals") return [];
+  const proposals = await getDatabaseByModuleId(client, "processingProposals");
+  if (!proposals) return [];
+  const property = (await listPropertiesByDatabase(client, proposals.id)).find((entry) => entry.key === "sourceInbox");
+  const definition = property ? await getRelationDefinitionByPropertyId(client, property.id) : null;
+  if (!definition) return [];
+  const { rows } = await client.query<{ item_a: string; item_b: string }>(
+    `SELECT item_a, item_b FROM item_relations WHERE relation_definition_id = $1 AND (item_a = $2 OR item_b = $2)
+     ORDER BY id LIMIT $3`,
+    [definition.id, item.id, MAX_RELATION_TARGETS + 1],
+  );
+  const ids = rows.slice(0, MAX_RELATION_TARGETS).map((edge) => (edge.item_a === item.id ? edge.item_b : edge.item_a));
+  const related = await projectItemsForRead(client, await getItemsByIds(client, ids));
+  return {
+    items: related.map((entry) => ({ id: entry.id, properties: entry.properties })),
+    truncated: rows.length > MAX_RELATION_TARGETS,
+  };
+}
+
+async function mailThreadMessages(client: PoolClient, itemId: string) {
+  const { rows } = await client.query<{ item_id: string }>(
+    `SELECT m.item_id FROM mail_message_meta source
+       JOIN mail_message_meta m ON m.tenant_id = source.tenant_id AND m.thread_id = source.thread_id
+       JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id
+      WHERE source.item_id = $1 AND source.thread_id IS NOT NULL AND i.deleted_at IS NULL
+      ORDER BY COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) DESC, i.id DESC
+      LIMIT 101`,
+    [itemId],
+  );
+  const selected = rows.slice(0, 100);
+  const projected = await projectItemsForRead(
+    client,
+    await getItemsByIds(
+      client,
+      selected.map((row) => row.item_id),
+    ),
+  );
+  const byId = new Map(projected.map((item) => [item.id, item]));
+  return {
+    messages: selected.flatMap((row) => {
+      const item = byId.get(row.item_id);
+      return item ? [{ id: item.id, properties: item.properties }] : [];
+    }),
+    truncated: rows.length > 100,
+  };
+}
+
+async function itemBlob(client: PoolClient, item: ItemRow): Promise<SempRefContext["blob"]> {
+  const metadata = (await loadBlobMetadataForItems(client, [item])).get(item.id);
+  if (!metadata) return null;
+  const first = Object.values(metadata)[0];
+  return first ? blobProjection(await getBlob(client, first.blobId)) : null;
+}
+
+async function blockDetails(client: PoolClient, itemId: string, blockId: string): Promise<unknown> {
+  const state = (await readRefDocumentStates(client, [itemId]))[0];
+  if (!state) return null;
+  const doc = new Y.Doc();
+  try {
+    if (state.snapshot) Y.applyUpdate(doc, state.snapshot);
+    for (const update of state.updates) Y.applyUpdate(doc, update);
+    const block = getBlock(doc, blockId);
+    if (!block) return null;
+    const blocks = listBlocks(doc);
+    const parent = blocks.find(
+      (candidate) => Array.isArray(candidate["sys:children"]) && candidate["sys:children"].includes(blockId),
+    );
+    const siblings =
+      parent && Array.isArray(parent["sys:children"])
+        ? parent["sys:children"]
+            .flatMap((id: unknown) => (typeof id === "string" ? [getBlock(doc, id)] : []))
+            .filter((entry) => entry !== null)
+        : [];
+    return { block, parent: parent ?? null, siblings };
+  } finally {
+    doc.destroy();
+  }
+}
+
+const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A future occurrence of a repeating task (issue #1771): the series template, the day and the relations of the series'
+ * current instance, which carries the series' project, people and attachments. A series the tenant does not hold
+ * (deleted since the message was sent, or never there), one whose owner item is deleted, and one whose row has no template
+ * are unavailable.
+ */
+async function readTaskOccurrenceContext(
+  client: PoolClient,
+  seriesId: string,
+  occurrenceDate: string,
+): Promise<SempRefContext | null> {
+  // `series_id` is a uuid column: a string of any other shape names no series, and must not reach the cast.
+  if (!SERIES_ID_SHAPE.test(seriesId)) return null;
+  const series = await getTaskRecurrenceBySeriesId(client, seriesId.toLowerCase());
+  if (!series?.template) return null;
+  // Soft deletion keeps the recurrence row until the purge: a series whose current owner item is gone is unavailable.
+  const [instance] = await getItemsByIds(client, [series.itemId]);
+  if (!instance) return null;
+  const template = publicTaskRecurrenceTemplate(series.template);
+  return {
+    label: Array.from(template.name ?? "")
+      .slice(0, 500)
+      .join(""),
+    state: "active",
+    details: {
+      series: { seriesId: seriesId.toLowerCase(), mode: series.mode, rule: series.rule, anchorDate: series.anchorDate },
+      template,
+      occurrenceDate,
+      relations: await relatedNames(client, instance, TASK_RELATED_KEYS),
+    },
+    blob: null,
+  };
+}
+
+/** Composes existing tenant readers for exactly the reference carried by this turn. */
+export async function readSempRefContext(client: PoolClient, ref: SempMessageRef): Promise<SempRefContext | null> {
+  requireManagedTransaction(client);
+  if (currentTenantScope()?.kind !== "tenant") throw new Error("Semp reference read requires tenant scope");
+  if (ref.kind === "agentRun") {
+    const run = await getAgentRun(client, ref.agentRunId);
+    if (!run) return null;
+    const { rows } = await client.query<{ kind: string; payload: string; truncated: boolean }>(
+      `SELECT kind, left(payload::text, 8000) AS payload, length(payload::text) > 8000 AS truncated
+       FROM agent_run_events WHERE agent_run_id = $1 AND kind IN ('tool_use', 'tool_result') ORDER BY id LIMIT 101`,
+      [run.id],
+    );
+    return {
+      label: Array.from(run.task).slice(0, 120).join(""),
+      state: "active",
+      details: { task: run.task, status: run.status, steps: rows.slice(0, 100), truncated: rows.length > 100 },
+      blob: null,
+    };
+  }
+  if (ref.kind === "approvalRequest") {
+    const request = await getApprovalRequest(client, ref.approvalRequestId);
+    if (!request) return null;
+    return {
+      label: request.description?.key ?? "",
+      state: "active",
+      details: { description: request.description, status: request.status, reason: request.reason },
+      blob: null,
+    };
+  }
+  if (ref.kind === "mailAttachment") {
+    const { rows } = await client.query<{ filename: string; content_type: string; byte_size: string; blob_id: string }>(
+      "SELECT filename, content_type, byte_size, blob_id FROM mail_attachments WHERE id = $1",
+      [ref.attachmentId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      label: row.filename,
+      state: "active",
+      details: { filename: row.filename, contentType: row.content_type, byteSize: row.byte_size },
+      blob: blobProjection(await getBlob(client, row.blob_id)),
+    };
+  }
+  if (ref.kind === "taskOccurrence") return readTaskOccurrenceContext(client, ref.seriesId, ref.occurrenceDate);
+  const [raw] = await getItemsByIdsIncludingDeleted(client, [ref.itemId]);
+  if (!raw || ((ref.kind === "item" || ref.kind === "taskTrace") && raw.databaseId !== ref.databaseId.toLowerCase()))
+    return null;
+  // A trace names a live task: a task deleted since the message was sent is unavailable, not a trashed marker.
+  if (ref.kind === "taskTrace" && raw.deletedAt) return null;
+  const item = (await projectItemsForRead(client, [raw]))[0];
+  if (!item) return null;
+  const database = await getDatabase(client, item.databaseId);
+  if (!database) return null;
+  // A deleted task is unavailable, like a deleted trace; other trashed items keep the trashed marker.
+  if (ref.kind === "item" && item.deletedAt && database.ownerModuleId === "tasks") return null;
+  const label = await itemTitle(client, item);
+  const state = item.deletedAt ? "trashed" : "active";
+  if (ref.kind === "taskTrace") {
+    if (database.ownerModuleId !== "tasks") return null;
+    return {
+      label,
+      state,
+      details: {
+        properties: item.properties,
+        relations: await relatedNames(client, item, TASK_RELATED_KEYS),
+        traceDay: ref.traceDay,
+      },
+      blob: null,
+    };
+  }
+  if (ref.kind === "block") {
+    const block = await blockDetails(client, item.id, ref.blockId);
+    return block === null ? null : { label, state, details: { page: item.properties, ...{ block } }, blob: null };
+  }
+  if (ref.kind === "transcriptSegment" || database.ownerModuleId === "transcripts") {
+    if (database.ownerModuleId !== "transcripts") return null;
+    const segments = segmentsSchema.parse(item.computed.segments ?? []);
+    const speakers = item.deletedAt ? [] : await listTranscriptSpeakers(client, item.id, item);
+    if (ref.kind === "transcriptSegment") {
+      const index = segments.findIndex((segment) => segment.startsAt <= ref.startsAt && segment.endsAt >= ref.endsAt);
+      if (index < 0) return null;
+      return {
+        label,
+        state,
+        details: { segments: segments.slice(Math.max(0, index - 3), index + 4), speakers },
+        blob: null,
+      };
+    }
+    return {
+      label,
+      state,
+      details: { properties: item.properties, summary: item.computed.summary ?? null, segments, speakers },
+      blob: null,
+    };
+  }
+  return {
+    label,
+    state,
+    details: {
+      properties: item.properties,
+      relations: await relatedNames(
+        client,
+        item,
+        database.ownerModuleId === "tasks" ? TASK_RELATED_KEYS : RELATED_KEYS,
+      ),
+      inboxRelated: await inboxRelatedItems(client, item, database.ownerModuleId),
+      ...(database.ownerModuleId === "emails" ? { thread: await mailThreadMessages(client, item.id) } : {}),
+    },
+    blob: database.ownerModuleId === "files" ? await itemBlob(client, item) : null,
+  };
+}

@@ -1,17 +1,34 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { CAPABILITY_IDS } from "@semprec/shared";
+import type { Pool } from "pg";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+
+export function createGuardedHeartbeatTriggerTool(pool: Pool, ruleKinds: HeartbeatRuleKindRegistry) {
+  return createHeartbeatTriggerTool(pool, ruleKinds, { refuseWhileActive: true });
+}
 
 export {
   createHeartbeatListTool,
   createHeartbeatHistoryTool,
   createHeartbeatTriggerTool,
+  heartbeatListArgsSchema,
+  heartbeatHistoryArgsSchema,
+  heartbeatTriggerArgsSchema,
 } from "../scheduler/heartbeatAgentTools.js";
 export {
   createRegisterPushSubscriptionRouteHandler,
   createRevokePushSubscriptionRouteHandler,
 } from "../push/pushRouteHandlers.js";
-export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
+export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "../semp/sempStatusRouteHandler.js";
+export {
+  createGetNotificationPreferencesRouteHandler,
+  createPatchNotificationPreferencesRouteHandler,
+} from "../notifications/notificationPreferencesRoutes.js";
+export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
+export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeatEnabledRoute.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -29,10 +46,11 @@ export { createSystemHealthRouteHandler } from "../observability/systemHealthRou
  * `heartbeat.trigger` (issue #136) joins them on the same terms — project-scoped availability
  * only, no `capability` gate and no approval requirement beyond that.
  *
- * `capabilities` registers the eight generic-operation capability ids from #252's
- * `CAPABILITY_IDS` (issue #220) — the same eight `OPERATION_METADATA.requiresCapability` values
- * every one of the 29 generic operations is keyed against, so a project's granted subset of
- * these is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
+ * `capabilities` registers the generic-operation capability ids from
+ * `CAPABILITY_IDS` (issue #220) — the same `OPERATION_METADATA.requiresCapability` values
+ * generic operations are keyed against. The permission manifest excludes page capabilities
+ * from automatic project-agent grants; human MCP registration retains the full list.
+ * A project's granted subset is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
  * discovery and invocation by.
  */
 export const manifest: ModuleManifest = {
@@ -44,12 +62,52 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [...CAPABILITY_IDS],
   agentTools: [
-    { name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
-    { name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
-    { name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
+    {
+      name: "heartbeat.list",
+      handlerExport: "createHeartbeatListTool",
+      argumentSchemaExport: "heartbeatListArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "heartbeat.history",
+      handlerExport: "createHeartbeatHistoryTool",
+      argumentSchemaExport: "heartbeatHistoryArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "heartbeat.trigger",
+      handlerExport: "createGuardedHeartbeatTriggerTool",
+      argumentSchemaExport: "heartbeatTriggerArgsSchema",
+      approval: "none",
+      riskClass: "write",
+    },
   ],
   migrations: ["0001_core_schema.sql"],
   customRoutes: [
+    {
+      name: "sempStatus",
+      method: "GET",
+      path: "/api/semp-status",
+      handlerExport: "createSempStatusRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "sempStatusSummary",
+      method: "GET",
+      path: "/api/semp-status/summary",
+      handlerExport: "createSempStatusSummaryRouteHandler",
+      // Serves the profile's problem count and the chat banner from the same report read.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "setHeartbeatEnabled",
+      method: "PATCH",
+      path: "/api/heartbeats/:id",
+      handlerExport: "createSetHeartbeatEnabledRouteHandler",
+      justification: "transactional-semantics",
+    },
     {
       name: "registerPushSubscription",
       method: "POST",
@@ -76,6 +134,16 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "aiUsageSummary",
+      method: "GET",
+      path: "/api/ai-usage/summary",
+      handlerExport: "createAiUsageSummaryRouteHandler",
+      // One read shaped for the caller's own spend against its own caps (issue gh-1456): the budget
+      // row, the system timezone and the gateway's spend. The request carries no input.
+      // The "single-consumer-read" justification.
+      justification: "single-consumer-read",
+    },
+    {
       name: "systemHealthReport",
       method: "GET",
       path: "/api/system-health",
@@ -86,6 +154,34 @@ export const manifest: ModuleManifest = {
       // block) — the "single-consumer-read" justification. Operator data is not served here
       // (issue #1038, GET /api/admin/health).
       justification: "single-consumer-read",
+    },
+    {
+      name: "getNotificationPreferences",
+      method: "GET",
+      path: "/api/notification-preferences",
+      handlerExport: "createGetNotificationPreferencesRouteHandler",
+      // Shaped for exactly one consumer, the settings screen's notification section: the caller's
+      // own preferences row, or the defaults, and no other table.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "patchNotificationPreferences",
+      method: "PATCH",
+      path: "/api/notification-preferences",
+      handlerExport: "createPatchNotificationPreferencesRouteHandler",
+      // The first change inserts the caller's row and the update that sets its fields commits with
+      // it in one transaction, a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "triggerHeartbeat",
+      method: "POST",
+      path: "/api/heartbeats/:id/trigger",
+      handlerExport: "createTriggerHeartbeatRouteHandler",
+      // The active-run and waiting-job checks and the enqueue commit or roll back together under the
+      // heartbeat's row lock (issue #1453): the transactional shape the generic item-write endpoint
+      // can't express.
+      justification: "transactional-semantics",
     },
   ],
 };

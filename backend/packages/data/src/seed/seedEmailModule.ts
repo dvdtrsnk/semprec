@@ -18,7 +18,9 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
+import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
+import { COMPANIES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
@@ -40,7 +42,13 @@ async function createDb(
   ownerModuleId: string,
   ownerProjectItemId: string,
 ): Promise<DatabaseRow> {
-  return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
+  return databasesStore.createDatabase(client, {
+    name,
+    key: ownerModuleId,
+    system: true,
+    ownerModuleId,
+    ownerProjectItemId,
+  });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
@@ -54,6 +62,53 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
       config: spec.config,
     });
   }
+}
+
+export async function createThreadsDatabase(
+  client: PoolClient,
+  ownerProjectItemId: string,
+  projectsDatabaseId: string,
+  companiesDatabaseId: string,
+  computedKeyRegistry?: ComputedKeyRegistry,
+): Promise<DatabaseRow> {
+  const threads = await createDb(client, "Threads", THREADS_MODULE_ID, ownerProjectItemId);
+  await createProps(client, threads.id, [{ key: "name", name: "Name", type: "title", owner: "system" }]);
+  for (const target of [
+    { key: "project", name: "Project", id: projectsDatabaseId },
+    { key: "company", name: "Company", id: companiesDatabaseId },
+  ]) {
+    await createRelationPropertyWithClient(
+      client,
+      {
+        sourceDatabaseId: threads.id,
+        key: target.key,
+        name: target.name,
+        targetDatabaseId: target.id,
+        cardinality: "many_to_many",
+        owner: "user",
+      },
+      undefined,
+      computedKeyRegistry,
+    );
+  }
+  // Threads -> Tasks (issue #1612): Tasks is schema-locked, so the relation lives on Threads only. Threads is the
+  // "one" side of `one_to_many`, so a task has at most one thread. User-owned: Semp links a task with `relation.put`.
+  const tasks = await databasesStore.getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  if (!tasks) throw new Error("Tasks database is missing");
+  await createRelationPropertyWithClient(
+    client,
+    {
+      sourceDatabaseId: threads.id,
+      key: "tasks",
+      name: null,
+      targetDatabaseId: tasks.id,
+      cardinality: "one_to_many",
+      owner: "user",
+    },
+    undefined,
+    computedKeyRegistry,
+  );
+  return threads;
 }
 
 export interface EmailModuleResult {
@@ -105,14 +160,19 @@ export async function seedEmailModuleInTransaction(
     properties: {
       name: "Email",
       systemActive: true,
-      agents:
-        "Purpose: keep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n" +
-        "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n" +
-        "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
-        "General instructions: this project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[MAILBOXES_MODULE_ID],
     },
   });
 
+  const companies = await databasesStore.getDatabaseByModuleId(client, COMPANIES_MODULE_ID);
+  if (!companies) throw new Error("Companies database is missing");
+  const threads = await createThreadsDatabase(
+    client,
+    emailProject.id,
+    projectsDatabaseId,
+    companies.id,
+    computedKeyRegistry,
+  );
   const mailboxes = await createDb(client, "Mailboxes", MAILBOXES_MODULE_ID, emailProject.id);
   await createProps(client, mailboxes.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
@@ -123,7 +183,10 @@ export async function seedEmailModuleInTransaction(
       owner: "user",
       config: selectConfig(["gmail", "outlook", "icloud", "generic"]),
     },
-    { key: "addresses", name: "Addresses", type: "longText", owner: "user" },
+    // Owned by the system since issue #1454: the connect and reauthorization flows (#1686, #1736)
+    // will record the provider-verified address through mail/mailboxAddresses.ts, and a generic
+    // item write (REST or agent) is refused with owner_violation.
+    { key: "addresses", name: "Addresses", type: "longText", owner: "system" },
     // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
     // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
     // conservative per-provider default.
@@ -236,13 +299,16 @@ export async function seedEmailModuleInTransaction(
   );
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
+  // A person may send many emails (issue #1457), so this is many_to_many. Cardinality does not
+  // keep "one message, one sender"; today mail/personLinkingActions.ts is the only writer of this
+  // edge. Populated installs are switched by mail/emailsSenderPeopleCardinalityCutoverMigration.ts.
   await relate(
     {
       sourceDatabaseId: emails.id,
       key: "senderPeople",
       name: "Sender",
       targetDatabaseId: peopleDatabaseId,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: EMAILS_MODULE_ID,
     },
@@ -284,9 +350,10 @@ export async function seedEmailModuleInTransaction(
     viewTypeRegistry,
   );
 
-  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
-    [mailboxes.id, folders.id, emails.id],
+  const lockedDatabases = await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
+    [mailboxes.id, folders.id, emails.id, threads.id],
   ]);
+  if (lockedDatabases.rowCount !== 4) throw new Error("Expected four mail databases to be locked");
 
   // People.emails (issue #26 is its sole owner) — direct store call against the raw client,
   // the same "code-level migration with direct DB access" exception seedSystem.ts documents
@@ -337,6 +404,7 @@ export async function seedEmailModuleInTransaction(
     actionId: CORE_AGENT_RUN_ACTION_ID,
     actionConfig: {
       task: "A new message arrived in the Inbox.",
+      senderKnownFilter: {},
       itemRelationFilter: {
         relationPropertyId: folderRelation.property.id,
         property: "specialPurpose",

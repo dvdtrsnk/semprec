@@ -43,6 +43,23 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
+  // Issue #1652: rebuilds the search documents that quote another item's text after an edge, title, trash
+  // state or Inbox entry change, looking the dependents up when it runs, in committed chunks.
+  ITEM_SEARCH_REINDEX_DEPENDENTS: "itemSearchReindexDependents",
+  // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
+  // with a 30-second debounce (`preserve_run_at`).
+  ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
+  // Issue #1715: copies the text of a parent document's `page` blocks onto the `title` of their Pages items, enqueued by
+  // a page edit with a 10-second debounce (`preserve_run_at`).
+  PAGE_TITLE_MIRROR: "pageTitleMirror",
+  // Issue #1468: fills mail_message_meta.preview_text/ingested_at for rows that predate them.
+  MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
+  // Issue #1496: removes Gmail pseudo-label folders (UNREAD, STARRED, CATEGORY_*...) and keeps their mail in Archive.
+  MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP: "mailGmailPseudoFolderCleanup",
+  // Issue #1570: threads stored mail that has no thread (sent messages before #1474) and merges copies of one
+  // Message-ID that were split across threads.
+  MAIL_THREAD_BACKFILL: "mailThreadBackfill",
+  MAIL_LINK_PERSON_EMAILS: "mailLinkPersonEmails",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
@@ -66,6 +83,7 @@ export const CORE_TASK_NAMES = {
   // Issue #26: periodic safety net for Emails items whose search index write was skipped
   // (a direct-DB write outside ingestEmailMessage's own standard path).
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
+  MAIL_SEARCH_TEXT_REINDEX: "mailSearchTextReindex",
   // Issue #93: backfills mail_message_meta (envelope/threadId/messageId) for legacy Emails
   // items that predate it.
   MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
@@ -90,10 +108,16 @@ export const CORE_TASK_NAMES = {
   // trigger) or an explicit `POST /api/transcriptions` request. Its actual processing (the
   // paid transcription pipeline) is out of this issue's scope — see transcriptionJob.ts.
   TRANSCRIPTION_JOB: "transcriptionJob",
+  TRANSCRIPTION_CREATE: "transcriptionCreate",
+  VALUE_LINKS_PROPAGATE: "valueLinksPropagate",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
+  // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
+  MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
+  SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
+  SEMP_THREAD_TITLE: "sempThreadTitle",
   // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
   QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
   // Issue #1043: builds one requested tenant export archive, and the daily sweep that removes
@@ -102,6 +126,12 @@ export const CORE_TASK_NAMES = {
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
   // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
   TENANT_PURGE: "tenantPurge",
+  // Issue #1401: the daily sweep that deletes standalone upload blobs nothing references 24 hours after creation.
+  BLOBS_UNREFERENCED_SWEEP: "blobsUnreferencedSweep",
+  // Issue #1660: recomputes one person's derived People `lastContact`, and the daily sweep that queues a
+  // recompute for every person whose linked source's date fell within the last 24 hours.
+  PEOPLE_LAST_CONTACT_RECOMPUTE: "peopleLastContactRecompute",
+  PEOPLE_LAST_CONTACT_SWEEP: "peopleLastContactSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -116,6 +146,13 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "api",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
@@ -128,6 +165,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "api",
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "api",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
@@ -136,12 +174,20 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
+  [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "transcribe",
+  [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "api",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "api",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.TENANT_PURGE]: "api",
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "api",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "api",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "api",
 };
 
 /**
@@ -154,6 +200,7 @@ export const AGENT_TASK_NAMES = {
   HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",
   AGENT_RUN: "agentRun",
   DELEGATED_AGENT_RUN: "delegatedAgentRun",
+  SEMP_MESSAGE: "sempMessage",
 } as const;
 export type AgentTaskName = (typeof AGENT_TASK_NAMES)[keyof typeof AGENT_TASK_NAMES];
 
@@ -167,6 +214,13 @@ export type TaskTenancy = "tenant" | "system";
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "tenant",
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "tenant",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "tenant",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
@@ -179,6 +233,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "system",
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "tenant",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
@@ -187,20 +242,81 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "system",
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
+  [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "tenant",
+  [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "tenant",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.TENANT_PURGE]: "system",
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "system",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "tenant",
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
+  [AGENT_TASK_NAMES.SEMP_MESSAGE]: "tenant",
 };
 
-/** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
+/**
+ * The item-search tasks whose enqueues a managed transaction adds at its pre-commit flush, in
+ * code-unit order (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md).
+ * `ensureQueueSchema` registers exactly these identifiers.
+ */
+export const SEARCH_TASK_IDENTIFIERS = [
+  CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL,
+  CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT,
+  CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS,
+] as const;
+export type SearchTaskIdentifier = (typeof SEARCH_TASK_IDENTIFIERS)[number];
+
+/**
+ * graphile-worker 0.17.3's own registration statement (`dist/taskIdentifiers.js`): one idempotent
+ * insert of the identifier rows, committed on its own, creating no job and no queue. The ADR above
+ * grants this package alone this one write to graphile-worker's private metadata; it depends on that
+ * version's `_private_tasks` shape.
+ */
+const REGISTER_SEARCH_TASK_IDENTIFIERS_SQL = `INSERT INTO graphile_worker._private_tasks AS tasks (identifier)
+  SELECT unnest($1::text[]) ON CONFLICT DO NOTHING`;
+
+/**
+ * Creates/updates graphile-worker's own schema, then registers `SEARCH_TASK_IDENTIFIERS`, so a
+ * search enqueue never inserts a task row itself. Call once at startup, before enqueueJob/runWorker.
+ */
 export async function ensureQueueSchema(pool: Pool): Promise<void> {
-  await runAsSystem("queue-schema", () => runMigrations({ pgPool: pool }));
+  await runAsSystem("queue-schema", async () => {
+    await runMigrations({ pgPool: pool });
+    await pool.query(REGISTER_SEARCH_TASK_IDENTIFIERS_SQL, [SEARCH_TASK_IDENTIFIERS]);
+  });
+}
+
+/** `SEARCH_TASK_IDENTIFIERS` that the reading transaction did not see registered. */
+export class SearchTaskIdentifiersNotRegisteredError extends Error {
+  constructor(readonly missing: readonly string[]) {
+    super(`Search task identifiers are not registered (run ensureQueueSchema): ${missing.join(", ")}`);
+    this.name = "SearchTaskIdentifiersNotRegisteredError";
+  }
+}
+
+const registeredIdentifierRowSchema = z.object({ identifier: z.string() });
+
+/**
+ * Fails closed unless every `SEARCH_TASK_IDENTIFIERS` row is visible to `client`'s statement: an
+ * error from the read itself (no queue schema) propagates as it is. A read only; it never registers
+ * a missing identifier.
+ */
+export async function assertSearchTaskIdentifiersRegistered(client: Queryable): Promise<void> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    "SELECT identifier FROM graphile_worker._private_tasks WHERE identifier = ANY($1::text[])",
+    [SEARCH_TASK_IDENTIFIERS],
+  );
+  const registered = new Set(rows.map((row) => registeredIdentifierRowSchema.parse(row).identifier));
+  const missing = SEARCH_TASK_IDENTIFIERS.filter((identifier) => !registered.has(identifier));
+  if (missing.length > 0) throw new SearchTaskIdentifiersNotRegisteredError(missing);
 }
 
 /**
@@ -266,6 +382,7 @@ export interface EnqueueJobOptions {
   maxAttempts?: number;
   runAt?: Date;
   queueName?: string;
+  priority?: number;
 }
 
 /**
@@ -289,6 +406,31 @@ export async function enqueueJob(
     tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
     payload,
   };
+  await addJob(client, [
+    identifier,
+    JSON.stringify(envelope),
+    options.queueName ?? null,
+    options.runAt ?? null,
+    options.maxAttempts ?? null,
+    options.jobKey ?? null,
+    options.jobKeyMode ?? "replace",
+    options.priority ?? 0,
+  ]);
+}
+
+/** The bound values of one `graphile_worker.add_job` call, in parameter order. */
+type AddJobValues = [
+  identifier: string,
+  envelopeJson: string,
+  queueName: string | null,
+  runAt: Date | null,
+  maxAttempts: number | null,
+  jobKey: string | null,
+  jobKeyMode: string,
+  priority: number,
+];
+
+async function addJob(client: Queryable, values: AddJobValues): Promise<void> {
   await client.query(
     `SELECT graphile_worker.add_job(
        identifier => $1,
@@ -297,18 +439,93 @@ export async function enqueueJob(
        run_at => $4,
        max_attempts => $5,
        job_key => $6,
-       job_key_mode => $7
+       job_key_mode => $7,
+       priority => $8
      )`,
-    [
-      identifier,
-      JSON.stringify(envelope),
-      options.queueName ?? null,
-      options.runAt ?? null,
-      options.maxAttempts ?? null,
-      options.jobKey ?? null,
-      options.jobKeyMode ?? "replace",
-    ],
+    values,
   );
+}
+
+const preparedJobOptionsSchema = z
+  .object({
+    jobKey: z.string().min(1),
+    jobKeyMode: z.enum(["replace", "preserve_run_at"]).default("replace"),
+    maxAttempts: z.number().int().positive().optional(),
+    runAt: z.date().optional(),
+    queueName: z.string().min(1).optional(),
+    priority: z.number().int().optional(),
+  })
+  .strict();
+/** A prepared enqueue is always keyed, and only in the two modes whose same-key calls replay in order. */
+export type PreparedJobOptions = z.input<typeof preparedJobOptionsSchema>;
+
+/**
+ * An enqueue call captured when it was prepared: its identifier, key and the tenant stamped into its
+ * envelope. The handle is opaque: `addPreparedJob` accepts only a handle `prepareJob` returned.
+ */
+export interface PreparedJob {
+  readonly identifier: string;
+  readonly jobKey: string;
+  readonly tenantId: string | null;
+}
+
+interface CapturedJob {
+  readonly envelopeJson: string;
+  readonly queueName: string | null;
+  /** Milliseconds since the epoch; a `Date` stays mutable through `setTime`, a number does not. */
+  readonly runAtMs: number | null;
+  readonly maxAttempts: number | null;
+  readonly jobKeyMode: "replace" | "preserve_run_at";
+  readonly priority: number;
+}
+
+const capturedJobs = new WeakMap<PreparedJob, CapturedJob>();
+
+/**
+ * Captures one keyed `enqueueJob` call to be added later with `addPreparedJob`. The envelope is
+ * stamped and serialized now, exactly as `enqueueJob` stamps it (the producer's tenant scope and
+ * trace), and the options are copied, so nothing a caller or the ambient scope does afterwards
+ * changes the job.
+ */
+export function prepareJob(
+  identifier: CoreTaskName | (string & {}),
+  payload: Record<string, unknown>,
+  options: PreparedJobOptions,
+): PreparedJob {
+  const parsedIdentifier = z.string().min(1).parse(identifier);
+  const parsed = preparedJobOptionsSchema.parse(options);
+  const scope = currentTenantScope() ?? enforceTenantScope("prepareJob");
+  const tenantId = scope?.kind === "tenant" ? scope.tenantId : null;
+  const envelope: QueueJobEnvelope = { traceId: getTraceId() ?? mintTraceId(), tenantId, payload };
+  const job: PreparedJob = Object.freeze({ identifier: parsedIdentifier, jobKey: parsed.jobKey, tenantId });
+  capturedJobs.set(
+    job,
+    Object.freeze({
+      envelopeJson: JSON.stringify(envelope),
+      queueName: parsed.queueName ?? null,
+      runAtMs: parsed.runAt?.getTime() ?? null,
+      maxAttempts: parsed.maxAttempts ?? null,
+      jobKeyMode: parsed.jobKeyMode,
+      priority: parsed.priority ?? 0,
+    }),
+  );
+  return job;
+}
+
+/** Adds a prepared job through the same `graphile_worker.add_job` call `enqueueJob` makes. */
+export async function addPreparedJob(client: Queryable, job: PreparedJob): Promise<void> {
+  const captured = capturedJobs.get(job);
+  if (!captured) throw new TypeError("addPreparedJob accepts only a job returned by prepareJob");
+  await addJob(client, [
+    job.identifier,
+    captured.envelopeJson,
+    captured.queueName,
+    captured.runAtMs === null ? null : new Date(captured.runAtMs),
+    captured.maxAttempts,
+    job.jobKey,
+    captured.jobKeyMode,
+    captured.priority,
+  ]);
 }
 
 /**
@@ -447,6 +664,15 @@ export function resolveQueueConcurrency(env: NodeJS.ProcessEnv): number {
   if (raw === undefined || raw === "") return QUEUE_CONCURRENCY_DEFAULT;
   if (!/^[1-9][0-9]*$/.test(raw)) {
     throw new Error(`QUEUE_CONCURRENCY is not a positive integer: ${raw}`);
+  }
+  return Number(raw);
+}
+
+export function resolveSempChatQueueConcurrency(env: NodeJS.ProcessEnv): number {
+  const raw = env.SEMP_CHAT_QUEUE_CONCURRENCY;
+  if (raw === undefined || raw === "") return 2;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`SEMP_CHAT_QUEUE_CONCURRENCY is not a positive integer: ${raw}`);
   }
   return Number(raw);
 }

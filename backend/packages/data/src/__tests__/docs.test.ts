@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { ConflictError, HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import {
   DEFAULT_COMPACTION_THRESHOLD,
@@ -22,6 +26,8 @@ import {
 } from "../docs/docHistory.js";
 import { getBlock as readBlock, listBlocks as readBlocks } from "../docs/blocks.js";
 import { setDocUpdateHook, type DocUpdateEvent } from "../realtimeHook.js";
+import { getBlocksMap, readPageBlocks, writeBlock } from "@semprec/block-model";
+import { docEtag, insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -77,6 +83,101 @@ describe("docs (CRDT layer)", () => {
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     return item;
   }
+
+  describe("explicit page ensure", () => {
+    it("waits for a concurrent trash and refuses both absent and existing documents", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runAsSystem("check page reservation role", () =>
+          runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        const tenant = await createTestTenant(pool);
+        await runInTenant(tenant, async () => {
+          const cp = createChokePoint(runtime);
+          const store = createDocStore(runtime);
+          const db = await cp.createDatabase({ name: "Page reservation" });
+          for (const existing of [false, true]) {
+            const item = await cp.createItem({ databaseId: db.id, properties: {} });
+            if (existing) await store.ensurePage(item.id);
+            const before = await runtime.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
+            let ready!: (pid: number) => void;
+            let release!: () => void;
+            const started = new Promise<number>((resolve) => {
+              ready = resolve;
+            });
+            const gate = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            const trash = withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("Missing trash PID");
+              await itemDeleteWithClient(client, db.id, item.id, { queueAffinity: createActionQueueAffinity() });
+              ready(pid);
+              await gate;
+            });
+            const trashSettled = Promise.allSettled([trash]);
+            let ensureSettled: Promise<PromiseSettledResult<{ docId: string }>[]> | undefined;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              const pid = await Promise.race([
+                started,
+                trash.then(() => {
+                  throw new Error("Trash finished before barrier");
+                }),
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error("Trash barrier timed out")), 5_000);
+                }),
+              ]);
+              const ensuring = store.ensurePage(item.id);
+              ensureSettled = Promise.allSettled([ensuring]);
+              let blocked = false;
+              for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+                const waiting = await pool.query<{ present: boolean }>(
+                  "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM items%FOR UPDATE%') AS present",
+                  [pid],
+                );
+                blocked = waiting.rows[0]?.present === true;
+                if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+              expect(blocked).toBe(true);
+            } finally {
+              release();
+              if (timer) clearTimeout(timer);
+              await trashSettled;
+              if (ensureSettled !== undefined) await ensureSettled;
+            }
+            const [deleted] = await trashSettled;
+            if (deleted?.status === "rejected") throw deleted.reason;
+            const [ensured] = ensureSettled !== undefined ? await ensureSettled : [];
+            expect(ensured).toMatchObject({ status: "rejected", reason: { status: 404 } });
+            expect((await runtime.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toEqual(
+              before.rows,
+            );
+          }
+        });
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("converges concurrent creates, reuses the row and refuses trashed or wrong-kind items", async () => {
+      const item = await makeItem();
+      const [first, second] = await Promise.all([docStore.ensurePage(item.id), docStore.ensurePage(item.id)]);
+      expect(second).toEqual(first);
+      expect(await docStore.ensurePage(item.id)).toEqual(first);
+      const stored = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
+      expect(stored.rows).toEqual([{ id: first.docId }]);
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      await expect(docStore.ensurePage(item.id)).rejects.toMatchObject({ status: 404 });
+      const canvas = await makeItem();
+      await docStore.getOrCreateDoc(canvas.id, "canvas");
+      await expect(docStore.ensurePage(canvas.id)).rejects.toMatchObject({ status: 409 });
+      expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [canvas.id])).rows).toHaveLength(1);
+    });
+  });
 
   describe("lazy creation", () => {
     it("an item has no doc until the first content-write", async () => {
@@ -231,6 +332,69 @@ describe("docs (CRDT layer)", () => {
       );
       expect(rows).toHaveLength(1);
       expect(rows[0]!.created_by).toBe("ai_agent");
+    });
+
+    describe("last edited tracking", () => {
+      async function readLastEdited(docId: string) {
+        const { rows } = await pool.query<{ last_edited_at: Date | null; last_edited_by: string | null }>(
+          `SELECT last_edited_at, last_edited_by FROM docs WHERE id = $1`,
+          [docId],
+        );
+        return rows[0]!;
+      }
+
+      it("a user write records last_edited_by 'user' and the update's own created_at", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+        const doc = (await docStore.getDoc(item.id))!;
+        const edited = await readLastEdited(doc.id);
+        const { rows } = await pool.query<{ created_at: Date }>(
+          `SELECT created_at FROM doc_updates WHERE doc_id = $1`,
+          [doc.id],
+        );
+        expect(edited.last_edited_by).toBe("user");
+        expect(edited.last_edited_at).toEqual(rows[0]!.created_at);
+      });
+
+      it("an ai_agent write records last_edited_by 'ai_agent'", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        expect((await readLastEdited(doc.id)).last_edited_by).toBe("ai_agent");
+      });
+
+      it("a sync-style mutateDoc update moves last_edited_at forward", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        const first = await readLastEdited(doc.id);
+        await mutateDoc(pool, doc.id, "user", (ydoc) => {
+          ydoc.getMap("sync-test").set("k", "v");
+        });
+        const second = await readLastEdited(doc.id);
+        expect(second.last_edited_by).toBe("user");
+        expect(second.last_edited_at!.getTime()).toBeGreaterThan(first.last_edited_at!.getTime());
+      });
+
+      it("a mutation that changes nothing leaves the columns untouched", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        const before = await readLastEdited(doc.id);
+        await mutateDoc(pool, doc.id, "user", () => {});
+        expect(await readLastEdited(doc.id)).toEqual(before);
+      });
+
+      it("a docs row with NULL columns reads lastEditedAt equal to createdAt and lastEditedBy null", async () => {
+        const item = await makeItem();
+        await withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page"));
+        const doc = (await docStore.getDoc(item.id))!;
+        expect(doc.lastEditedAt).toBe(doc.createdAt);
+        expect(doc.lastEditedBy).toBeNull();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "system");
+        const edited = (await docStore.getDoc(item.id))!;
+        expect(edited.lastEditedBy).toBe("system");
+      });
     });
 
     it("notifies the realtime doc-update hook with the doc id, origin, and the persisted update's id", async () => {
@@ -1000,6 +1164,149 @@ describe("docs (CRDT layer)", () => {
       } finally {
         clientX.release();
       }
+    });
+  });
+
+  describe("page Markdown and its version token (issue #1678)", () => {
+    const readMarkdown = (itemId: string) => withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+
+    async function pageWithBlocks() {
+      const item = await makeItem();
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        writeBlock(ydoc, { id: "h", type: "h1", text: "Heading" });
+        writeBlock(ydoc, { id: "p", type: "text", text: "Body text" });
+      });
+      return { item, doc };
+    }
+
+    it("returns the same token for two reads with a compaction between them", async () => {
+      const { item, doc } = await pageWithBlocks();
+      const first = await readMarkdown(item.id);
+      const updatesBefore = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
+      expect(updatesBefore.rows[0]!.n).toBeGreaterThan(0);
+
+      // Threshold 1 compacts every pending update into the snapshot on this read: the stored rows change, the page does not.
+      await loadDoc(pool, doc.id, 1);
+      const updatesAfter = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
+      expect(updatesAfter.rows[0]!.n).toBe(0);
+
+      const second = await readMarkdown(item.id);
+      expect(second.etag).toBe(first.etag);
+      expect(second.markdown).toBe(first.markdown);
+      expect(first.markdown).toBe("# Heading\n\nBody text");
+    });
+
+    it("changes the token when a write only deletes text", async () => {
+      const { item, doc } = await pageWithBlocks();
+      const before = await readMarkdown(item.id);
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        const text = getBlocksMap(ydoc).get("p")?.get("text");
+        if (!(text instanceof Y.Text)) throw new Error("expected the block text to be a Y.Text");
+        text.delete(0, 5);
+      });
+      const after = await readMarkdown(item.id);
+      expect(after.markdown).toBe("# Heading\n\ntext");
+      expect(after.etag).not.toBe(before.etag);
+    });
+
+    it("reads an item without a document as an empty body with the token of an empty document, creating no row", async () => {
+      const item = await makeItem();
+      const result = await readMarkdown(item.id);
+      expect(result).toEqual({ docId: null, markdown: "", etag: docEtag(new Y.Doc()) });
+      expect((await pool.query(`SELECT 1 FROM docs WHERE item_id = $1`, [item.id])).rows).toHaveLength(0);
+
+      // The token of an empty read is the token of a page that was created and left empty.
+      const created = await docStore.getOrCreateDoc(item.id, "page");
+      expect(await readMarkdown(item.id)).toEqual({ docId: created.id, markdown: "", etag: result.etag });
+    });
+
+    it("writes a page block as a link captioned with the block's own title and never writes the page title", async () => {
+      const item = await makeItem();
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await mutateDoc(pool, doc.id, "user", (ydoc) => {
+        ydoc.getMap("meta").set("title", "Root title");
+        writeBlock(ydoc, { id: "a", type: "page", pageId: "11111111-1111-4111-8111-111111111111", text: "Subpage" });
+        writeBlock(ydoc, { id: "b", type: "h1", text: "Heading block" });
+      });
+      const result = await readMarkdown(item.id);
+      expect(result.markdown).toContain("[Subpage](semprec://page/11111111-1111-4111-8111-111111111111)");
+      expect(result.markdown).toContain("# Heading block");
+      expect(result.markdown).not.toContain("Root title");
+      expect(readPageBlocks(await loadDoc(pool, doc.id)).map((block) => block.id)).toEqual(["a", "b"]);
+    });
+
+    it("refuses an item that already holds a canvas document, as one that cannot host a page", async () => {
+      const item = await makeItem();
+      await docStore.getOrCreateDoc(item.id, "canvas");
+      const error = await readMarkdown(item.id).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ status: 400, details: { reason: "not_a_page_host" } });
+    });
+  });
+
+  describe("insert Markdown into a page (issue #1679)", () => {
+    const insertMarkdown = (itemId: string, input: Parameters<typeof insertPageMarkdown>[2]) =>
+      withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+
+    it("writes one document update authored by the origin the caller names, system included", async () => {
+      const item = await makeItem();
+      const { blockIds } = await insertMarkdown(item.id, {
+        placement: "end",
+        markdown: "One\n\nTwo",
+        origin: "system",
+      });
+      expect(blockIds).toHaveLength(2);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+        [item.id],
+      );
+      expect(rows).toEqual([{ created_by: "system" }]);
+      expect((await withTransaction(pool, (client) => readPageMarkdown(client, item.id))).markdown).toBe("One\n\nTwo");
+    });
+
+    it("rolls the lazily created document back when the placement is unknown", async () => {
+      const item = await makeItem();
+      const error = await insertMarkdown(item.id, {
+        placement: { afterBlockId: "missing" },
+        markdown: "Never written",
+        origin: "user",
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "placement.afterBlockId" } });
+      expect((await pool.query(`SELECT 1 FROM docs WHERE item_id = $1`, [item.id])).rows).toHaveLength(0);
+    });
+
+    it("refuses a trashed item and an unknown one with the same NotFoundError and creates no document", async () => {
+      const item = await makeItem();
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      for (const id of [item.id, randomUUID()]) {
+        const error = await insertMarkdown(id, { placement: "end", markdown: "x", origin: "user" }).catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(NotFoundError);
+      }
+      expect((await pool.query(`SELECT 1 FROM docs`)).rows).toHaveLength(0);
+    });
+
+    it("keeps the nesting indent of the parsed blocks and inserts after a block in document order", async () => {
+      const item = await makeItem();
+      await insertMarkdown(item.id, { placement: "end", markdown: "- parent\n  - child\n\nlast", origin: "user" });
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("Missing doc");
+      const loaded = await loadDoc(pool, doc.id);
+      const blocks = readPageBlocks(loaded);
+      expect(blocks.map((block) => [block.type, block.indent])).toEqual([
+        ["bullet", 0],
+        ["bullet", 1],
+        ["text", 0],
+      ]);
     });
   });
 });

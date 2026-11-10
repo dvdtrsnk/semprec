@@ -38,6 +38,7 @@ import type { HeartbeatRule, HeartbeatRuleKindRegistry } from "../scheduler/rule
 import { computeNextFireAt } from "../scheduler/nextFireAt.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import type { InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -68,9 +69,15 @@ describe("scheduler", () => {
   });
 
   async function getSemprecProjectId(): Promise<string> {
-    const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-    const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-    return items[0].id;
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const database = rows[0];
+    if (!database) throw new Error("Missing projects database");
+    const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      database.id,
+    ]);
+    const item = items[0];
+    if (!item) throw new Error("Missing seeded project");
+    return item.id;
   }
 
   it("createHeartbeat computes next_fire_at deterministically at write time", async () => {
@@ -125,6 +132,30 @@ describe("scheduler", () => {
     expect(ran).toBe(1);
   });
 
+  it("creates an unchained run for an item-event fire through the worker", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const db = await chokePoint.createDatabase({ name: "Event-run evidence" });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Event-run evidence",
+        rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "event" },
+      }),
+    );
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => ({ result: "done" })),
+    );
+    await inTenantZero(() => chokePoint.createItem({ databaseId: db.id, properties: {} }));
+    await drainQueue(registry);
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "done", heartbeatOccurrenceId: null, retryOfRunId: null, attempt: 1 });
+  });
+
   it("sweepDueHeartbeats fires a due heartbeat exactly once", async () => {
     const projectItemId = await getSemprecProjectId();
     const registry = createActionRegistry();
@@ -154,6 +185,73 @@ describe("scheduler", () => {
     const { fired: fired2 } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
     expect(fired2).toHaveLength(0);
   });
+
+  it.each([false, true])(
+    "chains scheduled retries through the queue worker (final failure: %s)",
+    async (finalFailure) => {
+      const projectItemId = await getSemprecProjectId();
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Retry chain",
+          rule: { kind: "interval", minutes: 1 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "retry" },
+        }),
+      );
+      // The test advances this heartbeat's schedule so the production sweep can enqueue it.
+      const due = await pool.query(
+        "UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1",
+        [heartbeat.id],
+      );
+      expect(due.rowCount).toBe(1);
+      await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+      let calls = 0;
+      const registry = createActionRegistry();
+      registry.set(
+        CORE_AGENT_RUN_ACTION_ID,
+        coreAgentRunAction(pool, async () => {
+          calls += 1;
+          if (calls < 3 || finalFailure) throw new Error("retry test failure");
+        }),
+      );
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await drainQueue(registry);
+        if (attempt < 3) {
+          const notifications = await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM notifications WHERE kind = 'agent_run_error'",
+          );
+          expect(notifications.rows[0]?.count).toBe(0);
+          const { rows } = await pool.query<{ id: string; attempts: number }>(
+            "SELECT id::text, attempts FROM graphile_worker.jobs WHERE key LIKE $1",
+            [`heartbeat-fire:${heartbeat.id}:%`],
+          );
+          expect(rows).toHaveLength(1);
+          const job = rows[0];
+          if (!job) throw new Error("Expected queued retry");
+          expect(job.attempts).toBe(attempt);
+          const rescheduled = await pool.query("SELECT * FROM graphile_worker.reschedule_jobs($1::bigint[], now())", [
+            [job.id],
+          ]);
+          expect(rescheduled.rowCount).toBe(1);
+        }
+      }
+      const runs = (await listAgentRunsByHeartbeat(pool, heartbeat.id)).sort((a, b) => a.attempt - b.attempt);
+      expect(runs.map((run) => run.attempt)).toEqual([1, 2, 3]);
+      expect(runs.map((run) => run.status)).toEqual(["error", "error", finalFailure ? "error" : "done"]);
+      expect(runs[0]?.heartbeatOccurrenceId).toBeTruthy();
+      expect(runs.map((run) => run.heartbeatOccurrenceId)).toEqual([
+        runs[0]?.heartbeatOccurrenceId,
+        runs[0]?.heartbeatOccurrenceId,
+        runs[0]?.heartbeatOccurrenceId,
+      ]);
+      expect(runs.map((run) => run.retryOfRunId)).toEqual([null, runs[0]?.id, runs[1]?.id]);
+      const notifications = await pool.query<{ source_id: string }>(
+        "SELECT source_id FROM notifications WHERE kind = 'agent_run_error'",
+      );
+      expect(notifications.rows).toEqual(finalFailure ? [{ source_id: runs[2]?.id }] : []);
+    },
+  );
 
   it("a floating (interval/everyNDays) heartbeat leaves next_fire_at and last_fired_at unset at sweep time, and schedules its next occurrence from the first attempt's actual start, not enqueue time", async () => {
     const projectItemId = await getSemprecProjectId();
@@ -253,6 +351,70 @@ describe("scheduler", () => {
 
     const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))!.nextFireAt;
     expect(after).not.toBe(before);
+  });
+
+  it("recomputes for a transform-added timezone and rolls back an invalid one", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily transform",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const settingsId = await withTransaction(pool, (client) => getSystemSettingsItemId(client));
+    const settings = await pool.query<{ database_id: string }>("SELECT database_id FROM items WHERE id = $1", [
+      settingsId,
+    ]);
+    const databaseId = settings.rows[0]?.database_id;
+    if (!databaseId) throw new Error("Missing system settings database");
+    const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
+    vi.resetModules();
+    const hooks = await import("../chokePoint/hooks.js");
+    const search = await import("../search/itemSearchIndexer.js");
+    const searchUpdate = vi.spyOn(search, "itemSearchUpdateHook");
+    await import("../domainWriteHooks.js");
+    const isolated = await import("../chokePoint/chokePoint.js");
+    const isolatedRealtime = await import("../realtimeHook.js");
+    try {
+      hooks.registerItemPreWriteTransform("systemSettings", async ({ patch }) => ({
+        ...patch,
+        timezone: patch.name === "invalid" ? "Not/A_Zone" : "Pacific/Kiritimati",
+      }));
+      const cp = isolated.createChokePoint(pool);
+      const events: InvalidationEvent[] = [];
+      isolatedRealtime.setInvalidationHook((event) => events.push(event));
+      await cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "valid" } });
+      expect(searchUpdate).toHaveBeenCalledOnce();
+      expect(events).toMatchObject([{ scope: "item", itemId: settingsId, op: "update" }]);
+      events.length = 0;
+      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
+      expect(after).not.toBe(before);
+      const persisted = await cp.getItem(databaseId, settingsId);
+      expect(persisted?.properties).toMatchObject({ name: "valid", timezone: "Pacific/Kiritimati" });
+      const readSearchIndex = () =>
+        pool.query<{ item_id: string; updated_at: Date; body: string | null; search_vector: string }>(
+          "SELECT item_id, updated_at, body, search_vector::text FROM item_search_index WHERE item_id = $1",
+          [settingsId],
+        );
+      const searchBefore = await readSearchIndex();
+      expect(searchBefore.rowCount).toBe(1);
+      await expect(
+        cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "invalid" } }),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+      expect((await cp.getItem(databaseId, settingsId))?.properties).toEqual(persisted?.properties);
+      expect((await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt).toBe(after);
+      expect(events).toEqual([]);
+      expect(searchUpdate).toHaveBeenCalledTimes(2);
+      const searchAfter = await readSearchIndex();
+      expect(searchAfter.rows).toEqual(searchBefore.rows);
+    } finally {
+      isolatedRealtime.setInvalidationHook(() => {});
+      hooks.clearHooksForTests();
+      searchUpdate.mockRestore();
+      vi.resetModules();
+    }
   });
 
   it("core.agentRun creates an agent_runs row, calls the injected runner, and records the delegation trail", async () => {
@@ -753,7 +915,7 @@ describe("scheduler", () => {
     const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
     expect(runs).toHaveLength(1);
     expect(runs[0]!.status).toBe("done");
-    expect(runs[0]!.result).toBe("handled: process the inbox");
+    expect(runs[0]!.result).toBe("handled: process the inbox\nTriggering item id: unused");
   });
 
   it("createHeartbeatFireCoreTask rejects a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {

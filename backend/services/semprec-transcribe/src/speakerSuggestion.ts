@@ -10,8 +10,12 @@ const SPEAKER_SUGGESTION_RESPONSE_SCHEMA = {
       type: "array",
       items: {
         type: "object",
-        properties: { speaker: { type: "string" }, personId: { type: "string" } },
-        required: ["speaker", "personId"],
+        properties: {
+          speaker: { type: "string" },
+          personId: { type: ["string", "null"] },
+          reason: { type: "string", minLength: 1 },
+        },
+        required: ["speaker", "personId", "reason"],
         additionalProperties: false,
       },
     },
@@ -21,13 +25,12 @@ const SPEAKER_SUGGESTION_RESPONSE_SCHEMA = {
 };
 
 const speakerSuggestionResponseSchema = z.object({
-  mappings: z.array(z.object({ speaker: z.string(), personId: z.string() })),
+  mappings: z.array(z.object({ speaker: z.string(), personId: z.string().nullable(), reason: z.string().min(1) })),
 });
 
 /**
- * The `gateway.complete()` request that asks which of the Event's participants each unmapped
- * speaker key is (issue #185): only from the participant list and the ways speakers address each
- * other in the transcript, and only where the transcript actually supports it.
+ * The gateway request asks which eligible person each unmapped speaker is, using the supplied
+ * candidate list and how speakers address each other in the transcript.
  */
 export function buildSpeakerSuggestionRequest(
   segments: readonly TranscriptSegment[],
@@ -42,8 +45,9 @@ export function buildSpeakerSuggestionRequest(
     system:
       "You identify which meeting participant each anonymous speaker label in a transcript is. Use only the " +
       "participant list and how the speakers address or refer to each other in the transcript. Map a speaker " +
-      "only when the transcript clearly supports it; leave it out otherwise. Never map two speakers to the " +
-      "same participant. Answer with participant ids exactly as listed.",
+      "only when the transcript clearly supports it; otherwise use null for personId. Never map two speakers to the " +
+      "same participant. Answer with participant ids exactly as listed, and give one short reason sentence " +
+      `in the user's language (${context.locale}).`,
     messages: [
       {
         role: "user",

@@ -1,7 +1,10 @@
 import type { Pool } from "pg";
+import { labeledSempMessageRefSchema } from "@semprec/shared";
 import {
+  getAgentRun,
   insertAgentRunEvent,
   listSessionAgentRunEventsFromLastCompaction,
+  withTransaction,
   type SessionAgentRunsFilter,
 } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
@@ -21,15 +24,22 @@ const AGENT_MESSAGE_KINDS: ReadonlySet<string> = new Set<AgentMessageKind>([
   "turn_end",
   "run_status",
   "message_update",
+  "user_message",
 ]);
 
 function isAgentMessage(value: unknown): value is AgentMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { kind?: unknown }).kind === "string" &&
-    AGENT_MESSAGE_KINDS.has((value as { kind: string }).kind)
-  );
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !("kind" in value)) return false;
+  if (typeof value.kind !== "string" || !AGENT_MESSAGE_KINDS.has(value.kind)) return false;
+  if (
+    value.kind === "user_message" &&
+    (!("text" in value) ||
+      typeof value.text !== "string" ||
+      !("context" in value) ||
+      !labeledSempMessageRefSchema.array().safeParse(value.context).success)
+  ) {
+    throw new Error("Invalid stored user message");
+  }
+  return true;
 }
 
 /**
@@ -46,14 +56,18 @@ function parseStoredAgentMessage(payload: unknown, eventId: string): AgentMessag
 }
 
 function isConversationEntry(value: unknown): value is ConversationEntry {
-  if (typeof value !== "object" || value === null) return false;
-  const entry = value as Partial<ConversationEntry>;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   return (
-    typeof entry.id === "string" &&
-    (entry.parentId === null || typeof entry.parentId === "string") &&
-    typeof entry.seq === "number" &&
-    typeof entry.timestamp === "number" &&
-    isAgentMessage(entry.message)
+    "id" in value &&
+    typeof value.id === "string" &&
+    "parentId" in value &&
+    (value.parentId === null || typeof value.parentId === "string") &&
+    "seq" in value &&
+    typeof value.seq === "number" &&
+    "timestamp" in value &&
+    typeof value.timestamp === "number" &&
+    "message" in value &&
+    isAgentMessage(value.message)
   );
 }
 
@@ -64,7 +78,11 @@ function parseCompactionPayload(payload: unknown, agentRunId: string): Conversat
       `agent_run_events 'compaction' row for run ${agentRunId} has a payload that is not a valid ConversationEntry[]`,
     );
   }
-  return payload;
+  return payload.map((entry) => {
+    const replayEntry = { ...entry };
+    delete replayEntry.images;
+    return replayEntry;
+  });
 }
 
 /**
@@ -113,8 +131,12 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
  * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
  * over again.
  */
-async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Promise<ConversationEntry[]> {
-  const events = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+async function walkStoredEntries(
+  pool: Pool,
+  filter: SessionAgentRunsFilter,
+  bounds?: { maxRows: number; maxBytes: number },
+): Promise<ConversationEntry[]> {
+  const events = await listSessionAgentRunEventsFromLastCompaction(pool, filter, bounds);
   if (events.length === 0) return [];
 
   let entries: ConversationEntry[] = [];
@@ -143,6 +165,24 @@ async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Pr
   }
 
   return entries;
+}
+
+export async function reconstructBoundedThreadHistory(
+  pool: Pool,
+  threadId: string,
+): Promise<ReconstructedHistory | null> {
+  const bounds = { maxRows: 2000, maxBytes: 262144 };
+  const entries = await walkStoredEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, bounds);
+  const expandedBytes = entries.reduce(
+    (total, entry) => total + Buffer.byteLength(JSON.stringify(entry.message), "utf8"),
+    0,
+  );
+  if (entries.length > bounds.maxRows || expandedBytes > bounds.maxBytes) {
+    throw new Error("Semp conversation history exceeds replay limits");
+  }
+  if (!entries.length) return null;
+  validateProtocolInvariants(entries);
+  return { entries, compacted: false };
 }
 
 export interface ReconstructedHistory {
@@ -186,6 +226,32 @@ export async function reconstructConversationHistory(
  * deterministic" half of #119's Task, without which every restart would redo the same
  * (possibly expensive, and not guaranteed idempotent) compaction from scratch.
  */
-export async function persistCompaction(pool: Pool, agentRunId: string, entries: ConversationEntry[]): Promise<void> {
-  await insertAgentRunEvent(pool, agentRunId, "compaction", entries);
+export async function persistCompaction(
+  pool: Pool,
+  agentRunId: string,
+  entries: ConversationEntry[],
+  filter?: SessionAgentRunsFilter,
+): Promise<void> {
+  await withTransaction(pool, async (client) => {
+    const run = await getAgentRun(client, agentRunId, true);
+    const mainThread =
+      run !== null &&
+      run.unit === "session" &&
+      run.threadId !== null &&
+      run.triggeredBy === "user" &&
+      run.parentRunId === null;
+    const matches =
+      run !== null &&
+      (filter === undefined
+        ? !mainThread
+        : "threadId" in filter
+          ? mainThread && run.threadId === filter.threadId
+          : !mainThread &&
+            run.unit === "session" &&
+            run.projectItemId === filter.projectItemId &&
+            run.triggeredBy === filter.triggeredBy &&
+            run.parentRunId === filter.parentRunId);
+    if (!matches) throw new Error("Invalid compaction target");
+    await insertAgentRunEvent(client, agentRunId, "compaction", entries);
+  });
 }

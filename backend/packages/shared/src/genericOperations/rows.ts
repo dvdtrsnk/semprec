@@ -43,6 +43,9 @@ export interface Database {
   ownerModuleId: string | null;
   schemaLocked: boolean;
   system: boolean;
+  /** Stored pick of a user-created database; null when none was made or for a system database. */
+  icon: string | null;
+  color: string | null;
   archivedAt: string | null;
 }
 
@@ -78,13 +81,76 @@ export interface ViewItem {
 }
 
 /** Fixed exactly by this issue's Task. */
+/** Mirrors `packages/data`'s `ValueLinkSource`: where an inherited value was taken from (issue #1403). */
+export type ItemLinkSource =
+  | { kind: "item"; itemId: string; databaseKey: string | null; title: string; propertyKey: string }
+  | { kind: "senderDomain"; domain: string; propertyKey: string };
+
+/** Mirrors `packages/data`'s `ValueLinkEntry`: one property's link on an item (issue #1403). */
+export interface ItemLink {
+  valueKind: "inherited" | "inheritedBroken" | "derived";
+  sources: ItemLinkSource[];
+  brokenBy: "user" | "agent" | null;
+  brokenAt: string | null;
+}
+
+export interface ReducedRelationTarget {
+  id: string;
+  databaseKey: string | null;
+  title: string;
+  color?: string;
+  icon?: string;
+}
+export interface ExpandedRelationTarget extends ReducedRelationTarget {
+  databaseId: string;
+  metadata: Record<string, unknown>;
+  properties?: Record<string, unknown>;
+  blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
+}
+
 export interface Item {
+  automation?: {
+    status: "pending" | "found" | "notFound" | "error" | "locked";
+    attempts: number;
+    lastAttemptAt: string | null;
+    errorCode:
+      | "budgetExceeded"
+      | "mediaUnreadable"
+      | "providerFailed"
+      | "unknown"
+      | "deleted"
+      | "sourceUnavailable"
+      | "rateLimited"
+      | "invalidResponse"
+      | null;
+    source: "openLibrary" | "googleBooks" | "tmdb" | null;
+    nextAttemptAt: string | null;
+  };
+  derived?: {
+    area?: {
+      values: Array<{ id: string; title: string; color?: string | null; icon?: string | null }>;
+      via: "project";
+      projectIds: string[];
+    };
+    company?: { values: Array<{ id: string; title: string }>; via: "project"; projectIds: string[] };
+  };
   id: string;
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /**
+   * When the item was created (ISO 8601), set by the database; no item write changes it. An item that
+   * predates the field carries its last update time at the issue #1594 backfill instead.
+   */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
+  fromInbox?: boolean;
+  relations?: Record<string, ExpandedRelationTarget[]>;
+  relationsTruncated?: string[];
+  /** Present only when the read asked for `include: ["links"]`; keyed by property key, empty when the item has no link. */
+  links?: Record<string, ItemLink>;
 }
 
 /** Fixed by issue #82. */
@@ -96,9 +162,35 @@ export interface RelationEdge {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * One live edge seen from one end (issue #1404): `relationPropertyId` and `propertyKey` name the
+ * listed item's own property, `targetItemId` the item on the other side, and `targetDatabaseId`
+ * that item's database. A paired definition reports the other end under that end's own property.
+ */
+export interface RelationListEntry {
+  relationPropertyId: string;
+  propertyKey: string;
+  targetItemId: string;
+  targetDatabaseId: string;
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * The page after `page.restoreVersion` (issue #1617): the restored instant as ISO 8601 and the ids
+ * of the page's blocks in document order once the restore is applied.
+ */
+export interface PageRestoreOutput {
+  itemId: string;
+  at: string;
+  blockIds: string[];
+}
+
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;
 }
 
-export type ItemPage = Page<Item>;
+/** `totalCount` is present only when the query asked for it with `includeCount: true`; it ignores paging and sort. */
+export interface ItemPage extends Page<Item> {
+  totalCount?: number;
+}

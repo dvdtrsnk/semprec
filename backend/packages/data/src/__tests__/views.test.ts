@@ -6,6 +6,9 @@ import { type Actor } from "../chokePoint/authorization.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { resolveProperty } from "../manifest/catalogResolution.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -83,6 +86,98 @@ describe("views", () => {
       await expect(
         chokePoint.createView({ databaseId: db.id, type: "table", name: "X", ownerModuleId: "emails" }),
       ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    describe("gallery view type", () => {
+      it.each(["table", "board", "calendar", "list"])(
+        "keeps common config validation and permits unrelated fields for the %s built-in",
+        async (type) => {
+          const db = await makeTasksDb();
+          const config = { columns: 5, aspect: "1:1", visibility: { name: true } };
+          const view = await chokePoint.createView({ databaseId: db.id, type, name: "Existing type", config });
+          expect(view.config).toMatchObject(config);
+          await expect(
+            chokePoint.patchView({ id: view.id, actor: userActor, config: { visibility: { name: "not boolean" } } }),
+          ).rejects.toMatchObject({ status: 400, details: { field: "config" } });
+          expect((await chokePoint.getView(view.id))?.config).toEqual(view.config);
+        },
+      );
+      it("creates gallery views with and without a coverKey", async () => {
+        const db = await makeTasksDb();
+        const plain = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "Files",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        expect(plain.type).toBe("gallery");
+        expect(plain.config).toMatchObject({ columns: 3, aspect: "3:4" });
+        const withCover = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "Recipes",
+          config: { columns: 2, aspect: "4:3", coverKey: "photo" },
+        });
+        expect(withCover.config).toMatchObject({ columns: 2, aspect: "4:3", coverKey: "photo" });
+      });
+
+      it.each([
+        ["columns 5", { columns: 5, aspect: "3:4" }],
+        ["missing columns", { aspect: "3:4" }],
+        ["missing aspect", { columns: 3 }],
+        ["aspect 1:1", { columns: 3, aspect: "1:1" }],
+        ["empty coverKey", { columns: 3, aspect: "3:4", coverKey: "" }],
+      ])("rejects a gallery config on create: %s", async (_label, config) => {
+        const db = await makeTasksDb();
+        await expect(
+          chokePoint.createView({ databaseId: db.id, type: "gallery", name: "G", config }),
+        ).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      it.each([
+        ["columns 5", { columns: 5 }],
+        ["aspect 1:1", { aspect: "1:1" }],
+      ])("rejects a gallery config on patch: %s", async (_label, patch) => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "G",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        await expect(chokePoint.patchView({ id: view.id, actor: userActor, config: patch })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect((await chokePoint.getView(view.id))?.config).toMatchObject({ columns: 3, aspect: "3:4" });
+      });
+
+      it("accepts a valid gallery patch", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "G",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        const patched = await chokePoint.patchView({ id: view.id, actor: userActor, config: { columns: 2 } });
+        expect(patched.config).toMatchObject({ columns: 2, aspect: "3:4" });
+        const aspectOnly = await chokePoint.patchView({ id: view.id, actor: userActor, config: { aspect: "4:3" } });
+        expect(aspectOnly.config).toMatchObject({ columns: 2, aspect: "4:3" });
+      });
+
+      it("rejects ownerModuleId and re-registration like every built-in type", async () => {
+        const db = await makeTasksDb();
+        await expect(
+          chokePoint.createView({
+            databaseId: db.id,
+            type: "gallery",
+            name: "G",
+            config: { columns: 3, aspect: "3:4" },
+            ownerModuleId: "recipes",
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        expect(() => registerViewType(viewTypeRegistry, "gallery", {})).toThrow(/built-in/);
+      });
     });
 
     it("a curated view has no databaseId and requires config.membership = 'manual'", async () => {
@@ -744,6 +839,81 @@ describe("views", () => {
   });
 
   describe("queryView: filter/sort/visibility push-down", () => {
+    it("keeps a generic saved filter selecting the same items when stored option-label metadata changes", async () => {
+      const db = await chokePoint.createDatabase({ name: "Filter label fixture" });
+      const status = await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "status",
+        name: "Status",
+        type: "select",
+        config: {
+          options: [
+            { key: "monitoring", label: "Sledování" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const selected = await chokePoint.createItem({ databaseId: db.id, properties: { status: "monitoring" } });
+      await chokePoint.createItem({ databaseId: db.id, properties: { status: "resolved" } });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Monitoring",
+        config: { filter: { type: "in", property: "status", value: ["monitoring"] } },
+      });
+      const before = await chokePoint.queryView(view.id);
+      await chokePoint.updateProperty(status.id, {
+        config: {
+          options: [
+            { key: "monitoring", label: "Sleduje se" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const after = await chokePoint.queryView(view.id);
+      expect(before.items.map((item) => item.id)).toEqual([selected.id]);
+      expect(after.items).toEqual(before.items);
+      expect((await chokePoint.getItem(db.id, selected.id))?.properties.status).toBe("monitoring");
+    });
+
+    it("keeps a saved monitoring filter and seeded Health-record values unchanged across Czech catalog resolution", async () => {
+      await resetDatabase(pool);
+      await seedSystem(pool, viewTypeRegistry);
+      const db = (await chokePoint.listDatabases()).find((entry) => entry.key === "healthRecords");
+      if (!db) throw new Error("Missing seeded Health records");
+      const status = await chokePoint.getPropertyByKey(db.id, "status");
+      if (!status) throw new Error("Missing seeded Health records status");
+      const matching = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { name: "Monitor", status: "monitoring" },
+      });
+      const other = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { name: "Resolved", status: "resolved" },
+      });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Monitoring",
+        config: { filter: { type: "in", property: "status", value: ["monitoring"] } },
+      });
+      const before = await chokePoint.queryView(view.id);
+      const storedProperty = await chokePoint.getPropertyByKey(db.id, "status");
+      const storedView = await chokePoint.getView(view.id);
+      const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+      await registry.loadModule(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
+      const resolved = resolveProperty(status, "healthRecords", await registry.getCatalogs("systemDatabases"), "cs");
+      expect(resolved.options).toContainEqual({ key: "monitoring", label: "Sleduje se", color: "#FF9500" });
+      const after = await chokePoint.queryView(view.id);
+      expect(before.items.map((item) => item.id)).toEqual([matching.id]);
+      expect(after.items.map((item) => item.id)).toEqual([matching.id]);
+      expect(after.items).toEqual(before.items);
+      expect(await chokePoint.getPropertyByKey(db.id, "status")).toEqual(storedProperty);
+      expect(await chokePoint.getView(view.id)).toEqual(storedView);
+      expect((await chokePoint.getItem(db.id, matching.id))?.properties.status).toBe("monitoring");
+      expect((await chokePoint.getItem(db.id, other.id))?.properties.status).toBe("resolved");
+    });
+
     async function seedTasks(db: { id: string }, chokePointRef: ChokePoint) {
       const done = await chokePointRef.createItem({
         databaseId: db.id,

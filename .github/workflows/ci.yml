@@ -293,27 +293,19 @@ jobs:
         working-directory: backend
         run: pnpm run test:unit
 
-  # The integration tier runs as three vitest shards (`--shard=<n>/3`), one per
-  # matrix runner. Every shard is its own vitest process, so
-  # `packages/data/src/testSupport/globalSetup.ts` gives each its own ephemeral
-  # PostgreSQL; the shards share nothing. The matrix reports one context per shard
-  # (`integration-shard (1)`, …) — the required `integration` context comes from the
-  # fan-in job below.
-  #
-  # The job timeout is the sum of its step budgets plus about a minute for checkout,
-  # toolchain setup and `pnpm install`: 13 minutes for ffmpeg (the slowest uncached
-  # install seen took 12.5) and 9 for the shard's tests (a shard takes 2–5 minutes; the
-  # whole tier took about 13 serially). The two slow steps carry their own
-  # `timeout-minutes`, so a stalled package mirror and a stalled test run each fail
-  # under their own step name instead of both surfacing as the job being cancelled,
-  # and time the mirror takes never comes out of the tests' budget.
+  # Every shard has its own ephemeral PostgreSQL. The required integration job
+  # below remains the fan-in gate and succeeds only when every shard passes.
+  # The accumulated backend suite exceeded the old nine-minute test budget in
+  # two observed runners on PR2054. Six shards divide the larger suite; each keeps
+  # a finite thirty-minute test budget, independent of the ffmpeg/build budgets.
+  # The job allows 13 minutes for ffmpeg, 5 for build, 30 for tests and 2 for setup.
   integration-shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 23
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
@@ -371,13 +363,20 @@ jobs:
           path: ~/apt-archives
           key: ${{ steps.ffmpeg-cache-key.outputs.key }}
 
+      # These suites launch compiled workspace fixtures; another CI job's build
+      # is on a different runner and cannot supply them.
+      - name: Backend — build test fixtures
+        timeout-minutes: 5
+        working-directory: backend
+        run: pnpm -r run build
+
       # The ephemeral PostgreSQL is created for this shard and removed after it by
       # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
       # container and no external database).
-      - name: Backend — test:integration (shard ${{ matrix.shard }}/3)
-        timeout-minutes: 9
+      - name: Backend — test:integration (shard ${{ matrix.shard }}/6)
+        timeout-minutes: 30
         working-directory: backend
-        run: pnpm run test:integration --shard=${{ matrix.shard }}/3
+        run: pnpm run test:integration --shard=${{ matrix.shard }}/6
 
   # Exists so the required context keeps the name `integration` while the work runs in
   # the `integration-shard` matrix above; renaming it is a branch-protection contract
@@ -427,7 +426,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -442,6 +441,39 @@ jobs:
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
+
+      # E2E invokes the real ffmpeg binary as well as the compiled fixture.
+      - name: Backend — ffmpeg package cache key
+        id: ffmpeg-cache-key
+        run: echo "key=ffmpeg-debs-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Backend — restore ffmpeg packages
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
+      - name: Backend — install ffmpeg
+        timeout-minutes: 13
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" ffmpeg
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+      - name: Backend — save ffmpeg packages
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
+      # The transcription scenario launches the compiled gateway fixture.
+      - name: Backend — build test fixtures
+        timeout-minutes: 5
+        working-directory: backend
+        run: pnpm -r run build
 
       # Provisions its own ephemeral PostgreSQL through
       # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.

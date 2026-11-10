@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -15,10 +15,13 @@ import { withTransaction } from "../db/pool.js";
 import { mutateDocWithClient } from "../docs/docPersistence.js";
 import { deleteDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
 import { createMailThread } from "../mail/mailMessageMetaStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { createSempChatThread, insertSempUserTurn } from "../sempThreads/sempThreadsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
@@ -40,11 +43,14 @@ interface Parents {
   docId: string;
   heartbeatId: string;
   agentRunId: string;
+  occurrenceId: string;
   threadId: string;
   blobId: string;
   notificationId: string;
   pushSubscriptionId: string;
   toolRegistrationId: string;
+  problemId: string;
+  sempMessageId: string;
 }
 
 let adminPool: Pool;
@@ -88,6 +94,11 @@ async function seedParents(tenantId: string): Promise<Parents> {
       enabled: false,
     });
     const agentRun = await createAgentRun(client, { triggeredBy: "user", task: "probe", userId: user.id });
+    const { rows: occurrenceRows } = await client.query<{ id: string }>(
+      `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+       VALUES ($1, now(), '{}', 'queued') RETURNING id`,
+      [heartbeat.id],
+    );
     const thread = await createMailThread(client, "Probe");
     const blob = await createBlob(client, { mimeType: "text/plain", byteSize: 1, storageKey: `${tenantId}/probe` });
     const notificationId = await writeNotification(client, {
@@ -110,6 +121,17 @@ async function seedParents(tenantId: string): Promise<Parents> {
       toolName: "probe",
       toolSchema: {},
     });
+    const problem = await raiseProblem(client, {
+      userId: user.id,
+      category: "mail",
+      kind: "sync",
+      severity: "warning",
+      sourceTable: "mail_account_sync_state",
+      sourceId: randomUUID(),
+      dedupeKey: "fk-probe",
+    });
+    const sempThreadId = await createSempChatThread(client);
+    const sempTurn = await insertSempUserTurn(client, sempThreadId, "FK probe", []);
     return {
       userId: user.id,
       databaseId: database.id,
@@ -119,11 +141,14 @@ async function seedParents(tenantId: string): Promise<Parents> {
       docId: doc.id,
       heartbeatId: heartbeat.id,
       agentRunId: agentRun.id,
+      occurrenceId: occurrenceRows[0]!.id,
       threadId: thread.id,
       blobId: blob.id,
       notificationId,
       pushSubscriptionId: subscription.id,
       toolRegistrationId: registration.id,
+      problemId: problem.problemId,
+      sempMessageId: sempTurn.assistantMessageId,
     };
   });
 }
@@ -147,6 +172,51 @@ interface Reference {
 }
 
 const REFERENCES: Reference[] = [
+  {
+    parent: "Semp message",
+    constraint: "semp_message_speech_message_fkey",
+    table: "semp_message_speech",
+    column: "message_id",
+    parentId: (p) => p.sempMessageId,
+    insert: (client, id, own) =>
+      client.query<Record<string, never>>(
+        "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
+        [id, own.blobId],
+      ),
+  },
+  {
+    parent: "speech blob",
+    constraint: "semp_message_speech_blob_fkey",
+    table: "semp_message_speech",
+    column: "blob_id",
+    parentId: (p) => p.blobId,
+    insert: (client, id, own) =>
+      client.query<Record<string, never>>(
+        "INSERT INTO semp_message_speech (message_id, voice, blob_id, audio_seconds) VALUES ($1, 'alloy', $2, 1)",
+        [own.sempMessageId, id],
+      ),
+  },
+  {
+    parent: "Semp message",
+    constraint: "ai_gateway_calls_semp_message_id_tenant_fkey",
+    table: "ai_gateway_calls",
+    column: "semp_message_id",
+    parentId: (p) => p.sempMessageId,
+    insert: (client, id) =>
+      client.query(
+        "INSERT INTO ai_gateway_calls (provider, model, cost_usd, semp_message_id) VALUES ('fixture', 'fixture', 0, $1)",
+        [id],
+      ),
+  },
+  {
+    parent: "problem",
+    constraint: "semp_problem_occurrences_problem_id_tenant_fkey",
+    table: "semp_problem_occurrences",
+    column: "problem_id",
+    parentId: (p) => p.problemId,
+    insert: (client, id) =>
+      client.query("INSERT INTO semp_problem_occurrences (problem_id, occurrence_key) VALUES ($1, 'probe')", [id]),
+  },
   {
     parent: "database",
     constraint: "properties_database_id_tenant_fkey",
@@ -214,6 +284,30 @@ const REFERENCES: Reference[] = [
     parentId: (p) => p.agentRunId,
     insert: (client, id) =>
       client.query("INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'message', '{}')", [id]),
+  },
+  {
+    parent: "agent run",
+    constraint: "agent_runs_retry_of_run_id_fkey",
+    table: "agent_runs",
+    column: "retry_of_run_id",
+    parentId: (p) => p.agentRunId,
+    insert: (client, id, own) =>
+      client.query(
+        "INSERT INTO agent_runs (retry_of_run_id, attempt, triggered_by, unit, task, actor_user_id) VALUES ($1, 2, 'user', 'invocation', 'probe', $2)",
+        [id, own.userId],
+      ),
+  },
+  {
+    parent: "heartbeat occurrence",
+    constraint: "agent_runs_heartbeat_occurrence_id_fkey",
+    table: "agent_runs",
+    column: "heartbeat_occurrence_id",
+    parentId: (p) => p.occurrenceId,
+    insert: (client, id, own) =>
+      client.query(
+        "INSERT INTO agent_runs (heartbeat_occurrence_id, triggered_by, unit, task, actor_user_id) VALUES ($1, 'heartbeat', 'invocation', 'probe', $2)",
+        [id, own.userId],
+      ),
   },
   {
     parent: "thread",
@@ -307,6 +401,12 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:foreign-key-role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
 
   afterAll(async () => {
@@ -318,6 +418,7 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
     await resetDatabase(adminPool);
     tenantA = await createTestTenant(adminPool);
     tenantB = await createTestTenant(adminPool);
+    for (const tenant of [tenantA, tenantB]) await runInTenant(tenant, () => seedSystem(pool));
     parentsA = await seedParents(tenantA);
     parentsB = await seedParents(tenantB);
   });

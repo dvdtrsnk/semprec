@@ -32,6 +32,7 @@ export interface TranscriptionResult {
 }
 
 export interface DiarizeRequest {
+  numSpeakers?: { exact: number } | { min: number };
   audio: Uint8Array;
   filename: string;
   mimeType: string;
@@ -43,7 +44,7 @@ export interface TranscribeRequest {
   filename: string;
   mimeType: string;
   audioSeconds: number;
-  /** Omit on the first chunk to let Whisper detect the recording language. */
+  /** Omit to let Whisper detect the recording language. */
   language?: string;
 }
 
@@ -194,6 +195,7 @@ export function createHttpAudioGatewayClient(config: HttpAudioGatewayClientConfi
           filename: request.filename,
           mimeType: request.mimeType,
           audioSeconds: request.audioSeconds,
+          numSpeakers: request.numSpeakers,
         }),
       );
     },

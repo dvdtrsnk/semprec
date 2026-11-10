@@ -14,7 +14,7 @@ import {
  * Validates `raw` against operation `K`'s own Zod schema from `GENERIC_OPERATION_BINDINGS` —
  * converting a failure into this adapter's `ValidationError` contract, since a `ZodError` itself
  * isn't one of the errors `adapterRoute.ts` catches. Exported (issue #789) so a route calling a
- * `GenericApplicationPort` method outside the 29-operation catalog — e.g.
+ * `GenericApplicationPort` method outside the 30-operation catalog — e.g.
  * `patchPropertyWithDatabase` — can still validate its input against the same operation's schema
  * before calling that method directly, instead of going through `dispatchGenericOperation`. See
  * `docs/adr/2026-10-01-rest-only-port-extension-methods.md` for when a catalog-external port
@@ -34,6 +34,9 @@ export function parseOperationInput<K extends GenericOperationName>(operation: K
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];
     const field = validationIssueField(parsed.error.issues);
+    if (operation === "database.patch" && firstIssue?.params?.reason === "empty_patch") {
+      throw new ValidationError(firstIssue.message, { reason: "empty_patch" });
+    }
     throw new ValidationError(
       firstIssue?.message ?? "Request failed validation",
       field === undefined ? undefined : { field },

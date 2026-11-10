@@ -140,6 +140,63 @@ describe("auth schema (issue #139)", () => {
     ).rejects.toThrow();
   });
 
+  it("stores the five device columns, and leaves them NULL when none is given", async () => {
+    const user = await makeUser(pool);
+    const deviceId = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
+    const withDevice = await createSession(pool, {
+      userId: user.id,
+      tokenHash: generateOpaqueToken().tokenHash,
+      platform: "ios",
+      expiresAt: new Date(Date.now() + 60_000),
+      deviceId,
+      deviceName: "iPhone 17 Pro",
+      deviceKind: "iphone",
+      osVersion: "26.0",
+      appVersion: "1.2.3",
+    });
+    expect(withDevice).toMatchObject({
+      deviceId,
+      deviceName: "iPhone 17 Pro",
+      deviceKind: "iphone",
+      osVersion: "26.0",
+      appVersion: "1.2.3",
+    });
+    const without = await createSession(pool, {
+      userId: user.id,
+      tokenHash: generateOpaqueToken().tokenHash,
+      platform: "ios",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(without).toMatchObject({
+      deviceId: null,
+      deviceName: null,
+      deviceKind: null,
+      osVersion: null,
+      appVersion: null,
+    });
+  });
+
+  it("rejects a device_kind outside iphone/ipad/mac/browser", async () => {
+    const user = await makeUser(pool);
+    await expect(
+      createSession(pool, {
+        userId: user.id,
+        tokenHash: generateOpaqueToken().tokenHash,
+        platform: "ios",
+        expiresAt: new Date(Date.now() + 60_000),
+        deviceKind: "phone" as never,
+      }),
+    ).rejects.toThrow(/sessions_device_kind_check/);
+  });
+
+  it("has the partial active-device index", async () => {
+    const { rows } = await pool.query<{ indexdef: string }>(
+      "SELECT indexdef FROM pg_indexes WHERE indexname = 'sessions_user_device_active_idx'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.indexdef).toMatch(/\(user_id, device_id\).*revoked_at IS NULL/);
+  });
+
   it("counts only recent failed login attempts for the same email and IP", async () => {
     await recordLoginAttempt(pool, { email: "target@example.com", ip: "1.2.3.4", succeeded: false });
     await recordLoginAttempt(pool, { email: "target@example.com", ip: "1.2.3.4", succeeded: false });

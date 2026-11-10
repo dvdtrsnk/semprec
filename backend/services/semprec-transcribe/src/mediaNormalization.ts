@@ -32,8 +32,23 @@ export interface MediaProbeResult {
   creationTime: string | null;
 }
 
-function describeExit(command: string, code: number | null, signal: NodeJS.Signals | null, stderr: string): Error {
-  return new Error(`${command} exited with code ${code ?? "null"}${signal ? ` (signal ${signal})` : ""}: ${stderr}`);
+/** `ffmpeg` or `ffprobe` could not read or convert the media; `recordTranscriptionFailure` stores this class as `mediaUnreadable`. */
+export class MediaToolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MediaToolError";
+  }
+}
+
+function describeExit(
+  command: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderr: string,
+): MediaToolError {
+  return new MediaToolError(
+    `${command} exited with code ${code ?? "null"}${signal ? ` (signal ${signal})` : ""}: ${stderr}`,
+  );
 }
 
 /**
@@ -47,8 +62,8 @@ async function cleanUpLeftover(
 ): Promise<void> {
   try {
     await cleanup();
-  } catch (err) {
-    logger.warn({ ...fields, err }, message);
+  } catch {
+    logger.warn(fields, message);
   }
 }
 
@@ -142,7 +157,7 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
           if (parsed.format.duration !== undefined) {
             durationSeconds = Number.parseFloat(parsed.format.duration);
             if (!Number.isFinite(durationSeconds)) {
-              reject(new Error(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
+              reject(new MediaToolError(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
               return;
             }
           }
@@ -172,7 +187,8 @@ export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, st
   const path = await downloadToTempFile(blobStorage, storageKey);
   try {
     const { durationSeconds } = await probeMedia(path);
-    if (durationSeconds === null) throw new Error(`ffprobe reported no duration for normalized output '${storageKey}'`);
+    if (durationSeconds === null)
+      throw new MediaToolError(`ffprobe reported no duration for normalized output '${storageKey}'`);
     return durationSeconds;
   } finally {
     await removeTempFile(path);
@@ -232,38 +248,60 @@ export async function extractAudioChunkBytes(
 
 /**
  * Normalizes a local input file to 16 kHz mono Opus (audio/ogg) at 16 kb/s — about 7 MB per hour
- * of audio — and streams the result straight into `blobStorage` under `storageKey`, with no
- * intermediate output file. For a video input, `-vn` drops the video stream and keeps only its
- * audio, so a single command covers both the audio and video acceptance criteria. On failure,
- * whatever already reached `storageKey` is deleted before the error propagates.
+ * of audio — and streams the result into `blobStorage` under `storageKey`.
  */
-export async function normalizeAudio(
+export function normalizeAudio(
   inputPath: string,
+  blobStorage: BlobStorageWriter,
+  storageKey: string,
+): Promise<NormalizedAudioResult> {
+  return encodeAudioToStorage(
+    inputPath,
+    ["-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "16k", "-f", "ogg"],
+    blobStorage,
+    storageKey,
+  );
+}
+
+/**
+ * Renders a player-friendly copy of a local input file — AAC in an MP4 container (audio/mp4),
+ * mono, 64 kb/s — from the same decoded input as `normalizeAudio` and with the same `start_time`
+ * handling, so both share one timeline and a segment's `startsAt` seeks to the same word in either.
+ * The MP4 is fragmented because it is streamed to storage, where a plain MP4 would need a seekable
+ * output to place its index.
+ */
+export function renderPlaybackAudio(
+  inputPath: string,
+  blobStorage: BlobStorageWriter,
+  storageKey: string,
+): Promise<NormalizedAudioResult> {
+  return encodeAudioToStorage(
+    inputPath,
+    ["-ac", "1", "-c:a", "aac", "-b:a", "64k", "-f", "mp4", "-movflags", "frag_keyframe+delay_moov+default_base_moof"],
+    blobStorage,
+    storageKey,
+  );
+}
+
+/**
+ * Runs `ffmpeg -i inputPath -vn <outputArgs>` and streams its stdout straight into `blobStorage`
+ * under `storageKey`, with no intermediate output file. `-vn` drops any video stream and keeps only
+ * its audio. The audio timestamps are rebased to the first decoded sample for both outputs.
+ * On failure, whatever already reached `storageKey`
+ * is deleted before the error propagates.
+ */
+async function encodeAudioToStorage(
+  inputPath: string,
+  outputArgs: string[],
   blobStorage: BlobStorageWriter,
   storageKey: string,
 ): Promise<NormalizedAudioResult> {
   const child = spawn(
     "ffmpeg",
-    [
-      "-y",
-      "-loglevel",
-      "error",
-      "-i",
-      inputPath,
-      "-vn",
-      "-ac",
-      "1",
-      "-ar",
-      "16000",
-      "-c:a",
-      "libopus",
-      "-b:a",
-      "16k",
-      "-f",
-      "ogg",
-      "pipe:1",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    ["-y", "-loglevel", "error", "-i", inputPath, "-vn", "-af", "asetpts=PTS-STARTPTS", ...outputArgs, "pipe:1"],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   const stderrChunks: Buffer[] = [];
   child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));

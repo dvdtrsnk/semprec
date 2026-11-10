@@ -21,8 +21,15 @@ export {
   decodeDocId,
   buildBinaryFrame,
   DOC_FRAME_PREFIX_BYTES,
+  CLIENT_UPDATE_ID_MAX_LENGTH,
+  isClientUpdateId,
+  appendClientUpdateId,
+  readClientUpdateId,
   type InboundFrame,
   type OutboundFrame,
   type AgentDeltaChunk,
   type BinaryFrame,
 } from "./protocolV1.js";
+
+export { sendWithBackpressure, BACKPRESSURE_CLOSE_CODE } from "./backpressure.js";
+export type { VoiceRunFrame, VoiceRunWatchInput } from "./agentRunWatch.js";

@@ -1,1 +1,6 @@
-{}
+{
+  "page.notes.title": "Poznámky",
+  "database.pages.name": "Stránky",
+  "property.pages.title.name": "Název",
+  "property.pages.parentItemId.name": "Nadřazená položka"
+}

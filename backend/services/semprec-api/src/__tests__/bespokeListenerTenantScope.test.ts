@@ -33,9 +33,9 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** The `public: false` matrix entries answered by the eight tenant-scoped bespoke listeners. */
+/** The `public: false` matrix entries answered by tenant-scoped bespoke listeners. */
 const TENANT_LISTENER_PATH =
-  /^\/(?:api\/notifications\/|api\/schema$|api\/approval-requests|mcp$|api\/agent-runs\/|api\/projects\/[^/]+\/mcp-grants|api\/mcp-tool-registrations\/|api\/files$|api\/blobs\/)/;
+  /^\/(?:api\/notifications\/|api\/schema$|api\/approval-requests|mcp$|api\/agent-runs\/|api\/projects\/[^/]+\/mcp-grants|api\/mcp-tool-registrations\/|api\/files$|api\/blobs\/|api\/items\/[^/]+\/page\.md$|api\/items\/[^/]+\/page\/insert$|api\/semp\/threads\/[^/]+\/messages\/[^/]+\/speech$)/;
 
 const tenantRoutes = ROUTE_MATRIX.filter((r) => r.surface === "api" && !r.public && TENANT_LISTENER_PATH.test(r.path));
 
@@ -63,6 +63,7 @@ function requestSpecFor(route: RouteMatrixEntry): RequestSpec {
   }
   if (route.path.includes("/mcp-grants/")) return json({ granted: true });
   if (route.path.startsWith("/api/mcp-tool-registrations/")) return json({ riskClass: "low" });
+  if (route.path.endsWith("/page/insert")) return json({ placement: "end", markdown: "Scoped" });
   return json({});
 }
 
@@ -144,7 +145,8 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   async function send(route: RouteMatrixEntry, token?: string): Promise<Response> {
     const spec = requestSpecFor(route);
-    return fetch(`${baseUrl}${route.path}`, {
+    const path = route.path === "/api/notifications/resolved" ? `${route.path}?since=2020-01-01T00:00:00Z` : route.path;
+    return fetch(`${baseUrl}${path}`, {
       method: route.method,
       headers: { ...spec.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: spec.body,
@@ -152,7 +154,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   }
 
   it("covers every tenant-scoped listener route of the matrix", () => {
-    expect(tenantRoutes).toHaveLength(14);
+    expect(tenantRoutes).toHaveLength(18);
   });
 
   describe.each(tenantRoutes)("$name ($method $path)", (route) => {
@@ -220,7 +222,14 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       await resetDatabase(pool);
       recorded.length = 0;
       const strictFirst = await withScopeMode("strict", setup);
-      expectAllSystem();
+      // The bootstrap seeds the new account's project guidance inside that tenant's scope
+      // (seedAccountSystemProjectGuidance), so the success path may enter tenant zero; nothing else leaves the system scope.
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(
+        recorded.every(
+          (scope) => scope?.kind === "system" || (scope?.kind === "tenant" && scope.tenantId === getTenantZeroId()),
+        ),
+      ).toBe(true);
       recorded.length = 0;
       const strictSecond = await withScopeMode("strict", setup);
 

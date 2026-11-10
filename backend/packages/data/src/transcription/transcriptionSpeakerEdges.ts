@@ -9,6 +9,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow, PropertyRow } from "../types.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPT_SEGMENTS_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
+import { runValueLinkAdmissionLock } from "../chokePoint/valueLinkRelationAdmission.js";
 
 /** The Transcripts -> People relation property whose edges map a diarization speaker key to a person. */
 export const TRANSCRIPT_SPEAKERS_PROPERTY_KEY = "speakers";
@@ -43,6 +44,7 @@ export interface SpeakerEdgeWriteInput {
   transcriptId: string;
   personId: string;
   metadata: Record<string, unknown> | undefined;
+  lockMode?: "nowait";
 }
 
 /**
@@ -63,7 +65,12 @@ export async function assertSpeakerEdgeWritable(client: PoolClient, input: Speak
   }
   const { speaker } = parsed.data;
 
-  const transcript = await itemsStore.lockItemById(client, input.transcriptsDatabaseId, input.transcriptId);
+  const transcript =
+    input.lockMode === "nowait"
+      ? await runValueLinkAdmissionLock(() =>
+          itemsStore.lockItemByIdNowait(client, input.transcriptsDatabaseId, input.transcriptId),
+        )
+      : await itemsStore.lockItemById(client, input.transcriptsDatabaseId, input.transcriptId);
   if (!transcript || transcript.deletedAt) {
     throw new NotFoundError(`Transcripts item '${input.transcriptId}' not found`, {
       resource: "item",
@@ -105,6 +112,7 @@ export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
   callerItemId,
   targetItemId,
   metadata,
+  lockMode,
 }) => {
   if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
   await assertSpeakerEdgeWritable(client, {
@@ -113,6 +121,7 @@ export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
     transcriptId: callerItemId,
     personId: targetItemId,
     metadata,
+    lockMode,
   });
 };
 
@@ -129,11 +138,20 @@ export interface TranscriptSpeaker {
  * only read: who spoke is composed here, at read time, from the edges. An edge to a person who has
  * since been deleted leaves its key unmapped.
  */
-export async function listTranscriptSpeakers(client: PoolClient, transcriptId: string): Promise<TranscriptSpeaker[]> {
+export async function listTranscriptSpeakers(
+  client: PoolClient,
+  transcriptId: string,
+  captured?: ItemRow,
+): Promise<TranscriptSpeaker[]> {
   const transcripts = await databasesStore.getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
   if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
-  const transcript = await itemsStore.getItemById(client, transcripts.id, transcriptId);
-  if (!transcript || transcript.deletedAt) {
+  const transcript = captured ?? (await itemsStore.getItemById(client, transcripts.id, transcriptId));
+  if (
+    !transcript ||
+    transcript.id !== transcriptId ||
+    transcript.databaseId !== transcripts.id ||
+    transcript.deletedAt
+  ) {
     throw new NotFoundError(`Transcripts item '${transcriptId}' not found`, { resource: "item", itemId: transcriptId });
   }
 

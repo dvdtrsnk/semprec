@@ -3,6 +3,7 @@ import { replayApprovedGenericOperation } from "@semprec/application";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   CORE_CRONTAB,
+  createLibraryMetadataFetcher,
   assertTaskListMatchesAffinity,
   createApiCoreTaskList,
   mergeModuleTaskListForAffinity,
@@ -11,6 +12,8 @@ import {
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
+import { createMailSyncAdapters } from "./mailSyncAdapters.js";
+import { createAiGatewayClientForApi } from "./projectAgentGuidanceComposition.js";
 
 export interface ApiQueueRuntimeOptions {
   /** Overrides `CORE_CRONTAB` — tests use a faster cadence to observe a sweep without waiting on the real one. */
@@ -35,10 +38,11 @@ export interface ApiQueueRuntime {
  * mail jobs resolve the mail databases' ids themselves, per job or per tenant pass, inside that
  * tenant's scope (`resolveMailModuleIds`): nothing is captured at boot, so this starts on a
  * database the mail module is not seeded in, and a tenant without those databases fails only the
- * job that needs them, naming the missing module ids and the seed CLI. The remaining adapters (an external library-metadata fetcher,
- * mail sync transports, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
- * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own
- * composition-root concern once it exists.
+ * job that needs them, naming the missing module ids and the seed CLI. Gmail, Graph and IMAP mail
+ * accounts sync through the transports `createMailSyncAdapters` builds (#1505, #1508, #1510).
+ * The remaining adapters (mail blob storage, a legacy raw-MIME fetcher, push senders) stay on
+ * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
+ * concern once it exists.
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -55,15 +59,16 @@ export async function createApiQueueRuntime(
   const coreTaskList = createApiCoreTaskList(
     pool,
     actionRegistry,
-    undefined, // libraryMetadataFetcher
-    // Transport adapters wait on mailbox onboarding: a Mailbox carries no server settings or stored
-    // credential yet, so a real IMAP/Gmail/Graph adapter would have nothing to connect with.
-    undefined, // mailSyncAdapters
+    createLibraryMetadataFetcher({ tmdbToken: process.env.TMDB_READ_TOKEN }),
+    createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail, Graph and IMAP
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher
     moduleRegistry,
     undefined, // pushSenders
     replayApprovedGenericOperation,
+    undefined, // filesBlobStorage
+    undefined, // tenantBlobStorageDirs
+    createAiGatewayClientForApi(),
   );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
 

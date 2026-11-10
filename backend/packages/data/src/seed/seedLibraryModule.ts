@@ -22,11 +22,31 @@ import {
 } from "../library/libraryModuleContract.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
+function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
+  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
+}
+
+/**
+ * The rating filter presets of Books and Movies (issue #1622): "5 stars", "4 and up", "3 and up" and "No rating"
+ * (empty or 0), labelled from `library/i18n`. Seeded here for a fresh install and written to existing tenants by
+ * `ratingFilterPresetsCutoverMigration.ts`.
+ */
+export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | typeof MOVIES_MODULE_ID): {
+  filterPresets: Array<{ value: number; op: "gte"; labelKey: string }>;
+  emptyPreset: { labelKey: string; matchZero: boolean };
+} {
+  return {
+    filterPresets: [5, 4, 3].map((value) => ({
+      value,
+      op: "gte" as const,
+      labelKey: `property.${databaseKey}.rating.preset.${value}`,
+    })),
+    emptyPreset: { labelKey: `property.${databaseKey}.rating.preset.none`, matchZero: true },
+  };
 }
 
 interface PropSpec {
@@ -64,7 +84,10 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
 function metadataActionConfig(databaseId: string, contract: LibraryModuleContract): Record<string, unknown> {
   return {
     databaseId,
-    source: "none", // no external metadata source is wired up yet — see libraryMetadataJob.ts's noop fetcher.
+    source: contract === BOOKS_LIBRARY_CONTRACT ? "openLibrary" : "tmdb",
+    ...(contract === BOOKS_LIBRARY_CONTRACT
+      ? { authorKey: "author", yearKey: "year", isbnKey: "isbn" }
+      : { yearKey: "year", typeKey: "type" }),
     coverKey: contract.coverKey,
     secondaryRatingKey: contract.secondaryRatingKey,
     sourceUrlKey: contract.sourceUrlKey,
@@ -106,26 +129,27 @@ export async function seedLibraryModuleInTransaction(
     properties: {
       name: "Books",
       systemActive: true,
-      agents:
-        "Purpose: catalog books the user is reading or has read.\n" +
-        "Allowed: create a Books item (name/author/rating/status) via the generic create-item endpoint.\n" +
-        "Not allowed: write 'cover' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n" +
-        "General instructions: use the same create-item path as the UI; there is no separate AI path.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[BOOKS_MODULE_ID],
     },
   });
   const books = await createDb(client, BOOKS_MODULE_ID, booksProject.id);
   await createProps(client, books.id, [
     { key: "name", name: null, type: "title", owner: "user" },
     { key: "author", name: null, type: "text", owner: "user" },
+    { key: "year", name: null, type: "number", owner: "user" },
+    { key: "isbn", name: null, type: "text", owner: "user" },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
-    { key: "rating", name: null, type: "number", owner: "user" },
+    { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(BOOKS_MODULE_ID) },
     {
       key: "status",
       name: null,
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["toRead", "reading", "read"]), default: "toRead" },
+      config: {
+        ...selectConfig(["toRead", "reading", "read"], { toRead: "#8E8E93", reading: "#007AFF", read: "#34C759" }),
+        default: "toRead",
+      },
     },
   ]);
 
@@ -134,11 +158,7 @@ export async function seedLibraryModuleInTransaction(
     properties: {
       name: "Movies/TV",
       systemActive: true,
-      agents:
-        "Purpose: catalog movies and TV series watched or planned to watch.\n" +
-        "Allowed: create a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n" +
-        "Not allowed: write 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n" +
-        "General instructions: use the same create-item path as the UI; there is no separate AI path.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[MOVIES_MODULE_ID],
     },
   });
   const movies = await createDb(client, MOVIES_MODULE_ID, moviesProject.id);
@@ -150,7 +170,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
-    { key: "rating", name: null, type: "number", owner: "user" },
+    { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(MOVIES_MODULE_ID) },
     { key: "secondaryRating", name: null, type: "number", owner: "system" },
     { key: "sourceUrl", name: null, type: "url", owner: "system" },
     {
@@ -158,7 +178,14 @@ export async function seedLibraryModuleInTransaction(
       name: null,
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["planned", "watching", "watched"]), default: "planned" },
+      config: {
+        ...selectConfig(["planned", "watching", "watched"], {
+          planned: "#8E8E93",
+          watching: "#007AFF",
+          watched: "#34C759",
+        }),
+        default: "planned",
+      },
     },
     // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
     { key: "notes", name: null, type: "longText", owner: "user" },

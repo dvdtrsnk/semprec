@@ -1,9 +1,9 @@
 import type { PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
-import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
+import { parseHeartbeatRule, type AnyHeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 import { createCatalogResolver, resolveDatabaseName, resolveProperty } from "./catalogResolution.js";
@@ -48,7 +48,7 @@ export interface ManifestHeartbeat {
   id: string;
   name: string;
   actionId: string;
-  rule: HeartbeatRule;
+  rule: AnyHeartbeatRule;
 }
 
 /**
@@ -74,14 +74,11 @@ export interface PermissionManifest {
   /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
   agentTools: McpAgentToolProjection[];
   /**
-   * The generic-operation capability ids (#252's `CAPABILITY_IDS`) granted to this run (issue
-   * #220): every active module's registered capability, narrowed to the eight this catalog
-   * defines. `packages/agent-runtime`'s generic AgentTool factories construct only the subset of
-   * the 29 operations whose `OPERATION_METADATA.requiresCapability` appears here — an ungranted
-   * one is absent from the run's tool list, not present-but-forbidden. Empty when `moduleRegistry`
-   * isn't supplied (matching every other `moduleRegistry`-gated field on this manifest).
+   * Active core capabilities plus module capabilities admitted by the run project's database
+   * ownership, per the owned-databases module-tools ADR. The generic adapter intersects this
+   * list with its closed core catalog. Empty without a module registry.
    */
-  grantedCapabilities: CapabilityId[];
+  grantedCapabilities: string[];
 }
 
 export interface GeneratePermissionManifestOptions {
@@ -136,7 +133,18 @@ export async function generatePermissionManifest(
     const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
 
     const dbName = resolveDatabaseName(db.name, db.key, db.id, catalogs, locale);
-    const manifestProperties: ManifestProperty[] = properties.map((p) => resolveProperty(p, db.key, catalogs, locale));
+    const manifestProperties: ManifestProperty[] = properties.map((p) => {
+      // The manifest keeps its pre-#1360 shape: id, type, filterable and the typed config belong to /api/schema.
+      const { key, name, owner, locked, options, config } = resolveProperty(p, db.key, catalogs, locale);
+      return {
+        key,
+        name,
+        owner,
+        locked,
+        ...(options ? { options } : {}),
+        ...(Object.hasOwn(config, "default") ? { config: { default: config.default } } : {}),
+      };
+    });
 
     databases.push({
       databaseId: db.id,
@@ -151,11 +159,17 @@ export async function generatePermissionManifest(
     `SELECT id, name, action_id, rule FROM project_heartbeats WHERE project_item_id = $1`,
     [projectItemId],
   );
+  const ruleKinds = new Map(
+    ((await moduleRegistry?.getHeartbeatRuleKindDefinitions()) ?? []).map((definition) => [
+      definition.kind,
+      { schema: definition.schema, nextFireAt: definition.nextFireAt },
+    ]),
+  );
   const heartbeats = heartbeatRows.map((h) => ({
     id: h.id,
     name: h.name,
     actionId: h.action_id,
-    rule: heartbeatRuleSchema.parse(h.rule),
+    rule: parseHeartbeatRule(h.rule, ruleKinds),
   }));
 
   const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(
@@ -172,7 +186,32 @@ export async function generatePermissionManifest(
   const grantedModuleCapabilities = moduleRegistry
     ? new Set(await moduleRegistry.getCapabilities())
     : new Set<string>();
-  const grantedCapabilities = CAPABILITY_IDS.filter((id) => grantedModuleCapabilities.has(id));
+  const grantedCapabilities: string[] = CAPABILITY_IDS.filter(
+    (id) => id !== "core.page.read" && id !== "core.page.write" && grantedModuleCapabilities.has(id),
+  );
+  if (moduleRegistry) {
+    const visible = new Set(await visibleDatabaseIds(client));
+    const core = new Set<string>(CAPABILITY_IDS);
+    const ownership = new Map<string, boolean>();
+    for (const declaration of await moduleRegistry.getModuleCapabilityDeclarations()) {
+      const owned =
+        declaration.databaseKeys.length > 0 &&
+        declaration.databaseKeys.every((key) => {
+          const row = databaseRows.find(
+            (candidate) => candidate.key === key || (candidate.key === null && candidate.owner_module_id === key),
+          );
+          return (
+            row !== undefined &&
+            visible.has(row.id) &&
+            !(row.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
+          );
+        });
+      for (const capability of declaration.capabilities) {
+        if (!core.has(capability)) ownership.set(capability, (ownership.get(capability) ?? true) && owned);
+      }
+    }
+    for (const [capability, owned] of ownership) if (owned) grantedCapabilities.push(capability);
+  }
 
   return { projectItemId, databases, heartbeats, capabilities, agentTools, grantedCapabilities };
 }

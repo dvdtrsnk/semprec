@@ -14,6 +14,9 @@ import {
   seedSystem,
   createAgentRun,
   createPendingApprovalRequest,
+  createItemWithClient,
+  upsertMcpToolRegistration,
+  withTransaction,
   createChokePoint,
   createUser,
   hashPassword,
@@ -145,9 +148,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; decidedBy: string };
-    expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ status: "approved", decidedBy: session.userId });
     expect(await countExecuteJobs(id)).toBe(1);
   });
 
@@ -161,8 +163,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "rejected", decidedByUserId: session.userId }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string };
-    expect(body.status).toBe("rejected");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ status: "rejected" });
   });
 
   it("returns 400 for an invalid decision value", async () => {
@@ -187,8 +189,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { decidedBy: string };
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ decidedBy: session.userId });
     const { rows } = await pool.query<{ decided_by: string }>(
       `SELECT decided_by FROM approval_requests WHERE id = $1`,
       [id],
@@ -207,9 +209,9 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved", decidedByUserId: claimedDecider }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { decidedBy: string };
-    expect(body.decidedBy).toBe(session.userId);
-    expect(body.decidedBy).not.toBe(claimedDecider);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ decidedBy: session.userId });
+    expect(body).not.toMatchObject({ decidedBy: claimedDecider });
   });
 
   it("returns the decision without the payload's argument values", async () => {
@@ -222,10 +224,140 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown> & { safeSummary: { argKeys: string[] } };
+    const body: unknown = await res.json();
     expect(body).not.toHaveProperty("payload");
     expect(JSON.stringify(body)).not.toContain('"hi"');
-    expect(body.safeSummary.argKeys).toEqual(["query"]);
+    // The fixture's server item and registration do not exist: still 200, with null names.
+    expect(body).toMatchObject({ safeSummary: { argKeys: ["query"], mcpServerName: null, mcpToolName: null } });
+  });
+
+  it("returns names and a null deleted server name in actual approval responses", async () => {
+    const session = await authSession();
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+      "mcpServers",
+    ]);
+    const databaseId = rows[0]?.id;
+    if (!databaseId) throw new Error("Missing MCP server database");
+    const serverItem = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId,
+        properties: { name: "Search server", active: true },
+      }),
+    );
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: serverItem.id,
+      toolName: "search_web",
+      toolSchema: {},
+    });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: session.userId });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "search_web",
+      riskClass: "write",
+      payload: {
+        mcpToolRegistrationId: registration.id,
+        mcpServerItemId: serverItem.id,
+        args: { query: "private-argument" },
+      },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const list = async (): Promise<unknown> => {
+      const response = await fetch(`${baseUrl}/api/approval-requests`, { headers: session.headers });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const before = await list();
+    expect(before).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: request.id,
+          safeSummary: expect.objectContaining({
+            mcpServerName: "Search server",
+            mcpToolName: "search_web",
+            argKeys: ["query"],
+          }),
+        }),
+      ],
+    });
+    expect(JSON.stringify(before)).not.toContain("private-argument");
+    expect(await chokePoint.softDeleteItem(databaseId, serverItem.id, session.userId)).not.toBeNull();
+    const after = await list();
+    expect(after).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: request.id,
+          safeSummary: expect.objectContaining({ mcpServerName: null, mcpToolName: "search_web", argKeys: ["query"] }),
+        }),
+      ],
+    });
+    const decision = await fetch(`${baseUrl}/api/approval-requests/${request.id}`, {
+      method: "PATCH",
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "rejected" }),
+    });
+    expect(decision.status).toBe(200);
+    const result: unknown = await decision.json();
+    expect(result).toMatchObject({ safeSummary: { mcpServerName: null, mcpToolName: "search_web" } });
+    expect(JSON.stringify(result)).not.toContain("private-argument");
+  });
+
+  it.each([
+    [
+      { error: { code: "version_conflict", details: { currentResource: "private-marker" } } },
+      "approval.conflict.changed",
+    ],
+    [{ error: { code: "version_conflict", details: { reason: "not_found" } } }, "approval.conflict.deleted"],
+    [
+      { error: { code: "version_conflict", details: { reason: "owner_violation" } } },
+      "approval.conflict.provenanceChanged",
+    ],
+    [{ error: { code: "version_conflict", details: { reason: "database_archived" } } }, "approval.conflict.archived"],
+    [{ error: { code: "version_conflict", details: { reason: "unknown" } } }, "approval.conflict.other"],
+    [{ text: "private-marker", outcomeKind: "toolUnavailable" }, "approval.conflict.toolUnavailable"],
+    [{ text: "private-marker", outcomeKind: "callFailed" }, "approval.outcome.failed"],
+    ["private-marker", "approval.conflict.other"],
+  ])("returns a safe conflict reason through PATCH", async (executionResult, key) => {
+    const session = await authSession();
+    const generic = typeof executionResult === "object" && executionResult !== null && "error" in executionResult;
+    let id: string;
+    if (generic) {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: session.userId });
+      const resourceSnapshot = { kind: "test", resourceId: "test", sha256: null };
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "item.delete",
+        riskClass: "destructive",
+        payload: {
+          operationName: "item.delete",
+          canonicalInput: { itemId: "private-marker" },
+          actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: session.userId },
+          resourceSnapshot,
+        },
+        resourceSnapshot,
+      });
+      id = request.id;
+    } else {
+      id = await createPendingRequest(session.userId);
+    }
+    const decide = () =>
+      fetch(`${baseUrl}/api/approval-requests/${id}`, {
+        method: "PATCH",
+        headers: { ...session.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approved" }),
+      });
+    expect((await decide()).status).toBe(200);
+    // Recreate persisted historical execution outcomes for the response boundary.
+    await pool.query(
+      "UPDATE approval_requests SET execution_status = 'conflict', execution_result_jsonb = $2::jsonb WHERE id = $1",
+      [id, JSON.stringify(executionResult)],
+    );
+    const response = await decide();
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ executionStatus: "conflict", conflictReason: { key } });
+    expect(body).not.toHaveProperty("executionResult");
+    expect(JSON.stringify(body)).not.toContain("private-marker");
+    expect(JSON.stringify(body)).not.toContain('"hi"');
   });
 
   it("treats a repeated decision by the owner as a deterministic no-op, returning the current state with 200", async () => {
@@ -246,9 +378,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "rejected" }),
     });
     expect(second.status).toBe(200);
-    const body = (await second.json()) as { status: string; decidedBy: string };
-    expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await second.json();
+    expect(body).toMatchObject({ status: "approved", decidedBy: session.userId });
     expect(await countExecuteJobs(id)).toBe(1);
   });
 
@@ -309,9 +440,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { code: string; details?: unknown };
-    expect(body.code).toBe("validation_failed");
-    expect(body.details).toEqual({ field: "id" });
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "id" } });
   });
 
   it("rejects a PATCH with a malformed JSON body", async () => {
@@ -361,7 +491,7 @@ describe("createApprovalRequestsRequestListener", () => {
       await createPendingApprovalRequest(pool, {
         agentRunId: run.id,
         toolName: "send_email",
-        riskClass: "moderate",
+        riskClass: "write",
         payload,
         resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
       });
@@ -370,19 +500,24 @@ describe("createApprovalRequestsRequestListener", () => {
         headers: session.headers,
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
-      expect(body.rows).toHaveLength(1);
-      expect(body.rows[0]).toMatchObject({
-        toolName: "send_email",
-        riskClass: "moderate",
-        agentRunId: run.id,
-        projectItemId: projectItem.id,
-        projectName: "Kitchen",
-        safeSummary: {
-          mcpToolRegistrationId: payload.mcpToolRegistrationId,
-          mcpServerItemId: payload.mcpServerItemId,
-          argKeys: ["to"],
-        },
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({
+        rows: [
+          {
+            toolName: "send_email",
+            riskClass: "write",
+            agentRunId: run.id,
+            projectItemId: projectItem.id,
+            projectName: "Kitchen",
+            safeSummary: {
+              mcpToolRegistrationId: payload.mcpToolRegistrationId,
+              mcpServerItemId: payload.mcpServerItemId,
+              mcpServerName: null,
+              mcpToolName: null,
+              argKeys: ["to"],
+            },
+          },
+        ],
       });
       expect(JSON.stringify(body)).not.toContain("a@b.com");
     });
@@ -425,8 +560,8 @@ describe("createApprovalRequestsRequestListener", () => {
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, { headers: owner.headers });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: Array<{ id: string }> };
-      expect(body.rows.map((row) => row.id)).toEqual([ownId]);
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ rows: [{ id: ownId }] });
     });
   });
 });

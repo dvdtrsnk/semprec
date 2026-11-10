@@ -37,6 +37,15 @@ export async function reindexPersonEmails(
   personItemId: string,
   addresses: string[],
 ): Promise<ReindexPersonEmailsResult> {
+  const { conflicts } = await reindexPersonEmailsWithClaims(client, personItemId, addresses);
+  return { conflicts };
+}
+
+export async function reindexPersonEmailsWithClaims(
+  client: Queryable,
+  personItemId: string,
+  addresses: string[],
+): Promise<ReindexPersonEmailsResult & { claimed: string[] }> {
   const normalized = [...new Set(addresses.map(normalizeEmailAddress).filter((a) => a.length > 0))];
 
   const { rows: existing } = await client.query<{ email: string; item_id: string }>(
@@ -51,12 +60,61 @@ export async function reindexPersonEmails(
     normalized,
   ]);
 
+  const claimed: string[] = [];
   if (toClaim.length > 0) {
-    await client.query(
-      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING`,
+    const { rows } = await client.query<{ email: string }>(
+      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING RETURNING email`,
       [toClaim, personItemId],
     );
+    claimed.push(...rows.map((row) => row.email));
   }
 
-  return { conflicts: [...ownedByOther] };
+  return { conflicts: [...ownedByOther], claimed };
+}
+
+export interface MailContact {
+  personId: string;
+  name: string;
+  email: string;
+  relationship: string | null;
+}
+
+/** Escapes LIKE metacharacters before surrounding a literal substring with wildcards. */
+export function escapeContactSearchPattern(query: string): string {
+  return `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+}
+
+/** People-only suggestions; every item/database read is confined by the caller's tenant scope. */
+export async function searchMailContacts(
+  client: Queryable,
+  query: string,
+  exclude: string[],
+  limit: number,
+): Promise<MailContact[]> {
+  const { rows } = await client.query<MailContact>(
+    String.raw`
+    WITH own_addresses AS (
+      SELECT lower(btrim(a.address, E' \t\n\r')) AS email
+      FROM items m JOIN databases d ON d.id = m.database_id AND d.owner_module_id = 'mailboxes'
+      CROSS JOIN LATERAL regexp_split_to_table(CASE WHEN jsonb_typeof(m.properties->'addresses') = 'string'
+        THEN m.properties->>'addresses' ELSE '' END, E'[,\n\r]+') a(address)
+      WHERE m.deleted_at IS NULL
+    ), contacts AS (
+      SELECT DISTINCT p.id AS "personId", COALESCE(p.properties->>'name', '') AS name,
+        lower(btrim(a.address, E' \t\n\r')) AS email,
+        CASE WHEN jsonb_typeof(p.properties->'relationship') = 'string' THEN p.properties->>'relationship' ELSE NULL END AS relationship
+      FROM items p JOIN databases d ON d.id = p.database_id AND d.owner_module_id = 'people'
+      CROSS JOIN LATERAL regexp_split_to_table(CASE WHEN jsonb_typeof(p.properties->'emails') = 'string'
+        THEN p.properties->>'emails' ELSE '' END, E'[,\n\r]+') a(address)
+      WHERE p.deleted_at IS NULL
+        AND (unaccent(COALESCE(p.properties->>'name', '')) ILIKE unaccent($1) ESCAPE '\'
+          OR unaccent(btrim(a.address, E' \t\n\r')) ILIKE unaccent($1) ESCAPE '\')
+    )
+    SELECT "personId", name, email, relationship FROM contacts c
+    WHERE email <> '' AND email <> ALL($2::text[])
+      AND NOT EXISTS (SELECT 1 FROM own_addresses o WHERE o.email = c.email)
+    ORDER BY name, email, "personId" LIMIT $3`,
+    [escapeContactSearchPattern(query), [...new Set(exclude.map(normalizeEmailAddress))], limit],
+  );
+  return rows;
 }

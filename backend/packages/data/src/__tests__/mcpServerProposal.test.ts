@@ -22,7 +22,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 
 describe("MCP server database seed and proposal/confirm integration (issue #123)", () => {
   let inboxId: string;
-  let journalId: string;
   let proposalsId: string;
   let mcpServersId: string;
 
@@ -32,7 +31,6 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     inboxId = await databaseIdFor("inbox");
-    journalId = await databaseIdFor("journal");
     proposalsId = await databaseIdFor("processingProposals");
     mcpServersId = await databaseIdFor("mcpServers");
   });
@@ -64,15 +62,13 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "connect a server",
       }),
     );
     const handler = createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     await handler(
       {
@@ -247,15 +243,13 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",
       }),
     );
     const handler = createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called");
+      return { properties: {}, candidates: [] };
     });
     await handler(
       {

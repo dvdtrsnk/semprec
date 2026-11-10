@@ -1,9 +1,19 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
+import { KNOWN_OWNER_PROCESS_IDS } from "../manifest/knownActionIds.js";
 import {
   createModuleRegistryDriftCheckAction,
   findOrphanedOwnerProcessIds,
@@ -83,6 +93,67 @@ describe("moduleRegistry.checkDrift", () => {
       findOrphanedOwnerProcessIds(client, new Set(["core.known"])),
     );
     expect(orphaned).toEqual(["core.unknown"]);
+  });
+
+  it("scopes heartbeat and owner scans to the current tenant even for an owner connection", async () => {
+    const other = await createTestTenant(pool);
+    const projectItemId = await runInTenant(other, createProjectItem);
+    await runInTenant(other, async () => {
+      const db = await chokePoint.createDatabase({ name: "Foreign" });
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "foreignOwner",
+        name: "Foreign",
+        type: "text",
+        owner: "system",
+        ownerProcess: "foreignProcess",
+      });
+      await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Foreign",
+          rule: { kind: "dailyTime", at: "02:00" },
+          actionId: "foreign.action",
+          enabled: false,
+        }),
+      );
+    });
+    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    try {
+      for (const clientPool of [pool, runtime]) {
+        await withTenantTransaction(clientPool, getTenantZeroId(), async (client) => {
+          expect(await findOrphanedOwnerProcessIds(client, new Set())).toEqual([]);
+          expect(await findUnknownHeartbeatActionIds(client, new Set())).toEqual([]);
+        });
+        await withTenantTransaction(clientPool, other, async (client) => {
+          expect(await findOrphanedOwnerProcessIds(client, new Set())).toContain("foreignProcess");
+          expect(await findUnknownHeartbeatActionIds(client, new Set())).toContain("foreign.action");
+        });
+        await withTenantTransaction(clientPool, "", async (client) => {
+          expect(await findOrphanedOwnerProcessIds(client, new Set())).toEqual([]);
+          expect(await findUnknownHeartbeatActionIds(client, new Set())).toEqual([]);
+        });
+      }
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it("does not report a property owned by the calendar module as an orphan", async () => {
+    const db = await chokePoint.createDatabase({ name: "D" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "status",
+      name: "Status",
+      type: "text",
+      owner: "system",
+      ownerProcess: CALENDAR_MODULE_ID,
+    });
+
+    const orphaned = await withTransaction(pool, (client) =>
+      findOrphanedOwnerProcessIds(client, KNOWN_OWNER_PROCESS_IDS),
+    );
+    expect(orphaned).toEqual([]);
   });
 
   it("publishes a finding for each drift kind and resolves it once repaired", async () => {

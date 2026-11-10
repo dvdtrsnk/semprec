@@ -1,5 +1,11 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
+import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
+import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
+
+/** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
+export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
 
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
 
@@ -40,6 +46,45 @@ export interface ApprovalResourceSnapshot {
 }
 
 /**
+ * The localisable description snapshotted on a request (issue #1683): a template key plus
+ * parameters, never rendered text. The template contract is documented next to the builders in
+ * `approvalDescription.ts`.
+ */
+export interface ApprovalDescription {
+  key: string;
+  params: Record<string, string | number | null>;
+  /** Links the action would end; filled by the value-link work, omitted until then. */
+  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isInheritanceEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.itemId === "string" &&
+    typeof value.propertyKey === "string" &&
+    typeof value.sourceName === "string"
+  );
+}
+
+export function assertDescriptionShape(value: unknown): ApprovalDescription | null {
+  if (value === null) return null;
+  assertShape(
+    isRecord(value) &&
+      typeof value.key === "string" &&
+      isRecord(value.params) &&
+      Object.values(value.params).every((v) => v === null || typeof v === "string" || typeof v === "number") &&
+      (value.endsInheritance === undefined ||
+        (Array.isArray(value.endsInheritance) && value.endsInheritance.every(isInheritanceEntry))),
+    "description",
+  );
+  return value as unknown as ApprovalDescription;
+}
+
+/**
  * `approval_requests` (issue #130 baseline): one immutable, invocation-time snapshot per
  * deferred MCP tool call. `payload` is exactly what a later issue needs to execute the
  * approved call unchanged — the resolved target's identity plus the model-supplied
@@ -53,7 +98,7 @@ export interface ApprovalRequest {
   id: string;
   agentRunId: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   payload: ApprovalRequestPayload;
   status: ApprovalRequestStatus;
   requestedAt: string;
@@ -65,6 +110,12 @@ export interface ApprovalRequest {
   executedAt: string | null;
   executionError: boolean | null;
   executionResult: unknown;
+  /** The agent's own explanation of why it asked, as plain text; `null` when it gave none. */
+  reason: string | null;
+  /** The model-runtime tool call that created the request; `null` for older requests and paths without one. */
+  toolCallId: string | null;
+  /** What the request asks, as a template key and parameters snapshotted at creation; `null` for requests created before issue #1683. */
+  description: ApprovalDescription | null;
 }
 
 /** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
@@ -113,6 +164,9 @@ interface ApprovalRequestRow {
   executed_at: string | null;
   execution_error: boolean | null;
   execution_result_jsonb: unknown;
+  reason: string | null;
+  tool_call_id: string | null;
+  description: unknown;
 }
 
 function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalResourceSnapshot {
@@ -127,12 +181,41 @@ function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalR
   return value;
 }
 
+function assertNullableString(value: unknown, column: string): string | null {
+  assertShape(value === null || typeof value === "string", column);
+  return value as string | null;
+}
+
+function classifyOutcomePayload(value: unknown): "generic" | "mcp" {
+  if (!isRecord(value)) throw new Error("Invalid approval outcome payload");
+  if ("operationName" in value) {
+    if (typeof value.operationName !== "string" || value.operationName.length === 0) {
+      throw new Error("Invalid approval outcome payload");
+    }
+    return "generic";
+  }
+  if (!isMcpItemId(value.mcpToolRegistrationId) || !isMcpItemId(value.mcpServerItemId) || !isRecord(value.args)) {
+    throw new Error("Invalid approval outcome payload");
+  }
+  return "mcp";
+}
+
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
+  if (
+    isRecord(row.execution_result_jsonb) &&
+    "failure" in row.execution_result_jsonb &&
+    classifyOutcomePayload(row.payload) === "mcp"
+  ) {
+    parseMcpInvokeFailure(row.execution_result_jsonb.failure);
+    if (row.execution_error !== true || typeof row.execution_result_jsonb.text !== "string") {
+      throw new Error("Invalid MCP failure metadata");
+    }
+  }
   return {
     id: row.id,
     agentRunId: row.agent_run_id,
     toolName: row.tool_name,
-    riskClass: row.risk_class,
+    riskClass: assertKnownValue(RISK_CLASSES, row.risk_class, "risk_class"),
     payload: row.payload,
     status: assertKnownValue(APPROVAL_REQUEST_STATUSES, row.status, "status"),
     requestedAt: row.requested_at,
@@ -143,25 +226,39 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     executedAt: row.executed_at,
     executionError: row.execution_error,
     executionResult: row.execution_result_jsonb,
+    reason: row.reason,
+    toolCallId: assertNullableString(row.tool_call_id, "tool_call_id"),
+    description: assertDescriptionShape(row.description),
   };
 }
 
 export interface CreatePendingApprovalRequestInput {
   agentRunId: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   payload: ApprovalRequestPayload;
   resourceSnapshot: ApprovalResourceSnapshot;
+  /** Optional agent-supplied reason (at most `APPROVAL_REQUEST_REASON_MAX_LENGTH` characters); stored as `NULL` when absent. */
+  reason?: string | null;
+  /** The model-runtime tool call that produced the request; stored as `NULL` when absent. */
+  toolCallId?: string | null;
+  /** The localisable description, computed by the caller in the same transaction; stored as `NULL` when absent. */
+  description?: ApprovalDescription | null;
 }
 
-/** Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with. */
+/**
+ * Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with.
+ * A repeated creation for the same `(agentRunId, toolCallId)` returns the existing request instead of inserting a second row.
+ */
 export async function createPendingApprovalRequest(
   client: Queryable,
   input: CreatePendingApprovalRequestInput,
 ): Promise<ApprovalRequest> {
+  const toolCallId = input.toolCallId ?? null;
   const { rows } = await client.query<ApprovalRequestRow>(
-    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason, tool_call_id, description)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
+     ON CONFLICT (tenant_id, agent_run_id, tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
       input.agentRunId,
@@ -169,9 +266,29 @@ export async function createPendingApprovalRequest(
       input.riskClass,
       JSON.stringify(input.payload),
       JSON.stringify(input.resourceSnapshot),
+      input.reason ?? null,
+      toolCallId,
+      input.description ? JSON.stringify(input.description) : null,
     ],
   );
-  return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
+  if (rows.length === 0 && toolCallId !== null) {
+    const existing = await client.query<ApprovalRequestRow>(
+      `SELECT * FROM approval_requests WHERE agent_run_id = $1 AND tool_call_id = $2`,
+      [input.agentRunId, toolCallId],
+    );
+    return rowToApprovalRequest(requireSingleRow(existing.rows, "approval_requests tool call lookup"));
+  }
+  const created = rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
+  // Raise the requesting run's thread to the top of the activity ordering (issue #1728). Runs in the
+  // caller's transaction, so a rollback drops it with the request; GREATEST never lowers a newer
+  // activity committed after this transaction started (`now()` is the transaction start time). A
+  // run without a thread matches no row. A replayed tool call (conflict above) is not new activity.
+  await client.query(
+    `UPDATE semp_threads SET last_activity_at = GREATEST(last_activity_at, now())
+      WHERE id = (SELECT thread_id FROM agent_runs WHERE id = $1)`,
+    [input.agentRunId],
+  );
+  return created;
 }
 
 /** `forUpdate` row-locks the request for the duration of the caller's transaction — `approvalExecute`'s locked revalidate-then-mutate protocol (issue #89) needs this so a concurrent decide/replay can't observe or race a half-finished execution. */
@@ -283,6 +400,12 @@ export async function claimApprovalRequestExecution(client: Queryable, id: strin
 export interface ApprovalRequestOutcome {
   error: boolean;
   result: string;
+  /**
+   * Why a failed MCP outcome failed. When set, `execution_result_jsonb` holds `{ text, outcomeKind }`
+   * so `approvalConflictReason` can tell the causes apart; when absent it holds the plain text.
+   */
+  outcomeKind?: ApprovalOutcomeKind;
+  failure?: McpInvokeFailure;
 }
 
 /**
@@ -310,13 +433,27 @@ export async function recordApprovalRequestOutcome(
   id: string,
   outcome: ApprovalRequestOutcome,
 ): Promise<boolean> {
+  const failure = outcome.failure === undefined ? undefined : parseMcpInvokeFailure(outcome.failure);
+  if (failure && !outcome.error) throw new Error("Invalid MCP failure metadata");
   const result = await client.query(
     `UPDATE approval_requests
         SET execution_error = $2, execution_result_jsonb = $3::jsonb,
             execution_status = CASE WHEN $2 THEN 'conflict' ELSE 'succeeded' END,
             executed_at = COALESCE(executed_at, now())
       WHERE id = $1 AND execution_status = 'queued'`,
-    [id, outcome.error, JSON.stringify(outcome.result)],
+    [
+      id,
+      outcome.error,
+      JSON.stringify(
+        outcome.outcomeKind || failure
+          ? {
+              text: outcome.result,
+              ...(outcome.outcomeKind ? { outcomeKind: outcome.outcomeKind } : {}),
+              ...(failure ? { failure } : {}),
+            }
+          : outcome.result,
+      ),
+    ],
   );
   return result.rowCount === 1;
 }
@@ -345,14 +482,16 @@ export async function settleStaleApprovalRequestClaim(
   id: string,
   staleAfterMs: number,
 ): Promise<StaleApprovalClaimSettlement> {
-  const unknownOutcomeText =
-    "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.";
+  const unknownOutcome: { text: string; outcomeKind: ApprovalOutcomeKind } = {
+    text: "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.",
+    outcomeKind: "staleClaim",
+  };
   const result = await client.query(
     `UPDATE approval_requests
         SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb
       WHERE id = $1 AND status = 'approved' AND execution_status = 'queued' AND executed_at IS NOT NULL
         AND executed_at < now() - make_interval(secs => $3 / 1000.0)`,
-    [id, JSON.stringify(unknownOutcomeText), staleAfterMs],
+    [id, JSON.stringify(unknownOutcome), staleAfterMs],
   );
   if (result.rowCount === 1) return "settled";
 

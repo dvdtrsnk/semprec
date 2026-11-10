@@ -8,9 +8,11 @@ import {
   type CreateRelationPropertyInput,
 } from "../chokePoint/relationPropertyOps.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
+import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import {
   AREAS_MODULE_ID,
@@ -25,14 +27,16 @@ import {
   TRANSCRIPTS_MODULE_ID,
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
+import { ensureUnplannedArea } from "./seedUnplannedArea.js";
+import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — no `label`, since a
 // shipped option's display text is not an override (see SelectOption's doc comment).
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
+function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
+  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
 }
 
 interface PropSpec {
@@ -42,7 +46,7 @@ interface PropSpec {
    * translation catalog); a built-in property of a system database is stored with a null
    * `name` (issue #235) — `createProps` below never writes this string to the column.
    */
-  name: string;
+  name: string | null;
   type: PropertyType;
   owner?: PropertyOwner;
   ownerProcess?: string;
@@ -94,11 +98,14 @@ export async function seedTenDatabasesInTransaction(
   // of one of these ten databases is as much a built-in property as the plain ones `createProps`
   // creates, so it gets the same null-name treatment (issue #235). Each call site below still
   // spells out its intended label as documentation for the future translation catalog (#146).
-  const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
+  const relate = (
+    input: CreateRelationPropertyInput,
+    context?: SystemRelationWriteContext,
+  ): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(
       client,
       { ...input, name: null, inverse: input.inverse ? { ...input.inverse, name: null } : undefined },
-      undefined,
+      context,
       computedKeyRegistry,
     );
 
@@ -107,21 +114,37 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
+    { key: "systemActive", name: null, type: "checkbox", owner: "user", locked: true },
     { key: "note", name: "Note", type: "text", owner: "user" },
+    { key: "icon", name: null, type: "text", owner: "user" },
+    { key: "color", name: null, type: "color", owner: "user" },
+    { key: "position", name: null, type: "number", owner: "user" },
   ]);
+
+  await ensureUnplannedArea(client, areas.id);
 
   const projects = await createDb(client, PROJECTS_MODULE_ID);
   await createProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "pinned", name: "Pinned", type: "checkbox", owner: "user" },
+    { key: "pinnedOrder", name: null, type: "number", owner: "user" },
     {
       key: "status",
       name: "Status",
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["inProgress", "done", "archived", "longTerm"]), default: "inProgress" },
+      config: {
+        ...selectConfig(["inProgress", "longTerm", "done", "archived"], {
+          inProgress: "#007AFF",
+          longTerm: "#AF52DE",
+          done: "#34C759",
+          archived: "#8E8E93",
+        }),
+        default: "inProgress",
+      },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
+    { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
     // A 4-section equivalent of an AGENT.md; `sections` names the fixed structure a client
     // renders as separate fields within this one longText value, not four separate columns.
@@ -146,16 +169,40 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["notDone", "done", "wontDo"]), default: "notDone" },
+      config: { ...selectConfig(["notDone", "done", "wontDo", "missed"]), default: "notDone" },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
     { key: "timeTo", name: "Time to", type: "time", owner: "user" },
     // Derived from timeFrom/timeTo; not directly editable — see the issue's "the generic
     // update path refuses this field" pattern (assertWritableProperties on owner:'system').
-    { key: "time", name: "Time", type: "time", owner: "system", locked: true },
+    { key: "time", name: "Time", type: "time", owner: "system", ownerProcess: TASKS_MODULE_ID, locked: true },
+    { key: "flagged", name: null, type: "checkbox", owner: "user" },
+    { key: "description", name: null, type: "longText", owner: "user" },
+    { key: "since", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "sinceTime", name: null, type: "json", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "completedOn", name: null, type: "date", owner: "user" },
+    {
+      key: "completedAt",
+      name: null,
+      type: "date",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      config: { includeTime: true },
+    },
+    {
+      key: "hiddenUntil",
+      name: null,
+      type: "date",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      config: { includeTime: true },
+    },
+    { key: "effectiveDate", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "seriesId", name: null, type: "text", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "occurrenceDate", name: null, type: "date", owner: "system", ownerProcess: TASKS_MODULE_ID },
+    { key: "recurrence", name: null, type: "json", owner: "system", ownerProcess: TASKS_MODULE_ID },
     { key: "notifications", name: "Notifications", type: "checkbox", owner: "user" },
-    { key: "persistent", name: "Persistent", type: "checkbox", owner: "user" },
   ]);
 
   const people = await createDb(client, PEOPLE_MODULE_ID);
@@ -167,17 +214,45 @@ export async function seedTenDatabasesInTransaction(
       name: "Relationship",
       type: "select",
       owner: "user",
-      config: selectConfig(["parent", "therapist", "closeFriend", "girlfriend", "client", "neighbor"]),
+      config: selectConfig(
+        ["client", "closeFriend", "parent", "girlfriend", "therapist", "neighbor", "colleague", "craftsman", "doctor"],
+        {
+          client: "#007AFF",
+          closeFriend: "#AF52DE",
+          parent: "#FF9500",
+          girlfriend: "#FF2D55",
+          therapist: "#34C759",
+          neighbor: "#8E8E93",
+          colleague: "#8E8E93",
+          craftsman: "#8E8E93",
+          doctor: "#8E8E93",
+        },
+      ),
     },
     // Canonical values stay plain English camelCase per the canonical-keys skill; the
     // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
+    { key: "phones", name: "Phones", type: "longText", owner: "user" },
+    // Issue #1660: derived from the person's past Events, Emails and Transcripts, written only by
+    // `people/lastContact.ts`'s recompute; populated installs get it from the People lastContact cutover.
+    { key: "lastContact", name: "Last contact", type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID },
   ]);
 
   const files = await createDb(client, FILES_MODULE_ID);
   await createProps(client, files.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["pdf", "xlsx", "docx", "jpg"]) },
+    {
+      key: "type",
+      name: "Type",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"], {
+        pdf: "#FF3B30",
+        xlsx: "#34C759",
+        docx: "#007AFF",
+        jpg: "#FF9500",
+      }),
+    },
     { key: "date", name: "Date", type: "date", owner: "user", config: { default: "today" } },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql).
     { key: "file", name: "File", type: "file", owner: "user" },
@@ -186,15 +261,45 @@ export async function seedTenDatabasesInTransaction(
   const events = await createDb(client, EVENTS_MODULE_ID);
   await createProps(client, events.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["event", "standup", "meeting"]) },
+    {
+      key: "type",
+      name: "Type",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["meeting", "standup", "event"], {
+        meeting: "#AF52DE",
+        standup: "#007AFF",
+        event: "#FF3B30",
+      }),
+    },
     { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
+    // Calendar time model (wall-clock values in the tenant time zone); no `timeFrom` means all-day.
+    { key: "endDate", name: "End date", type: "date", owner: "user" },
+    { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
+    { key: "timeTo", name: "Time to", type: "time", owner: "user" },
+    { key: "time", name: "Time", type: "time", owner: "system", locked: true },
+    { key: "place", name: "Place", type: "text", owner: "user" },
+    { key: "url", name: "URL", type: "url", owner: "user" },
+    { key: "description", name: "Description", type: "longText", owner: "user" },
+    { key: "alertMinutes", name: "Alert minutes", type: "number", owner: "user" },
+    { key: "travelMinutes", name: "Travel minutes", type: "number", owner: "user" },
+    // The iCalendar identity of an Event (issue #1599), computed by `calendar/eventIcalIdentityTransform.ts`;
+    // a populated tenant gets the same two definitions from `calendar/eventsIcalIdentityCutoverMigration.ts`.
+    { key: "icalUid", name: "iCalendar UID", type: "text", owner: "system", locked: true },
+    { key: "icalSequence", name: "iCalendar sequence", type: "number", owner: "system", locked: true },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);
   await createProps(client, healthRecords.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "date", name: "Date", type: "date", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["resolved", "monitoring"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["monitoring", "resolved"], { monitoring: "#FF9500", resolved: "#34C759" }),
+    },
     // Stays text, not a relation to People: also covers pets, which don't and shouldn't
     // exist in the People database.
     { key: "subject", name: "Subject", type: "text", owner: "user" },
@@ -261,6 +366,49 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 2: relations — every target database above already exists, so declaration order doesn't matter here ----
 
+  await relate({
+    sourceDatabaseId: tasks.id,
+    key: "people",
+    name: null,
+    targetDatabaseId: people.id,
+    cardinality: "many_to_many",
+    inverse: { key: "tasks", name: null },
+  });
+  await relate({
+    sourceDatabaseId: tasks.id,
+    key: "files",
+    name: null,
+    targetDatabaseId: files.id,
+    cardinality: "many_to_many",
+    inverse: { key: "tasks", name: null },
+  });
+  await relate(
+    {
+      sourceDatabaseId: tasks.id,
+      key: "hostEvents",
+      name: null,
+      targetDatabaseId: events.id,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      inverse: { key: "hostedTasks", name: null, owner: "system", ownerProcess: TASKS_MODULE_ID },
+    },
+    { ownerProcess: TASKS_MODULE_ID },
+  );
+  await relate(
+    {
+      sourceDatabaseId: events.id,
+      key: "completedTasks",
+      name: null,
+      targetDatabaseId: tasks.id,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: TASKS_MODULE_ID,
+      inverse: { key: "completedInEvent", name: null, owner: "system", ownerProcess: TASKS_MODULE_ID },
+    },
+    { ownerProcess: TASKS_MODULE_ID },
+  );
+
   // Areas <-> Projects ("Hub"): one area has many projects. `property_id_a` is Areas.projects
   // (the "one" side, issue #82's cardinality contract), Projects.area/"Hub" is the inverse —
   // a project's own "Hub" field is single-valued and must be the side the enforced
@@ -273,13 +421,21 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "area", name: "Hub" },
   });
-  // Areas <-> Companies: explicit bidirectional, 1:1 per the issue.
+  await relate({
+    sourceDatabaseId: areas.id,
+    key: "events",
+    name: "Events",
+    targetDatabaseId: events.id,
+    cardinality: "one_to_many",
+    inverse: { key: "area", name: "Area" },
+  });
+  // Areas <-> Companies: an area can contain several companies.
   await relate({
     sourceDatabaseId: areas.id,
     key: "company",
     name: "Company",
     targetDatabaseId: companies.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
   // Fix: Areas <-> Health records was one-directional (from Areas) in the mock; unified to bidirectional.
@@ -288,7 +444,7 @@ export async function seedTenDatabasesInTransaction(
     key: "healthRecord",
     name: "Health record",
     targetDatabaseId: healthRecords.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
   // Fix: Projects <-> Companies was a free-form select ("Osobní"/"MeguMethod") in the mock;
@@ -382,30 +538,48 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "project", name: "Project" },
   });
-  // Events -> People: one-directional only (People's own relation list doesn't name Events).
+  // Events <-> Files: files attached to an event (issue #1588). Populated installs get the same pair from
+  // `blobs/eventsFilesRelationCutoverMigration.ts`.
+  await relate({
+    sourceDatabaseId: events.id,
+    key: "files",
+    name: "Files",
+    targetDatabaseId: files.id,
+    cardinality: "many_to_many",
+    owner: "user",
+    inverse: { key: "events", name: "Events", owner: "user" },
+  });
+  // Events <-> People: an Event's participants, read from the person as `People.events` (issue #1664). Populated
+  // installs get the inverse from `calendar/peopleEventsInverseCutoverMigration.ts`.
   await relate({
     sourceDatabaseId: events.id,
     key: "people",
     name: "People",
     targetDatabaseId: people.id,
     cardinality: "many_to_many",
+    inverse: { key: "events", name: "Events" },
   });
-  // Events <-> Transcripts: explicit bidirectional 1:1.
+  // Events <-> Transcripts: explicit bidirectional. One Event has many transcripts (the parts of one
+  // meeting, each with its own summary); a transcript has at most one Event. `property_id_a` is
+  // Events.transcript (the "one" side), so the trigger from 0013 guards only `item_b`, the transcript.
+  // Populated installs seeded with the earlier `one_to_one` are cut over by
+  // `transcription/eventTranscriptCardinalityCutoverMigration.ts`.
   await relate({
     sourceDatabaseId: events.id,
     key: "transcript",
     name: "Transcript",
     targetDatabaseId: transcripts.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "event", name: "Event" },
   });
-  // Events -> Tasks (action items from a meeting): one-directional only (Tasks' own relation list doesn't name Events).
+  // Events <-> Tasks: action items and their source events.
   await relate({
     sourceDatabaseId: events.id,
     key: "actionItems",
     name: "Action items",
     targetDatabaseId: tasks.id,
     cardinality: "many_to_many",
+    inverse: { key: "sourceEvents", name: null },
   });
   // Fix: Events <-> Companies ("firma") was a free-form multiSelect in the mock, the same
   // inconsistency as Projects'; unified with the existing Companies -> Events ("meetings") relation.
@@ -436,6 +610,33 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: people.id,
     cardinality: "many_to_many",
   });
+  // Transcripts <-> Projects / Companies: a transcript has at most one of each, so the "many"
+  // side (`Projects.transcripts`, `Companies.transcripts`) is property A of `one_to_many`.
+  await relate({
+    sourceDatabaseId: projects.id,
+    key: "transcripts",
+    name: "Transcripts",
+    targetDatabaseId: transcripts.id,
+    cardinality: "one_to_many",
+    inverse: { key: "project", name: "Project" },
+  });
+  await relate({
+    sourceDatabaseId: companies.id,
+    key: "transcripts",
+    name: "Transcripts",
+    targetDatabaseId: transcripts.id,
+    cardinality: "one_to_many",
+    inverse: { key: "company", name: "Company" },
+  });
+  // Transcripts <-> People ("people"): the recording's participants, separate from the mapped `speakers`.
+  await relate({
+    sourceDatabaseId: transcripts.id,
+    key: "people",
+    name: "People",
+    targetDatabaseId: people.id,
+    cardinality: "many_to_many",
+    inverse: { key: "transcripts", name: "Transcripts" },
+  });
   // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
   // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
   // `many_to_many`, not `one_to_many` (issue #82) — same reasoning as Files.area above.
@@ -446,6 +647,28 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: areas.id,
     cardinality: "many_to_many",
   });
+
+  await relate({
+    sourceDatabaseId: journal.id,
+    key: "project",
+    name: null,
+    targetDatabaseId: projects.id,
+    cardinality: "many_to_many",
+  });
+  // Journal -> Events (issue #1609): derived from the event links in the entry's page (#2016), so it is system-owned
+  // by that sync's process; one-directional, with no inverse on Events.
+  await relate(
+    {
+      sourceDatabaseId: journal.id,
+      key: "events",
+      name: null,
+      targetDatabaseId: events.id,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS,
+    },
+    { ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS },
+  );
 
   // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
   const all: TenDatabases = {

@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { getNotificationById } from "@semprec/data";
+import { getDocById, getItemsByIds, getNotificationById, withTransaction } from "@semprec/data";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   AGENT_STREAM_CHANNEL,
@@ -13,11 +13,12 @@ import {
   type RealtimeMessage,
 } from "./pgNotifyPublisher.js";
 import { logger } from "./logger.js";
-import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
+import { createAgentRunWatchRegistry, type VoiceRunWatchInput } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 import { createInvalidationCoalescer } from "./invalidationCoalescer.js";
+import { createDocInvalidationThrottle } from "./docInvalidationThrottle.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
@@ -45,6 +46,7 @@ export interface SyncServerOptions {
 }
 
 export interface SyncServer {
+  subscribeVoice(input: VoiceRunWatchInput): Promise<() => Promise<void>>;
   /** Wire this to the underlying `http.Server`'s `'upgrade'` event for the `/api/sync` path. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
@@ -126,6 +128,8 @@ function rejectUpgrade(socket: Duplex): void {
  *   write carries no single acting user, so it reaches every socket of the envelope's tenant — and
  *   never another tenant's. Every client refetches the referenced row itself over REST and a client
  *   with nothing cached for it just ignores the frame.
+ * - `invalidation` with `scope: "sempThread"` sends a thin frame naming the thread to every socket
+ *   of the envelope's tenant, best effort and without replay.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -156,7 +160,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const invalidationCoalescer = createInvalidationCoalescer();
 
   function deliver(client: WebSocket, frame: OutboundFrame): void {
-    if (frame.type === "invalidate" && frame.scope === "item") {
+    if (frame.type === "invalidate" && (frame.scope === "item" || frame.scope === "relation")) {
       invalidationCoalescer.enqueue(client, frame);
       return;
     }
@@ -281,6 +285,31 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     }
   }
 
+  async function resolveDocInvalidation(tenantId: string, docId: string) {
+    return runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const doc = await getDocById(client, docId);
+        if (!doc) return null;
+        const [item] = await getItemsByIds(client, [doc.itemId]);
+        if (!item) return null;
+        return {
+          type: "invalidate",
+          scope: "doc",
+          docId,
+          itemId: item.id,
+          databaseId: item.databaseId,
+          lastEditedAt: doc.lastEditedAt,
+        } as const;
+      }),
+    );
+  }
+
+  const docInvalidations = createDocInvalidationThrottle(
+    resolveDocInvalidation,
+    (tenantId, frame) => sendToTenant(tenantId, frame),
+    () => logger.error({ stage: "doc_invalidation" }, "Sync server failed to invalidate a document"),
+  );
+
   /** Closes every currently connected socket with `code`/`reason` — never a per-stream drop. */
   function closeAll(code: number, reason: string): void {
     for (const client of wss.clients) {
@@ -390,6 +419,26 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "invalidation": {
+          if (parsed.scope === "sempThread") {
+            // Tenant-wide, best effort, no replay: the client refetches the thread.
+            sendToTenant(tenantId, { type: "invalidate", scope: "sempThread", threadId: parsed.threadId });
+            return;
+          }
+          if (parsed.scope === "relation") {
+            sendToTenant(
+              tenantId,
+              {
+                type: "invalidate",
+                scope: "relation",
+                databaseId: parsed.databaseId,
+                itemId: parsed.itemId,
+                propertyKey: parsed.propertyKey,
+                op: parsed.op,
+              },
+              parsed.userId,
+            );
+            return;
+          }
           const frame: OutboundFrame =
             parsed.scope === "item"
               ? {
@@ -425,6 +474,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "doc_update": {
+          docInvalidations.enqueue(tenantId, parsed.docId);
           docSync.fanOutDocUpdate(tenantId, parsed.docId, parsed.updateId).catch((err: unknown) => {
             logger.error({ err }, "Sync server failed to fan out a doc update");
           });
@@ -483,6 +533,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const onError = (err: unknown) => {
     logger.error({ err }, "Sync server LISTEN connection error");
     detachListenClient();
+    agentRunWatch.resetVoice();
     closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection lost");
     if (!closed) {
       reconnectListen().catch((reconnectErr: unknown) => {
@@ -493,6 +544,10 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   listenClient.on("error", onError);
 
   return {
+    async subscribeVoice(input) {
+      if (closed || !listenClientActive) throw new Error("Voice run watch unavailable");
+      return agentRunWatch.subscribeVoice(input);
+    },
     handleUpgrade(req, socket, head) {
       const closesBefore = tenantCloseCount;
       runAsSystem("realtime:upgrade", () => options.authenticate(req))
@@ -523,6 +578,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         });
     },
     closeTenant(tenantId) {
+      agentRunWatch.closeTenant(tenantId);
       lastTenantClose.set(tenantId, ++tenantCloseCount);
       for (const client of wss.clients) {
         const identity = identityByClient.get(client);
@@ -533,6 +589,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     },
     async close() {
       closed = true;
+      agentRunWatch.close();
+      const docInvalidationsClosed = docInvalidations.close();
       detachListenClient();
       // A controlled (deploy) shutdown (issue #242's Task) sends every client a real 1012 close
       // frame rather than `terminate()`ing them: the whole point is telling each one "reconnect
@@ -541,7 +599,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       // wait on these clients finishing their handshake — an unresponsive one is hard-dropped by
       // `ws`'s own close timeout rather than hanging this method.
       closeAll(SERVICE_RESTART_CLOSE_CODE, "server shutting down");
-      await new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve())));
+      const results = await Promise.allSettled([
+        new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve()))),
+        docInvalidationsClosed,
+      ]);
+      const failures: unknown[] = [];
+      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Sync server shutdown failed");
     },
   };
 }

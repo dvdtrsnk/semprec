@@ -1,15 +1,21 @@
 import type { ModuleRegistry } from "@semprec/module-registry";
 import {
+  compareCollections,
   createCatalogResolver,
+  createCollectionMetadataResolver,
   resolveDatabaseName,
+  resolveDatabasePlaceholderForRow,
   resolveProperty,
   toManifestLocale,
+  ValidationError,
   type CatalogResolver,
+  type CollectionMetadataResolver,
   type ManifestLocale,
+  type OrderableCollection,
 } from "@semprec/data";
 import type { Database, GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { optionalIntegerQueryParam, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
+import { requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toDatabaseEnvelope } from "./adapter/databaseEnvelope.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
@@ -56,9 +62,73 @@ async function resolvedDatabaseBody(
   catalogResolver: CatalogResolver,
   database: Database,
   locale: ManifestLocale,
+  metadataResolver: CollectionMetadataResolver,
 ): Promise<ReturnType<typeof toDatabaseEnvelope>> {
   const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
-  return toDatabaseEnvelope(database, resolveDatabaseName(database.name, database.key, database.id, catalogs, locale));
+  return toDatabaseEnvelope(
+    database,
+    resolveDatabaseName(database.name, database.key, database.id, catalogs, locale),
+    await resolveDatabasePlaceholderForRow(catalogResolver, database, locale),
+    metadataResolver.resolve(database),
+  );
+}
+
+const DATABASE_LIST_PAGE_SIZE = 200;
+const DEFAULT_LIST_LIMIT = 50;
+
+/** Encodes the sort tuple of the last returned row, so a cursor stays valid after that row is archived. */
+function encodeListCursor(row: OrderableCollection): string {
+  const tuple = [row.switcherOrder, row.overviewOrder, row.name, row.id];
+  return Buffer.from(JSON.stringify(tuple), "utf8").toString("base64url");
+}
+
+function invalidCursor(): ValidationError {
+  return new ValidationError("'cursor' is not a valid cursor", { field: "cursor" });
+}
+
+function isOrder(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isInteger(value) && value > 0);
+}
+
+function decodeListCursor(raw: string): OrderableCollection {
+  let tuple: unknown;
+  try {
+    tuple = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    throw invalidCursor();
+  }
+  if (!Array.isArray(tuple) || tuple.length !== 4) throw invalidCursor();
+  const [switcherOrder, overviewOrder, name, id] = tuple as unknown[];
+  if (!isOrder(switcherOrder) || !isOrder(overviewOrder) || typeof name !== "string" || typeof id !== "string") {
+    throw invalidCursor();
+  }
+  return { switcherOrder, overviewOrder, name, id };
+}
+
+/** Reads every page of `database.list`; the new order cannot be expressed by that operation's id-keyed cursor. */
+async function listAllDatabases(service: GenericApplicationPort, userId: string): Promise<Database[]> {
+  const all: Database[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await dispatchGenericOperation(service, "database.list", restActor(userId), {
+      cursor,
+      limit: DATABASE_LIST_PAGE_SIZE,
+    });
+    all.push(...page.items);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return all;
+}
+
+/** `limit` keeps the `database.list` range: 1 to 200, default 50. */
+function optionalLimit(query: URLSearchParams): number {
+  const raw = query.get("limit");
+  if (raw === null) return DEFAULT_LIST_LIMIT;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 200) {
+    throw new ValidationError("'limit' must be an integer between 1 and 200", { field: "limit" });
+  }
+  return value;
 }
 
 function requestUrl(rawUrl: string | undefined): URL {
@@ -85,14 +155,35 @@ export function createDatabaseRoutes(
       path: "/api/databases",
       handler: async (ctx) => {
         const query = requestUrl(ctx.req.url).searchParams;
-        const page = await dispatchGenericOperation(service, "database.list", restActor(ctx.identity.user.id), {
-          cursor: query.get("cursor") ?? undefined,
-          limit: optionalIntegerQueryParam(query, "limit"),
-        });
+        const limit = optionalLimit(query);
+        const rawCursor = query.get("cursor");
+        const after = rawCursor === null ? undefined : decodeListCursor(rawCursor);
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        const databases = await Promise.all(page.items.map((db) => resolvedDatabaseBody(catalogResolver, db, locale)));
-        return { status: 200, body: { databases, nextCursor: page.nextCursor } };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        const rows = await listAllDatabases(service, ctx.identity.user.id);
+        const entries = await Promise.all(
+          rows.map(async (db) => {
+            const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
+            const metadata = metadataResolver.resolve(db);
+            const sortable: OrderableCollection = {
+              id: db.id,
+              name: resolveDatabaseName(db.name, db.key, db.id, catalogs, locale),
+              switcherOrder: metadata.switcherOrder,
+              overviewOrder: metadata.overviewOrder,
+            };
+            return { db, sortable };
+          }),
+        );
+        entries.sort((a, b) => compareCollections(a.sortable, b.sortable));
+        const remaining =
+          after === undefined ? entries : entries.filter((e) => compareCollections(e.sortable, after) > 0);
+        const window = remaining.slice(0, limit);
+        const databases = await Promise.all(
+          window.map((e) => resolvedDatabaseBody(catalogResolver, e.db, locale, metadataResolver)),
+        );
+        const nextCursor = remaining.length > limit ? encodeListCursor(window[window.length - 1]!.sortable) : null;
+        return { status: 200, body: { databases, nextCursor } };
       },
     },
     {
@@ -100,13 +191,14 @@ export function createDatabaseRoutes(
       path: "/api/databases",
       handler: async (ctx) => {
         const body = requireJsonObjectBody(ctx.body);
-        const database = await dispatchGenericOperation(service, "database.create", restActor(ctx.identity.user.id), {
-          name: body.name,
-          parentItemId: body.parentItemId,
-        });
         const locale = toManifestLocale(ctx.identity.user.locale);
+        const database = await dispatchGenericOperation(service, "database.create", restActor(ctx.identity.user.id), {
+          ...body,
+          titlePropertyName: body.titlePropertyName ?? (locale === "cs" ? "Název" : "Name"),
+        });
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        return { status: 201, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        return { status: 201, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
       },
     },
     {
@@ -119,7 +211,8 @@ export function createDatabaseRoutes(
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
       },
     },
     {
@@ -128,15 +221,14 @@ export function createDatabaseRoutes(
       handler: async (ctx) => {
         const databaseId = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
-        const patch: Record<string, unknown> = {};
-        if (body.name !== undefined) patch.name = body.name;
         const database = await dispatchGenericOperation(service, "database.patch", restActor(ctx.identity.user.id), {
           databaseId,
-          patch,
+          patch: body,
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
       },
     },
     {
@@ -149,7 +241,8 @@ export function createDatabaseRoutes(
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
       },
     },
     {
@@ -162,7 +255,8 @@ export function createDatabaseRoutes(
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+        const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
       },
     },
     {

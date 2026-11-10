@@ -4,9 +4,11 @@
  * dependency exists outside this one process (the issue's acceptance criterion).
  */
 
+import type { AiGatewayContentBlock } from "@semprec/shared";
+
 export interface StructuredCompletionMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiGatewayContentBlock[];
 }
 
 export interface StructuredCompletionRequest {

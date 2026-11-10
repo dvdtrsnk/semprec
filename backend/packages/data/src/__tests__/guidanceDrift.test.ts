@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -13,6 +13,11 @@ import {
 } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { agentGuidanceDriftFindingsStore } from "../guidanceDrift/agentGuidanceDriftFindingsStore.js";
 import type { GuidanceDriftContradiction } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { createUser } from "../auth/usersStore.js";
+import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
+import { projectToolCallUsageStore } from "../guidanceDrift/projectToolCallUsageStore.js";
 
 let pool: Pool;
 
@@ -26,6 +31,8 @@ async function createProjectItem(): Promise<string> {
 }
 
 const CONTRADICTION: GuidanceDriftContradiction = {
+  kind: "permission",
+  subject: { operation: "files.delete", databaseId: null },
   claim: "The agent can delete files without approval.",
   guidanceExcerpt: "Agents may delete any file directly.",
   manifestFacts: ["capability.files.delete requires approval"],
@@ -41,6 +48,205 @@ describe("guidanceDrift stores (issue #85)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("groups typed generic and MCP events by distinct run inside the runtime tenant", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const a = await createTestTenant(pool);
+      const b = await createTestTenant(pool);
+      const userA = await createUser(pool, { email: "drift-a@example.test", passwordHash: "hash", tenantId: a });
+      const userB = await createUser(pool, { email: "drift-b@example.test", passwordHash: "hash", tenantId: b });
+      const projectA = randomUUID();
+      const projectB = randomUUID();
+      const databaseId = randomUUID();
+      for (const [tenant, user, project] of [
+        [a, userA.id, projectA],
+        [b, userB.id, projectB],
+      ] as const) {
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (tx) => {
+            for (let index = 0; index < 3; index++) {
+              const run = await createAgentRun(tx, {
+                projectItemId: project,
+                userId: user,
+                triggeredBy: "user",
+                task: "test",
+              });
+              await insertAgentRunEvent(tx, run.id, "tool_use", {
+                toolCallId: `c${index}`,
+                name: "create",
+                arguments: {},
+                operation: "item.create",
+                targetDatabaseId: databaseId,
+              });
+              if (index === 0)
+                await insertAgentRunEvent(tx, run.id, "tool_use", {
+                  toolCallId: "duplicate",
+                  name: "create",
+                  arguments: {},
+                  operation: "item.create",
+                  targetDatabaseId: databaseId,
+                });
+              if (index === 0) {
+                await insertAgentRunEvent(tx, run.id, "tool_use", { toolCallId: "legacy", name: "old", arguments: {} });
+                await insertAgentRunEvent(tx, run.id, "tool_use", {
+                  toolCallId: "malformed",
+                  name: "bad",
+                  arguments: {},
+                  operation: "not.a.real.operation",
+                });
+              }
+              await insertAgentRunEvent(tx, run.id, "tool_use", {
+                toolCallId: `m${index}`,
+                name: "search",
+                arguments: {},
+                mcp: {
+                  toolRegistrationId: "registration",
+                  serverItemId: "server",
+                  serverName: index === 2 ? "Newest" : "Server",
+                  toolName: "search",
+                },
+              });
+            }
+          }),
+        );
+      }
+      await runInTenant(a, () =>
+        withTransaction(runtime, async (tx) => {
+          for (let index = 0; index < 21; index++) {
+            const run = await createAgentRun(tx, {
+              projectItemId: projectA,
+              userId: userA.id,
+              triggeredBy: "user",
+              task: "recent runs",
+            });
+            await insertAgentRunEvent(tx, run.id, "tool_use", {
+              toolCallId: `patch${index}`,
+              name: "patch",
+              arguments: {},
+              operation: "item.patch",
+              targetDatabaseId: databaseId,
+            });
+          }
+        }),
+      );
+      await runInTenant(a, async () => {
+        // Synthetic historical event timestamps: the event writer cannot select sub-millisecond times.
+        const aged = await runtime.query(
+          `UPDATE agent_run_events e SET at = date_trunc('second', now()) - interval '1 second'
+             + (1000 - (e.id % 1000)) * interval '1 microsecond'
+           FROM agent_runs r WHERE r.id = e.agent_run_id AND r.project_item_id = $1
+             AND e.kind = 'tool_use' AND e.payload->>'operation' = 'item.patch'`,
+          [projectA],
+        );
+        expect(aged.rowCount).toBe(21);
+      });
+      const since = new Date(Date.now() - 14 * 86400_000);
+      const groups = await runInTenant(a, () =>
+        withTransaction(runtime, async (tx) => {
+          const result = await projectToolCallUsageStore.listProjectToolCallGroups(tx, projectA, since);
+          const cursors = await tx.query("SELECT name FROM pg_cursors WHERE name LIKE 'behavior_usage_%'");
+          expect(cursors.rowCount).toBe(0);
+          return result;
+        }),
+      );
+      expect(groups).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ subject: { operation: "item.create", databaseId }, count: 3 }),
+          expect.objectContaining({ subject: { operation: "item.patch", databaseId }, count: 21 }),
+          expect.objectContaining({
+            subject: { mcpTool: "registration", databaseId: null },
+            count: 3,
+            toolName: "Newest/search",
+          }),
+        ]),
+      );
+      expect(groups).toHaveLength(3);
+      const recent = await runInTenant(a, () =>
+        runtime.query<{ run_id: string }>(
+          `SELECT e.agent_run_id AS run_id FROM agent_run_events e JOIN agent_runs r ON r.id = e.agent_run_id
+           WHERE r.project_item_id = $1 AND e.kind = 'tool_use' AND e.payload->>'operation' = 'item.patch'
+           ORDER BY e.at DESC, e.id DESC LIMIT 20`,
+          [projectA],
+        ),
+      );
+      const patchGroup = groups.find(
+        (group) => "operation" in group.subject && group.subject.operation === "item.patch",
+      );
+      expect(patchGroup?.runIds).toEqual(recent.rows.map((row) => row.run_id));
+      expect(new Set(patchGroup?.runIds).size).toBe(20);
+      expect(
+        await runInTenant(a, () =>
+          withTransaction(runtime, (tx) => projectToolCallUsageStore.listProjectToolCallGroups(tx, projectB, since)),
+        ),
+      ).toEqual([]);
+      expect(
+        await runInTenant(a, () =>
+          withTransaction(runtime, (tx) =>
+            projectToolCallUsageStore.listProjectToolCallGroups(tx, randomUUID(), since),
+          ),
+        ),
+      ).toEqual([]);
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it.each(["many events", "large event"])("retains valid groups with %s in the window", async (scenario) => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runAsSystem("test:role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenant = await createTestTenant(pool);
+      const user = await createUser(pool, {
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "hash",
+        tenantId: tenant,
+      });
+      const project = randomUUID();
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, async (tx) => {
+          const runs = [];
+          for (let index = 0; index < 3; index++) {
+            runs.push(
+              await createAgentRun(tx, { projectItemId: project, userId: user.id, triggeredBy: "user", task: "test" }),
+            );
+          }
+          const count = scenario === "many events" ? 1_001 : 3;
+          for (let index = 0; index < count; index++) {
+            const run = runs[index % runs.length];
+            if (!run) throw new Error("Missing run");
+            await insertAgentRunEvent(tx, run.id, "tool_use", {
+              toolCallId: `call${index}`,
+              name: "create",
+              arguments: scenario === "large event" && index === 0 ? { text: "x".repeat(70_000) } : {},
+              operation: "item.create",
+            });
+          }
+        }),
+      );
+      const groups = await runInTenant(tenant, () =>
+        withTransaction(runtime, (tx) =>
+          projectToolCallUsageStore.listProjectToolCallGroups(tx, project, new Date(Date.now() - 14 * 86400_000)),
+        ),
+      );
+      expect(groups).toContainEqual(
+        expect.objectContaining({ subject: { operation: "item.create", databaseId: null }, count: 3 }),
+      );
+    } finally {
+      await runtime.end();
+    }
   });
 
   describe("guidanceDriftHeartbeatStore", () => {

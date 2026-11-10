@@ -1,14 +1,16 @@
-import type { PoolClient } from "pg";
+import { DatabaseError, type PoolClient } from "pg";
+import { z } from "zod";
 import { requireSingleRow } from "../db/pool.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { visibleDatabaseIds } from "./itemsStore.js";
 
 /** The custom SQLSTATE `enforce_relation_cardinality` (0013_relation_cardinality.sql) raises on a cardinality conflict. */
 const CARDINALITY_VIOLATION_ERRCODE = "SC001";
 
 function isCardinalityViolation(err: unknown): boolean {
-  return (err as { code?: string })?.code === CARDINALITY_VIOLATION_ERRCODE;
+  return err instanceof DatabaseError && err.code === CARDINALITY_VIOLATION_ERRCODE;
 }
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
@@ -124,18 +126,59 @@ export interface CreateItemRelationInput {
 }
 
 export async function createItemRelation(client: PoolClient, input: CreateItemRelationInput): Promise<ItemRelationRow> {
+  return (await createItemRelationReportingInsert(client, input)).edge;
+}
+
+/** `createItemRelation` that also reports whether this call inserted the edge (false: it existed and only its metadata was replaced). */
+export async function createItemRelationReportingInsert(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<{ edge: ItemRelationRow; inserted: boolean }> {
   const definition = await getRelationDefinition(client, input.relationDefinitionId);
   if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
 
   try {
-    const { rows } = await client.query<ItemRelationDbRow>(
+    const { rows } = await client.query<ItemRelationDbRow & { inserted: boolean }>(
       `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
        VALUES ($1, $2, $3, $4::jsonb)
        ON CONFLICT (relation_definition_id, item_a, item_b) DO UPDATE SET metadata = EXCLUDED.metadata
+       RETURNING id, relation_definition_id, item_a, item_b, metadata, (xmax = 0) AS inserted`,
+      [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
+    );
+    const row = requireSingleRow(rows, "relation row");
+    return { edge: mapItemRelationRow(row), inserted: row.inserted };
+  } catch (err) {
+    if (isCardinalityViolation(err)) {
+      throw new CardinalityViolationError(
+        `Relation ${input.relationDefinitionId} (${definition.cardinality}) rejected item_a=${input.itemA}/item_b=${input.itemB}: cardinality violation`,
+        {
+          relationDefinitionId: input.relationDefinitionId,
+          cardinality: definition.cardinality,
+          itemA: input.itemA,
+          itemB: input.itemB,
+        },
+      );
+    }
+    throw err;
+  }
+}
+
+/** Insert the normalized tuple only when absent; never replace a concurrent edge's metadata. */
+export async function insertItemRelationIfAbsent(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<ItemRelationRow | null> {
+  const definition = await getRelationDefinition(client, input.relationDefinitionId);
+  if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
+  try {
+    const { rows } = await client.query<ItemRelationDbRow>(
+      `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (relation_definition_id, item_a, item_b) DO NOTHING
        RETURNING id, relation_definition_id, item_a, item_b, metadata`,
       [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
     );
-    return mapItemRelationRow(requireSingleRow(rows, "relation row"));
+    return rows[0] ? mapItemRelationRow(rows[0]) : null;
   } catch (err) {
     if (isCardinalityViolation(err)) {
       throw new CardinalityViolationError(
@@ -182,6 +225,51 @@ export async function getItemRelationByTuple(
     [relationDefinitionId, itemA, itemB],
   );
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
+}
+
+export async function tryLockRelationDefinition(client: PoolClient, definitionId: string): Promise<boolean> {
+  const { rows } = await client.query<{ locked: boolean }>(
+    "SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked",
+    [definitionId],
+  );
+  if (typeof rows[0]?.locked !== "boolean") throw new Error("Missing relation admission result");
+  return rows[0].locked;
+}
+
+/** Locks the addressed source side of a relation snapshot in deterministic edge order. */
+export async function lockRelationSnapshotEdgesNowait(
+  client: PoolClient,
+  definitionId: string,
+  callerId: string,
+  side: "a" | "b",
+): Promise<ItemRelationRow[]> {
+  // The interpolated column is chosen only from these two fixed SQL identifiers.
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE relation_definition_id = $1 AND ${side === "a" ? "item_a" : "item_b"} = $2
+     ORDER BY id FOR UPDATE NOWAIT`,
+    [definitionId, callerId],
+  );
+  const schema = z.object({
+    id: z.string(),
+    relation_definition_id: z.string(),
+    item_a: z.string(),
+    item_b: z.string(),
+    metadata: z.record(z.string(), z.unknown()),
+  });
+  return rows.map((row) => mapItemRelationRow(schema.parse(row)));
+}
+
+export async function lockExistingRelationNowait(
+  client: PoolClient,
+  definitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<void> {
+  await client.query<{ id: string }>(
+    "SELECT id FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3 FOR UPDATE NOWAIT",
+    [definitionId, itemA, itemB],
+  );
 }
 
 export async function deleteItemRelation(
@@ -237,6 +325,43 @@ export async function listRelationsForItems(
   return rows.map(mapItemRelationRow);
 }
 
+/**
+ * Every edge `itemId` sits on, across a set of relation definitions, from either side — one query
+ * however many definitions are listed (issue #1404). The caller keeps the edges its own side reads.
+ */
+export async function listRelationEdgesForItemOnDefinitions(
+  client: PoolClient,
+  relationDefinitionIds: string[],
+  itemId: string,
+): Promise<ItemRelationRow[]> {
+  const { rows } = await client.query<ItemRelationDbRow>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE relation_definition_id = ANY($1::uuid[]) AND (item_a = $2 OR item_b = $2)`,
+    [relationDefinitionIds, itemId],
+  );
+  return rows.map(mapItemRelationRow);
+}
+
+/**
+ * The items among `itemIds` that a relation may still point at (issue #1404): not in the trash and
+ * in a database that is not archived, each with its database id. An id absent from the result is
+ * trashed, in an archived database, missing, or another tenant's (row-level security hides it).
+ */
+export async function listLiveRelationTargets(
+  client: PoolClient,
+  itemIds: string[],
+): Promise<{ id: string; databaseId: string }[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<{ id: string; database_id: string }>(
+    `SELECT i.id, i.database_id FROM items i
+     JOIN databases d ON d.id = i.database_id
+     WHERE i.id = ANY($1::uuid[]) AND i.database_id = ANY($2::uuid[])
+       AND i.deleted_at IS NULL AND d.archived_at IS NULL`,
+    [itemIds, await visibleDatabaseIds(client)],
+  );
+  return rows.map((row) => ({ id: row.id, databaseId: row.database_id }));
+}
+
 /** Every edge `itemId` participates in, across all relation definitions — used for the soft-delete/restore rollup trigger. */
 export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
   const { rows } = await client.query<ItemRelationDbRow>(
@@ -250,4 +375,63 @@ export function otherSide(relation: ItemRelationRow, itemId: string): string {
   if (relation.itemA === itemId) return relation.itemB;
   if (relation.itemB === itemId) return relation.itemA;
   throw new ValidationError(`Item ${itemId} is not part of relation ${relation.id}`);
+}
+
+/** Internal primitives for the mail-thread structural handoff. */
+export async function lockThreadMergeEdges(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE tenant_id = app_tenant_default() AND (item_a = $1 OR item_b = $1)
+     ORDER BY relation_definition_id, item_a, item_b FOR UPDATE`,
+    [itemId],
+  );
+  return z
+    .array(
+      z.object({
+        id: z.uuid(),
+        relation_definition_id: z.uuid(),
+        item_a: z.uuid(),
+        item_b: z.uuid(),
+        metadata: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .parse(rows)
+    .map(mapItemRelationRow);
+}
+
+export async function insertThreadMergeEdgeIfAbsent(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<ItemRelationRow | null> {
+  const definition = await getRelationDefinition(client, input.relationDefinitionId);
+  if (!definition) throw new NotFoundError("Relation definition not found");
+  try {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
+       VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (relation_definition_id, item_a, item_b) DO NOTHING
+       RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+      [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
+    );
+    if (!rows[0]) return null;
+    return mapItemRelationRow(
+      z
+        .object({
+          id: z.uuid(),
+          relation_definition_id: z.uuid(),
+          item_a: z.uuid(),
+          item_b: z.uuid(),
+          metadata: z.record(z.string(), z.unknown()),
+        })
+        .parse(rows[0]),
+    );
+  } catch (error) {
+    if (isCardinalityViolation(error))
+      throw new CardinalityViolationError("Relation cardinality violation", {
+        relationDefinitionId: definition.id,
+        cardinality: definition.cardinality,
+        itemA: input.itemA,
+        itemB: input.itemB,
+      });
+    throw error;
+  }
 }

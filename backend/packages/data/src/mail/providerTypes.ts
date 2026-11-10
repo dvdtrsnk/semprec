@@ -1,5 +1,6 @@
 import type { MailEnvelope } from "./mailMessageMetaStore.js";
 import type { ClassifiedAttachment } from "./attachments.js";
+import type { BulkMailHeaders } from "./bulkMail.js";
 
 /**
  * Thrown by an adapter when it detects that the stored credential itself is no longer valid
@@ -11,6 +12,37 @@ import type { ClassifiedAttachment } from "./attachments.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
+ * Thrown by `exchangeAuthorizationCode` when the provider answered 400/401: the authorization
+ * code (or PKCE verifier) was rejected. `providerError` is the provider's short `error` code
+ * (for example `invalid_grant`) when it is a plain token, never free text.
+ */
+export class MailAuthorizationCodeRejectedError extends Error {
+  constructor(
+    message: string,
+    readonly providerError: string | null,
+  ) {
+    super(message);
+    this.name = "MailAuthorizationCodeRejectedError";
+  }
+}
+
+/**
+ * Thrown by `exchangeAuthorizationCode` when Microsoft refuses the code because the tenant
+ * requires administrator approval for the application (`consent_required`, or `invalid_grant`
+ * with AADSTS65001/AADSTS90094). Distinct from `MailAuthorizationCodeRejectedError` so the
+ * connect flow can ask for admin consent instead of a retry.
+ */
+export class MailAdminConsentRequiredError extends Error {
+  constructor(
+    message: string,
+    readonly providerError: string | null,
+  ) {
+    super(message);
+    this.name = "MailAdminConsentRequiredError";
+  }
+}
+
+/**
  * Thrown by an adapter's `createImapClient` when the provider rejected the connection purely
  * for having too many of this account's IMAP sessions open at once (Gmail's well-known
  * "Too many simultaneous connections" `BYE`, detected via `imapFlowClient.ts`'s
@@ -20,6 +52,77 @@ export class MailReauthorizationRequiredError extends Error {}
  * and likely hit the same limit again before the provider has cleared it.
  */
 export class MailConnectionLimitError extends Error {}
+
+/**
+ * Thrown by the connection factories in mail/mailServerConnections.ts when a tenant-chosen IMAP or
+ * SMTP host cannot be connected to: its address was refused by the outbound address policy, or the
+ * connection was refused, timed out, failed name resolution or failed TLS. Every such failure gets
+ * this one error with no cause and no address in its message, so a refused address and an unreachable
+ * server look identical to the caller (docs/adr/2026-10-29-mail-connections-through-the-outbound-address-policy.md).
+ * Authentication failures are not mapped to it.
+ */
+export class MailServerUnreachableError extends Error {
+  readonly code = "mail_server_unreachable";
+
+  constructor() {
+    super("The mail server could not be reached");
+    this.name = "MailServerUnreachableError";
+  }
+}
+
+/** A generic mailbox's credentials were rejected during verification. */
+export class MailAuthFailedError extends Error {
+  readonly code = "mail_auth_failed";
+  constructor() {
+    super("The mail server rejected the login");
+    this.name = "MailAuthFailedError";
+  }
+}
+
+/** iCloud requires an app-specific password when login fails. */
+export class MailAppPasswordRequiredError extends Error {
+  readonly code = "mail_app_password_required";
+  constructor() {
+    super("An app-specific password is required");
+    this.name = "MailAppPasswordRequiredError";
+  }
+}
+
+/** Verification observed an unambiguous TLS or required-upgrade failure. */
+export class MailTlsFailedError extends Error {
+  readonly code = "mail_tls_failed";
+  constructor() {
+    super("The mail server could not establish TLS");
+    this.name = "MailTlsFailedError";
+  }
+}
+
+/**
+ * Thrown by a mail transport when the outgoing server rejects the login: a 535 reply, or another login failure
+ * nodemailer reports as `EAUTH`. The message names neither the server's response nor the credential.
+ */
+export class MailSendAuthFailedError extends Error {
+  readonly code = "mail_send_auth_failed";
+
+  constructor() {
+    super("The mail server rejected the login");
+    this.name = "MailSendAuthFailedError";
+  }
+}
+
+/**
+ * Thrown by a mail transport when the outgoing server refuses a recipient in the RCPT phase: a 5xx when every
+ * recipient is refused, or any refusal when the server accepted the message for only some recipients. The
+ * refused recipients get nothing; the accepted ones already have the message. The error names no address.
+ */
+export class MailRecipientRejectedError extends Error {
+  readonly code = "mail_recipient_rejected";
+
+  constructor() {
+    super("The mail server refused a recipient");
+    this.name = "MailRecipientRejectedError";
+  }
+}
 
 /**
  * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
@@ -101,6 +204,8 @@ export interface FetchedMessage {
   deliveredToHeaders?: string[];
   xOriginalTo?: string | null;
   envelopeTo?: string | null;
+  /** The raw `List-Unsubscribe`/`List-Id`/`Precedence`/`Auto-Submitted` values (each absent as `null`) — mail/ingest.ts feeds them to `detectBulkMail` (mail/bulkMail.ts) once, centrally. */
+  bulkHeaders?: BulkMailHeaders;
   /** True when this message's top-level Content-Type is `multipart/report; report-type=delivery-status` (mail/dsn.ts) — a DSN/bounce, not an ordinary human reply. */
   isDsn?: boolean;
   /**

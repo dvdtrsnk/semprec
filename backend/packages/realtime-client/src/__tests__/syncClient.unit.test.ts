@@ -39,6 +39,25 @@ function sentFrames(socket: FakeSocket): unknown[] {
   return socket.sent.filter((data): data is string => typeof data === "string").map((data) => JSON.parse(data));
 }
 
+// The invalidate branch of parseServerFrame at d99edb8a0b7a3a09aa0028d8ecbea1c42b7af2a8.
+function recordedOldInvalidation(parsed: Record<string, unknown>): unknown {
+  if (parsed.scope === "item") {
+    const { databaseId, itemId, op, updatedAt } = parsed;
+    if (typeof databaseId !== "string" || typeof itemId !== "string" || typeof updatedAt !== "string") return null;
+    if (op !== "create" && op !== "update" && op !== "delete") return null;
+    return { type: "invalidate", scope: "item", databaseId, itemId, op, updatedAt };
+  }
+  if (parsed.scope === "schema") {
+    const { databaseId } = parsed;
+    return typeof databaseId === "string" ? { type: "invalidate", scope: "schema", databaseId } : null;
+  }
+  if (parsed.scope === "sempThread") {
+    const { threadId } = parsed;
+    return typeof threadId === "string" ? { type: "invalidate", scope: "sempThread", threadId } : null;
+  }
+  return null;
+}
+
 describe("createSyncClient (issue #164)", () => {
   let sockets: FakeSocket[];
 
@@ -56,6 +75,37 @@ describe("createSyncClient (issue #164)", () => {
     sockets.push(socket);
     return socket;
   }
+
+  it("the recorded older invalidate handler accepts its known scopes and ignores relation", () => {
+    expect(recordedOldInvalidation({ scope: "schema", databaseId: "db" })).toEqual({
+      type: "invalidate",
+      scope: "schema",
+      databaseId: "db",
+    });
+    expect(
+      recordedOldInvalidation({ scope: "relation", databaseId: "db", itemId: "item", propertyKey: "links", op: "put" }),
+    ).toBeNull();
+  });
+
+  it("exposes a relation invalidation after the initial refetch", async () => {
+    const onInvalidate = vi.fn();
+    const client = createSyncClient({ createSocket, refetchActiveState: async () => {}, onInvalidate });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    const frame = {
+      type: "invalidate",
+      scope: "relation",
+      databaseId: "db",
+      itemId: "item",
+      propertyKey: null,
+      op: "put",
+    };
+    socket.receiveFrame(frame);
+    expect(onInvalidate).toHaveBeenCalledWith(frame);
+  });
 
   it("runs refetchActiveState and fetchUnreadNotifications once on the first successful connect", async () => {
     const refetchActiveState = vi.fn().mockResolvedValue(undefined);
@@ -107,6 +157,7 @@ describe("createSyncClient (issue #164)", () => {
       userId: "u1",
       kind: "system",
       title: "Hello",
+      body: null,
       linkHref: null,
       sourceTable: "items",
       sourceId: "i1",
@@ -155,6 +206,23 @@ describe("createSyncClient (issue #164)", () => {
       runId: "22222222-2222-2222-2222-222222222222",
       afterEventId: "7",
     });
+  });
+
+  it("dispatches a doc:ack frame to onDocAck and drops a malformed one", () => {
+    const onDocAck = vi.fn();
+    const client = createSyncClient({ createSocket, onDocAck });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "edit-1" });
+    expect(onDocAck).toHaveBeenCalledExactlyOnceWith("d1", "edit-1");
+
+    socket.receiveFrame({ type: "doc:ack", docId: "d1" });
+    socket.receiveFrame({ type: "doc:ack", docId: 5, clientUpdateId: "edit-2" });
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "bad id" });
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "a".repeat(65) });
+    expect(onDocAck).toHaveBeenCalledTimes(1);
   });
 
   it("reconnects with the injected backoff delay after a server-initiated drop", async () => {

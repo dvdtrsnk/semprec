@@ -1,9 +1,13 @@
+import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { approvalConflictReason, type ApprovalConflictReason } from "./approvalConflictReason.js";
+import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
   listPendingApprovalRequests,
+  type ApprovalDescription,
   type ApprovalRequest,
 } from "./approvalRequestsStore.js";
 
@@ -21,13 +25,24 @@ import {
  * reading `string | undefined` regardless of the entry's actual origin.
  */
 export type ApprovalRequestSafeSummary =
-  | { kind: "mcpInvoke"; mcpToolRegistrationId: string; mcpServerItemId: string; argKeys: string[] }
+  | {
+      kind: "mcpInvoke";
+      mcpToolRegistrationId: string;
+      mcpServerItemId: string;
+      /** The server item's current `name`; `null` when the server item no longer exists. */
+      mcpServerName: string | null;
+      /** The registration's current `tool_name`; `null` when the registration no longer exists. */
+      mcpToolName: string | null;
+      argKeys: string[];
+    }
   | { kind: "genericOperation"; operationName: string; argKeys: string[] };
 
 export interface ApprovalRequestQueueEntry {
   id: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
+  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
+  riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   safeSummary: ApprovalRequestSafeSummary;
   agentRunId: string;
@@ -35,9 +50,39 @@ export interface ApprovalRequestQueueEntry {
   projectItemId: string | null;
   /** `null` alongside `projectItemId` when there is no project, or when the project item has since been deleted. */
   projectName: string | null;
+  /** The agent's own explanation of why it asked; `null` when it gave none. */
+  reason: string | null;
+  /** The snapshotted template key and parameters clients render; `null` for requests created before issue #1683. */
+  description: ApprovalDescription | null;
 }
 
-function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafeSummary {
+interface ResolvedMcpNames {
+  serverNameById: Map<string, string | null>;
+  toolNameById: Map<string, string>;
+}
+
+/** Batched read-time resolution of the server and tool names the `mcpInvoke` summaries carry. */
+async function resolveMcpNames(client: Queryable, requests: ApprovalRequest[]): Promise<ResolvedMcpNames> {
+  const registrationIds = new Set<string>();
+  const serverItemIds = new Set<string>();
+  for (const { payload } of requests) {
+    if (isGenericOperationApprovalRequestPayload(payload)) continue;
+    registrationIds.add(payload.mcpToolRegistrationId);
+    serverItemIds.add(payload.mcpServerItemId);
+  }
+  const [registrations, serverItems] = await Promise.all([
+    getMcpToolRegistrationsByIds(client, [...registrationIds]),
+    getItemsByIds(client, [...serverItemIds]),
+  ]);
+  return {
+    serverNameById: new Map(
+      serverItems.map((item) => [item.id, typeof item.properties.name === "string" ? item.properties.name : null]),
+    ),
+    toolNameById: new Map(registrations.map((registration) => [registration.id, registration.toolName])),
+  };
+}
+
+function safeSummaryOf(payload: ApprovalRequest["payload"], names: ResolvedMcpNames): ApprovalRequestSafeSummary {
   if (isGenericOperationApprovalRequestPayload(payload)) {
     const canonicalInput = payload.canonicalInput;
     return {
@@ -50,8 +95,19 @@ function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafe
     kind: "mcpInvoke",
     mcpToolRegistrationId: payload.mcpToolRegistrationId,
     mcpServerItemId: payload.mcpServerItemId,
+    mcpServerName: names.serverNameById.get(payload.mcpServerItemId) ?? null,
+    mcpToolName: names.toolNameById.get(payload.mcpToolRegistrationId) ?? null,
     argKeys: Object.keys(payload.args),
   };
+}
+
+function riskLevelOf(request: ApprovalRequest): ApprovalRiskLevel {
+  return deriveApprovalRiskLevel({
+    riskClass: request.riskClass,
+    operationName: isGenericOperationApprovalRequestPayload(request.payload)
+      ? request.payload.operationName
+      : undefined,
+  });
 }
 
 /**
@@ -66,25 +122,39 @@ export interface ApprovalRequestDecisionView {
   decidedAt: string | null;
   decidedBy: string | null;
   executionStatus: ApprovalRequest["executionStatus"];
+  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  conflictReason: ApprovalConflictReason | null;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
+  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
+  riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;
+  reason: string | null;
+  description: ApprovalDescription | null;
 }
 
-export function toApprovalRequestDecisionView(request: ApprovalRequest): ApprovalRequestDecisionView {
+export async function toApprovalRequestDecisionView(
+  client: Queryable,
+  request: ApprovalRequest,
+): Promise<ApprovalRequestDecisionView> {
+  const names = await resolveMcpNames(client, [request]);
   return {
     id: request.id,
     status: request.status,
     decidedAt: request.decidedAt,
     decidedBy: request.decidedBy,
     executionStatus: request.executionStatus,
+    conflictReason: approvalConflictReason(request.executionStatus, request.executionResult),
     toolName: request.toolName,
     riskClass: request.riskClass,
+    riskLevel: riskLevelOf(request),
     requestedAt: request.requestedAt,
     agentRunId: request.agentRunId,
-    safeSummary: safeSummaryOf(request.payload),
+    safeSummary: safeSummaryOf(request.payload, names),
+    reason: request.reason,
+    description: request.description,
   };
 }
 
@@ -113,6 +183,8 @@ export async function listApprovalRequestsQueue(
     projectItems.map((item) => [item.id, typeof item.properties.name === "string" ? item.properties.name : null]),
   );
 
+  const names = await resolveMcpNames(client, pending);
+
   return pending.map((request) => {
     const run = runById.get(request.agentRunId);
     const projectItemId = run?.projectItemId ?? null;
@@ -120,11 +192,14 @@ export async function listApprovalRequestsQueue(
       id: request.id,
       toolName: request.toolName,
       riskClass: request.riskClass,
+      riskLevel: riskLevelOf(request),
       requestedAt: request.requestedAt,
-      safeSummary: safeSummaryOf(request.payload),
+      safeSummary: safeSummaryOf(request.payload, names),
       agentRunId: request.agentRunId,
       projectItemId,
       projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
+      reason: request.reason,
+      description: request.description,
     };
   });
 }

@@ -1,10 +1,48 @@
 import type { Pool } from "pg";
 import type { WebSocket } from "ws";
-import { getAgentRun, getAgentRunEventById, listAgentRunEventsAfter, type AgentRunEventRow } from "@semprec/data";
+import {
+  getAgentRun,
+  getAgentRunEventById,
+  getSempVoiceDelivery,
+  listAgentRunEventsAfter,
+  type AgentRunEventRow,
+} from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
-import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
+import { isAgentRunEventId, isUuid, type AgentDeltaChunk, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
+import { VoiceDeltaBufferError, VoiceRunDeltaBuffer } from "./voiceRunDeltaBuffer.js";
+
+export type VoiceRunFrame = { type: "event"; event: AgentRunEventRow } | { type: "delta"; message: AgentStreamMessage };
+
+export interface VoiceRunWatchInput {
+  tenantId: string;
+  userId: string;
+  runId: string;
+  threadId: string;
+  sempMessageId: string;
+  afterEventId: string;
+  signal?: AbortSignal;
+  onFrame(frame: VoiceRunFrame): boolean;
+  onFailure(error: unknown, cause?: "overloaded" | "unavailable"): void;
+}
+
+interface VoiceWatcher {
+  input: VoiceRunWatchInput;
+  lastEventId: string;
+  replaying: boolean;
+  draining: boolean;
+  queuedEventIds: Set<string>;
+  staleAnchors: Set<string>;
+  active: boolean;
+  abort: () => void;
+  live: VoiceRunDeltaBuffer;
+  timer: ReturnType<typeof setTimeout> | undefined;
+  drainPromise: Promise<void> | undefined;
+  drainFailure: { error: unknown } | undefined;
+}
+
+const MAX_VOICE_PENDING_EVENTS = 256;
 
 interface Watcher {
   ws: WebSocket;
@@ -24,6 +62,10 @@ interface Watcher {
 export interface AgentRunWatchRegistry {
   /** A socket of `tenantId` watches `runId`; authorization and replay resolve inside that tenant. */
   watch(ws: WebSocket, tenantId: string, userId: string, runId: string, afterEventId: string): Promise<void>;
+  subscribeVoice(input: VoiceRunWatchInput): Promise<() => Promise<void>>;
+  closeTenant(tenantId: string): void;
+  resetVoice(): void;
+  close(): void;
   unwatch(ws: WebSocket, runId: string): void;
   handleSocketClosed(ws: WebSocket): void;
   /** Delivers one durable event reference from `tenantId`'s NOTIFY to that tenant's watchers of `runId` only. */
@@ -51,6 +93,162 @@ function deltaFrame(message: AgentStreamMessage): OutboundFrame {
 
 export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   const watchersByRun = new Map<string, Set<Watcher>>();
+  const voiceByRun = new Map<string, Set<VoiceWatcher>>();
+  const tenantGenerations = new Map<string, number>();
+  let voiceClosed = false;
+  let voiceGeneration = 0;
+
+  function removeVoice(watcher: VoiceWatcher): void {
+    if (!watcher.active) return;
+    watcher.active = false;
+    watcher.input.signal?.removeEventListener("abort", watcher.abort);
+    const watchers = voiceByRun.get(watcher.input.runId);
+    watchers?.delete(watcher);
+    if (watchers?.size === 0) voiceByRun.delete(watcher.input.runId);
+    watcher.queuedEventIds.clear();
+    watcher.staleAnchors.clear();
+    if (watcher.timer) clearTimeout(watcher.timer);
+    watcher.live.clear();
+  }
+
+  function failVoice(watcher: VoiceWatcher, error: unknown, cause?: "overloaded" | "unavailable"): void {
+    if (!watcher.active) return;
+    removeVoice(watcher);
+    watcher.input.onFailure(error, cause);
+  }
+
+  function reportVoiceFailure(watcher: VoiceWatcher, error: unknown, cause?: "overloaded" | "unavailable"): void {
+    try {
+      failVoice(watcher, error, cause);
+    } catch (callbackError) {
+      watcher.drainFailure = {
+        error: new AggregateError([error, callbackError], "Voice failure callback failed", { cause: error }),
+      };
+    }
+  }
+
+  function deliverVoice(watcher: VoiceWatcher, frame: VoiceRunFrame): void {
+    if (!watcher.active) return;
+    try {
+      if (!watcher.input.onFrame(frame)) reportVoiceFailure(watcher, new Error("Voice run watch sink closed"));
+    } catch (error) {
+      reportVoiceFailure(watcher, error);
+    }
+  }
+
+  function deliverVoiceEvent(watcher: VoiceWatcher, event: AgentRunEventRow): void {
+    if (!watcher.active || !isLater(event.id, watcher.lastEventId)) return;
+    const anchor = watcher.live.nextAnchor;
+    if (anchor && isLater(anchor, watcher.lastEventId) && isLater(event.id, anchor))
+      throw new Error("Voice delta anchor unavailable");
+    deliverVoice(watcher, { type: "event", event });
+    if (watcher.active) {
+      watcher.lastEventId = event.id;
+      watcher.live.advance(event.id);
+    }
+  }
+
+  function releaseVoiceDeltas(watcher: VoiceWatcher): void {
+    watcher.live.expire(performance.now());
+    while (watcher.active && watcher.live.peek()?.afterEventId === watcher.lastEventId) {
+      const message = watcher.live.shift();
+      if (message) deliverVoice(watcher, { type: "delta", message });
+    }
+  }
+
+  function scheduleVoice(watcher: VoiceWatcher): void {
+    if (watcher.timer) clearTimeout(watcher.timer);
+    watcher.timer = undefined;
+    const deadline = watcher.live.deadline;
+    if (!watcher.active || deadline === undefined) return;
+    watcher.timer = setTimeout(
+      () => {
+        watcher.timer = undefined;
+        watcher.live.expire(performance.now());
+        if (!watcher.replaying) void startVoiceDrain(watcher);
+        scheduleVoice(watcher);
+      },
+      Math.max(0, deadline - performance.now()),
+    );
+  }
+
+  async function drainVoice(watcher: VoiceWatcher): Promise<void> {
+    if (watcher.draining || watcher.replaying || !watcher.active) return;
+    watcher.draining = true;
+    try {
+      while (watcher.active) {
+        const staleAnchor = watcher.staleAnchors.values().next().value;
+        if (staleAnchor !== undefined) {
+          watcher.staleAnchors.delete(staleAnchor);
+          const anchor = await runInTenant(watcher.input.tenantId, () =>
+            getAgentRunEventById(pool, watcher.input.runId, staleAnchor, {
+              threadId: watcher.input.threadId,
+              sempMessageId: watcher.input.sempMessageId,
+            }),
+          );
+          if (!watcher.active) return;
+          if (!anchor) throw new Error("Voice delta anchor unavailable");
+          continue;
+        }
+        releaseVoiceDeltas(watcher);
+        for (const id of watcher.queuedEventIds)
+          if (!isLater(id, watcher.lastEventId)) watcher.queuedEventIds.delete(id);
+        const liveAnchor = watcher.live.nextAnchor;
+        const candidates = [
+          ...watcher.queuedEventIds,
+          ...(liveAnchor && isLater(liveAnchor, watcher.lastEventId) ? [liveAnchor] : []),
+        ];
+        candidates.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0));
+        const target = candidates[0];
+        if (!target) break;
+        const rows = await runInTenant(watcher.input.tenantId, () =>
+          listAgentRunEventsAfter(pool, watcher.input.runId, watcher.lastEventId, 257, {
+            threadId: watcher.input.threadId,
+            sempMessageId: watcher.input.sempMessageId,
+            throughEventId: target,
+          }),
+        );
+        if (!watcher.active) return;
+        if (rows.length > 256) throw new VoiceDeltaBufferError("overloaded");
+        for (const event of rows) {
+          releaseVoiceDeltas(watcher);
+          deliverVoiceEvent(watcher, event);
+        }
+        if (isLater(target, watcher.lastEventId)) {
+          if (watcher.live.nextAnchor === target) throw new Error("Voice delta anchor unavailable");
+          watcher.queuedEventIds.delete(target);
+        }
+      }
+    } catch (error) {
+      reportVoiceFailure(watcher, error, error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable");
+    } finally {
+      watcher.draining = false;
+      scheduleVoice(watcher);
+    }
+  }
+
+  function startVoiceDrain(watcher: VoiceWatcher): Promise<void> {
+    if (watcher.drainPromise) return watcher.drainPromise;
+    const task = drainVoice(watcher)
+      .catch((error: unknown) => {
+        watcher.drainFailure = { error };
+        reportVoiceFailure(watcher, error, "unavailable");
+      })
+      .finally(() => {
+        if (watcher.drainPromise === task) {
+          watcher.drainPromise = undefined;
+          if (
+            watcher.active &&
+            !watcher.replaying &&
+            (watcher.queuedEventIds.size || watcher.staleAnchors.size || watcher.live.peek())
+          )
+            void startVoiceDrain(watcher);
+        }
+      });
+    watcher.drainPromise = task;
+    return task;
+  }
+
   const watchersBySocket = new WeakMap<WebSocket, Map<string, Watcher>>();
   // A replacement replays alongside the current watcher. It is not made active until replay has
   // succeeded, so a transient replay failure cannot silently drop an established subscription.
@@ -131,6 +329,136 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   }
 
   return {
+    async subscribeVoice(input) {
+      input.signal?.throwIfAborted();
+      if (
+        !isUuid(input.tenantId) ||
+        !isUuid(input.userId) ||
+        !isUuid(input.runId) ||
+        !isUuid(input.threadId) ||
+        !isUuid(input.sempMessageId) ||
+        !isAgentRunEventId(input.afterEventId)
+      )
+        throw new Error("Voice run watch unavailable");
+      if (voiceClosed) throw new Error("Voice run watch unavailable");
+      const generation = tenantGenerations.get(input.tenantId) ?? 0;
+      const connectionGeneration = voiceGeneration;
+      const run = await runInTenant(input.tenantId, () => getAgentRun(pool, input.runId));
+      const delivery = await runInTenant(input.tenantId, () =>
+        getSempVoiceDelivery(pool, input.threadId, input.sempMessageId),
+      );
+      input.signal?.throwIfAborted();
+      if (
+        voiceClosed ||
+        connectionGeneration !== voiceGeneration ||
+        generation !== (tenantGenerations.get(input.tenantId) ?? 0)
+      )
+        throw new Error("Voice run watch unavailable");
+      if (
+        !run ||
+        run.actorUserId !== input.userId ||
+        !delivery ||
+        delivery.runId !== input.runId ||
+        !delivery.firstEventId ||
+        (delivery.status !== "running" &&
+          !((delivery.status === "done" || delivery.status === "error") && delivery.lastEventId))
+      )
+        throw new Error("Voice run watch unavailable");
+      const watcher: VoiceWatcher = {
+        input,
+        lastEventId: input.afterEventId,
+        replaying: true,
+        draining: false,
+        queuedEventIds: new Set(),
+        staleAnchors: new Set(),
+        active: true,
+        abort: () => {},
+        live: new VoiceRunDeltaBuffer(input.afterEventId),
+        timer: undefined,
+        drainPromise: undefined,
+        drainFailure: undefined,
+      };
+      watcher.abort = () => removeVoice(watcher);
+      input.signal?.addEventListener("abort", watcher.abort, { once: true });
+      if (input.signal?.aborted) {
+        removeVoice(watcher);
+        input.signal.throwIfAborted();
+      }
+      let watchers = voiceByRun.get(input.runId);
+      if (!watchers) {
+        watchers = new Set();
+        voiceByRun.set(input.runId, watchers);
+      }
+      watchers.add(watcher);
+      try {
+        if (input.afterEventId !== "0") {
+          const cursor = await runInTenant(input.tenantId, () =>
+            getAgentRunEventById(pool, input.runId, input.afterEventId, {
+              threadId: input.threadId,
+              sempMessageId: input.sempMessageId,
+            }),
+          );
+          if (!watcher.active || !cursor) throw new Error("Voice run cursor unavailable");
+        }
+        const replay = await runInTenant(input.tenantId, () =>
+          listAgentRunEventsAfter(pool, input.runId, input.afterEventId, 257, {
+            threadId: input.threadId,
+            sempMessageId: input.sempMessageId,
+          }),
+        );
+        if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+          input.signal?.throwIfAborted();
+          throw new Error("Voice run watch unavailable");
+        }
+        if (replay.length > 256) {
+          const error = new VoiceDeltaBufferError("overloaded", "Voice run replay exceeds event limit");
+          reportVoiceFailure(watcher, error, "overloaded");
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+          throw error;
+        }
+        for (const event of replay) {
+          releaseVoiceDeltas(watcher);
+          deliverVoiceEvent(watcher, event);
+        }
+        if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+          input.signal?.throwIfAborted();
+          throw new Error("Voice run watch unavailable");
+        }
+        watcher.replaying = false;
+        await startVoiceDrain(watcher);
+        if (!watcher.active) {
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+          throw new Error("Voice run watch unavailable");
+        }
+        return async () => {
+          removeVoice(watcher);
+          await watcher.drainPromise;
+          if (watcher.drainFailure) throw watcher.drainFailure.error;
+        };
+      } catch (error) {
+        removeVoice(watcher);
+        throw error;
+      }
+    },
+    closeTenant(tenantId) {
+      tenantGenerations.set(tenantId, (tenantGenerations.get(tenantId) ?? 0) + 1);
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers])
+          if (watcher.input.tenantId === tenantId) reportVoiceFailure(watcher, new Error("Voice tenant closed"));
+    },
+    resetVoice() {
+      voiceGeneration++;
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers]) reportVoiceFailure(watcher, new Error("Voice run watch unavailable"));
+    },
+    close() {
+      voiceClosed = true;
+      voiceGeneration++;
+      for (const watchers of voiceByRun.values())
+        for (const watcher of [...watchers]) reportVoiceFailure(watcher, new Error("Voice run watch unavailable"));
+    },
     async watch(ws, tenantId, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
 
@@ -224,8 +552,17 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     },
 
     async forwardEvent(tenantId, runId, eventId) {
-      const watchers = watchersByRun.get(runId);
-      if (!watchers || watchers.size === 0) return;
+      const watchers = watchersByRun.get(runId) ?? new Set<Watcher>();
+      const voices = [...(voiceByRun.get(runId) ?? [])].filter(
+        (watcher) => watcher.active && watcher.input.tenantId === tenantId,
+      );
+      for (const watcher of voices) {
+        watcher.queuedEventIds.add(eventId);
+        if (watcher.queuedEventIds.size > MAX_VOICE_PENDING_EVENTS)
+          reportVoiceFailure(watcher, new Error("Voice run watch overflow"), "overloaded");
+        else if (!watcher.replaying) void startVoiceDrain(watcher);
+      }
+      if (watchers.size === 0 && voices.length === 0) return;
 
       // Only the publisher's tenant's watchers may hold or receive this reference; a watcher of
       // another tenant that shares the run id is left alone.
@@ -244,6 +581,42 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     },
 
     forwardDelta(tenantId, message) {
+      const voices = voiceByRun.get(message.agentRunId);
+      if (voices)
+        for (const watcher of voices)
+          if (
+            watcher.active &&
+            watcher.input.tenantId === tenantId &&
+            message.sempMessageId === watcher.input.sempMessageId &&
+            message.afterEventId !== undefined &&
+            message.deltaSequence !== undefined
+          ) {
+            try {
+              if (isLater(watcher.lastEventId, message.afterEventId)) {
+                watcher.staleAnchors.add(message.afterEventId);
+                if (watcher.staleAnchors.size > MAX_VOICE_PENDING_EVENTS) throw new VoiceDeltaBufferError("overloaded");
+                if (!watcher.replaying) void startVoiceDrain(watcher);
+                continue;
+              }
+              watcher.live.admit(
+                {
+                  ...message,
+                  sempMessageId: message.sempMessageId,
+                  afterEventId: message.afterEventId,
+                  deltaSequence: message.deltaSequence,
+                },
+                performance.now(),
+              );
+              scheduleVoice(watcher);
+              if (!watcher.replaying) void startVoiceDrain(watcher);
+            } catch (error) {
+              reportVoiceFailure(
+                watcher,
+                error,
+                error instanceof VoiceDeltaBufferError ? error.causeCode : "unavailable",
+              );
+            }
+          }
       const watchers = watchersByRun.get(message.agentRunId);
       if (!watchers) return;
       const frame = deltaFrame(message);

@@ -1,8 +1,11 @@
 import type { Transporter } from "nodemailer";
+import { renderAuthMail } from "./authMailCatalog.js";
 
 export interface SendPasswordResetEmailInput {
   to: string;
   resetUrl: string;
+  /** `users.locale` of the account that requested the reset; an unknown value renders English. */
+  locale: string;
 }
 
 export interface PasswordResetMailer {
@@ -55,15 +58,16 @@ export class NodemailerPasswordResetMailer implements PasswordResetMailer {
   ) {}
 
   async sendPasswordResetEmail(input: SendPasswordResetEmailInput): Promise<void> {
+    const mail = await renderAuthMail("passwordReset", input.locale, input.resetUrl, escapeHtml);
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
         this.transporter.sendMail({
           from: this.fromAddress,
           to: input.to,
-          subject: "Reset your password",
-          text: `Use this link to reset your password:\n\n${input.resetUrl}\n\nThis link expires in 30 minutes and can only be used once. If you didn't request this, you can safely ignore this email.`,
-          html: `<p>Use the link below to reset your password. This link expires in 30 minutes and can only be used once.</p><p><a href="${escapeHtml(input.resetUrl)}">${escapeHtml(input.resetUrl)}</a></p><p>If you didn't request this, you can safely ignore this email.</p>`,
+          subject: mail.subject,
+          text: mail.text,
+          html: mail.html,
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(

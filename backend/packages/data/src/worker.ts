@@ -1,8 +1,9 @@
+import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTransaction } from "./db/pool.js";
 import { resolveMailModuleIds } from "./mail/mailModuleIds.js";
-import { withTraceContext } from "@semprec/shared";
+import { withTraceContext, type AiGatewayClientPort } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   handleHeartbeatSweepTask,
@@ -11,10 +12,18 @@ import {
 } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
+import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolderCleanupJob.js";
+import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
+import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
+import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
+import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
+import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
+import { handlePageTitleMirrorTask } from "./docs/pageTitleMirrorJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
+import { handleLinkPropagation } from "./valueLinks/linkPropagation.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
@@ -44,13 +53,18 @@ import {
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
+import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
+import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
+import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
+import { handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "./tenancy/tenantPurgeJob.js";
+import { handlePeopleLastContactRecomputeTask, handlePeopleLastContactSweep } from "./people/lastContact.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -92,9 +106,13 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
 20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
 20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
+30 4 * * * ${CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
+*/10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
+50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
+0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
 `;
 
 /**
@@ -122,10 +140,24 @@ export function createCoreTaskList(
     files: resolveBlobStorageDir("FILES_STORAGE_DIR"),
     mailAttachments: resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
   },
+  titleGateway?: AiGatewayClientPort,
 ): TaskList {
   const handlers: TaskList = {
+    [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: async (payload) => handleLinkPropagation(pool, payload),
+    [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: async (payload) => {
+      await handleMailLinkPersonEmailsTask(pool, payload);
+    },
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: async (payload) => {
+      await handleItemSearchReindexDependentsTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: async (payload) => {
+      await handleItemSearchPageTextTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: async (payload) => {
+      await handlePageTitleMirrorTask(pool, payload);
     },
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
@@ -172,6 +204,7 @@ export function createCoreTaskList(
         },
         libraryMetadataFetcher,
         { job: { id: helpers.job.id } },
+        filesBlobStorage,
       );
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
@@ -186,6 +219,18 @@ export function createCoreTaskList(
           job: { id: helpers.job.id },
         }),
       );
+    },
+    [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: async () => {
+      await handleMailMessagePreviewBackfillTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: async () => {
+      await handleMailGmailPseudoFolderCleanupTask(pool, mailSyncAdapters.loadGmailLabels);
+    },
+    [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
+      await handleMailThreadBackfillTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: async () => {
+      await handleMailSearchTextReindexTask(pool, mailBlobStorage, filesBlobStorage);
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);
@@ -212,12 +257,23 @@ export function createCoreTaskList(
       );
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
-      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
     // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
     // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
-      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
+    },
+    // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
+    [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {
+      await handleBlobsUnreferencedSweepTask(pool, filesBlobStorage);
+    },
+    // Issue #1660: one person's derived People `lastContact`, and the daily sweep that catches sources whose date passed.
+    [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: async (payload) => {
+      await handlePeopleLastContactRecomputeTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: async () => {
+      await handlePeopleLastContactSweep(pool);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
@@ -225,8 +281,17 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
     },
+    [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: async () => {
+      await handleMailOauthStatesSweepTask(pool);
+    },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);
+    },
+    [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: async () => {
+      await handleSempProblemsPruneTask(pool);
+    },
+    [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: async (payload) => {
+      if (titleGateway) await handleSempThreadTitle(pool, requireString(payload, "threadId"), titleGateway);
     },
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);

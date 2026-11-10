@@ -34,6 +34,30 @@ describe("createHttpAiGatewayClient", () => {
     expect(result).toEqual({ content: { ok: true }, usage: { inputTokens: 10, outputTokens: 5 } });
   });
 
+  it("sends text and image content blocks verbatim in the request body", async () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: "read this invoice" },
+          { type: "image" as const, mimeType: "image/jpeg" as const, data: "/9j/4AAQ" },
+        ],
+      },
+    ];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(init.body as string).messages).toEqual(messages);
+      return new Response(JSON.stringify({ content: { ok: true }, usage: { inputTokens: 10, outputTokens: 5 } }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+    await client.complete({ ...INPUT, messages });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("forwards the active trace's id as x-trace-id (#167)", async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       expect((init.headers as Record<string, string>)["x-trace-id"]).toBe("3fa85f64-5717-4562-b3fc-2c963f66afa6");

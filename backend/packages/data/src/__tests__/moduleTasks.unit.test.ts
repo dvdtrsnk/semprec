@@ -41,9 +41,14 @@ describe("CORE_TASK_NAME_SET", () => {
 });
 
 describe("AGENT_TASK_NAME_SET", () => {
-  it("contains exactly the three closed agent task names", () => {
+  it("contains exactly the four closed agent task names", () => {
     expect([...AGENT_TASK_NAME_SET].sort()).toEqual(
-      [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, AGENT_TASK_NAMES.AGENT_RUN, AGENT_TASK_NAMES.DELEGATED_AGENT_RUN].sort(),
+      [
+        AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT,
+        AGENT_TASK_NAMES.AGENT_RUN,
+        AGENT_TASK_NAMES.DELEGATED_AGENT_RUN,
+        AGENT_TASK_NAMES.SEMP_MESSAGE,
+      ].sort(),
     );
   });
 });

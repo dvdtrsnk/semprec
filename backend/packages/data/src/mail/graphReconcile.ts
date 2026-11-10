@@ -1,3 +1,6 @@
+import type { GraphMoveResult } from "./mailMoveProviderAdapters.js";
+import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -38,6 +41,11 @@ export interface GraphDeltaResult {
 }
 
 export interface GraphMailClient {
+  observeMoveMessage?(messageId: string): Promise<GraphMoveResult>;
+  moveMessage?(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<GraphMoveResult>;
   listFolders(): Promise<GraphFolderRef[]>;
   /** `deltaLink: null` = initial/full-resync fetch (mailbox-wide `/me/messages/delta`, not per-folder — see the migration's `graph_delta_link` note). */
   fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult>;
@@ -61,6 +69,8 @@ function specialPurposeForGraphFolder(folder: GraphFolderRef): string {
 
 export interface ReconcileGraphAccountParams {
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
+  moveBaseline?: MailMoveBaseline;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -91,6 +101,13 @@ export async function reconcileGraphAccount(
   graph: GraphMailClient,
   params: ReconcileGraphAccountParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
@@ -125,7 +142,8 @@ export async function reconcileGraphAccount(
   for (const change of delta.changes) {
     if (change.removed) {
       const meta = await getMailMessageMetaByProviderMessageId(dbClient, change.id);
-      if (!meta) continue;
+      if (!meta || protectedMoveMessageIds?.has(meta.itemId) || (await hasUnsettledMailMove(dbClient, meta.itemId)))
+        continue;
       const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
       for (const edge of edges) {
         const folderItemId = otherSide(edge, meta.itemId);
@@ -152,6 +170,7 @@ export async function reconcileGraphAccount(
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId,
       mailboxItemId: params.mailboxItemId,
+      protectedMoveMessageIds: protectedMoveMessageIds,
       providerMessageId: change.id,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
@@ -159,6 +178,7 @@ export async function reconcileGraphAccount(
       ...change.message,
     });
 
+    if (protectedMoveMessageIds?.has(result.itemId) || (await hasUnsettledMailMove(dbClient, result.itemId))) continue;
     const edges = await listRelationsForItem(dbClient, relationDefinition.id, result.itemId);
     for (const edge of edges) {
       const otherFolderId = otherSide(edge, result.itemId);
@@ -188,6 +208,11 @@ export async function reconcileGraphAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
+    if (
+      protectedMoveMessageIds?.has(pending.messageItemId) ||
+      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
+    )
+      continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

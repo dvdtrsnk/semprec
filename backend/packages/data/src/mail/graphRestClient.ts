@@ -1,7 +1,20 @@
+import {
+  prepareGraphMove,
+  registerGraphMovePreparer,
+  graphMoveRequest,
+  type GraphMoveResult,
+} from "./mailMoveProviderAdapters.js";
+import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
-import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import {
+  assertJsonObject,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  MAX_ATTACHMENT_BYTES,
+  type FetchedMessage,
+} from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
@@ -17,6 +30,7 @@ interface GraphMessageResource {
   toRecipients?: { emailAddress: { name?: string; address: string } }[];
   ccRecipients?: { emailAddress: { name?: string; address: string } }[];
   bccRecipients?: { emailAddress: { name?: string; address: string } }[];
+  replyTo?: { emailAddress: { name?: string; address: string } }[];
   bodyPreview?: string;
   body?: { contentType: string; content: string };
   receivedDateTime?: string;
@@ -173,6 +187,8 @@ export async function toFetchedGraphMessage(
   });
   const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
+  const replyTo = toEnvelopeAddressList(resource.replyTo);
+
   return {
     messageId: resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`,
     inReplyTo: header(resource, "In-Reply-To") ?? null,
@@ -183,6 +199,7 @@ export async function toFetchedGraphMessage(
       to: toEnvelopeAddressList(resource.toRecipients),
       cc: toEnvelopeAddressList(resource.ccRecipients),
       bcc: toEnvelopeAddressList(resource.bccRecipients),
+      ...(replyTo.length > 0 ? { replyTo } : {}),
     },
     bodyText: appendGraphNonFileAttachmentAnnotations(
       resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
@@ -196,6 +213,12 @@ export async function toFetchedGraphMessage(
     deliveredToHeaders: headerValues(resource, "Delivered-To"),
     xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
     envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
+    bulkHeaders: {
+      listUnsubscribe: header(resource, "List-Unsubscribe") ?? null,
+      listId: header(resource, "List-Id") ?? null,
+      precedence: header(resource, "Precedence") ?? null,
+      autoSubmitted: header(resource, "Auto-Submitted") ?? null,
+    },
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
     // Delta links created before `isRead` was added to our `$select` do not carry that field.
     // Preserve the stored observation in that case instead of treating the incomplete payload
@@ -213,42 +236,181 @@ class GraphApiError extends Error {
   }
 }
 
+/** A Graph recipient in the `emailAddress` shape that `createDraft` takes. */
+export interface GraphRecipient {
+  emailAddress: { address: string; name?: string };
+}
+
 /**
- * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API — same
- * "not exercised by tests, reconcile logic tested via a fake" relationship as
- * `GmailRestClient`. `internetMessageHeaders` is requested via `$select` (Graph has no
+ * The draft `createDraft` posts: the message without its attachments, which follow through upload sessions.
+ * `internetMessageId` and the reply headers are set on the draft so that the sent copy keeps them.
+ */
+export interface GraphDraft {
+  subject: string;
+  body: { contentType: "html" | "text"; content: string };
+  toRecipients: GraphRecipient[];
+  ccRecipients: GraphRecipient[];
+  bccRecipients: GraphRecipient[];
+  internetMessageId: string;
+  internetMessageHeaders: { name: string; value: string }[];
+}
+
+/** One attachment of a draft, as `createUploadSession` describes it. */
+export interface GraphUploadAttachment {
+  name: string;
+  contentType: string;
+  size: number;
+  isInline: boolean;
+  contentId?: string;
+}
+
+/**
+ * The largest raw MIME `sendMime` takes. `sendMail` carries the MIME base64 encoded in a request of at most 4 MB.
+ * Read as 4 000 000 bytes, the stricter of the two readings, and since base64 turns every 3 raw bytes into 4
+ * characters, the largest raw message is 3 000 000 bytes. Larger messages take the draft path (graphTransport.ts).
+ */
+export const GRAPH_SEND_MAIL_MAX_RAW_BYTES = 3_000_000;
+
+const WRITE_REQUEST_TIMEOUT_MS = 30_000;
+/** An upload chunk is larger than a metadata call, so its deadline is longer. */
+const UPLOAD_CHUNK_TIMEOUT_MS = 120_000;
+/** The most of a failed write's body that is read. It is read only to tell a refused recipient apart from other refusals. */
+const WRITE_ERROR_BODY_READ_LIMIT = 4_096;
+/**
+ * The most of a successful write's JSON body that is read. A create response may carry the created message, body
+ * included, so this limit sits well above what a draft id needs. A response over it fails the call instead of being cut short.
+ */
+const WRITE_JSON_RESPONSE_LIMIT = 32 * 1024 * 1024;
+/**
+ * Graph text that names a refused recipient. The wording is inferred from Graph's error codes; no live refusal has
+ * been captured to confirm it, so a refusal worded differently is an ordinary failure.
+ */
+const RECIPIENT_REFUSAL = /ErrorInvalidRecipients|invalid recipient/i;
+
+/**
+ * Reads at most `limit` bytes of a response body and then releases the stream. Releasing is cleanup: its failure is
+ * dropped, because the outcome of the read is what the caller needs.
+ */
+async function readBodyUpTo(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
+  return privateSendOperation(() => readSendBody(response, limit));
+}
+
+/**
+ * The error a refused Graph write with a bearer token becomes. A refusal that names an invalid recipient is
+ * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`, and
+ * any other status is an ordinary failure. The messages name neither the body nor any token.
+ */
+async function writeFailure(response: Response): Promise<Error> {
+  const { text } = await readBodyUpTo(response, WRITE_ERROR_BODY_READ_LIMIT);
+  if (RECIPIENT_REFUSAL.test(text)) return new MailRecipientRejectedError();
+  if (response.status === 400 || response.status === 401) {
+    return new MailReauthorizationRequiredError(`Microsoft Graph rejected the request with status ${response.status}`);
+  }
+  return new Error(`Microsoft Graph request failed with status ${response.status}`);
+}
+
+/** Parses the JSON object of a successful write. A body over the limit fails the call instead of being parsed short. */
+async function jsonObjectOf(response: Response, context: string): Promise<Record<string, unknown>> {
+  const { text, truncated } = await readBodyUpTo(response, WRITE_JSON_RESPONSE_LIMIT);
+  if (truncated) throw new Error(`${context} is over the ${WRITE_JSON_RESPONSE_LIMIT}-byte cap`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${context} is not valid JSON`);
+  }
+  return assertJsonObject(parsed, context);
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API. CI never reaches
+ * Microsoft: the semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Graph server
+ * through `fetchImpl`, and the reconcile logic itself is tested against a fake client. `fetchImpl`
+ * defaults to the global `fetch`. `internetMessageHeaders` is requested via `$select` (Graph has no
  * separate "which headers" query parameter — it must be a selected property, same as any
  * other field) specifically to recover `References`/`In-Reply-To`, which Graph doesn't
  * surface as first-class fields.
  */
 export class GraphRestClient implements GraphMailClient {
-  constructor(private readonly getAccessToken: () => Promise<string>) {}
+  constructor(
+    private readonly getAccessToken: () => Promise<string>,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {
+    registerGraphMovePreparer(this, (id, destination) => this.prepareMoveMessage(id, destination));
+  }
 
-  private async request<T>(url: string): Promise<T> {
+  async observeMoveMessage(messageId: string): Promise<GraphMoveResult> {
     const token = await this.getAccessToken();
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    return graphMoveRequest(this.fetchImpl, token, messageId);
+  }
+
+  async moveMessage(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<GraphMoveResult> {
+    return (await prepareGraphMove(this, messageId, destination))();
+  }
+
+  private async prepareMoveMessage(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<() => Promise<GraphMoveResult>> {
+    if (!messageId || messageId.length > 1024) throw new Error("Invalid Graph message identity");
+    if (!["archive", "deleteditems", "inbox", "sentitems"].includes(destination))
+      throw new Error("Invalid Graph move destination");
+    const token = await this.getAccessToken();
+    let used = false;
+    return () => {
+      if (used) throw new Error("Graph move command already used");
+      used = true;
+      return graphMoveRequest(this.fetchImpl, token, messageId, destination);
+    };
+  }
+
+  private request<T>(url: string): Promise<T>;
+  private request<T>(url: string, tolerated: 404 | 410): Promise<T | null>;
+  private async request<T>(url: string, tolerated?: 404 | 410): Promise<T | null> {
+    const token = await this.getAccessToken();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider request failed unexpectedly");
+    }
+    if (response.status === tolerated) return null;
     if (!response.ok) throw new GraphApiError(response.status);
-    const body = assertJsonObject(await response.json(), `Graph API response from ${url}`);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider response could not be read");
+    }
+    const body = assertJsonObject(parsed, "Graph API response");
     return body as T;
   }
 
   private async listAttachmentMetadata(messageId: string): Promise<GraphAttachmentResource[]> {
-    try {
-      const page = await this.request<{ value: GraphAttachmentResource[] }>(
-        `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
-      );
-      return page.value;
-    } catch (err) {
-      // The message can be deleted between the delta page that listed it and this follow-up
-      // fetch (a real race in a live mailbox) — a 404 here means "nothing to attach anymore,"
-      // not a sync failure; the message itself getting removed is handled separately, by a
-      // later delta page's own `@removed` entry.
-      if (err instanceof GraphApiError && err.status === 404) return [];
-      throw err;
-    }
+    // A real 404 means the message disappeared between delta and attachment lookup.
+    const page = await this.request<{ value: GraphAttachmentResource[] }>(
+      `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
+      404,
+    );
+    return page?.value ?? [];
   }
 
   /**
@@ -260,35 +422,72 @@ export class GraphRestClient implements GraphMailClient {
    */
   private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider request failed unexpectedly");
+    }
     if (!response.ok) throw new GraphApiError(response.status);
-    if (!response.body) throw new Error(`Graph attachment ${attachmentId} on message ${messageId} returned no body`);
+    let source: Readable;
+    try {
+      const body = response.body;
+      if (!body) throw new Error("Graph attachment response has no body");
+      source = Readable.fromWeb(body);
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider response could not be read");
+    }
+    const observed: unknown[] = [];
+    const sourceClosed = new Promise<void>((resolve) => source.once("close", resolve));
 
     let received = 0;
+    let started = false;
     const limiter = new Transform({
+      read(size) {
+        Transform.prototype._read.call(this, size);
+        if (!started) {
+          started = true;
+          source.pipe(this);
+        }
+      },
       transform(chunk: Buffer, _encoding, callback) {
         received += chunk.length;
         if (received > MAX_ATTACHMENT_BYTES) {
-          callback(
-            new Error(
-              `Graph attachment ${attachmentId} on message ${messageId} exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`,
-            ),
-          );
+          callback(new Error(`Graph attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`));
           return;
         }
         callback(null, chunk);
       },
+      destroy(error, callback) {
+        try {
+          if (!source.destroyed) source.destroy();
+        } catch (cleanupError) {
+          observed.push(cleanupError);
+          // Do not report a terminal result before the owned source actually closes.
+          void sourceClosed.then(() => callback(error ?? new Error("Graph sync provider stream could not be closed")));
+          return;
+        }
+        void sourceClosed.then(() => {
+          void observed;
+          callback(error);
+        });
+      },
     });
-    const source = Readable.fromWeb(response.body);
     // Plain `.pipe()` does not forward the source's own 'error' event to the destination — a
     // dropped connection mid-transfer would otherwise leave `limiter` (and whatever later
     // consumes it, e.g. blobStorage.ts's `pipeline()`) waiting forever instead of erroring out,
     // the same class of bug this codebase already documents for imapflow's own download() path.
-    source.on("error", (err) => limiter.destroy(err));
-    source.pipe(limiter);
+    source.on("error", (error: unknown) => {
+      observed.push(error);
+      limiter.destroy(new Error("Graph sync provider response could not be read"));
+    });
     return limiter;
   }
 
@@ -300,8 +499,7 @@ export class GraphRestClient implements GraphMailClient {
    * node, not a limit expected to ever bind in practice.
    */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>, depth = 0): Promise<GraphFolderRef[]> {
-    if (depth > 50)
-      throw new Error(`Graph mailFolders tree exceeded depth 50 under ${url} — likely a malformed API response`);
+    if (depth > 50) throw new Error("Graph mailFolders tree exceeded depth 50");
     const folders: GraphFolderRef[] = [];
     let pageUrl = url;
     while (pageUrl) {
@@ -329,12 +527,8 @@ export class GraphRestClient implements GraphMailClient {
   async listFolders(): Promise<GraphFolderRef[]> {
     const wellKnownIds = new Map<string, string>();
     for (const name of WELL_KNOWN_FOLDERS) {
-      try {
-        const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
-        wellKnownIds.set(folder.id, name);
-      } catch {
-        // Not every well-known folder exists for every account (e.g. no Archive) — skip.
-      }
+      const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`, 404);
+      if (folder) wellKnownIds.set(folder.id, name);
     }
 
     return this.listFoldersUnder(
@@ -346,41 +540,31 @@ export class GraphRestClient implements GraphMailClient {
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
     let url =
       deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
+      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
-    try {
-      while (url) {
-        const page = await this.request<{
-          value: GraphMessageResource[];
-          ["@odata.nextLink"]?: string;
-          ["@odata.deltaLink"]?: string;
-        }>(url);
-        for (const resource of page.value) {
-          if (resource["@removed"]) {
-            changes.push({ id: resource.id, removed: true });
-          } else {
-            const message = await toFetchedGraphMessage(
-              resource,
-              (messageId) => this.listAttachmentMetadata(messageId),
-              (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
-            );
-            changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message });
-          }
+    while (url) {
+      const page = await this.request<{
+        value: GraphMessageResource[];
+        ["@odata.nextLink"]?: string;
+        ["@odata.deltaLink"]?: string;
+      }>(url, 410);
+      if (!page) return { invalidated: true, newDeltaLink: "", changes: [] };
+      for (const resource of page.value) {
+        if (resource["@removed"]) {
+          changes.push({ id: resource.id, removed: true });
+        } else {
+          const message = await toFetchedGraphMessage(
+            resource,
+            (messageId) => this.listAttachmentMetadata(messageId),
+            (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
+          );
+          changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message });
         }
-        if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
-        url = page["@odata.nextLink"] ?? "";
       }
-    } catch (err) {
-      // 410 Gone is Graph's documented "deltaLink expired, resync required" response —
-      // matched on the actual HTTP status, not a substring of the error message, so an
-      // unrelated 4xx (a malformed query, throttling) surfaces as a real error instead of
-      // silently discarding the account's sync position.
-      if (err instanceof GraphApiError && err.status === 410) {
-        return { invalidated: true, newDeltaLink: "", changes: [] };
-      }
-      throw err;
+      if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
+      url = page["@odata.nextLink"] ?? "";
     }
 
     return { invalidated: false, newDeltaLink, changes };
@@ -391,7 +575,7 @@ export class GraphRestClient implements GraphMailClient {
     patch: { isRead: boolean } | { flag: { flagStatus: "flagged" | "notFlagged" } },
   ): Promise<void> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
+    const response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -399,5 +583,137 @@ export class GraphRestClient implements GraphMailClient {
     });
     if (!response.ok) throw new GraphApiError(response.status);
     await response.body?.cancel();
+  }
+
+  /** A write with a bearer token. A failed status becomes the error `writeFailure` classifies; a success returns the response. */
+  private async writeRequest(
+    url: string,
+    init: { method: "POST" | "DELETE"; body?: string; contentType?: string },
+  ): Promise<Response> {
+    const token = await this.getAccessToken();
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(url, {
+        method: init.method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(init.contentType ? { "Content-Type": init.contentType } : {}),
+        },
+        ...(init.body !== undefined ? { body: init.body } : {}),
+        signal: AbortSignal.timeout(WRITE_REQUEST_TIMEOUT_MS),
+      }),
+    );
+    if (!response.ok) throw await privateSendOperation(() => writeFailure(response));
+    return response;
+  }
+
+  /**
+   * Sends a complete RFC 5322 message with `POST /me/sendMail`, base64 encoded as Graph requires for MIME. Graph files
+   * the Sent copy itself and answers 202 with no body. The caller keeps `raw` within GRAPH_SEND_MAIL_MAX_RAW_BYTES.
+   */
+  async sendMime(raw: Buffer): Promise<void> {
+    if (raw.byteLength > GRAPH_SEND_MAIL_MAX_RAW_BYTES) throw new Error("Graph MIME exceeds the send body budget");
+    const response = await this.writeRequest(`${BASE_URL}/sendMail`, {
+      method: "POST",
+      body: raw.toString("base64"),
+      contentType: "text/plain",
+    });
+    try {
+      await response.body?.cancel();
+    } catch (error) {
+      void error;
+      reportSendCleanupFailure("graph-send-response");
+    }
+  }
+
+  /** Creates a draft that carries the Message-ID and the reply headers. Returns the draft's id. */
+  async createDraft(draft: GraphDraft): Promise<{ id: string }> {
+    const response = await this.writeRequest(`${BASE_URL}/messages`, {
+      method: "POST",
+      body: JSON.stringify(draft),
+      contentType: "application/json",
+    });
+    const json = await jsonObjectOf(response, "Microsoft Graph draft response");
+    if (typeof json.id !== "string" || !json.id) throw new Error("Microsoft Graph draft response has no message id");
+    return { id: json.id };
+  }
+
+  /**
+   * Opens an upload session for one attachment of a draft. Returns its upload URL. The URL must be HTTPS. One that is
+   * not is refused before any byte is sent to it.
+   */
+  async createUploadSession(draftId: string, attachment: GraphUploadAttachment): Promise<{ uploadUrl: string }> {
+    const response = await this.writeRequest(
+      `${BASE_URL}/messages/${encodeURIComponent(draftId)}/attachments/createUploadSession`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          AttachmentItem: {
+            attachmentType: "file",
+            name: attachment.name,
+            size: attachment.size,
+            isInline: attachment.isInline,
+            contentType: attachment.contentType,
+            contentId: attachment.contentId,
+          },
+        }),
+        contentType: "application/json",
+      },
+    );
+    const json = await jsonObjectOf(response, "Microsoft Graph upload session response");
+    if (typeof json.uploadUrl !== "string")
+      throw new Error("Microsoft Graph upload session response has no upload URL");
+    if (!isHttpsUrl(json.uploadUrl)) throw new Error("Microsoft Graph returned an upload URL that is not HTTPS");
+    return { uploadUrl: json.uploadUrl };
+  }
+
+  /**
+   * Writes one chunk of an upload session with `PUT`. `start` is the chunk's offset in the attachment and `total` is the
+   * attachment's size. An upload URL is pre-authenticated, so no bearer token is sent to it, and a refusal is an ordinary
+   * failure rather than a credential one.
+   */
+  async uploadChunk(uploadUrl: string, chunk: Buffer, start: number, total: number): Promise<void> {
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Range": `bytes ${start}-${start + chunk.byteLength - 1}/${total}` },
+        body: chunk,
+        signal: AbortSignal.timeout(UPLOAD_CHUNK_TIMEOUT_MS),
+      }),
+    );
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch (error) {
+        void error;
+        reportSendCleanupFailure("graph-upload-response");
+      }
+      throw new Error(`Microsoft Graph upload failed with status ${response.status}`);
+    }
+    await privateSendOperation(async () => {
+      await response.body?.cancel();
+    });
+  }
+
+  /** Sends a draft with `POST /me/messages/{id}/send`. Graph files the sent copy itself. */
+  async sendDraft(draftId: string): Promise<void> {
+    const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(draftId)}/send`, {
+      method: "POST",
+    });
+    try {
+      await response.body?.cancel();
+    } catch (error) {
+      void error;
+      reportSendCleanupFailure("graph-send-response");
+    }
+  }
+
+  /** Deletes a message, here a draft that a failed large send left behind. */
+  async deleteMessage(messageId: string): Promise<void> {
+    const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
+      method: "DELETE",
+    });
+    await privateSendOperation(async () => {
+      await response.body?.cancel();
+    });
   }
 }

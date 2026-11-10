@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ModuleManifest } from "../../manifest.js";
 
 export const manifest: ModuleManifest = {
@@ -8,7 +9,16 @@ export const manifest: ModuleManifest = {
   systemProject: true,
   databases: [{ key: "fixtureGoodItems", name: "Fixture Good Items" }],
   capabilities: ["fixtureGood.send"],
-  agentTools: [{ name: "fixtureGood.doThing", handlerExport: "handleDoThing", capability: "fixtureGood.send" }],
+  agentTools: [
+    {
+      name: "fixtureGood.doThing",
+      handlerExport: "handleDoThing",
+      argumentSchemaExport: "toolArgsSchema",
+      approval: "none",
+      riskClass: "read",
+      capability: "fixtureGood.send",
+    },
+  ],
   viewTypes: ["fixture-good-view"],
   heartbeatActions: ["fixtureGood.heartbeat"],
   heartbeatRuleKinds: [
@@ -70,3 +80,5 @@ export function computeWidgetTickNextFireAt(): Date {
 export function convertFixtureGoodItem(properties: Record<string, unknown>): Record<string, unknown> {
   return properties;
 }
+
+export const toolArgsSchema = z.object({});

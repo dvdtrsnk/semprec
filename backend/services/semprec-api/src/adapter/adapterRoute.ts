@@ -1,10 +1,11 @@
+import type { ConfirmationResult } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { ChokePointError, ForbiddenError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
-import { toItemEnvelope } from "./itemEnvelope.js";
+import { toItemEnvelopeWithBlobs } from "./itemEnvelope.js";
 import { logger } from "../logger.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./http.js";
 
@@ -23,7 +24,7 @@ export { PayloadTooLargeError };
  * change without a transition period. See
  * `docs/adr/2026-09-11-additive-only-rest-contract-no-url-versioning.md` for why.
  *
- * `requireAuthenticatedIdentity`, `sendErrorResponse`, and `sendItemResponse` are deliberately
+ * `requireAuthenticatedIdentity` and `sendErrorResponse` are deliberately
  * module-private: `createAdapterRequestListener` is the only supported entry point, so a route
  * handler can never bypass its centralized auth gate or error mapping by calling one of these
  * directly.
@@ -41,11 +42,6 @@ function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
   sendJson(res, statusForError(err), toErrorResponseBody(err));
 }
 
-/** Sends a successful item write/read as the full item envelope — never an empty 204. */
-function sendItemResponse(res: ServerResponse, status: number, item: ItemRow): void {
-  sendJson(res, status, toItemEnvelope(item));
-}
-
 export interface AdapterRequestContext {
   req: IncomingMessage;
   identity: AuthenticatedIdentity;
@@ -60,7 +56,8 @@ export interface AdapterRequestContext {
  * plain confirmation) — a raw JSON `body` sent as-is. Either way, status mapping and error
  * serialization stay the adapter's job, never the handler's.
  */
-export type AdapterHandlerResult = { status: number; item: ItemRow } | { status: number; body: unknown };
+export type AdapterHandlerResult =
+  { status: number; item: ItemRow; results?: ConfirmationResult[] } | { status: number; body: unknown };
 
 export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<AdapterHandlerResult>;
 
@@ -85,26 +82,32 @@ export function createAdapterRequestListener(
   pool: Pool,
   handler: AdapterHandler,
   options: AdapterRequestListenerOptions = {},
-): (req: IncomingMessage, res: ServerResponse) => void {
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
       if (options.admin && identity.role !== "admin") {
         throw new ForbiddenError("Admin role required", undefined, "admin_required");
       }
-      const run = async (): Promise<AdapterHandlerResult> => {
+      const run = async (): Promise<{ status: number; body: unknown }> => {
         const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         const params = options.extractParams?.(req) ?? {};
-        return handler({ req, identity, params, body });
+        const handled = await handler({ req, identity, params, body });
+        // The full item envelope — never an empty 204 — built here because the blob lookup needs the tenant scope.
+        return "item" in handled
+          ? {
+              status: handled.status,
+              body: {
+                ...(await toItemEnvelopeWithBlobs(pool, handled.item)),
+                ...(handled.results === undefined ? {} : { results: handled.results }),
+              },
+            }
+          : handled;
       };
       // The tenant comes from the authenticated session only; the handler and everything it
       // awaits runs inside it. An admin route runs in system scope and never enters a tenant.
       const result = options.admin ? await runAsSystem("adminRoute", run) : await runInTenant(identity.tenantId, run);
-      if ("item" in result) {
-        sendItemResponse(res, result.status, result.item);
-      } else {
-        sendJson(res, result.status, result.body);
-      }
+      sendJson(res, result.status, result.body);
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: { code: "payload_too_large" } });
@@ -120,11 +123,10 @@ export function createAdapterRequestListener(
     }
   }
 
-  // Same shape as authHandler.ts's own listener wrapper: keeps an unhandled rejection out of
-  // `http.createServer`, which discards an async listener's return value and would otherwise
-  // crash the process on any rejection escaping the try/catch above.
-  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
-    handleRequest(req, res).catch((err: unknown) => {
+  // Return the request completion and attempt a fallback for an escaping error.
+  // The fallback itself can reject, and HTTP listeners may ignore the returned promise.
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    return handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();

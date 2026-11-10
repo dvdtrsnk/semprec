@@ -5,7 +5,8 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { logger } from "./logger.js";
 
-const DEFAULT_RETENTION_DAYS = 30;
+/** How long a trashed item stays restorable before the purge sweep removes it. */
+export const TRASH_RETENTION_DAYS = 30;
 const CANDIDATE_PAGE_SIZE = 500;
 
 /**
@@ -19,11 +20,10 @@ const CANDIDATE_PAGE_SIZE = 500;
  *
  * Candidates are read in keyset pages of 500 (issue #675), so at most one page is held at a time;
  * the keyset advances from the last row of each page, so a candidate whose subtree failed is not
- * re-read by this run. A blob whose row a subtree call deleted has its bytes removed from `storage`
- * only after that call has resolved — its transaction has committed by then — and a storage
- * failure is logged and skipped, leaving the unreferenced bytes behind rather than failing the
- * sweep. Only ids a subtree call actually committed are counted. Returns the number of items
- * permanently removed.
+ * re-read by this run. A blob whose row a subtree call deleted has its bytes removed from each
+ * distinct configured storage only after that call has resolved — its transaction has committed
+ * by then. A storage failure is logged and does not prevent another root's cleanup. Only ids a
+ * subtree call actually committed are counted. Returns the number of items permanently removed.
  *
  * Row-level security narrows every read and write to the scope the caller runs in, so call it inside
  * a tenant scope to purge that tenant's trash; `handleItemTrashPurgeSweepTask` does so once per
@@ -32,7 +32,8 @@ const CANDIDATE_PAGE_SIZE = 500;
 export async function purgeExpiredTrash(
   pool: Pool,
   storage: BlobStorageWriter,
-  retentionDays = DEFAULT_RETENTION_DAYS,
+  retentionDays = TRASH_RETENTION_DAYS,
+  alternateStorage?: BlobStorageWriter,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const chokePoint = createChokePoint(pool);
@@ -55,14 +56,17 @@ export async function purgeExpiredTrash(
       for (const id of result.purgedItemIds) purgedInPage.add(id);
       purgedCount += result.purgedItemIds.length;
       for (const key of result.blobStorageKeys) {
-        try {
-          await storage.delete(key);
-        } catch (err) {
-          // The blob row is already gone, so these bytes are unreachable; leaving them is safe.
-          logger.error(
-            { errCode: err instanceof Error && "code" in err ? String(err.code) : undefined, itemId: candidate.id },
-            "Failed to delete blob bytes of a purged item",
-          );
+        for (const target of alternateStorage && alternateStorage !== storage
+          ? [storage, alternateStorage]
+          : [storage]) {
+          try {
+            await target.delete(key);
+          } catch (err) {
+            logger.error(
+              { errCode: err instanceof Error && "code" in err ? String(err.code) : undefined, itemId: candidate.id },
+              "Failed to delete blob bytes of a purged item",
+            );
+          }
         }
       }
     }
@@ -79,8 +83,12 @@ export async function purgeExpiredTrash(
  * escapes one tenant's pass fails only that tenant; `forEachActiveTenant` rethrows the failures
  * together after every tenant was attempted, so the job is retried.
  */
-export async function handleItemTrashPurgeSweepTask(pool: Pool, storage: BlobStorageWriter): Promise<void> {
+export async function handleItemTrashPurgeSweepTask(
+  pool: Pool,
+  storage: BlobStorageWriter,
+  alternateStorage?: BlobStorageWriter,
+): Promise<void> {
   await forEachActiveTenant(pool, async () => {
-    await purgeExpiredTrash(pool, storage);
+    await purgeExpiredTrash(pool, storage, TRASH_RETENTION_DAYS, alternateStorage);
   });
 }

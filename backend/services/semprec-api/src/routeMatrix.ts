@@ -68,6 +68,66 @@ const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
+    name: "recording upload",
+    method: "POST",
+    path: "/api/recordings",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mailbox list",
+    method: "GET",
+    path: "/api/mail/mailboxes",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mailbox detail",
+    method: "GET",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "project guidance read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "project guidance save",
+    method: "PUT",
+    path: `/api/projects/${EXAMPLE_ID}/agent-guidance`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "project guidance drift read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance/drift`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "guidance drift resolve", method: "POST", path: `/api/agent-guidance-drift/${EXAMPLE_ID}/resolve`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "semp thread create message", method: "POST", path: "/api/semp/threads", surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "semp thread send message", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "semp message speech", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages/${EXAMPLE_ID}/speech`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "semp thread detail",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "semp thread messages",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}/messages`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "server identity",
     method: "GET",
     path: "/api/server-info",
@@ -135,7 +195,25 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     publicReason:
       "Issue #234: the wizard that calls the setup API above must itself be reachable before any account exists, for the same reason the API is public.",
   },
+  {
+    name: "accept invitation",
+    method: "POST",
+    path: "/api/invitations/accept",
+    surface: "api",
+    public: true,
+    tenancy: "anonymous",
+    publicReason:
+      "Issue #1087: the invitee has no session yet. The single-use invitation token is the credential, and every unusable token gets the same 404.",
+  },
   { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false, tenancy: "account" },
+  {
+    name: "list sessions",
+    method: "GET",
+    path: "/api/auth/sessions",
+    surface: "api",
+    public: false,
+    tenancy: "account",
+  },
   {
     name: "revoke session",
     method: "POST",
@@ -143,6 +221,16 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
     tenancy: "account",
+  },
+  // prettier-ignore
+  { name: "revoke other sessions", method: "POST", path: "/api/auth/sessions/revoke-others", surface: "api", public: false, tenancy: "account" },
+  {
+    name: "set self person",
+    method: "PUT",
+    path: "/api/auth/self-person",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
   },
   {
     name: "current session",
@@ -177,6 +265,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "resolved notifications",
+    method: "GET",
+    path: "/api/notifications/resolved",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "visit notification",
     method: "POST",
     path: `/api/notifications/${EXAMPLE_ID}/visit`,
@@ -193,6 +289,48 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "get notification preferences",
+    method: "GET",
+    path: "/api/notification-preferences",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "patch notification preferences",
+    method: "PATCH",
+    path: "/api/notification-preferences",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "trigger heartbeat",
+    method: "POST",
+    path: `/api/heartbeats/${EXAMPLE_ID}/trigger`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "set heartbeat enabled",
+    method: "PATCH",
+    path: `/api/heartbeats/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "semp status",
+    method: "GET",
+    path: "/api/semp-status",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "semp status summary", method: "GET", path: "/api/semp-status/summary", surface: "api", public: false, tenancy: "tenant" },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",
@@ -204,6 +342,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "ai usage report",
     method: "GET",
     path: "/api/ai-usage?from=2026-01-01&to=2026-01-02",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "ai usage summary",
+    method: "GET",
+    path: "/api/ai-usage/summary",
     surface: "api",
     public: false,
     tenancy: "tenant",
@@ -224,6 +370,28 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "task recurrence set", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "task series edit", method: "PATCH", path: `/api/tasks/series/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "task recurrence clear", method: "DELETE", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "journal period ensure",
+    method: "PUT",
+    path: "/api/journal/periods/day/2026-10-16/doc",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "journal period read",
+    method: "GET",
+    path: "/api/journal/periods/day/2026-10-16",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   {
     name: "create transcription",
     method: "POST",
@@ -236,6 +404,18 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "transcription rerun",
     method: "POST",
     path: `/api/transcriptions/${EXAMPLE_ID}/rerun`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "transcript list", method: "GET", path: "/api/transcripts", surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "transcript delete", method: "DELETE", path: `/api/transcripts/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "transcript detail",
+    method: "GET",
+    path: `/api/transcripts/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
     tenancy: "tenant",
@@ -515,6 +695,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  ...(["unlink", "relink"] as const).map((action): RouteMatrixEntry => ({
+    name: `${action} value`,
+    method: "POST",
+    path: `/api/items/${EXAMPLE_ID}/links/exampleKey/${action}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  })),
+  {
+    name: "set relation",
+    method: "PUT",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   {
     name: "create/replace relation",
     method: "PUT",
@@ -532,9 +728,41 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "list relations",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/relations`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "ensure page", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "get page", method: "GET", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "read page markdown", method: "GET", path: `/api/items/${EXAMPLE_ID}/page.md`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "insert page markdown", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/insert`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "list page changes", method: "GET", path: `/api/items/${EXAMPLE_ID}/page/changes`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "create subpage", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/subpages`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "restore page version", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/restore`, surface: "api", public: false, tenancy: "tenant" },
+  // Also takes the optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645), which link the
+  // upload to an item in the same request; tenantIsolationRoutes.test.ts answers a foreign target like a random one.
+  {
     name: "upload file",
     method: "POST",
     path: "/api/files",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "upload blob",
+    method: "POST",
+    path: "/api/blobs",
     surface: "api",
     public: false,
     tenancy: "tenant",
@@ -679,10 +907,46 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     admin: true,
   },
   {
+    name: "voice (WS upgrade)",
+    method: "GET",
+    path: "/api/voice",
+    surface: "ws",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "sync (WS upgrade)",
     method: "GET",
     path: "/api/sync",
     surface: "ws",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "mail autonomous send projects", method: "GET", path: "/api/mail/autonomous-send-projects", surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "mail contacts",
+    method: "GET",
+    path: "/api/mail/contacts?q=contact",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mail threads",
+    method: "GET",
+    path: "/api/mail/threads",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  // prettier-ignore
+  { name: "mail thread detail", method: "GET", path: `/api/mail/threads/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "mailbox removal impact",
+    method: "GET",
+    path: "/api/mail/mailboxes/00000000-0000-0000-0000-000000000000/removal-impact",
+    surface: "api",
     public: false,
     tenancy: "tenant",
   },

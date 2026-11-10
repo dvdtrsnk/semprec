@@ -32,6 +32,16 @@ export type RealtimeMessage =
       userId?: string;
     }
   | { type: "invalidation"; scope: "schema"; databaseId: string; userId?: string }
+  | {
+      type: "invalidation";
+      scope: "relation";
+      databaseId: string;
+      itemId: string;
+      propertyKey: string | null;
+      op: "put" | "delete" | "metadata";
+      userId?: string;
+    }
+  | { type: "invalidation"; scope: "sempThread"; threadId: string }
   | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
   | { type: "agent_run_event"; agentRunId: string; eventId: string }
   | { type: "notification_created"; userId: string; notificationId: string }
@@ -50,10 +60,20 @@ export async function publishRealtimeMessage(pool: Pool | PoolClient, message: R
     await pool.query(
       `SELECT pg_notify($1, json_build_object(
          'tenantId',
-         (SELECT COALESCE(u.tenant_id, app_sole_tenant()) FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
+         (SELECT u.tenant_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
          'message', $2::json)::text)`,
       [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
     );
+    return;
+  }
+  if (message.type === "invalidation" && message.scope === "relation") {
+    const validated = parseRealtimeMessage(message);
+    if (!validated || validated.type !== "invalidation" || validated.scope !== "relation")
+      throw new Error("Invalid relation invalidation");
+    const serialized = JSON.stringify(validated);
+    const bounded =
+      Buffer.byteLength(serialized, "utf8") <= 7000 ? serialized : JSON.stringify({ ...validated, propertyKey: null });
+    await publishEnveloped(pool, REALTIME_CHANNEL, bounded);
     return;
   }
   await publishEnveloped(pool, REALTIME_CHANNEL, JSON.stringify(message));
@@ -70,9 +90,12 @@ async function publishEnveloped(pool: Pool | PoolClient, channel: string, messag
   );
 }
 
-export type AgentStreamMessage =
-  | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
-  | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk };
+type VoiceDeltaIdentity = { sempMessageId?: string; afterEventId?: string; deltaSequence?: number };
+export type AgentStreamMessage = VoiceDeltaIdentity &
+  (
+    | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
+    | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk }
+  );
 
 function serializedBytes(message: AgentStreamMessage): number {
   return Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -83,11 +106,35 @@ function serializedBytes(message: AgentStreamMessage): number {
  * below its ~8 KiB ceiling, so unusually large JSON values are split into independently valid
  * base64 pieces. The receiver forwards the chunk metadata unchanged for the client to reassemble.
  */
-export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: string, delta: unknown): Promise<void> {
+export async function publishAgentRunDelta(
+  pool: Pool | PoolClient,
+  agentRunId: string,
+  delta: unknown,
+  sempMessageId?: string,
+  afterEventId?: string,
+  deltaSequence?: number,
+): Promise<void> {
+  const attributed = sempMessageId !== undefined || afterEventId !== undefined || deltaSequence !== undefined;
+  if (
+    attributed &&
+    (!isUuid(sempMessageId) ||
+      !isAgentRunEventId(afterEventId) ||
+      afterEventId === "0" ||
+      !Number.isSafeInteger(deltaSequence) ||
+      deltaSequence === undefined ||
+      deltaSequence < 1)
+  )
+    throw new Error("Invalid Semp delta identity");
+  const identity = attributed ? { sempMessageId, afterEventId, deltaSequence } : {};
   // `JSON.stringify` drops an object key whose value is `undefined`, and `parseAgentStreamMessage`
   // requires a `delta` key to be present — normalize so an explicit `undefined` delta still
   // round-trips instead of being silently dropped on the fast (unchunked) path below.
-  const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta: delta === undefined ? null : delta };
+  const single: AgentStreamMessage = {
+    type: "agent_run_delta",
+    agentRunId,
+    delta: delta === undefined ? null : delta,
+    ...identity,
+  };
   if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
     await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(single));
     return;
@@ -103,6 +150,7 @@ export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: 
     const message: AgentStreamMessage = {
       type: "agent_run_delta",
       agentRunId,
+      ...identity,
       delta: encoded.slice(index * AGENT_STREAM_CHUNK_BYTES, (index + 1) * AGENT_STREAM_CHUNK_BYTES),
       chunk,
     };
@@ -130,6 +178,25 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
 
   switch (value.type) {
     case "invalidation": {
+      if (value.scope === "relation") {
+        if (
+          !isUuid(value.databaseId) ||
+          !isUuid(value.itemId) ||
+          !(value.propertyKey === null || typeof value.propertyKey === "string") ||
+          !(value.op === "put" || value.op === "delete" || value.op === "metadata") ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return {
+          type: "invalidation",
+          scope: "relation",
+          databaseId: value.databaseId,
+          itemId: value.itemId,
+          propertyKey: value.propertyKey,
+          op: value.op,
+          userId: value.userId,
+        };
+      }
       if (value.scope === "item") {
         if (
           typeof value.databaseId === "string" &&
@@ -155,6 +222,9 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
           return { type: "invalidation", scope: "schema", databaseId: value.databaseId, userId: value.userId };
         }
         return null;
+      }
+      if (value.scope === "sempThread") {
+        return isUuid(value.threadId) ? { type: "invalidation", scope: "sempThread", threadId: value.threadId } : null;
       }
       return null;
     }
@@ -210,7 +280,26 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   if (typeof raw !== "object" || raw === null) return null;
   const value = raw as Record<string, unknown>;
   if (value.type !== "agent_run_delta" || !isUuid(value.agentRunId) || !("delta" in value)) return null;
-  if (value.chunk === undefined) return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta };
+  if (value.sempMessageId !== undefined && !isUuid(value.sempMessageId)) return null;
+  const ordered = value.afterEventId !== undefined || value.deltaSequence !== undefined;
+  if (
+    ordered &&
+    (!isUuid(value.sempMessageId) ||
+      !isAgentRunEventId(value.afterEventId) ||
+      value.afterEventId === "0" ||
+      typeof value.deltaSequence !== "number" ||
+      !Number.isSafeInteger(value.deltaSequence) ||
+      value.deltaSequence < 1)
+  )
+    return null;
+  const identity: VoiceDeltaIdentity = {
+    ...(value.sempMessageId === undefined ? {} : { sempMessageId: value.sempMessageId }),
+    ...(typeof value.afterEventId === "string" && typeof value.deltaSequence === "number"
+      ? { afterEventId: value.afterEventId, deltaSequence: value.deltaSequence }
+      : {}),
+  };
+  if (value.chunk === undefined)
+    return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta, ...identity };
   if (typeof value.chunk !== "object" || value.chunk === null || Array.isArray(value.chunk)) return null;
   const chunk = value.chunk as Record<string, unknown>;
   if (
@@ -230,6 +319,7 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
   return {
     type: "agent_run_delta",
     agentRunId: value.agentRunId,
+    ...identity,
     delta: value.delta,
     chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
   };

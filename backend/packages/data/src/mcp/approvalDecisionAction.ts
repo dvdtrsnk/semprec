@@ -6,6 +6,8 @@ import {
   type ApprovalRequest,
   type ApprovalRequestDecision,
 } from "./approvalRequestsStore.js";
+import { resolveNotificationsBySource } from "../notifications/notificationsStore.js";
+import { postApprovalOutcomeMessage } from "./approvalOutcomeMessage.js";
 
 export interface DecideAndEnqueueResult {
   outcome: "decided" | "unchanged";
@@ -31,7 +33,8 @@ export interface DecideApprovalRequestInput {
  * instead of scheduling a second one.
  *
  * Decide and re-read run in the same transaction, so the outcome cannot race another decision:
- * - `decided`: this call made the transition (and enqueued, on approval);
+ * - `decided`: this call made the transition (and enqueued, on approval), and resolved the
+ *   request's notifications in the same transaction;
  * - `unchanged`: the caller owns the request's run but it is no longer pending — whoever recorded
  *   that decision (the owner, or a system path such as a migration that left `decided_by` NULL) —
  *   so the update matched nothing and the current state is returned;
@@ -56,6 +59,9 @@ export async function decideAndEnqueueApprovalRequest(
       { jobKey: `approval-request-execute-${request.id}`, jobKeyMode: "preserve_run_at" },
     );
   }
+  if (request.status === "rejected") await postApprovalOutcomeMessage(client, request, "rejected");
+
+  await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
 
   return { outcome: "decided", request };
 }

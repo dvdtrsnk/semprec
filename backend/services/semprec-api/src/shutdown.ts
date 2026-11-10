@@ -18,7 +18,14 @@ export interface CreateGracefulShutdownOptions {
   /** The tenant deactivation listener; closed first, so no deactivation handler runs against a closing sync server or mail root. */
   tenantDeactivationListener: { close(): Promise<void> };
   syncServer: { close(): Promise<void> };
+  voiceServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
+  /**
+   * The Gmail Pub/Sub dispatcher (issue #1739), absent when this process hosts no Gmail watch; stopped
+   * after the HTTP drain and before `mailLiveSync`
+   * (docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md).
+   */
+  gmailPubSubDispatcher?: { stop(): Promise<void> };
   mailLiveSync: { stop(): Promise<void> };
   pool: Pool;
   logger: Logger;
@@ -134,16 +141,29 @@ function closeListener(listener: { close(): Promise<void> }, logger: Logger, sig
  * by `LISTENER_CLOSE_TIMEOUT_MS`), close the sync server (every `/api/sync` client gets
  * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
  * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
- * and drain in-flight requests (intake), stop the mail live-sync root (issue #650 — before the
- * queue runtime, because a hosted lifecycle's `start()` enqueues a `mailAccountSync` job, so no new
- * enqueue can race the runner's stop), stop the queue runtime issue #91 hosts in this same
+ * and drain in-flight requests (intake), stop the Gmail Pub/Sub dispatcher when there is one (issue #1739:
+ * its loop ends, a pull still in flight returns within the transport's request timeout, and what it pulled
+ * but did not hand off stays unacknowledged for Pub/Sub to redeliver), stop the mail live-sync root (issue
+ * #650 — before the queue runtime, because a hosted lifecycle's `start()` enqueues a `mailAccountSync`
+ * job, so no new enqueue can race the runner's stop), stop the queue runtime issue #91 hosts in this same
  * process (`queueRuntime.stop()` awaits its `Runner.stop()`), then end the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step, unlike
- * `semprec-ai-gateway`'s.
+ * `semprec-ai-gateway`'s. The dispatcher's place is recorded in
+ * `docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md`.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { server, tenantDeactivationListener, syncServer, queueRuntime, mailLiveSync, pool, logger } = options;
+  const {
+    server,
+    tenantDeactivationListener,
+    syncServer,
+    voiceServer,
+    queueRuntime,
+    gmailPubSubDispatcher,
+    mailLiveSync,
+    pool,
+    logger,
+  } = options;
   const drainTimeoutMs = options.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   let shutdownPromise: Promise<void> | null = null;
@@ -159,7 +179,25 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       logger.error({ err, signal }, "syncServer.close() failed");
     }
 
+    try {
+      await voiceServer.close();
+    } catch (err) {
+      logger.error({ err, signal }, "voiceServer.close() failed");
+    }
+
     const timedOut = await drainServer(server, drainTimeoutMs, logger, signal);
+
+    if (gmailPubSubDispatcher) {
+      try {
+        await gmailPubSubDispatcher.stop();
+      } catch (err) {
+        // Its name only: a Pub/Sub transport failure must not put a request's token into the log.
+        logger.error(
+          { errorName: err instanceof Error ? err.name : typeof err, signal },
+          "gmailPubSubDispatcher.stop() failed",
+        );
+      }
+    }
 
     try {
       await mailLiveSync.stop();

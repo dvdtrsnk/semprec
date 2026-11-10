@@ -1,10 +1,13 @@
 import type { Transporter } from "nodemailer";
+import { renderAuthMail } from "../auth/authMailCatalog.js";
 
 export interface SendInviteEmailInput {
   to: string;
   inviteUrl: string;
   /** ISO timestamp the invitation's link stops working at. */
   expiresAt: string;
+  /** Locale of the admin who created the invitation; an unknown value renders English. */
+  locale: string;
 }
 
 export interface InviteMailer {
@@ -36,15 +39,16 @@ export class NodemailerInviteMailer implements InviteMailer {
   ) {}
 
   async sendInviteEmail(input: SendInviteEmailInput): Promise<void> {
+    const mail = await renderAuthMail("invite", input.locale, input.inviteUrl, escapeHtml);
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
         this.transporter.sendMail({
           from: this.fromAddress,
           to: input.to,
-          subject: "You have been invited to Semprec",
-          text: `You have been invited to Semprec. Open this link to create your account:\n\n${input.inviteUrl}\n\nThis link expires in 7 days and can only be used once.`,
-          html: `<p>You have been invited to Semprec. Open the link below to create your account. This link expires in 7 days and can only be used once.</p><p><a href="${escapeHtml(input.inviteUrl)}">${escapeHtml(input.inviteUrl)}</a></p>`,
+          subject: mail.subject,
+          text: mail.text,
+          html: mail.html,
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(

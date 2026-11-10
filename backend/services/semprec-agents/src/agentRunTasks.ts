@@ -9,6 +9,7 @@ import {
   type CreateAgentSession,
 } from "@semprec/agent-runtime";
 import {
+  agentRunErrorCodeOf,
   finishAgentRunWithErrorNotification,
   getAgentRun,
   type AgentQueueTaskHandler,
@@ -35,15 +36,16 @@ function requireString(payload: unknown, field: string): string {
  * is seen as an already-aborted signal when the turn starts. Throws, before `fn`, outside a tenant scope: that is a wiring bug, since every
  * queued job runs inside its tenant.
  */
-async function withInFlightRegistration<T>(
+export async function withInFlightRegistration<T>(
   pool: Pool,
   inFlight: InFlightAgentRuns,
   fn: (signal: AbortSignal) => Promise<T>,
+  semp = false,
 ): Promise<T> {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("An agent run must execute inside a tenant scope");
   const controller = new AbortController();
-  const unregister = inFlight.register(scope.tenantId, controller);
+  const unregister = inFlight.register(scope.tenantId, controller, semp);
   try {
     // Registration precedes the read: an earlier deactivation is visible here, and a later
     // notification reaches this controller. The registry keeps no deactivation tombstones.
@@ -71,7 +73,8 @@ function errorMessage(err: unknown): string {
 async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {
-      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause)))) return;
+      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause), agentRunErrorCodeOf(cause))))
+        return;
       await pushRunStatus(client, run.id, "error");
     });
   } catch (err) {

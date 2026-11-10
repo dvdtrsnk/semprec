@@ -1,10 +1,23 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { confirmProposalWithClient, type ConfirmProposalCredentialInput } from "./proposalActions.js";
+import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import {
+  confirmProposalWithClient,
+  readConfirmationResults,
+  type ConfirmationResult,
+  type ConfirmProposalCredentialInput,
+} from "./proposalActions.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
+import {
+  createCatalogResolver,
+  resolveDatabaseName,
+  toManifestLocale,
+  type CatalogResolver,
+  type ManifestLocale,
+} from "../manifest/catalogResolution.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -17,9 +30,12 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
+  /** The authenticated caller; only the confirm route reads it. */
+  identity?: { user: { id: string } };
 }
 
-type CustomRouteResult = { status: number; item: ItemRow } | { status: number; body: unknown };
+type CustomRouteResult =
+  { status: number; item: ItemRow; results?: ConfirmationResult[] } | { status: number; body: unknown };
 
 function requireParam(params: Record<string, string>, name: string): string {
   const value = params[name];
@@ -69,25 +85,90 @@ export function createConfirmProposalRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const credential = parseConfirmCredential(ctx.body);
+    const actingUserId = ctx.identity?.user.id;
     const item = await withTransaction(pool, async (client) => {
       const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
-      return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential);
+      return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential, actingUserId);
     });
-    return { status: 200, item };
+    return { status: 200, item, results: readConfirmationResults(item.properties) };
   };
 }
 
+/** `GET /api/inbox-types`'s request context: the adapter always supplies the caller, whose `users.locale` is the locale its labels resolve in. */
+interface InboxTypesRouteRequestContext {
+  identity: { user: { locale: string } };
+}
+
+/** One active type as the capture UI reads it (issue #1439): the base fields, the processing config, and the target's label. */
+interface InboxTypeEntry extends InboxTypeSummary {
+  /** The target database's display name in the caller's locale; `null` when the type has no target. */
+  targetLabel: string | null;
+}
+
+let catalogResolverPromise: Promise<CatalogResolver> | undefined;
+
 /**
- * `GET /api/inbox-types` (issue #239's custom-route registration of #101's
- * `listActiveInboxTypes`) — a read shortcut shaped for exactly one consumer, the capture UI's
- * type picker, not a generic list-items-in-a-database query (it returns only active types, and
- * only the three fields that picker needs).
+ * The catalog resolver every target label is read through, built once per process from a module
+ * registry that `loadFullModuleRegistry` builds. The custom-route factory receives only the pool, so
+ * the handler cannot take the composition root's registry instance. A failed load is not cached, so
+ * the next request retries instead of failing until restart.
+ */
+function getCatalogResolver(): Promise<CatalogResolver> {
+  catalogResolverPromise ??= loadFullModuleRegistry()
+    .then((registry) => createCatalogResolver(registry))
+    .catch((error: unknown) => {
+      catalogResolverPromise = undefined;
+      throw error;
+    });
+  return catalogResolverPromise;
+}
+
+/**
+ * A target database's display name in `locale`: the name it was given, else its catalog label, else
+ * the key itself when the catalog has no entry for it. The key is always known here, so the database
+ * id is never read; the key stands in for it.
+ */
+async function resolveTargetLabel(
+  client: PoolClient,
+  catalogResolver: CatalogResolver,
+  targetKey: string,
+  locale: ManifestLocale,
+): Promise<string> {
+  const database = await getDatabaseByKey(client, targetKey);
+  const catalogs = await catalogResolver.getCatalogsForDbKey(targetKey);
+  return resolveDatabaseName(database?.name ?? null, targetKey, targetKey, catalogs, locale);
+}
+
+/**
+ * `GET /api/inbox-types` (issue #239's custom-route registration of #101's `listActiveInboxTypes`,
+ * extended by issue #1439) — a read shortcut shaped for exactly one consumer, the capture UI's type
+ * picker, not a generic list-items-in-a-database query. It returns only active types, and per type only
+ * the base fields, how the type is processed, and, for a type with a target, the target's label in the
+ * caller's locale. A label is resolved once per distinct target.
  */
 export function createInboxTypesRouteHandler(pool: Pool) {
-  return async (): Promise<CustomRouteResult> => {
-    const types: InboxTypeSummary[] = await withTransaction(pool, async (client) => {
+  return async (ctx: InboxTypesRouteRequestContext): Promise<CustomRouteResult> => {
+    const locale = toManifestLocale(ctx.identity.user.locale);
+    const catalogResolver = await getCatalogResolver();
+    const types = await withTransaction(pool, async (client) => {
       const inboxItemTypesDatabaseId = await resolveDatabaseIdByModuleId(client, INBOX_ITEM_TYPES_MODULE_ID);
-      return listActiveInboxTypes(client, inboxItemTypesDatabaseId);
+      const summaries = await listActiveInboxTypes(client, inboxItemTypesDatabaseId);
+      const targetLabels = new Map<string, string>();
+      const entries: InboxTypeEntry[] = [];
+      for (const summary of summaries) {
+        const targetKey = summary.targetDatabaseKey;
+        if (targetKey === null) {
+          entries.push({ ...summary, targetLabel: null });
+          continue;
+        }
+        let targetLabel = targetLabels.get(targetKey);
+        if (targetLabel === undefined) {
+          targetLabel = await resolveTargetLabel(client, catalogResolver, targetKey, locale);
+          targetLabels.set(targetKey, targetLabel);
+        }
+        entries.push({ ...summary, targetLabel });
+      }
+      return entries;
     });
     return { status: 200, body: { types } };
   };

@@ -14,7 +14,6 @@
   "property.mailboxes.syncStatus.option.never": "Nikdy",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Vyžaduje novou autorizaci",
   "property.mailboxes.folders.name": "Složky",
-
   "database.folders.name": "Složky",
   "property.folders.name.name": "Název",
   "property.folders.behavior.name": "Chování",
@@ -32,8 +31,8 @@
   "property.folders.providerId.name": "ID poskytovatele",
   "property.folders.mailbox.name": "Schránka",
   "property.folders.emails.name": "E-maily",
-
   "database.emails.name": "E-maily",
+  "database.emails.searchPlaceholder": "Hledat v e-mailech",
   "property.emails.name.name": "Předmět",
   "property.emails.sender.name": "Odesílatel",
   "property.emails.recipients.name": "Příjemci",
@@ -45,6 +44,10 @@
   "property.emails.attachments.name": "Přílohy",
   "property.emails.senderPeople.name": "Odesílatel",
   "property.emails.recipientsPeople.name": "Příjemci",
-
-  "viewType.mailbox-client.name": "Poštovní schránka"
+  "viewType.mailbox-client.name": "Poštovní schránka",
+  "database.threads.name": "Vlákna",
+  "property.threads.name.name": "Název",
+  "property.threads.project.name": "Projekt",
+  "property.threads.company.name": "Firma",
+  "property.threads.tasks.name": "Úkoly"
 }

@@ -30,21 +30,22 @@ export interface AudioHandlerOptions {
   globalCaps: GlobalAiCaps;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
 }
 
-class PayloadTooLargeError extends Error {}
+export class PayloadTooLargeError extends Error {}
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/** Buffers and parses a JSON request body of at most `maxBytes` (413 past it, 400 for invalid JSON). */
+export async function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+    if (size > maxBytes) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
     chunks.push(buf);
   }
   try {
@@ -55,13 +56,13 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
-function tokensMatch(provided: string, expected: string): boolean {
+export function tokensMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
   const expectedBuf = Buffer.from(expected);
   return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
 }
 
-function extractBearerToken(req: IncomingMessage): string {
+export function extractBearerToken(req: IncomingMessage): string {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) return "";
   return header.slice("Bearer ".length);
@@ -73,12 +74,30 @@ interface AudioRequestBody {
   mimeType: string;
   audioSeconds: number;
   language?: string;
+  numSpeakers?: { exact: number } | { min: number };
 }
 
 /** Canonical padded standard base64, as produced by `Buffer#toString("base64")`. */
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+function isBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const dataLength = value.length - padding;
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      !(code >= 65 && code <= 90) &&
+      !(code >= 97 && code <= 122) &&
+      !(code >= 48 && code <= 57) &&
+      code !== 43 &&
+      code !== 47
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
-function validateBody(raw: unknown): AudioRequestBody {
+function validateBody(raw: unknown, diarization = false): AudioRequestBody {
   if (typeof raw !== "object" || raw === null) throw new ValidationError("Request body must be a JSON object");
   const body = raw as Record<string, unknown>;
 
@@ -98,9 +117,26 @@ function validateBody(raw: unknown): AudioRequestBody {
     throw new ValidationError("'language' must be a string when present", { field: "language" });
   }
 
+  let numSpeakers: AudioRequestBody["numSpeakers"];
+  if (diarization && body.numSpeakers !== undefined) {
+    const value = body.numSpeakers;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    const keys = Object.keys(value);
+    if (keys.length !== 1 || (keys[0] !== "exact" && keys[0] !== "min")) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    const number = keys[0] === "exact" && "exact" in value ? value.exact : "min" in value ? value.min : undefined;
+    if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    numSpeakers = keys[0] === "exact" ? { exact: number } : { min: number };
+  }
+
   // Buffer.from(..., "base64") never throws — it silently drops invalid characters — so the
   // format is checked up front instead of forwarding garbled bytes to the provider.
-  if (!BASE64_PATTERN.test(body.audioBase64)) {
+  if (!isBase64(body.audioBase64)) {
     throw new ValidationError("'audioBase64' is not valid base64", { field: "audioBase64" });
   }
 
@@ -110,6 +146,7 @@ function validateBody(raw: unknown): AudioRequestBody {
     mimeType: body.mimeType,
     audioSeconds: body.audioSeconds,
     language: body.language,
+    numSpeakers,
   };
 }
 
@@ -117,7 +154,7 @@ function validateBody(raw: unknown): AudioRequestBody {
  * A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection loss;
  * `writableFinished` is only true for the former, so only a disconnect aborts the returned signal.
  */
-function abortOnDisconnect(res: ServerResponse): AbortSignal {
+export function abortOnDisconnect(res: ServerResponse): AbortSignal {
   const abort = new AbortController();
   res.on("close", () => {
     if (!res.writableFinished) abort.abort();
@@ -136,7 +173,7 @@ function abortOnDisconnect(res: ServerResponse): AbortSignal {
  */
 export function createAudioRequestListener(pool: Pool, options: AudioHandlerOptions) {
   async function handleDiarize(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = validateBody(await readJsonBody(req));
+    const body = validateBody(await readJsonBody(req), true);
     // The audio length is known up front, so the reserved estimate is the exact price.
     const costUsd = (body.audioSeconds / 3600) * options.pyannotePricePerAudioHour;
     const signal = abortOnDisconnect(res);
@@ -155,6 +192,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
             audio: body.audio,
             filename: body.filename,
             mimeType: body.mimeType,
+            numSpeakers: body.numSpeakers,
             signal,
           });
           return { turns, audioSeconds: body.audioSeconds, costUsd };

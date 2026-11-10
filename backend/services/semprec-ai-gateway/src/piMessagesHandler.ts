@@ -39,6 +39,7 @@ export const STREAM_TIMEOUT_MS = 10 * 60 * 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
+const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
 export interface PiMessagesHandlerOptions {
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
@@ -100,9 +101,9 @@ const requestBodySchema = z.object({
 
 type PiMessagesRequestBody = z.infer<typeof requestBodySchema>;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(payload);
 }
 
@@ -157,6 +158,16 @@ function extractAgentRunId(req: IncomingMessage): string | null {
   if (value === undefined) return null;
   if (!UUID_PATTERN.test(value)) {
     throw new ValidationError(`'${AGENT_RUN_ID_HEADER}' must be a UUID`, { field: AGENT_RUN_ID_HEADER });
+  }
+  return value;
+}
+
+function extractSempMessageId(req: IncomingMessage): string | null {
+  const header = req.headers[SEMP_MESSAGE_ID_HEADER];
+  const value = Array.isArray(header) ? header[0] : header;
+  if (value === undefined) return null;
+  if (!UUID_PATTERN.test(value)) {
+    throw new ValidationError(`'${SEMP_MESSAGE_ID_HEADER}' must be a UUID`, { field: SEMP_MESSAGE_ID_HEADER });
   }
   return value;
 }
@@ -339,6 +350,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
       const callerTenantId = readCallerTenantId(req);
       await runForCallerTenant(callerTenantId, async () => {
         const agentRunId = extractAgentRunId(req);
+        const sempMessageId = extractSempMessageId(req);
         const body = parseBody(await readJsonBody(req));
 
         const model = options.models.getModel(PROVIDER, body.model);
@@ -364,6 +376,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
               provider: PROVIDER,
               model: model.id,
               agentRunId,
+              sempMessageId,
               projectItemId: null,
               operation: "agent_turn",
               estimatedCostUsd,
@@ -375,7 +388,12 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
           if (err instanceof BudgetExceededError) {
             // Raised by the reservation, before `streamTurn` wrote the head; the pi client surfaces
             // the status as its own `error` event.
-            sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
+            sendJson(
+              res,
+              403,
+              { error: err.message, code: "budget_exceeded" },
+              { "x-semprec-error-code": "budget_exceeded" },
+            );
             return;
           }
           // Anything else that escaped before the head was written (the reservation itself failing)

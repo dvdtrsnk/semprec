@@ -34,7 +34,9 @@ const TENANT_TABLES = [
   "idempotency_keys",
   "rollup_dependencies",
   "task_recurrence",
+  "project_kept_dates",
   "item_automation",
+  "recording_requests",
   "item_search_index",
   "blobs",
   "docs",
@@ -48,18 +50,24 @@ const TENANT_TABLES = [
   "agent_run_events",
   "approval_requests",
   "mcp_tool_registrations",
+  "mcp_server_connection_state",
   "project_mcp_grants",
   "project_agent_guidance",
+  "project_agent_guidance_versions",
   "agent_guidance_drift_findings",
   "manifest_drift_findings",
   "notifications",
   "push_deliveries",
   "mail_account_sync_state",
+  "mail_account_server_settings",
+  "mail_drafts",
   "mail_folder_sync_state",
   "mail_threads",
+  "mail_thread_aliases",
   "mail_message_meta",
   "mail_attachments",
   "mail_message_flag_sync_state",
+  "mail_message_move_sync_state",
   "person_email_index",
   "external_credentials",
   "credential_access_log",
@@ -69,6 +77,17 @@ const TENANT_TABLES = [
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
+  "mail_oauth_states",
+  "semp_problems",
+  "semp_problem_occurrences",
+  "semp_threads",
+  "semp_messages",
+  "semp_message_speech",
+  "value_links",
+  "value_link_sources",
+  "item_origins",
+  "inbox_attachments",
+  "notification_preferences",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -122,6 +141,12 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   { table: "task_recurrence", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "item_automation", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_account_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_drafts", columns: ["email_item_id"], reason: "scoped by the server-generated email item id" },
+  {
+    table: "mail_account_server_settings",
+    columns: ["mailbox_item_id"],
+    reason: "scoped by the server-generated mailbox item id",
+  },
   { table: "mail_folder_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_message_meta", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "external_credentials", columns: ["item_id"], reason: "scoped by the server-generated item id" },
@@ -182,6 +207,18 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     predicate: "system",
   },
   { name: "idempotency_keys_pkey", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
+  {
+    name: "recording_requests_pkey",
+    table: "recording_requests",
+    columns: ["tenant_id", "file_item_id"],
+    predicate: null,
+  },
+  {
+    name: "mail_threads_tenant_item_id_idx",
+    table: "mail_threads",
+    columns: ["tenant_id", "item_id"],
+    predicate: "item_id IS NOT NULL",
+  },
   {
     name: "person_email_index_pkey",
     table: "person_email_index",
@@ -586,7 +623,7 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(24);
   });
 
   /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
@@ -652,12 +689,32 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(31);
+    expect(twins).toHaveLength(38);
+    expect(twins).toContainEqual({
+      table_name: "agent_guidance_drift_findings",
+      constraint_name: "agent_guidance_drift_findings_resolved_by_tenant_fkey",
+      column_name: "resolved_by",
+    });
+    expect(twins).toContainEqual({
+      table_name: "ai_gateway_calls",
+      constraint_name: "ai_gateway_calls_semp_message_id_tenant_fkey",
+      column_name: "semp_message_id",
+    });
+    expect(twins).toContainEqual({
+      table_name: "semp_problem_occurrences",
+      constraint_name: "semp_problem_occurrences_problem_id_tenant_fkey",
+      column_name: "problem_id",
+    });
     for (const twin of twins) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         try {
+          if (twin.constraint_name === "ai_gateway_calls_semp_message_id_tenant_fkey") {
+            // Synthetic detector fixture uses only these fixed literal identifiers, and is rolled back below.
+            await client.query(`ALTER TABLE ai_gateway_calls ADD CONSTRAINT test_semp_message_single_fk
+              FOREIGN KEY (semp_message_id) REFERENCES semp_messages (id)`);
+          }
           // Identifiers come from pg_constraint, never from input; ALTER TABLE accepts no bind parameters.
           await client.query(`ALTER TABLE ${twin.table_name} DROP CONSTRAINT ${twin.constraint_name}`);
           expect(await listCompositeForeignKeyViolations(client), twin.constraint_name).toEqual([
@@ -665,6 +722,14 @@ describe("tenancy classification catalog", () => {
           ]);
         } finally {
           await client.query("ROLLBACK");
+        }
+        if (twin.constraint_name === "ai_gateway_calls_semp_message_id_tenant_fkey") {
+          const restored = await client.query<{ conname: string }>(
+            `SELECT conname FROM pg_constraint WHERE conrelid = 'ai_gateway_calls'::regclass
+              AND conname = ANY($1::text[]) ORDER BY conname`,
+            [["ai_gateway_calls_semp_message_id_tenant_fkey", "test_semp_message_single_fk"]],
+          );
+          expect(restored.rows).toEqual([{ conname: "ai_gateway_calls_semp_message_id_tenant_fkey" }]);
         }
       } finally {
         client.release();

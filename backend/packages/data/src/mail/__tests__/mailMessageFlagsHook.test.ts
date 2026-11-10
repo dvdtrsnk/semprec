@@ -1,3 +1,8 @@
+import { inTenantZero } from "../../testSupport/tenantFixtures.js";
+import { CORE_TASK_NAMES } from "@semprec/queue";
+import { convergeObservedEmailFlagsWithClient } from "../../chokePoint/itemWrites.js";
+import { upsertMailMessageMeta } from "../mailMessageMetaStore.js";
+import { mailAccountSyncJobKey } from "../mailSyncJob.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import "../../domainWriteHooks.js";
@@ -45,6 +50,17 @@ async function relationDefinitionIdFor(propertyId: string): Promise<string> {
   );
   if (!rows[0]) throw new Error(`Relation definition for property '${propertyId}' was not seeded`);
   return rows[0].id;
+}
+
+function tenantIt(name: string, test: () => Promise<void>): void {
+  it(name, () => inTenantZero(test));
+}
+async function queuedSyncs() {
+  const { rows } = await pool.query<{ key: string | null }>(
+    "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+    [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC],
+  );
+  return rows;
 }
 
 /** Issue #659: the mail flag-sync write moves from a direct `chokePoint/itemWrites.ts` import to `mailMessageFlagsItemUpdateHook`, run through the choke point's per-process registry. */
@@ -116,7 +132,7 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
     };
   }
 
-  it("records the desired flag state through the registry when an Emails item is patched", async () => {
+  tenantIt("records the desired flag state through the registry when an Emails item is patched", async () => {
     const { emailsId, itemId, folderRelationDefinitionId, mailboxFolderRelationDefinitionId, mailboxItemId } =
       await ingestedEmail();
 
@@ -127,12 +143,13 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
       mailboxFolderRelationDefinitionId,
       mailboxItemId,
     });
+    expect(await queuedSyncs()).toEqual([{ key: mailAccountSyncJobKey(mailboxItemId) }]);
     expect(pending).toEqual([
       { messageItemId: itemId, propertyKey: "read", desiredState: true, folderPath: "INBOX", uid: 7 },
     ]);
   });
 
-  it("leaves no row when the transaction patching the item rolls back", async () => {
+  tenantIt("leaves no row when the transaction patching the item rolls back", async () => {
     const { emailsId, itemId, folderRelationDefinitionId, mailboxFolderRelationDefinitionId, mailboxItemId } =
       await ingestedEmail();
 
@@ -149,5 +166,62 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
       mailboxItemId,
     });
     expect(pending).toEqual([]);
+    expect(await queuedSyncs()).toEqual([]);
+  });
+  tenantIt("deduplicates patches of two messages in one mailbox", async () => {
+    const { emailsId, itemId, mailboxItemId } = await ingestedEmail();
+    const second = await withTransaction(pool, async (client) => {
+      const row = await createItemWithClient(client, { databaseId: emailsId, properties: {} });
+      await upsertMailMessageMeta(client, {
+        itemId: row.id,
+        messageId: "<second@example.com>",
+        mailboxItemId,
+        envelope: {},
+      });
+      return row;
+    });
+    await chokePoint.updateItem({ databaseId: emailsId, itemId, propertiesPatch: { read: true } });
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: second.id, propertiesPatch: { flagged: true } });
+    expect(await queuedSyncs()).toEqual([{ key: mailAccountSyncJobKey(mailboxItemId) }]);
+  });
+  tenantIt("queues a sync for an agent-originated generic patch", async () => {
+    const { emailsId, itemId, mailboxItemId } = await ingestedEmail();
+    await chokePoint.updateItem(
+      { databaseId: emailsId, itemId, propertiesPatch: { flagged: true } },
+      undefined,
+      undefined,
+      { writerKind: "agent" },
+    );
+    expect(await queuedSyncs()).toEqual([{ key: mailAccountSyncJobKey(mailboxItemId) }]);
+  });
+  tenantIt("does not queue a provider observation", async () => {
+    const { emailsId, itemId } = await ingestedEmail();
+    await withTransaction(pool, (client) =>
+      convergeObservedEmailFlagsWithClient(client, { databaseId: emailsId, itemId, propertiesPatch: { read: true } }),
+    );
+    expect(await queuedSyncs()).toEqual([]);
+  });
+  tenantIt("does not queue a draft without meta", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const draft = await chokePoint.createItem({ databaseId: emailsId, properties: {} });
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: draft.id, propertiesPatch: { read: true } });
+    expect(await queuedSyncs()).toEqual([]);
+  });
+  tenantIt("does not queue a legacy meta row with no mailbox", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const item = await chokePoint.createItem({ databaseId: emailsId, properties: {} });
+    await upsertMailMessageMeta(pool, {
+      itemId: item.id,
+      messageId: "<legacy@example.com>",
+      mailboxItemId: null,
+      envelope: {},
+    });
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: item.id, propertiesPatch: { read: true } });
+    expect(await queuedSyncs()).toEqual([]);
+  });
+  tenantIt("does not queue a patch without flag values", async () => {
+    const { emailsId, itemId } = await ingestedEmail();
+    await chokePoint.updateItem({ databaseId: emailsId, itemId, propertiesPatch: {} });
+    expect(await queuedSyncs()).toEqual([]);
   });
 });

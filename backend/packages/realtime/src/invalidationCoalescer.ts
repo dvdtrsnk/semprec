@@ -3,6 +3,8 @@ import type { OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 
 type ItemInvalidateFrame = Extract<OutboundFrame, { type: "invalidate"; scope: "item" }>;
+type RelationInvalidateFrame = Extract<OutboundFrame, { type: "invalidate"; scope: "relation" }>;
+type CoalescedFrame = ItemInvalidateFrame | RelationInvalidateFrame;
 
 const DEFAULT_DRAIN_POLL_INTERVAL_MS = 250;
 
@@ -13,8 +15,8 @@ const DEFAULT_DRAIN_POLL_INTERVAL_MS = 250;
  * regardless of how many redundant invalidations arrive before the client drains.
  */
 export interface InvalidationCoalescer {
-  /** Sends `frame` immediately if `client` has nothing queued and is fully drained; otherwise queues it, replacing any older pending frame for the same (databaseId, itemId). */
-  enqueue(client: WebSocket, frame: ItemInvalidateFrame): void;
+  /** Sends immediately when drained; otherwise replaces pending item frames by (databaseId, itemId) and relation frames by (itemId, propertyKey), including null. */
+  enqueue(client: WebSocket, frame: CoalescedFrame): void;
   /** Drops `client`'s queue and stops polling it — called from the socket's own `close` handler. */
   discard(client: WebSocket): void;
 }
@@ -22,7 +24,7 @@ export interface InvalidationCoalescer {
 export function createInvalidationCoalescer(
   drainPollIntervalMs = DEFAULT_DRAIN_POLL_INTERVAL_MS,
 ): InvalidationCoalescer {
-  const pendingByClient = new WeakMap<WebSocket, Map<string, ItemInvalidateFrame>>();
+  const pendingByClient = new WeakMap<WebSocket, Map<string, CoalescedFrame>>();
   // `ws`'s `WebSocket` has no public `'drain'` event — only its internal `Receiver` (inbound
   // decoding) does — so a queued client is polled for `bufferedAmount === 0` instead of waiting on
   // an event that would never fire. One timer per socket, cleared as soon as its queue empties.
@@ -56,9 +58,13 @@ export function createInvalidationCoalescer(
         pending = new Map();
         pendingByClient.set(client, pending);
       }
-      const key = `${frame.databaseId}:${frame.itemId}`;
+      const key =
+        frame.scope === "item"
+          ? JSON.stringify(["item", frame.databaseId, frame.itemId])
+          : JSON.stringify(["relation", frame.itemId, frame.propertyKey]);
       const existing = pending.get(key);
-      if (!existing || frame.updatedAt >= existing.updatedAt) pending.set(key, frame);
+      if (frame.scope === "relation" || !existing || existing.scope !== "item" || frame.updatedAt >= existing.updatedAt)
+        pending.set(key, frame);
       if (!drainPollers.has(client)) {
         const poller = setInterval(() => {
           if (client.readyState !== client.OPEN) {

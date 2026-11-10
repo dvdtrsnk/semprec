@@ -19,11 +19,16 @@ export const SESSION_DELIVERY_CHANNEL_BY_PLATFORM: Record<SessionPlatform, Sessi
   macos: "bearer",
 };
 
+export const SESSION_DEVICE_KINDS = ["iphone", "ipad", "mac", "browser"] as const;
+export type SessionDeviceKind = (typeof SESSION_DEVICE_KINDS)[number];
+
 export type UserRole = "admin" | "member";
 
 export interface UserRow {
   id: string;
   email: string;
+  /** The person's display name; `null` until one is set (`users.display_name`, #1387). */
+  displayName: string | null;
   passwordHash: string;
   locale: string;
   createdAt: string;
@@ -39,6 +44,11 @@ export interface SessionRow {
   expiresAt: string;
   userAgent: string | null;
   revokedAt: string | null;
+  deviceId: string | null;
+  deviceName: string | null;
+  deviceKind: SessionDeviceKind | null;
+  osVersion: string | null;
+  appVersion: string | null;
 }
 
 export interface LoginAttemptRow {

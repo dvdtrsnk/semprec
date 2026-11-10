@@ -3,35 +3,75 @@
 // expired trashed subtree. Item creation and updates, destructive-operation projection, and
 // database-level archiving do not belong here.
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md,
-// docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
+// docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md,
+// docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError } from "../errors.js";
-import type { ItemRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
+import { runItemDeleteHooks, runItemRestoreHooks } from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
+import * as valueLinksStore from "./valueLinksStore.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { deleteRecordingRequestForFile } from "../transcription/recordingIntake.js";
+import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
+import * as inboxAttachmentsStore from "../inbox/inboxAttachmentsStore.js";
+import * as itemOriginsStore from "../inbox/itemOriginsStore.js";
 import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
+import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
+import type { WriterIdentity } from "./writerKind.js";
+
+/** The writer fields every delete and restore hook receives; `system` when the caller supplied none. */
+function hookWriterFields(writer: WriterIdentity | undefined, actingUserId: string | undefined) {
+  return {
+    writerKind: writer?.writerKind ?? "system",
+    ...(writer?.agentRunId === undefined ? {} : { agentRunId: writer.agentRunId }),
+    ...(actingUserId === undefined ? {} : { actingUserId }),
+  };
+}
+
+/** Reads each database of a cascade once, for the hook contexts. */
+function databaseLookup(client: PoolClient): (databaseId: string) => Promise<DatabaseRow> {
+  const cache = new Map<string, DatabaseRow>();
+  return async (databaseId) => {
+    const cached = cache.get(databaseId);
+    if (cached) return cached;
+    const database = await databasesStore.getDatabase(client, databaseId);
+    if (!database) throw new Error(`Database ${databaseId} of a trash cascade row is missing`);
+    cache.set(databaseId, database);
+    return database;
+  };
+}
 
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
  * same reason as `propertyDeleteWithClient` above. Runs the identical subtree cascade, including
- * the `systemActive`/archived-database guards and rollup/heartbeat side effects.
+ * the `systemActive`/archived-database guards and rollup/heartbeat side effects. Each row this call
+ * actually soft-deletes, root first, runs the item delete hooks (issue #1601) right after its soft
+ * delete, inside this transaction; a row already in the trash runs none, and a repeat delete of a
+ * trashed root returns it without running any. A hook's rejection rolls the whole cascade back.
  */
 export async function itemDeleteWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
-  options: { queueAffinity: ActionQueueAffinity; actingUserId?: string },
+  options: {
+    queueAffinity: ActionQueueAffinity;
+    actingUserId?: string;
+    /** Passed to every delete hook; `system` when absent. */
+    writer?: WriterIdentity;
+  },
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   const before = await itemsStore.lockItemById(client, databaseId, itemId);
@@ -46,11 +86,23 @@ export async function itemDeleteWithClient(
   const subtree = await collectItemSubtree(client, before);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
+  const writerFields = hookWriterFields(options.writer, options.actingUserId);
+  const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
     const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    // `now()` is fixed for the transaction, so every row this cascade trashes shares this `deletedAt`.
+    if (item.deletedAt === null) throw new Error(`Soft delete of item ${item.id} returned a live row`);
+    await runItemDeleteHooks({
+      client,
+      database: await databaseOf(item.databaseId),
+      item,
+      rootItemId: itemId,
+      deletedAt: item.deletedAt,
+      ...writerFields,
+    });
     await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, options.queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
@@ -69,20 +121,64 @@ export async function itemDeleteWithClient(
 }
 
 /**
+ * The rows of `subtree` trashed together with `root` (its cascade epoch): those whose `deleted_at`
+ * equals the root's, compared by Postgres at the column's full microsecond precision. An `ItemRow`'s
+ * `deletedAt` keeps only whole milliseconds, so comparing those strings would take a row trashed on its
+ * own in a different transaction within the same millisecond for part of the cascade. The rows are
+ * locked `FOR UPDATE` in subtree (root-first) order, the order the delete and restore cascades write
+ * in, so a concurrent trash or restore of one of them waits for this transaction instead of changing
+ * the epoch it was matched on.
+ *
+ * Also returns that epoch as Postgres renders it, UTC with all six fraction digits
+ * (`YYYY-MM-DDTHH:MI:SS.ffffffZ`), for the restore hooks' `deletedAtExact`. It is read in this same
+ * statement, from the root row the caller already locked and before anything is restored. The root
+ * itself is always one of the matched rows (its `deleted_at` equals itself), so a matched row always
+ * carries the epoch.
+ */
+async function lockCascadeEpochRowIds(
+  client: PoolClient,
+  root: ItemRow,
+  subtree: ItemRow[],
+): Promise<{ ids: Set<string>; deletedAtExact: string }> {
+  const { rows } = await client.query<{ id: string; deleted_at_exact: string }>(
+    `SELECT id, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deleted_at_exact FROM items
+      WHERE database_id = ANY($1::uuid[]) AND id = ANY($2::uuid[])
+        AND deleted_at = (SELECT deleted_at FROM items WHERE database_id = $3 AND id = $4)
+      ORDER BY array_position($2::uuid[], id)
+      FOR UPDATE`,
+    [[...new Set(subtree.map((row) => row.databaseId))], subtree.map((row) => row.id), root.databaseId, root.id],
+  );
+  const epoch = rows.find((row) => row.id === root.id)?.deleted_at_exact;
+  if (epoch === undefined) throw new Error(`Trashed root ${root.id} is missing from its own cascade epoch`);
+  return { ids: new Set(rows.map((row) => row.id)), deletedAtExact: epoch };
+}
+
+/**
  * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
  * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
- * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
- * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
- * cascade delete touched shares one identical timestamp, which lets this tell "trashed
- * together with the root" apart from a row that happened to already be independently trashed
- * (earlier or later) before this subtree was ever cascaded — restoring the latter would
- * silently resurrect data the user deleted on purpose.
+ * restores subtree rows whose `deleted_at` equals the root's own (`lockCascadeEpochRowIds`):
+ * since Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
+ * cascade delete touched shares one identical timestamp, which tells "trashed together with the
+ * root" apart from a row independently trashed (earlier or later) at a different instant —
+ * restoring the latter would silently resurrect data the user deleted on purpose. A timestamp is
+ * not a transaction identity: a row trashed on its own at exactly the root's microsecond is
+ * indistinguishable and is restored with the cascade. Each restored row triggers the `update`
+ * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
+ * (issue #1604), and runs the item restore hooks (issue #1601) right after its restore; a skipped
+ * row runs none, and a restore of a live root returns it without running any. A hook's rejection
+ * rolls the whole cascade back. Each hook also receives the epoch at full precision
+ * (`deletedAtExact`) and this call's `queueAffinity`. Exported for a domain restore hook that
+ * restores a related item in the same transaction (issue #1642); it is not part of the package's
+ * public barrel.
  */
-async function restoreItemWithClient(
+export async function restoreItemWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
+  queueAffinity: ActionQueueAffinity,
   actingUserId?: string,
+  /** Passed to every restore hook; `system` when absent. */
+  writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
@@ -96,13 +192,27 @@ async function restoreItemWithClient(
 
   const subtree = await collectItemSubtree(client, before);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
+  const epoch = await lockCascadeEpochRowIds(client, before, subtree);
 
+  const writerFields = hookWriterFields(writer, actingUserId);
+  const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
-    if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
+    if (!epoch.ids.has(row.id)) continue; // not trashed together with the root: leave as-is
     const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    await runItemRestoreHooks({
+      client,
+      database: await databaseOf(item.databaseId),
+      item,
+      rootItemId: itemId,
+      deletedAt: cascadeEpoch,
+      deletedAtExact: epoch.deletedAtExact,
+      queueAffinity,
+      ...writerFields,
+    });
+    await triggerOnItemEventHeartbeats(client, row.databaseId, "update", row.id, queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
     runAfterCommit(client, () =>
@@ -171,36 +281,91 @@ function fileBlobId(row: ItemRow): string | null {
   return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId : null;
 }
 
+/** The `computed.prepare` blob ids that are valid UUID strings; a missing or older checkpoint yields none. */
+function derivedBlobIds(row: ItemRow): string[] {
+  const prepare: unknown = row.computed[TRANSCRIPTION_PREPARE_COMPUTED_KEY];
+  if (typeof prepare !== "object" || prepare === null) return [];
+  const original = fileBlobId(row);
+  const ids: string[] = [];
+  for (const key of ["normalizedBlobId", "playbackBlobId"] as const) {
+    const id: unknown = (prepare as Record<string, unknown>)[key];
+    // A playback rendition that is the original blob is not a separate blob; and one id is deleted once.
+    if (typeof id === "string" && UUID_RE.test(id) && id !== original && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 /**
  * Deletes every row that points at a just-purged item (issue #675). `items` is partitioned with a
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state and search-index row. Must run in the purge's own transaction, after
- * `itemsStore.hardDeleteItem` has removed `row` — the blob check below relies on the row already
- * being gone.
+ * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), and its
+ * value links and the value-link sources naming it (issue #1656).
+ * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
+ * the blob checks below rely on the row already being gone.
  *
- * The doc, recurrence rule, automation state and blob rows are each deleted through their owning
- * store. For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but
- * only when nothing else references that blob (`blobsStore.deleteBlobIfUnreferenced`). Returns the
- * deleted blob's `storage_key` so the caller can remove the bytes after the commit, or null when no
- * blob row was deleted.
+ * The doc, recurrence rule, automation state, origin and blob rows are each deleted through their
+ * owning store. Every blob an Inbox attachment row named is released through
+ * `blobsStore.deleteBlobIfUnreferenced` once those rows are gone, so a blob a Files item or another
+ * attachment still names keeps its row. For a Files item it also deletes the `blobs` row its
+ * `properties.file.blobId` names, but only when nothing else references that blob. Returns the
+ * deleted blob's `storage_key`, and the derived blobs named by its `computed.prepare` checkpoint
+ * (`normalizedBlobId`, `playbackBlobId`) are deleted unconditionally through
+ * `blobsStore.deleteDerivedBlob`, since they are one-to-one with the item; a playback id equal to
+ * the original blob is not deleted separately. Returns the `storage_key` of every deleted blob row
+ * so the caller can remove the bytes after the commit.
  */
-export async function deleteItemDependents(
-  client: PoolClient,
-  row: ItemRow,
-): Promise<{ blobStorageKey: string | null }> {
+export async function deleteItemDependents(client: PoolClient, row: ItemRow): Promise<{ blobStorageKeys: string[] }> {
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
+  // Issue #1656: the purged item's own value links (their sources cascade), every source naming it,
+  // and each link that is left without a source; the items of those links refetch them after commit.
+  await valueLinksStore.deleteValueLinksByItemId(client, row.id);
+  const detached = await valueLinksStore.deleteValueLinkSourcesBySourceItem(client, row.id);
+  await valueLinksStore.deleteValueLinksWithoutSources(
+    client,
+    detached.map((entry) => entry.linkId),
+  );
+  for (const item of await itemsStore.getItemsByIds(client, [...new Set(detached.map((entry) => entry.itemId))])) {
+    runAfterCommit(client, () =>
+      notifyInvalidation({
+        scope: "item",
+        databaseId: item.databaseId,
+        itemId: item.id,
+        op: "update",
+        updatedAt: item.updatedAt,
+      }),
+    );
+  }
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
   await docsStore.deleteDocByItemId(client, row.id);
   await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
+  await deleteKeptDate(client, row.id);
   await itemAutomationStore.deleteItemAutomation(client, row.id);
+  const database = await databasesStore.getDatabase(client, row.databaseId);
+  if (database?.system && database.ownerModuleId === FILES_MODULE_ID)
+    await deleteRecordingRequestForFile(client, row.id);
+  await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 
+  const blobStorageKeys: string[] = [];
+  // The attachment rows go first: a row still present would keep its blob referenced.
+  const attachmentBlobIds = await inboxAttachmentsStore.deleteInboxAttachmentsForItem(client, row.id);
+  for (const id of new Set(attachmentBlobIds)) {
+    const key = await blobsStore.deleteBlobIfUnreferenced(client, id);
+    if (key !== null) blobStorageKeys.push(key);
+  }
   const blobId = fileBlobId(row);
-  if (!blobId) return { blobStorageKey: null };
-  return { blobStorageKey: await blobsStore.deleteBlobIfUnreferenced(client, blobId) };
+  if (blobId) {
+    const key = await blobsStore.deleteBlobIfUnreferenced(client, blobId);
+    if (key !== null) blobStorageKeys.push(key);
+  }
+  for (const id of derivedBlobIds(row)) {
+    const key = await blobsStore.deleteDerivedBlob(client, id);
+    if (key !== null) blobStorageKeys.push(key);
+  }
+  return { blobStorageKeys };
 }
 
 export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
@@ -212,15 +377,27 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
      * is written; a database midway down the tree being archived is not a partial success.
      */
-    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
+    async softDeleteItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
       return withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId, writer }),
       );
     },
 
     /** Runs `restoreItemWithClient` in its own transaction. */
-    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId));
+    async restoreItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
+      return withTransaction(pool, (client) =>
+        restoreItemWithClient(client, databaseId, itemId, queueAffinity, actingUserId, writer),
+      );
     },
 
     /**
@@ -253,6 +430,14 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       cutoff: Date,
     ): Promise<{ purgedItemIds: string[]; blobStorageKeys: string[] }> {
       return withTransaction(pool, async (client) => {
+        const scope = await client.query<{ tenant_id: string | null }>(
+          "SELECT app_tenant_default()::text AS tenant_id",
+        );
+        const tenantId = scope.rows[0]?.tenant_id;
+        if (!tenantId) throw new Error("Tenant scope is required for trash purge");
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [
+          `trash-purge:v1:${tenantId.toLowerCase()}`,
+        ]);
         const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
         if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) {
           return { purgedItemIds: [], blobStorageKeys: [] };
@@ -274,8 +459,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
           const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
           if (!removed) continue;
           purgedItemIds.push(row.id);
-          const { blobStorageKey } = await deleteItemDependents(client, row);
-          if (blobStorageKey !== null) blobStorageKeys.push(blobStorageKey);
+          blobStorageKeys.push(...(await deleteItemDependents(client, row)).blobStorageKeys);
         }
 
         // Keyed off the purged owners rather than `subtreeDatabaseIds`: a nested row is usually an

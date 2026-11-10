@@ -1,5 +1,18 @@
 # Repository issues
 
+## Current backend delivery program
+
+Use [the sequential technical batches](batches/backend/README.md) to execute the
+open backend backlog in one working tree. Original implementation issues remain
+requirement records with their existing feature-epic parents; their individual
+dispatch intent is disabled. New aggregate issues are proposed, not approved or
+queued. The program preserves source Tasks/AC and declared dependencies.
+
+Run `node issues/batches/backend/verify.mjs` to check routing and snapshots, then
+`node .github/scripts/issues.mjs validate` for ordinary catalog validation.
+The scoped authoring/execution exception is recorded in
+`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`.
+
 Issues are Markdown records with stable identities and a small YAML metadata
 header. The rollout is tracked in [`migration/state.json`](migration/state.json).
 While its authority is `github`, the live Relay workflows still use GitHub;
@@ -37,8 +50,9 @@ node .github/scripts/issues.mjs reopen <id> <expected-file-sha256>
 ```
 
 Creation produces an unapproved proposal. Approval requires the owner's
-authorization; agents must not approve their own proposals. Actor metadata is
-an audit annotation in a Git-reviewed file, not independent authentication.
+authorization, or a decision agent acting under the delegation in the
+Autonomy section below. Actor metadata is an audit annotation in a
+Git-reviewed file, not independent authentication.
 Approving does not queue work. Queueing refuses protected paths declared in
 `Touches`. Reopening clears queue intent; it does not silently redispatch.
 
@@ -140,3 +154,41 @@ uses a versioned observation and preserves the grace period and `epic:wip` opt-o
 Follow-up triage creates proposed local records and publishes its ledger through a PR;
 it never approves or queues its own specifications. Local harvest markers replace
 remote issue labels as its durable ledger.
+
+## Autonomy
+
+No issue waits for a person by default. When an open question blocks dispatch,
+a decision agent decides it and the dispatch continues. The owner delegated
+the following decisions on 2026-10-29:
+
+1. Approval of an implementation proposal whose specification is sound against
+   the integration tip.
+2. A minimal correction of a specification defect (Task, Touches, Blocked-by,
+   Acceptance criteria). The exact old and new lines are recorded.
+3. A new ADR that supersedes or narrows an accepted decision. Accepted ADR
+   bodies are never edited.
+4. Resolution of an implementation refused as BLOCKED, followed by one retry of
+   the implementation on the corrected specification.
+
+Decisions run on the strongest model of the provider (`fable`, falling back to
+`opus`). Implementation and review run on the default model, and a decision
+agent never implements the Task.
+
+Protected paths (`.relay/**`, `.github/workflows/**`,
+`.github/scripts/check-protected-paths.mjs`,
+`.github/scripts/review-bot-disabled.mjs`, `.github/scripts/issues.mjs`,
+`.github/scripts/issues/**`) may be changed by agents for the autonomy purpose
+only, on the owner's instruction of 2026-10-29. Each such change is listed in
+its decision record, and no check is weakened beyond that purpose.
+
+Not delegated: any assertion of a fact outside the repository, such as
+production state, an external reviewer's identity or review, a third-party
+account, or a human attestation. An issue that needs such a fact gets the
+decision `PRECONDITION`. The fact is written into its decision record as a
+deployment precondition, and the issue stops blocking the dispatch of its
+dependants. No agent closes or attests such an issue.
+
+Every decision writes `issues/decisions/<id>.md` (question, options considered,
+decision, exact spec change, actor, model, date) and commits it together with
+the change it made. Approvals made under this section use the actor
+`claude-delegated-by-david`.

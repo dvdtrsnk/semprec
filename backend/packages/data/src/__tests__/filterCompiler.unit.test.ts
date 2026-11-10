@@ -162,6 +162,19 @@ describe("compileFilterNode", () => {
     expect(scalarParams).toEqual(["title", ["a", "b"]]);
   });
 
+  it("compiles `in status [monitoring]` against the option key, independent of the option's display label", () => {
+    const props = properties([["status", { type: "select" }]]);
+    const params: unknown[] = [];
+    const sql = compileFilterNode(
+      parseFilterNode({ type: "in", property: "status", value: ["monitoring"] }),
+      props,
+      params,
+    );
+
+    expect(sql).toBe("properties ->> $1 = ANY($2::text[])");
+    expect(params).toEqual(["status", ["monitoring"]]);
+  });
+
   it("reads a rollup property from computed and every other property from properties", () => {
     const props = properties([
       ["total", { type: "rollup" }],
@@ -286,5 +299,105 @@ describe("relation_path_contains", () => {
           expect.objectContaining({ status: 400, details: expect.objectContaining({ field: "filter" }) }),
         );
     }
+  });
+});
+
+describe("relation emptiness conditions", () => {
+  const databaseId = "22222222-2222-4222-8222-222222222222";
+  const relation = (side: "a" | "b"): FilterProperty => ({
+    type: "relation",
+    relationDefinitionId: "def-1",
+    relationSide: side,
+    targetDatabaseId: databaseId,
+  });
+
+  it.each([
+    ["relation_is_empty", "a", true],
+    ["relation_is_empty", "b", true],
+    ["relation_is_not_empty", "a", false],
+    ["relation_is_not_empty", "b", false],
+  ] as const)("compiles %s on side %s with bound ids and a live target", (type, side, negated) => {
+    const params: unknown[] = ["existing"];
+    const sql = compileFilterNode(
+      parseFilterNode({ type, property: "projects" }),
+      properties([["projects", relation(side)]]),
+      params,
+    );
+    expect(params).toEqual(["existing", "def-1", databaseId]);
+    expect(sql.startsWith("(NOT EXISTS")).toBe(negated);
+    expect(sql.startsWith("EXISTS")).toBe(!negated);
+    expect(sql).toContain("r.relation_definition_id = $2");
+    expect(sql).toContain("live.database_id = $3::uuid");
+    expect(sql).toContain("live.deleted_at IS NULL");
+    expect(sql).toContain("OFFSET 0");
+    expect(sql).toContain(`r.${side === "a" ? "item_a" : "item_b"} = items.id`);
+    expect(sql).toContain(`live.id = r.${side === "a" ? "item_b" : "item_a"}`);
+    expect(sql).not.toContain("def-1");
+    expect(sql).not.toContain(databaseId);
+  });
+
+  it.each(["relation_is_empty", "relation_is_not_empty"] as const)("rejects %s on a non-relation property", (type) => {
+    const params: unknown[] = [];
+    expect(() =>
+      compileFilterNode(
+        parseFilterNode({ type, property: "title" }),
+        properties([["title", { type: "text" }]]),
+        params,
+      ),
+    ).toThrow(expect.objectContaining({ status: 400, details: { field: "title" } }));
+    expect(params).toEqual([]);
+  });
+
+  it("rejects an unresolved relation definition or target database without adding parameters", () => {
+    for (const broken of [
+      { ...relation("a"), relationDefinitionId: undefined },
+      { ...relation("a"), relationSide: undefined },
+      { ...relation("a"), targetDatabaseId: undefined },
+    ]) {
+      const params: unknown[] = [];
+      expect(() =>
+        compileFilterNode(
+          parseFilterNode({ type: "relation_is_empty", property: "projects" }),
+          properties([["projects", broken]]),
+          params,
+        ),
+      ).toThrow(expect.objectContaining({ status: 400, details: { field: "projects" } }));
+      expect(params).toEqual([]);
+    }
+  });
+
+  it("still rejects is_empty on a relation and names the relation conditions", () => {
+    expect(() =>
+      compileFilterNode(
+        parseFilterNode({ type: "is_empty", property: "projects" }),
+        properties([["projects", relation("a")]]),
+        [],
+      ),
+    ).toThrow(/relation_is_empty\/relation_is_not_empty/);
+  });
+
+  it("accepts and rejects the same inputs as the shared schema", () => {
+    expect(FILTER_CONDITION_TYPES).toEqual(sharedTypes);
+    const cases: unknown[] = [
+      { type: "relation_is_empty", property: "projects" },
+      { type: "not", node: { type: "relation_is_not_empty", property: "projects" } },
+      { type: "relation_is_empty" },
+      { type: "relation_is_empty", property: "" },
+      { type: "relation_is_empty", property: 1 },
+      { type: "relation_is_not_empty", property: "projects", value: "x" },
+      { type: "relation_is_not_empty", property: "projects", value: "11111111-1111-4111-8111-111111111111" },
+    ];
+    for (const raw of cases) {
+      expect(dataSchema.safeParse(raw).success).toBe(sharedSchema.safeParse(raw).success);
+    }
+    expect(cases.map((raw) => dataSchema.safeParse(raw).success)).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 });

@@ -18,8 +18,10 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
+import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
 import { LocalFsBlobStorageWriter, MaxBytesExceededError, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { logger } from "../tenancy/logger.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
@@ -378,6 +380,35 @@ describe("tenant data export (issue #1043)", () => {
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
     const seededA = await seedTenant(tenantA);
     const seededB = await seedTenant(tenantB);
+    const aliasIds: string[] = [];
+    for (const tenant of [tenantA, tenantB]) {
+      const id = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const from = await createMailThread(client);
+          const to = await createMailThread(client);
+          await reassignThread(client, from.id, to.id);
+          return from.id;
+        }),
+      );
+      aliasIds.push(id);
+    }
+    for (const [tenant, seeded] of [
+      [tenantA, seededA],
+      [tenantB, seededB],
+    ] as const) {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          insertItemOrigins(client, [seeded.itemIds[0]!], {
+            proposalId: seeded.itemIds[1]!,
+            inboxItemId: null,
+            sourceTranscriptId: null,
+            capturedAt: null,
+            captureChannel: "inbox",
+            captureTimeBasis: "unknown",
+          }),
+        ),
+      );
+    }
     const exportId = await requestExportIn(tenantA);
 
     await runExport(tenantA, exportId);
@@ -391,6 +422,23 @@ describe("tenant data export (issue #1043)", () => {
     expect(row!.expires_at!.getTime() - row!.completed_at!.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
 
     const entries = readZip(archiveBytes);
+    const aliasFile = entries.get("tables/mail_thread_aliases.jsonl");
+    if (!aliasFile) throw new Error("Missing mail thread aliases in export");
+    const exportedAliases = aliasFile
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .map((line): unknown => JSON.parse(line));
+    expect(exportedAliases).toHaveLength(1);
+    expect(exportedAliases[0]).toMatchObject({ from_thread_id: aliasIds[0], tenant_id: tenantA });
+    const originFile = entries.get("tables/item_origins.jsonl");
+    if (!originFile) throw new Error("Missing origin table in export");
+    const exportedOrigin: unknown = JSON.parse(originFile.toString("utf8").trim());
+    expect(exportedOrigin).toMatchObject({
+      item_id: seededA.itemIds[0],
+      capture_time_basis: "unknown",
+      captured_at: null,
+    });
     const tableNames = await expectedTableNames();
     expect(tableNames).toEqual(
       expect.arrayContaining(["items", "item_relations", "docs", "mail_attachments", "blobs"]),
@@ -405,7 +453,13 @@ describe("tenant data export (issue #1043)", () => {
     );
 
     const account: unknown = JSON.parse(entries.get("account.json")!.toString("utf8"));
-    expect(account).toEqual({ email: seededA.email, locale: "cs", role: "member", createdAt: expect.any(String) });
+    expect(account).toEqual({
+      email: seededA.email,
+      displayName: null,
+      locale: "cs",
+      role: "member",
+      createdAt: expect.any(String),
+    });
 
     const manifest = manifestSchema.parse(JSON.parse(entries.get("manifest.json")!.toString("utf8")));
     expect(manifest.exportId).toBe(exportId);
@@ -471,6 +525,29 @@ describe("tenant data export (issue #1043)", () => {
     expect(
       [...entries.keys()].some((name) => name.includes("tenant_keys") || name.includes("external_credentials")),
     ).toBe(false);
+  });
+
+  it("writes the account's displayName into account.json when one is set", async () => {
+    const email = `${randomUUID()}@example.com`;
+    await createUser(adminPool, {
+      email,
+      passwordHash: `hash-${randomUUID()}`,
+      tenantId: tenantB,
+      displayName: "Ada Lovelace",
+    });
+    const exportId = await requestExportIn(tenantB);
+
+    await runExport(tenantB, exportId);
+
+    const entries = readZip(readFileSync(archivePath(tenantB, exportId)));
+    const account: unknown = JSON.parse(entries.get("account.json")!.toString("utf8"));
+    expect(account).toEqual({
+      email,
+      displayName: "Ada Lovelace",
+      locale: "cs",
+      role: "member",
+      createdAt: expect.any(String),
+    });
   });
 
   it("exports a Files upload reused by an identical mail attachment from the files root", async () => {

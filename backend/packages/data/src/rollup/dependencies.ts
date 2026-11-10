@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { lockRollupSourceDatabase } from "../chokePoint/databaseRowLocks.js";
 
 export interface RollupDependencyRow {
   rollupPropertyId: string;
@@ -33,6 +34,7 @@ export interface UpsertRollupDependencyInput {
 
 /** Must be called in the same transaction as the write to the rollup property (create or config change). */
 export async function upsertRollupDependency(client: PoolClient, input: UpsertRollupDependencyInput): Promise<void> {
+  await lockRollupSourceDatabase(client, input.sourceDatabaseId);
   await client.query(
     `INSERT INTO rollup_dependencies (rollup_property_id, relation_definition_id, source_database_id, source_property_key)
      VALUES ($1, $2, $3, $4)
@@ -67,6 +69,19 @@ export async function findDependenciesBySource(
     `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
      FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = $2`,
     [sourceDatabaseId, sourcePropertyKey],
+  );
+  return rows.map(mapRow);
+}
+
+/** Archive and restore of a database: which rollups aggregate its items. Zero rows is the common case. */
+export async function findDependenciesBySourceDatabase(
+  client: PoolClient,
+  sourceDatabaseId: string,
+): Promise<RollupDependencyRow[]> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1`,
+    [sourceDatabaseId],
   );
   return rows.map(mapRow);
 }

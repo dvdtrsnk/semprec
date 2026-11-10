@@ -21,12 +21,39 @@ export const FILTER_CONDITION_TYPES = [
   "on_or_before",
   "on_or_after",
   "date_range",
+  "date_relative",
+  "lt",
+  "lte",
+  "gt",
+  "gte",
   "in",
   "relation_contains",
   "relation_not_contains",
   "relation_path_contains",
+  "relation_is_empty",
+  "relation_is_not_empty",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
+
+export const DATE_RELATIVE_PRESETS = [
+  "today",
+  "tomorrow",
+  "thisWeek",
+  "nextWeek",
+  "thisMonth",
+  "upcoming",
+  "past",
+  "onOrBeforeToday",
+  "last7",
+  "last30",
+  "thisYear",
+  "olderThan30",
+  "beforeNow",
+] as const;
+export type DateRelativePresetName = (typeof DATE_RELATIVE_PRESETS)[number];
+/** Days relative to today, inclusive; negative is the past; no `toDays` means no upper bound. */
+export type DateRelativeRange = { fromDays: number; toDays?: number };
+export type DateRelativePreset = DateRelativePresetName | DateRelativeRange;
 
 export type FilterCondition =
   | { type: "equals" | "not_equals"; property: string; value: string | number | boolean }
@@ -34,10 +61,13 @@ export type FilterCondition =
   | { type: "is_empty" | "is_not_empty"; property: string }
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
+  | { type: "date_relative"; property: string; endProperty?: string; preset: DateRelativePreset }
+  | { type: "lt" | "lte" | "gt" | "gte"; property: string; value: number }
   | { type: "in"; property: string; value: string[] }
   /** `value` must be a UUID string — `filterConditionSchema` validates it with `z.uuid()`. */
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
-  | { type: "relation_path_contains"; path: [string, string]; value: string };
+  | { type: "relation_path_contains"; path: [string, string]; value: string }
+  | { type: "relation_is_empty" | "relation_is_not_empty"; property: string };
 
 export type FilterNode =
   | FilterCondition
@@ -71,6 +101,18 @@ const relationPathCondition = relationPathConditionSchema.refine(() => false, {
   params: { relationPathFilter: true },
 });
 
+const RELATIVE_DAYS_LIMIT = 36500;
+const relativeDays = z.number().int().min(-RELATIVE_DAYS_LIMIT).max(RELATIVE_DAYS_LIMIT);
+const dateRelativePreset = z.union([
+  z.enum(DATE_RELATIVE_PRESETS),
+  z
+    .object({ fromDays: relativeDays, toDays: relativeDays.optional() })
+    .strict()
+    .refine((range) => range.toDays === undefined || range.fromDays <= range.toDays, {
+      message: "fromDays must not exceed toDays",
+    }),
+]);
+
 const filterConditionSchema = z.union([
   z.object({ type: z.enum(["equals", "not_equals"]), property: filterProperty, value: filterScalarValue }).strict(),
   z
@@ -95,11 +137,21 @@ const filterConditionSchema = z.union([
       value: z.object({ from: z.string(), to: z.string() }).strict(),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("date_relative"),
+      property: filterProperty,
+      endProperty: filterProperty.optional(),
+      preset: dateRelativePreset,
+    })
+    .strict(),
+  z.object({ type: z.enum(["lt", "lte", "gt", "gte"]), property: filterProperty, value: z.number().finite() }).strict(),
   z.object({ type: z.literal("in"), property: filterProperty, value: z.array(z.string()).min(1) }).strict(),
   z
     .object({ type: z.enum(["relation_contains", "relation_not_contains"]), property: filterProperty, value: z.uuid() })
     .strict(),
   relationPathCondition,
+  z.object({ type: z.enum(["relation_is_empty", "relation_is_not_empty"]), property: filterProperty }).strict(),
 ]);
 
 /**
@@ -127,10 +179,15 @@ function buildFilterNodeSchema(remainingDepth: number): z.ZodType<FilterNode> {
 
 export const filterNodeSchema: z.ZodType<FilterNode> = buildFilterNodeSchema(MAX_FILTER_DEPTH);
 
-export const sortSpecSchema = z
-  .object({
-    property: z.string().min(1),
-    direction: z.enum(["asc", "desc"]),
-  })
-  .strict();
+const sortDirection = z.enum(["asc", "desc"]);
+
+/**
+ * A property sort key, or an item system timestamp (`createdAt`/`updatedAt`, issue #1594) in its own
+ * `system` namespace. Both variants are strict, so a spec naming both `property` and `system` matches
+ * neither. `packages/data/src/views/sortSpec.ts` accepts the same two variants.
+ */
+export const sortSpecSchema = z.union([
+  z.object({ property: z.string().min(1), direction: sortDirection }).strict(),
+  z.object({ system: z.enum(["createdAt", "updatedAt"]), direction: sortDirection }).strict(),
+]);
 export type SortSpec = z.infer<typeof sortSpecSchema>;

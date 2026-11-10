@@ -42,7 +42,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createTranscriptionTask } from "../transcriptionTask.js";
+import { createTranscriptionCreateTask, createTranscriptionTask } from "../transcriptionTask.js";
 import type {
   AudioGatewayClient,
   DiarizationTurn,
@@ -303,7 +303,10 @@ class FakeSummaryGateway implements AiGatewayClientPort {
     if (input.operation === "transcript_speaker_suggestion") {
       return { content: { mappings: [] }, usage: { inputTokens: 10, outputTokens: 5 } };
     }
-    return { content: { summary: "a summary" }, usage: { inputTokens: 10, outputTokens: 5 } };
+    return {
+      content: { title: "Notes", summary: "a summary", shortSummary: "a summary", decisions: [], actionItems: [] },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    };
   }
 }
 
@@ -314,6 +317,25 @@ function requirePayloadString(payload: Payload, field: string): string {
 }
 
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const pipelineCase = cases[CORE_TASK_NAMES.TRANSCRIPTION_JOB];
+      if (!pipelineCase) throw new Error("Transcription pipeline case missing");
+      return pipelineCase.seed(tenant);
+    },
+    async expectDone(tenant, payload) {
+      const transcripts = await runInTenant(tenant.tenantId, async () => {
+        const { rows } = await pool.query<{ status: string | null }>(
+          `SELECT t.properties->>'status' AS status FROM items f JOIN items t ON t.id = (f.computed->>'create')::uuid
+            WHERE f.id = $1`,
+          [requirePayloadString(payload, "fileItemId")],
+        );
+        return rows;
+      });
+      expect(transcripts).toEqual([{ status: "processing" }]);
+    },
+  },
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -365,6 +387,10 @@ describe("background task isolation across two tenants: transcribe runtime (issu
 
     // Composed as createTranscribeQueueRuntime composes it, with the fake gateways in place of HTTP.
     taskList = {
+      [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: registerTask(
+        CORE_TASK_NAMES.TRANSCRIPTION_CREATE,
+        createTranscriptionCreateTask(pool),
+      ),
       [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
         CORE_TASK_NAMES.TRANSCRIPTION_JOB,
         createTranscriptionTask(pool, blobStorage, new FakeAudioGateway(), new FakeSummaryGateway()),

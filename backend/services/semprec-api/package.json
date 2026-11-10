@@ -18,7 +18,9 @@
     "@semprec/realtime": "workspace:*",
     "@semprec/shared": "workspace:*",
     "nodemailer": "^9.0.6",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "ws": "^8.18.0",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
     "@semprec/credentials": "workspace:*",
@@ -28,7 +30,6 @@
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "vitest": "^4.1.11",
-    "ws": "^8.18.0",
     "yjs": "^13.6.32"
   }
 }

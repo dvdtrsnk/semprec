@@ -6,7 +6,7 @@ import { notifyAgentRunEvent } from "../realtimeHook.js";
 import type { SessionAgentRunsFilter } from "./agentRunsStore.js";
 
 export type AgentRunEventKind =
-  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction" | "user_message";
 
 const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_start",
@@ -16,6 +16,7 @@ const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_end",
   "run_status",
   "compaction",
+  "user_message",
 ];
 
 export interface AgentRunEventRow {
@@ -48,7 +49,7 @@ function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
 const MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES = 1024 * 1024;
 
 /**
- * One row per turn_start/message/tool_use/tool_result/turn_end/run_status — never for
+ * One row per turn_start/user_message/message/tool_use/tool_result/turn_end/run_status — never for
  * message_update deltas. 'compaction' is the one kind never written by the turn loop itself:
  * `@semprec/agent-runtime`'s reconstruction path (#119) inserts it directly, as a checkpoint
  * of a compacted `Entry[]` continuation.
@@ -125,13 +126,45 @@ export async function listAgentRunEventsAfter(
   client: Pool | PoolClient,
   agentRunId: string,
   afterEventId: string,
+  rowLimit?: number,
+  scope?: { threadId: string; sempMessageId: string; throughEventId?: string },
 ): Promise<AgentRunEventRow[]> {
+  if (rowLimit !== undefined && (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > 257)) {
+    throw new ValidationError("Invalid agent run event row limit");
+  }
+  if (scope !== undefined) {
+    validateSempEventScope(scope);
+    if (
+      scope.throughEventId !== undefined &&
+      (typeof scope.throughEventId !== "string" ||
+        !/^[1-9][0-9]{0,18}$/.test(scope.throughEventId) ||
+        BigInt(scope.throughEventId) > 9_223_372_036_854_775_807n)
+    )
+      throw new ValidationError("Invalid agent run event upper bound");
+    const params: unknown[] = [agentRunId, afterEventId, scope.threadId, scope.sempMessageId];
+    if (scope.throughEventId !== undefined) params.push(scope.throughEventId);
+    if (rowLimit !== undefined) params.push(rowLimit);
+    const { rows } = await client.query<AgentRunEventDbRow>(
+      `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
+       FROM agent_run_events e
+       JOIN semp_messages m ON m.tenant_id = e.tenant_id AND m.agent_run_id = e.agent_run_id
+         AND m.thread_id = $3::uuid AND m.id = $4::uuid AND m.role = 'assistant'
+       WHERE e.agent_run_id = $1 AND e.id > $2::bigint AND m.event_from_id IS NOT NULL
+         AND e.id >= m.event_from_id
+         AND ((m.status = 'running' AND m.event_to_id IS NULL)
+           OR (m.status IN ('done', 'error') AND m.event_to_id IS NOT NULL AND e.id <= m.event_to_id))
+         ${scope.throughEventId === undefined ? "" : "AND e.id <= $5::bigint"}
+       ORDER BY e.id ASC${rowLimit === undefined ? "" : ` LIMIT $${scope.throughEventId === undefined ? 5 : 6}`}`,
+      params,
+    );
+    return rows.map(mapRow);
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
      WHERE agent_run_id = $1 AND id > $2::bigint
-     ORDER BY id ASC`,
-    [agentRunId, afterEventId],
+     ORDER BY id ASC${rowLimit === undefined ? "" : " LIMIT $3"}`,
+    rowLimit === undefined ? [agentRunId, afterEventId] : [agentRunId, afterEventId, rowLimit],
   );
   return rows.map(mapRow);
 }
@@ -141,7 +174,23 @@ export async function getAgentRunEventById(
   client: Pool | PoolClient,
   agentRunId: string,
   eventId: string,
+  scope?: { threadId: string; sempMessageId: string },
 ): Promise<AgentRunEventRow | null> {
+  if (scope !== undefined) {
+    validateSempEventScope(scope);
+    const { rows } = await client.query<AgentRunEventDbRow>(
+      `SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
+       FROM agent_run_events e
+       JOIN semp_messages m ON m.tenant_id = e.tenant_id AND m.agent_run_id = e.agent_run_id
+         AND m.thread_id = $3::uuid AND m.id = $4::uuid AND m.role = 'assistant'
+       WHERE e.agent_run_id = $1 AND e.id = $2::bigint AND m.event_from_id IS NOT NULL
+         AND e.id >= m.event_from_id
+         AND ((m.status = 'running' AND m.event_to_id IS NULL)
+           OR (m.status IN ('done', 'error') AND m.event_to_id IS NOT NULL AND e.id <= m.event_to_id))`,
+      [agentRunId, eventId, scope.threadId, scope.sempMessageId],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
@@ -149,6 +198,18 @@ export async function getAgentRunEventById(
     [agentRunId, eventId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+function validateSempEventScope(scope: { threadId: string; sempMessageId: string }): void {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (
+    !scope ||
+    typeof scope.threadId !== "string" ||
+    typeof scope.sempMessageId !== "string" ||
+    !uuid.test(scope.threadId) ||
+    !uuid.test(scope.sempMessageId)
+  )
+    throw new ValidationError("Invalid Semp event scope");
 }
 
 /**
@@ -165,11 +226,65 @@ export async function getAgentRunEventById(
 export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
   filter: SessionAgentRunsFilter,
+  bounds?: { maxRows: number; maxBytes: number },
 ): Promise<AgentRunEventRow[]> {
+  // A thread's main conversation is keyed by `thread_id` (agent_runs_thread_wake_idx); the project-item
+  // form never picks those runs up, so a thread's runs and a non-thread session of the same project
+  // item stay separate conversations.
+  const isThread = "threadId" in filter;
+  const sessionRunsWhere = isThread
+    ? `thread_id = $1 AND unit = 'session' AND triggered_by = 'user' AND parent_run_id IS NULL`
+    : `project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+       AND NOT (thread_id IS NOT NULL AND triggered_by = 'user' AND parent_run_id IS NULL)`;
+  const params =
+    "threadId" in filter ? [filter.threadId] : [filter.projectItemId, filter.triggeredBy, filter.parentRunId];
+  if (bounds) {
+    if (
+      !("threadId" in filter) ||
+      !Number.isSafeInteger(bounds.maxRows) ||
+      bounds.maxRows < 1 ||
+      !Number.isSafeInteger(bounds.maxBytes) ||
+      bounds.maxBytes < 1
+    )
+      throw new Error("Invalid history bounds");
+    const result = await client.query<{
+      overflow: boolean;
+      id: string | null;
+      agent_run_id: string | null;
+      kind: string | null;
+      payload: unknown;
+      at: Date | null;
+    }>(
+      `WITH session_runs AS MATERIALIZED (
+         SELECT id, wake_seq FROM agent_runs WHERE ${sessionRunsWhere}
+       ), latest_compaction AS (
+         SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
+       ), candidates AS MATERIALIZED (
+         SELECT e.id, e.agent_run_id, e.kind, e.at, r.wake_seq, octet_length(e.payload::text) AS bytes
+         FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
+         WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
+         ORDER BY r.wake_seq, e.id LIMIT $2
+       ), budget AS (
+         SELECT count(*) > $3 OR COALESCE(sum(bytes), 0) > $4 AS overflow FROM candidates
+       )
+       SELECT budget.overflow, c.id, c.agent_run_id, c.kind, CASE WHEN budget.overflow THEN NULL ELSE e.payload END AS payload, c.at
+       FROM budget LEFT JOIN candidates c ON NOT budget.overflow
+       LEFT JOIN agent_run_events e ON e.id = c.id AND e.agent_run_id = c.agent_run_id
+       ORDER BY c.wake_seq, c.id`,
+      [filter.threadId, bounds.maxRows + 1, bounds.maxRows, bounds.maxBytes],
+    );
+    if (result.rows[0]?.overflow) throw new Error("Semp conversation history exceeds replay limits");
+    return result.rows.flatMap((row) => {
+      if (row.id === null) return [];
+      if (row.agent_run_id === null || row.kind === null || row.at === null)
+        throw new Error("Malformed conversation history row");
+      return [mapRow({ id: row.id, agent_run_id: row.agent_run_id, kind: row.kind, payload: row.payload, at: row.at })];
+    });
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `WITH session_runs AS (
        SELECT id, wake_seq FROM agent_runs
-       WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+       WHERE ${sessionRunsWhere}
      ),
      latest_compaction AS (
        SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
@@ -178,7 +293,7 @@ export async function listSessionAgentRunEventsFromLastCompaction(
      FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
      WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
      ORDER BY r.wake_seq ASC, e.id ASC`,
-    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
+    params,
   );
   return rows.map(mapRow);
 }

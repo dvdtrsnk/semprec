@@ -1,16 +1,17 @@
 import { requireSingleRow, type Queryable } from "../db/pool.js";
-import { NotFoundError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 import {
   rowToRegistration,
+  type McpToolDisplayLabel,
   type McpToolRegistration,
   type McpToolRegistrationRow,
 } from "./mcpToolRegistrationsStore.js";
 import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcpProjectGrantsStore.js";
 
 /**
- * The three user-only mutations issue #124's acceptance criteria carve out from
+ * The user-only mutations issue #124's acceptance criteria carve out from
  * `mcp_tool_registrations`/`project_mcp_grants`: granting/revoking a project's access to a
- * tool, and setting a tool's `risk_class`/`requires_approval`. Automatic risk classification
+ * tool, and setting a tool's `risk_class`/`requires_approval`/`display_label`. Automatic risk classification
  * and approval execution are explicitly out of scope for this issue — these are the only
  * writers of those columns.
  *
@@ -52,6 +53,47 @@ export async function setMcpToolRequiresApproval(
   );
   const row = rows[0];
   if (!row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
+  return rowToRegistration(row);
+}
+
+const MAX_DISPLAY_LABEL_LENGTH = 120;
+
+/** Returns the label with trimmed values, or throws `ValidationError`. */
+function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
+  if (typeof label !== "object" || label === null || Array.isArray(label)) {
+    throw new ValidationError("'displayLabel' must be an object or null");
+  }
+  const entries = Object.entries(label);
+  if (entries.length === 0) throw new ValidationError("'displayLabel' needs at least one of 'cs' or 'en'");
+  const validated: McpToolDisplayLabel = {};
+  for (const [key, value] of entries) {
+    if (key !== "cs" && key !== "en") {
+      throw new ValidationError("'displayLabel' has an unknown key; allowed keys are 'cs' and 'en'");
+    }
+    if (typeof value !== "string") throw new ValidationError(`'displayLabel.${key}' must be a string`);
+    const trimmed = value.trim();
+    if (trimmed.length === 0) throw new ValidationError(`'displayLabel.${key}' must not be empty`);
+    if (trimmed.length > MAX_DISPLAY_LABEL_LENGTH) {
+      throw new ValidationError(`'displayLabel.${key}' must be at most ${MAX_DISPLAY_LABEL_LENGTH} characters`);
+    }
+    validated[key] = trimmed;
+  }
+  return validated;
+}
+
+/** User-only mutation: sets (or, with `null`, clears) a tool's localized display label. */
+export async function setMcpToolDisplayLabel(
+  client: Queryable,
+  id: string,
+  label: unknown,
+): Promise<McpToolRegistration> {
+  const stored = label === null ? null : JSON.stringify(validateDisplayLabel(label));
+  const result = await client.query<McpToolRegistrationRow>(
+    `UPDATE mcp_tool_registrations SET display_label = $2::jsonb, updated_at = now() WHERE id = $1 RETURNING *`,
+    [id, stored],
+  );
+  const row = result.rows[0];
+  if (result.rowCount === 0 || !row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
   return rowToRegistration(row);
 }
 

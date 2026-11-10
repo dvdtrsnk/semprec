@@ -1,6 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { moduleManifestSchema, type ModuleManifest } from "../manifest.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "../registry.js";
 import { loadModuleCatalogs } from "../catalog.js";
+import {
+  editorConditionSchema,
+  editorFieldValueSchema,
+  editorFieldDescriptorSchema,
+  editorGroupDescriptorSchema,
+  editorSchemaDescriptorSchema,
+} from "../index.js";
 
 // `../catalog.js`'s named export binding can't be `vi.spyOn`'d directly under vitest's
 // ESM module loader, so `vi.mock` with a factory that wraps the real implementation in a
@@ -24,6 +36,15 @@ function fixturePath(name: string): string {
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["fixture-good", "fixture-second"]);
 
 describe("ModuleRegistry.loadModule", () => {
+  it("exports the editor schemas through the public entry point", () => {
+    const field = { key: "name", control: "text", labelKey: "name" };
+    const group = { key: "main", fields: [field] };
+    expect(editorFieldValueSchema.parse("value")).toBe("value");
+    expect(editorConditionSchema.parse({ field: "name", equals: "value" })).toEqual({ field: "name", equals: "value" });
+    expect(editorFieldDescriptorSchema.parse(field)).toEqual(field);
+    expect(editorGroupDescriptorSchema.parse(group)).toEqual(group);
+    expect(editorSchemaDescriptorSchema.parse({ groups: [group] })).toEqual({ groups: [group] });
+  });
   it("loads a structurally valid module and returns only its id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(fixturePath("goodModule.js"));
@@ -41,6 +62,14 @@ describe("ModuleRegistry.loadModule", () => {
     await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(
       /missing export "doesNotExist"/,
     );
+  });
+
+  it("rejects a module tool whose argument schema cannot be projected", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("invalidToolSchemaModule.js"))).rejects.toThrow(
+      /invalid argument schema/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
   });
 
   it("rejects a task descriptor missing queueAffinity", async () => {
@@ -282,6 +311,32 @@ describe("ModuleRegistry projections", () => {
       { moduleId: "fixture-good", name: "fixtureGood.doThing", handlerExport: "handleDoThing" },
     ]);
     expect(await registry.getAgentTools(new Set())).toEqual([]);
+    const definitions = await registry.getAgentToolDefinitions(new Set(["fixtureGood.send"]));
+    expect(definitions.map((tool) => tool.name)).toEqual(["fixtureGood.doThing"]);
+    expect(definitions[0]?.parseArguments({}).success).toBe(true);
+    expect(definitions[0]?.argumentSchema).toMatchObject({ type: "object" });
+    expect(await registry.getAgentToolDefinitions(new Set())).toEqual([]);
+  });
+
+  it("requires a safe explicit classification and the permission for conditional approval", () => {
+    const base = { name: "sample", handlerExport: "handler", argumentSchemaExport: "schema" };
+    const valid = (tool: unknown) =>
+      moduleManifestSchema.safeParse({
+        id: "sample",
+        version: "1",
+        name: "Sample",
+        removable: true,
+        systemProject: false,
+        databases: [],
+        capabilities: [],
+        agentTools: [tool],
+      }).success;
+    expect(valid(base)).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "destructive" })).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "unclassified" })).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "write" })).toBe(true);
+    expect(valid({ ...base, approval: "unlessProjectPermitted" })).toBe(false);
+    expect(valid({ ...base, approval: "unlessProjectPermitted", projectPermission: "allowed" })).toBe(true);
   });
 
   it("re-evaluates activation on every call instead of caching it at load time", async () => {
@@ -443,6 +498,442 @@ describe("ModuleRegistry.loadModule check ordering (issue #783)", () => {
     expect(await registry.getCatalogs("fixture-catalog-good")).toEqual({
       cs: { "database.fixtureCatalogGood.name": "Fixtura dobrého katalogu" },
       en: { "database.fixtureCatalogGood.name": "Fixture Catalog Good" },
+    });
+  });
+});
+
+describe("ModuleRegistry editor schemas (issue #1417)", () => {
+  const editorSchema = {
+    groups: [
+      {
+        key: "server",
+        fields: [{ key: "name", control: "text", labelKey: "fixture.editor.name.label", required: true }],
+      },
+    ],
+  };
+
+  it("projects the editor schema of an active module", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("omits the editor schema of an inactive module while the module stays loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set());
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([]);
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+  });
+
+  it("returns a copy, so changing a projected schema leaves the registry's schema unchanged", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    const [first] = await registry.getEditorSchemas();
+    const firstField = first?.schema.groups[0]?.fields[0];
+    if (firstField === undefined) throw new Error("expected the fixture's first field");
+    firstField.required = false;
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects a second module declaring the same base kind, naming both modules, and keeps the first module registered", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor", "fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp" loading .*: module "fixture-editor-duplicate" and module "fixture-editor" both declare it/,
+    );
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects the duplicate base kind even while the first declaring module is inactive", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp"/,
+    );
+  });
+});
+
+describe("related collection order", () => {
+  const base = {
+    id: "related",
+    name: "Related",
+    version: "1.0.0",
+    removable: true,
+    systemProject: false,
+    databases: [],
+    capabilities: [],
+    agentTools: [],
+    viewTypes: [],
+    migrations: [],
+  } satisfies ModuleManifest;
+  const manifestWith = (relatedOrder: unknown) => ({
+    ...base,
+    databases: [{ key: "projects", name: "Projects", relatedOrder }],
+  });
+
+  it.each([{ order: [], omit: [] }, { order: ["tasks"] }, { order: ["tasks", "unknown"], omit: ["journal"] }])(
+    "accepts valid related order without requiring every key to be known: %s",
+    (relatedOrder) => {
+      expect(moduleManifestSchema.safeParse(manifestWith(relatedOrder)).success).toBe(true);
+    },
+  );
+  it.each([
+    { order: [""] },
+    { order: [], omit: [""] },
+    { order: ["tasks", "tasks"] },
+    { order: [], omit: ["tasks", "tasks"] },
+    { order: ["tasks"], omit: ["tasks"] },
+    { omit: ["tasks"] },
+  ])("rejects empty strings and duplicates within or across lists: %s", (relatedOrder) => {
+    expect(moduleManifestSchema.safeParse(manifestWith(relatedOrder)).success).toBe(false);
+  });
+
+  let directory: string;
+  let ordinal = 0;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "semprec-related-order-"));
+  });
+  afterAll(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function load(registry: ModuleRegistry, manifest: ModuleManifest) {
+    const path = join(directory, `manifest-${ordinal++}.mjs`);
+    await writeFile(path, `export const manifest = ${JSON.stringify(manifest)};`);
+    await registry.loadModule(pathToFileURL(path).href);
+  }
+  async function createRegistry() {
+    const active = new Set(["related", "optional"]);
+    const registry = new ModuleRegistry(() => active);
+    await load(registry, {
+      ...base,
+      databases: [
+        {
+          key: "projects",
+          name: "Projects",
+          relatedOrder: {
+            order: ["people", "optionalItems", "unknown"],
+            omit: ["tasks", "optionalHidden", "missingOmit"],
+          },
+        },
+        { key: "people", name: "People", relatedOrder: { order: ["projects", "tasks"] } },
+        { key: "tasks", name: "Tasks" },
+        { key: "empty", name: "Empty", relatedOrder: { order: [] } },
+      ],
+    });
+    await load(registry, {
+      ...base,
+      id: "optional",
+      name: "Optional",
+      databases: [
+        { key: "optionalItems", name: "Optional items" },
+        { key: "optionalHidden", name: "Optional hidden" },
+      ],
+    });
+    return { registry, active };
+  }
+  it("projects a copy of the full declaration and leaves undeclared fields absent", async () => {
+    const { registry } = await createRegistry();
+    const databases = await registry.getDatabases();
+    const relatedOrder = databases.find((db) => db.key === "projects")?.relatedOrder;
+    expect(relatedOrder).toEqual({
+      order: ["people", "optionalItems", "unknown"],
+      omit: ["tasks", "optionalHidden", "missingOmit"],
+    });
+    expect(databases.find((db) => db.key === "tasks")).not.toHaveProperty("relatedOrder");
+    if (!relatedOrder?.omit) throw new Error("Expected the projected lists");
+    relatedOrder.order.push("mutated");
+    relatedOrder.omit.push("mutatedOmit");
+    expect((await registry.getDatabases()).find((db) => db.key === "projects")?.relatedOrder).toEqual({
+      order: ["people", "optionalItems", "unknown"],
+      omit: ["tasks", "optionalHidden", "missingOmit"],
+    });
+  });
+  it("filters unknown/inactive keys in both lists and rechecks activation on every call", async () => {
+    const { registry, active } = await createRegistry();
+    expect(await registry.getRelatedOrder("projects")).toEqual({
+      order: ["people", "optionalItems"],
+      omit: ["tasks", "optionalHidden"],
+    });
+    active.delete("optional");
+    expect(await registry.getRelatedOrder("projects")).toEqual({ order: ["people"], omit: ["tasks"] });
+    active.add("optional");
+    expect(await registry.getRelatedOrder("projects")).toEqual({
+      order: ["people", "optionalItems"],
+      omit: ["tasks", "optionalHidden"],
+    });
+  });
+  it("omits Tasks only for Projects and defaults an absent omit to an empty list", async () => {
+    const { registry } = await createRegistry();
+    expect((await registry.getRelatedOrder("projects"))?.order).not.toContain("tasks");
+    expect(await registry.getRelatedOrder("people")).toEqual({ order: ["projects", "tasks"], omit: [] });
+    const resolved = await registry.getRelatedOrder("people");
+    resolved?.order.push("mutated");
+    expect(await registry.getRelatedOrder("people")).toEqual({ order: ["projects", "tasks"], omit: [] });
+  });
+  it("returns undefined for undeclared, unknown or inactive source databases, preserving a declared empty list", async () => {
+    const { registry, active } = await createRegistry();
+    expect(await registry.getRelatedOrder("tasks")).toBeUndefined();
+    expect(await registry.getRelatedOrder("unknown")).toBeUndefined();
+    expect(await registry.getRelatedOrder("empty")).toEqual({ order: [], omit: [] });
+    active.delete("related");
+    expect(await registry.getRelatedOrder("projects")).toBeUndefined();
+  });
+});
+
+describe("database quick filters, default sorts and collection and picker filters (issue #1647)", () => {
+  const filter = { type: "in", property: "status", value: ["done"] };
+  const declared = {
+    key: "projects",
+    name: "Projects",
+    quickFilters: [
+      { key: "active", labelKey: "quickFilter.projects.active", filter, isDefault: true },
+      { key: "past", labelKey: "quickFilter.projects.past", sort: [{ property: "date", direction: "desc" }] },
+      { key: "all", labelKey: "quickFilter.projects.all" },
+    ],
+    defaultSort: { property: "date", direction: "asc" },
+    dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
+    collectionFilter: { type: "is_empty", property: "systemActive" },
+    pickerFilter: { type: "and", nodes: [{ type: "is_empty", property: "systemActive" }] },
+  };
+  const base = {
+    id: "quickFilters",
+    version: "1.0.0",
+    name: "Quick filters",
+    removable: true,
+    systemProject: false,
+    capabilities: [],
+    agentTools: [],
+  };
+  function manifestWith(database: Record<string, unknown>): unknown {
+    return { ...base, databases: [database] };
+  }
+
+  let directory: string;
+  let ordinal = 0;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "semprec-quick-filters-"));
+  });
+  afterAll(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function load(registry: ModuleRegistry, manifest: unknown): Promise<void> {
+    const path = join(directory, `manifest-${ordinal++}.mjs`);
+    await writeFile(path, `export const manifest = ${JSON.stringify(manifest)};`);
+    await registry.loadModule(pathToFileURL(path).href);
+  }
+
+  it("loads the declarations and projects a copy of them; a database without any projects none", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    await load(registry, { ...base, databases: [declared, { key: "plain", name: "Plain" }] });
+    const databases = await registry.getDatabases();
+    expect(databases).toEqual([
+      { moduleId: "quickFilters", ...declared },
+      { moduleId: "quickFilters", key: "plain", name: "Plain" },
+    ]);
+    // Editing a projection cannot change what the next projection returns.
+    databases[0]?.quickFilters?.splice(0);
+    const collectionFilter = databases[0]?.collectionFilter;
+    if (collectionFilter) collectionFilter.property = "changed";
+    expect((await registry.getDatabases())[0]).toEqual({ moduleId: "quickFilters", ...declared });
+  });
+
+  it("rejects a manifest declaring two default quick filters when the module is loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    const twoDefaults = {
+      ...declared,
+      quickFilters: [
+        { key: "active", labelKey: "a", isDefault: true },
+        { key: "done", labelKey: "b", isDefault: true },
+      ],
+    };
+    await expect(load(registry, manifestWith(twoDefaults))).rejects.toThrow(/invalid manifest/);
+    expect(registry.listModuleIds()).toEqual([]);
+    expect(moduleManifestSchema.safeParse(manifestWith(twoDefaults)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters"],
+        message: "At most one quick filter may be the default",
+      }),
+    ]);
+  });
+
+  it("rejects duplicate quick-filter keys within one database", () => {
+    const duplicate = {
+      ...declared,
+      quickFilters: [
+        { key: "all", labelKey: "a" },
+        { key: "all", labelKey: "b" },
+      ],
+    };
+    expect(moduleManifestSchema.safeParse(manifestWith(duplicate)).error?.issues).toEqual([
+      expect.objectContaining({
+        path: ["databases", 0, "quickFilters", 1, "key"],
+        message: "Duplicate quick filter key 'all'",
+      }),
+    ]);
+  });
+
+  it("accepts a single default, no default, and the same chip key in two databases", () => {
+    expect(moduleManifestSchema.safeParse(manifestWith(declared)).success).toBe(true);
+    const noDefault = { ...declared, quickFilters: [{ key: "all", labelKey: "a", isDefault: false }] };
+    expect(moduleManifestSchema.safeParse(manifestWith(noDefault)).success).toBe(true);
+    const twoDatabases = { ...base, databases: [declared, { ...declared, key: "other" }] };
+    expect(moduleManifestSchema.safeParse(twoDatabases).success).toBe(true);
+  });
+
+  it.each([
+    ["a quick filter whose filter is an array", { quickFilters: [{ key: "a", labelKey: "a", filter: [filter] }] }],
+    ["a quick filter whose filter is a string", { quickFilters: [{ key: "a", labelKey: "a", filter: "status=done" }] }],
+    ["a null collection filter", { collectionFilter: null }],
+    ["a picker filter that is a number", { pickerFilter: 1 }],
+    ["a quick filter without a label key", { quickFilters: [{ key: "a" }] }],
+    ["a quick filter with an unknown field", { quickFilters: [{ key: "a", labelKey: "a", label: "A" }] }],
+    ["a default sort with an unknown direction", { defaultSort: { property: "date", direction: "up" } }],
+    [
+      "a quick-filter sort with an empty property",
+      { quickFilters: [{ key: "a", labelKey: "a", sort: [{ property: "", direction: "asc" }] }] },
+    ],
+    ["date labels missing the no-date key", { dateLabels: { pastLabelKey: "p" } }],
+  ])("rejects %s", (_name, change) => {
+    expect(moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).success).toBe(
+      false,
+    );
+  });
+
+  describe("opaque filters are bounded JSON objects", () => {
+    /** `levels` objects nested in one another, the outermost first: `{ child: { child: { type: "leaf" } } }`. */
+    function nestedObjects(levels: number): Record<string, unknown> {
+      let value: Record<string, unknown> = { type: "leaf" };
+      for (let level = 1; level < levels; level += 1) value = { child: value };
+      return value;
+    }
+    /** A root object holding `arrays` arrays nested in one another, around one string. */
+    function nestedArrays(arrays: number): Record<string, unknown> {
+      let value: unknown = "leaf";
+      for (let level = 0; level < arrays; level += 1) value = [value];
+      return { nodes: value };
+    }
+    /** A root object with `values - 1` numeric properties: `values` values in all, the root included. */
+    function flatObject(values: number): Record<string, unknown> {
+      return Object.fromEntries(Array.from({ length: values - 1 }, (_, index) => [`k${index}`, index]));
+    }
+    /** A root holding one array that holds `shared` twice: 2 + 2 × (values of `shared`) values. */
+    function twoAliases(sharedValues: number): Record<string, unknown> {
+      const shared = flatObject(sharedValues);
+      return { nodes: [shared, shared] };
+    }
+    function parsesAsCollectionFilter(collectionFilter: unknown): boolean {
+      return moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", collectionFilter }))
+        .success;
+    }
+    class FilterNode {
+      type = "is_empty";
+    }
+    class FilterNodes extends Array<unknown> {}
+
+    const selfCycle: Record<string, unknown> = { type: "and", nodes: [] };
+    selfCycle.self = selfCycle;
+    const arrayCycle: Record<string, unknown> = { type: "and" };
+    arrayCycle.nodes = [{ type: "or", nodes: [arrayCycle] }];
+    const sparse: unknown[] = ["a"];
+    sparse[2] = "c";
+    const arrayWithExtra = Object.assign(["a"], { extra: true });
+    const hidden: Record<string, unknown> = { type: "is_empty" };
+    Object.defineProperty(hidden, "property", { value: "systemActive", enumerable: false });
+
+    it.each([
+      ["a Date", new Date(0)],
+      ["a class instance", new FilterNode()],
+      ["a Map", new Map([["type", "is_empty"]])],
+      ["a nested Date", { type: "in", value: new Date(0) }],
+      ["a nested class instance", { type: "and", nodes: [new FilterNode()] }],
+      ["a nested boxed string", { type: "in", value: new String("done") }],
+      ["a nested function", { type: "in", value: () => "done" }],
+      ["a nested undefined", { type: "in", value: undefined }],
+      ["a nested symbol", { type: "in", value: Symbol("done") }],
+      ["a symbol key", { type: "in", [Symbol("key")]: "done" }],
+      ["a nested bigint", { type: "in", value: 1n }],
+      ["a nested NaN", { type: "in", value: Number.NaN }],
+      ["a nested Infinity", { type: "in", value: Number.POSITIVE_INFINITY }],
+      ["a nested -Infinity", { type: "in", value: Number.NEGATIVE_INFINITY }],
+      ["an object that contains itself", selfCycle],
+      ["an object that contains itself through an array", arrayCycle],
+      ["an array with a hole", { type: "in", value: sparse }],
+      ["an array with a property beyond its indices", { type: "in", value: arrayWithExtra }],
+      ["an Array subclass instance", { type: "and", nodes: FilterNodes.from([{ type: "is_empty" }]) }],
+      ["a non-enumerable property", hidden],
+      ["33 nested objects", nestedObjects(33)],
+      ["a root object around 32 nested arrays", nestedArrays(32)],
+      ["1025 values", flatObject(1025)],
+      ["one value shared on two paths, counted on each, past 1024 values", twoAliases(512)],
+    ])("refuses %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(false);
+    });
+
+    it.each([
+      ["a null-prototype root", Object.assign(Object.create(null) as Record<string, unknown>, { type: "is_empty" })],
+      ["32 nested objects", nestedObjects(32)],
+      ["a root object around 31 nested arrays", nestedArrays(31)],
+      ["1024 values", flatObject(1024)],
+      ["one acyclic value shared on two paths, 1024 values counted on each", twoAliases(511)],
+      ["strings, booleans, null and finite numbers, with -0", { a: "s", b: true, c: null, d: 1.5, e: -0, f: [] }],
+    ])("accepts %s", (_name, collectionFilter) => {
+      expect(parsesAsCollectionFilter(collectionFilter)).toBe(true);
+    });
+
+    it("reads no accessor while refusing it", () => {
+      let read = false;
+      const accessor = {
+        type: "is_empty",
+        get property(): string {
+          read = true;
+          return "systemActive";
+        },
+      };
+      expect(parsesAsCollectionFilter(accessor)).toBe(false);
+      expect(read).toBe(false);
+    });
+
+    it.each([
+      [
+        "a quick filter's filter",
+        { quickFilters: [{ key: "a", labelKey: "a", filter: { type: "in", value: () => 1 } }] },
+      ],
+      ["a collection filter", { collectionFilter: { type: "in", value: () => 1 } }],
+      ["a picker filter", { pickerFilter: { type: "in", value: () => 1 } }],
+    ])("refuses a function inside %s", (_name, change) => {
+      expect(
+        moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).error?.issues,
+      ).toEqual([
+        expect.objectContaining({ message: "must be a JSON object of at most 32 nested levels and 1024 values" }),
+      ]);
+    });
+
+    it("refuses a module whose manifest declares a function inside a filter when it is loaded", async () => {
+      const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+      const path = join(directory, `manifest-${ordinal++}.mjs`);
+      await writeFile(
+        path,
+        [
+          `export const manifest = ${JSON.stringify(manifestWith({ key: "projects", name: "Projects" }))};`,
+          `manifest.databases[0].pickerFilter = { type: "in", property: "status", value: () => "done" };`,
+        ].join("\n"),
+      );
+      await expect(registry.loadModule(pathToFileURL(path).href)).rejects.toThrow(/invalid manifest/);
+      expect(registry.listModuleIds()).toEqual([]);
+      expect(await registry.getDatabases()).toEqual([]);
     });
   });
 });

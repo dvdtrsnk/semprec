@@ -5,6 +5,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { createUser } from "../auth/usersStore.js";
+import * as usersStore from "../auth/usersStore.js";
 import { hashToken } from "../auth/token.js";
 import { createInvite, INVITE_TTL_SECONDS, listInvites, revokeInvite, type CreatedInvite } from "../tenancy/invites.js";
 import type { InviteMailer, SendInviteEmailInput } from "../tenancy/inviteMail.js";
@@ -106,8 +107,25 @@ describe("invites (issue #1040)", () => {
     const created = await invite("New@Example.com", mailer);
 
     expect(mailer.calls).toEqual([
-      { to: "new@example.com", inviteUrl: created.inviteUrl, expiresAt: created.invite.expiresAt },
+      { to: "new@example.com", inviteUrl: created.inviteUrl, expiresAt: created.invite.expiresAt, locale: "cs" },
     ]);
+  });
+
+  it("passes the creating admin's locale, not anything about the invited address", async () => {
+    await pool.query("UPDATE users SET locale = 'en' WHERE id = $1", [inviterId]);
+    const mailer = recordingMailer();
+    await invite("novak@example.cz", mailer);
+    expect(mailer.calls.map((call) => call.locale)).toEqual(["en"]);
+  });
+
+  it("uses English when the admin lookup returns no row", async () => {
+    // The foreign key normally keeps this row present; override only the lookup to exercise its fallback.
+    const lookup = vi.spyOn(usersStore, "getUserById").mockResolvedValueOnce(null);
+    const mailer = recordingMailer();
+    const created = await invite("fallback@example.test", mailer);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(created.invite.invitedBy).toBe(inviterId);
+    expect(mailer.calls.map((call) => call.locale)).toEqual(["en"]);
   });
 
   it("sends nothing when no mailer is configured", async () => {

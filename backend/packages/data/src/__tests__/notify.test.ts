@@ -79,6 +79,99 @@ describe("writeNotification", () => {
     expect(rows[0].title).toBe(`Heartbeat „Daily digest“ selhal`);
   });
 
+  it("stores a NULL body for a notification written without a body key (issue #1773)", async () => {
+    const userId = await createTestUser("en");
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-no-body",
+        transitionInstance: "job-1",
+      }),
+    );
+
+    const { rows } = await pool.query(`SELECT body FROM notifications WHERE source_id = $1`, ["hb-no-body"]);
+    expect(rows[0].body).toBeNull();
+  });
+
+  /** Writes an approval body for one user and returns the stored body; `null` params exercise the unnamed label. */
+  async function writeApprovalBody(userId: string, sourceId: string): Promise<string | null> {
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: null,
+        sourceTable: "approval_requests",
+        sourceId,
+        transitionInstance: sourceId,
+        bodyKey: "approval.itemDelete",
+        bodyParams: { itemName: null, databaseName: "Tasks", databaseKey: null, linkedCount: 2, restorableDays: 30 },
+        bodySuffixKey: "notification.body.canUndo",
+      }),
+    );
+    const { rows } = await pool.query(`SELECT body FROM notifications WHERE source_id = $1`, [sourceId]);
+    return rows[0].body;
+  }
+
+  it("renders the body in English for an English recipient, with null as the unnamed label (issue #1773)", async () => {
+    const userId = await createTestUser("en");
+
+    expect(await writeApprovalBody(userId, "body-en")).toBe(
+      'Delete "unnamed" from "Tasks" (unnamed); 2 linked items, retained for 30 days. This can be undone later.',
+    );
+  });
+
+  it("renders the same body in Czech for a Czech recipient (issue #1773)", async () => {
+    const userId = await createTestUser("cs");
+
+    expect(await writeApprovalBody(userId, "body-cs")).toBe(
+      "Smazat „bez názvu“ z „Tasks“ (bez názvu); propojených položek: 2, uchování: 30 dní. Lze ji později vzít zpět.",
+    );
+  });
+
+  it("rejects a suffix without an action body", async () => {
+    const userId = await createTestUser("en");
+    await expect(
+      withTransaction(pool, (client) =>
+        writeNotification(client, {
+          userId,
+          kind: "approval_pending",
+          linkHref: null,
+          sourceTable: "approval_requests",
+          sourceId: "no-action",
+          transitionInstance: "no-action",
+          bodySuffixKey: "notification.body.cannotUndo",
+        }),
+      ),
+    ).rejects.toThrow("Notification suffix requires a body");
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM notifications WHERE source_id = 'no-action'",
+    );
+    expect(rows[0]!.count).toBe("0");
+  });
+
+  it("does not recursively expand placeholders in description values", async () => {
+    const userId = await createTestUser("en");
+    const id = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: null,
+        sourceTable: "approval_requests",
+        sourceId: "literal",
+        transitionInstance: "literal",
+        bodyKey: "approval.viewDelete",
+        bodyParams: { viewName: "{databaseName}", databaseName: "Tasks" },
+        bodySuffixKey: "notification.body.cannotUndo",
+      }),
+    );
+    const { rows } = await pool.query<{ body: string }>("SELECT body FROM notifications WHERE id = $1", [id]);
+    expect(rows[0]!.body).toBe('Delete view "{databaseName}" from "Tasks". Semp cannot undo this action.');
+  });
+
   it("rolls back the notification when the caller's transaction rolls back", async () => {
     const userId = await createTestUser();
     await expect(

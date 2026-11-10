@@ -1,7 +1,10 @@
 export { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalog, type ModuleCatalogs } from "./catalog.js";
 export type {
+  AreaFilterAreaValue,
+  AreaFilterTemplate,
   ModuleManifest,
   ModuleDatabaseDescriptor,
+  ModuleRelatedOrderDescriptor,
   ModuleAgentToolDescriptor,
   ModuleTaskDescriptor,
   ModuleTaskAffinity,
@@ -9,14 +12,30 @@ export type {
   ModuleHeartbeatRuleKindDescriptor,
   ModuleDataMigrationDescriptor,
   ModuleCustomRouteDescriptor,
+  ModuleLinkRuleDescriptor,
+  ModuleLinkRuleEndpoint,
   CustomRouteMethod,
   CustomRouteJustification,
+  EditorSchemaDescriptor,
+  EditorGroupDescriptor,
+  EditorFieldDescriptor,
+  EditorFieldCondition,
+  EditorFieldControl,
+  EditorFieldInputType,
+  EditorFieldValue,
 } from "./manifest.js";
 export {
   moduleManifestSchema,
+  editorFieldValueSchema,
+  editorConditionSchema,
+  editorFieldDescriptorSchema,
+  editorGroupDescriptorSchema,
+  editorSchemaDescriptorSchema,
   CUSTOM_ROUTE_METHODS,
   CUSTOM_ROUTE_JUSTIFICATIONS,
   MODULE_TASK_AFFINITIES,
+  EDITOR_FIELD_CONTROLS,
+  EDITOR_FIELD_INPUT_TYPES,
 } from "./manifest.js";
 export {
   ModuleRegistry,
@@ -31,5 +50,9 @@ export {
   type ModuleTaskDefinition,
   type ModuleHeartbeatRuleKindDefinition,
   type ModuleDataMigrationDefinition,
+  type ModuleDataMigrationConverter,
+  type ModuleDataMigrationConverterContext,
   type ModuleCustomRouteDefinition,
+  type ModuleLinkRuleProjection,
+  type ModuleEditorSchemaProjection,
 } from "./registry.js";

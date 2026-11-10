@@ -1,9 +1,21 @@
 import type { AuthenticatedActor } from "./actor.js";
 import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
-import type { Database, Item, ItemPage, Page, Property, RelationEdge, View, ViewItem } from "./rows.js";
+import type {
+  Database,
+  Item,
+  ItemPage,
+  ItemLink,
+  Page,
+  PageRestoreOutput,
+  Property,
+  RelationEdge,
+  RelationListEntry,
+  View,
+  ViewItem,
+} from "./rows.js";
 
-/** Exhaustive mapped type over the 29 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 38 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -38,12 +50,67 @@ export interface OutputByOperation {
   "item.restore": Item;
   "database.query": ItemPage;
   "relation.put": RelationEdge;
+  "relation.set": RelationEdge | null;
   "relation.delete": RelationEdge;
+  "relation.list": RelationListEntry[];
+  "page.restoreVersion": PageRestoreOutput;
+  "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
+  "link.relink": { itemId: string; propertyKey: string } & ItemLink;
+  "page.get": PageSummary | PageMarkdown;
+  "page.ensure": { docId: string };
+  "page.createSubpage": PageCreateSubpageOutput;
+  "page.insert": { blockIds: string[] };
+  "page.changes": PageChangeEntry[];
+}
+
+/** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
+export interface PageChangeEntry {
+  /** When the update was stored (ISO 8601). */
+  at: string;
+  /** The blocks the change touched, in document order (a deleted block in the order it had before the update). */
+  blockIds: string[];
+  kind: "insert" | "update" | "delete";
+}
+
+/** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
+export interface PageCreateSubpageOutput {
+  pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
+}
+
+/** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
+export interface PageMarkdown {
+  docId: string | null;
+  kind: "page";
+  markdown: string;
+  etag: string;
+}
+
+export interface PageSummary {
+  docId: string | null;
+  kind: "page";
+  title: string;
+  blocks: Array<{ id: string; type: string; indent: number; done: boolean; text: string; pageId?: string }>;
+  blockCount: number;
+  subpageCount: number;
+  headings: Array<{ id: string; type: string; text: string }>;
+  lastEditedAt: string | null;
+  lastEditedBy: "user" | "ai_agent" | "system" | null;
+  breadcrumbs: Array<{
+    itemId: string;
+    title: string;
+    databaseKey: string | null;
+    journal?: { type: string; period: string };
+  }> | null;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;
 const _assertOutputByOperationExhaustive: AssertSameKeys<keyof OutputByOperation, GenericOperationName> = true;
 void _assertOutputByOperationExhaustive;
+
+/** Batched automation projection used by the application read facade. */
+export interface ItemAutomationReadPort {
+  readAutomationForItems(itemIds: string[]): Promise<Map<string, NonNullable<Item["automation"]>>>;
+}
 
 /**
  * The one transport-independent port every generic-operation binding calls through (issue
@@ -102,7 +169,7 @@ export interface GenericApplicationPort {
    * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 29 catalog operations — `OutputByOperation["property.patch"]` (the
+   * the patch. Not one of the 30 catalog operations — `OutputByOperation["property.patch"]` (the
    * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
    * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
    * AgentTool composition root never call a catalog-external port method. See
@@ -159,6 +226,11 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["database.query"],
   ): Promise<OutputByOperation["database.query"]>;
+  setRelation(
+    actor: AuthenticatedActor,
+    input: InputByOperation["relation.set"],
+  ): Promise<OutputByOperation["relation.set"]>;
+
   putRelation(
     actor: AuthenticatedActor,
     input: InputByOperation["relation.put"],
@@ -167,4 +239,37 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.delete"],
   ): Promise<OutputByOperation["relation.delete"]>;
+  listRelations(
+    actor: AuthenticatedActor,
+    input: InputByOperation["relation.list"],
+  ): Promise<OutputByOperation["relation.list"]>;
+  unlinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.unlink"],
+  ): Promise<OutputByOperation["link.unlink"]>;
+  relinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.relink"],
+  ): Promise<OutputByOperation["link.relink"]>;
+  ensurePage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.ensure"],
+  ): Promise<OutputByOperation["page.ensure"]>;
+  getPage(actor: AuthenticatedActor, input: InputByOperation["page.get"]): Promise<OutputByOperation["page.get"]>;
+  createSubpage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.createSubpage"],
+  ): Promise<OutputByOperation["page.createSubpage"]>;
+  insertPage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.insert"],
+  ): Promise<OutputByOperation["page.insert"]>;
+  listPageChanges(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.changes"],
+  ): Promise<OutputByOperation["page.changes"]>;
+  restorePageVersion(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.restoreVersion"],
+  ): Promise<OutputByOperation["page.restoreVersion"]>;
 }

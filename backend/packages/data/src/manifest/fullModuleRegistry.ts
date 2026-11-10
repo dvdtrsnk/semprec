@@ -8,7 +8,16 @@ import { RESERVED_TASK_NAMES } from "../moduleTasks.js";
  * settings table lists deactivated modules), so "every known module is always active" is the
  * only activation predicate any production caller can honestly use today.
  */
-const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
+const ALL_MODULE_IDS = [
+  "schemaCore",
+  "views",
+  "docs",
+  "systemDatabases",
+  "library",
+  "mailSync",
+  "inboxPipeline",
+  "calendar",
+];
 
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
@@ -22,6 +31,7 @@ const MANIFEST_PATHS = [
   manifestPath("library/libraryModuleManifest.js"),
   manifestPath("mail/mailModuleManifest.js"),
   manifestPath("inbox/inboxModuleManifest.js"),
+  manifestPath("calendar/calendarModuleManifest.js"),
 ];
 
 /**
@@ -36,5 +46,6 @@ export async function loadFullModuleRegistry(): Promise<ModuleRegistry> {
   for (const path of MANIFEST_PATHS) {
     await registry.loadModule(path);
   }
+  registry.validateLinkRules();
   return registry;
 }

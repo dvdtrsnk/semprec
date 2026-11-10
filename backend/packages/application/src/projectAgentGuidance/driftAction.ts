@@ -1,21 +1,37 @@
-import { fingerprintGuidanceDriftContradiction, validateGuidanceDriftContradiction } from "@semprec/shared";
+import {
+  BEHAVIOR_DRIFT_INPUT_BYTES,
+  BEHAVIOR_DRIFT_MIN_RUNS,
+  BEHAVIOR_DRIFT_WINDOW_DAYS,
+  compareByCodePoint,
+  createLogger,
+  fingerprintGuidanceDriftSubject,
+  validateGuidanceDriftContradiction,
+  parseProjectAgentGuidanceMarkdown,
+} from "@semprec/shared";
 import type {
   AiGatewayClientPort,
-  GuidanceDriftContradiction,
+  GuidanceDriftPermissionContradiction,
   GuidanceDriftFindingStore,
+  GuidanceDriftPermissionSubject,
   GuidanceManifestPort,
   GuidanceNotificationWriter,
+  GuidanceProblemWriter,
   GuidanceReferenceStore,
+  ProjectToolCallUsageStore,
   ProjectAgentGuidanceStore,
   TransactionRunner,
 } from "@semprec/shared";
 import { GuidanceChangedError, GuidanceContextChangedError, GuidanceMissingError } from "./driftErrors.js";
 
 export const AGENT_GUIDANCE_DRIFT_OPERATION = "agent_guidance_drift";
+const logger = createLogger("agent-guidance-drift");
 
 const AGENT_GUIDANCE_DRIFT_SYSTEM_INSTRUCTION =
   "Compare project guidance with mechanically enforced manifest facts. Return only schema-valid " +
-  "contradictions; do not infer permissions absent from the manifest.";
+  "contradictions; do not infer permissions absent from the manifest. For each contradiction set " +
+  "subject.operation to the manifest operation the guidance contradicts and subject.databaseId to the " +
+  "target database id, or null when the contradiction is not database specific. Copy both values " +
+  "verbatim from the manifest; never invent them.";
 
 /** Draft 2020-12 JSON Schema for the gateway's structured completion (validated server-side, issue #215). */
 const AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA = {
@@ -28,8 +44,17 @@ const AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["claim", "guidanceExcerpt", "manifestFacts", "severity"],
+        required: ["claim", "guidanceExcerpt", "manifestFacts", "severity", "subject"],
         properties: {
+          subject: {
+            type: "object",
+            additionalProperties: false,
+            required: ["operation", "databaseId"],
+            properties: {
+              operation: { type: "string", minLength: 1 },
+              databaseId: { type: ["string", "null"], minLength: 1 },
+            },
+          },
           claim: { type: "string", minLength: 1 },
           guidanceExcerpt: { type: "string", minLength: 1 },
           manifestFacts: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
@@ -46,9 +71,11 @@ export interface AgentGuidanceDriftActionDeps<Tx> {
   references: GuidanceReferenceStore<Tx>;
   findings: GuidanceDriftFindingStore<Tx>;
   notifications: GuidanceNotificationWriter<Tx>;
+  problems: GuidanceProblemWriter<Tx>;
   manifest: GuidanceManifestPort<Tx>;
   gateway: AiGatewayClientPort;
   clock: () => Date;
+  toolCallUsage: ProjectToolCallUsageStore<Tx>;
 }
 
 export interface AgentGuidanceDriftActionInput {
@@ -77,9 +104,9 @@ export interface AgentGuidanceDriftActionInput {
 export function createAgentGuidanceDriftAction<Tx>(
   deps: AgentGuidanceDriftActionDeps<Tx>,
 ): (input: AgentGuidanceDriftActionInput) => Promise<void> {
-  const { transactions, guidance, references, findings, notifications, manifest, gateway, clock } = deps;
+  const { transactions, guidance, references, findings, notifications, problems, manifest, gateway, clock } = deps;
 
-  return async function runAgentGuidanceDriftAction({ projectItemId }) {
+  async function runPermission({ projectItemId }: AgentGuidanceDriftActionInput): Promise<void> {
     const snapshot = await transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
       const row = await guidance.load(tx, projectItemId);
       if (!row) throw new GuidanceMissingError(projectItemId);
@@ -132,12 +159,9 @@ export function createAgentGuidanceDriftAction<Tx>(
         throw new GuidanceContextChangedError(projectItemId);
       }
 
-      const ranked = contradictions
-        .map((contradiction) => ({
-          contradiction,
-          fingerprint: fingerprintGuidanceDriftContradiction(contradiction),
-        }))
-        .sort((a, b) => (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0));
+      const ranked = [...dedupeBySubject(projectItemId, contradictions).values()].sort((a, b) =>
+        a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0,
+      );
 
       const reportedFingerprints = new Set(ranked.map((entry) => entry.fingerprint));
       const linkHref = `/projects/${projectItemId}/agent-guidance`;
@@ -170,12 +194,19 @@ export function createAgentGuidanceDriftAction<Tx>(
               severity: contradiction.severity,
             },
           });
+          await problems.raise(tx, {
+            userId: snapshot.ownerUserId,
+            projectItemId,
+            fingerprint,
+            findingId: finding.id,
+            occurrenceKey: `${fingerprint}:${seenAt.toISOString()}`,
+          });
         }
       }
 
       const activeFindings = await findings.listActive(tx, projectItemId);
       for (const active of activeFindings) {
-        if (reportedFingerprints.has(active.fingerprint)) continue;
+        if (active.payload.kind !== "permission" || reportedFingerprints.has(active.fingerprint)) continue;
 
         const { finding, transitionedToResolved } = await findings.resolve(tx, active.id, seenAt);
         if (transitionedToResolved) {
@@ -193,6 +224,30 @@ export function createAgentGuidanceDriftAction<Tx>(
         }
       }
     });
+  }
+
+  return async function runAgentGuidanceDriftAction(input) {
+    let permissionError: unknown;
+    let permissionFailed = false;
+    try {
+      await runPermission(input);
+    } catch (error) {
+      permissionFailed = true;
+      permissionError = error;
+    }
+    try {
+      await runBehaviorPass(deps, input.projectItemId);
+    } catch (error) {
+      if (permissionFailed) {
+        logger.error(
+          { errorName: error instanceof Error ? error.name : "UnknownError", projectItemId: input.projectItemId },
+          "Behavior drift pass also failed",
+        );
+        throw permissionError;
+      }
+      throw error;
+    }
+    if (permissionFailed) throw permissionError;
   };
 }
 
@@ -202,7 +257,9 @@ export function createAgentGuidanceDriftAction<Tx>(
  * package stays neutral (no schema-validation library dependency) and never trusts a value typed
  * `unknown` without narrowing it itself.
  */
-function validateContradictions(content: unknown): GuidanceDriftContradiction[] {
+type SubjectContradiction = GuidanceDriftPermissionContradiction & { subject: GuidanceDriftPermissionSubject };
+
+function validateContradictions(content: unknown): SubjectContradiction[] {
   if (typeof content !== "object" || content === null || !("contradictions" in content)) {
     throw new Error("agent guidance drift: gateway response missing contradictions");
   }
@@ -210,7 +267,208 @@ function validateContradictions(content: unknown): GuidanceDriftContradiction[] 
   if (!Array.isArray(contradictions)) {
     throw new Error("agent guidance drift: gateway response contradictions is not an array");
   }
-  return contradictions.map((entry, index) =>
-    validateGuidanceDriftContradiction(entry, `agent guidance drift: contradiction ${index}`),
-  );
+  return contradictions.map((entry, index) => {
+    const context = `agent guidance drift: contradiction ${index}`;
+    const contradiction = validateGuidanceDriftContradiction(entry, context);
+    if (contradiction.kind !== "permission") throw new Error(`${context}: invalid contradiction kind`);
+    if (contradiction.subject === null) throw new Error(`${context}: contradiction is missing its subject`);
+    return { ...contradiction, subject: contradiction.subject };
+  });
+}
+
+interface RankedContradiction {
+  contradiction: GuidanceDriftPermissionContradiction;
+  fingerprint: string;
+}
+
+/**
+ * Findings are unique per fingerprint, so contradictions sharing a subject collapse into one:
+ * the higher severity wins, and equal severities fall back to the smaller claim so the outcome
+ * does not depend on the AI's report order.
+ */
+function dedupeBySubject(
+  projectItemId: string,
+  contradictions: SubjectContradiction[],
+): Map<string, RankedContradiction> {
+  const byFingerprint = new Map<string, RankedContradiction>();
+  for (const contradiction of contradictions) {
+    const fingerprint = fingerprintGuidanceDriftSubject(projectItemId, contradiction.kind, contradiction.subject);
+    const kept = byFingerprint.get(fingerprint);
+    if (!kept || outranks(contradiction, kept.contradiction)) {
+      byFingerprint.set(fingerprint, { contradiction, fingerprint });
+    }
+  }
+  return byFingerprint;
+}
+
+function outranks(
+  candidate: GuidanceDriftPermissionContradiction,
+  kept: GuidanceDriftPermissionContradiction,
+): boolean {
+  if (candidate.severity !== kept.severity) return candidate.severity === "blocking";
+  return compareByCodePoint(candidate.claim, kept.claim) < 0;
+}
+
+export { BEHAVIOR_DRIFT_MIN_RUNS, BEHAVIOR_DRIFT_WINDOW_DAYS } from "@semprec/shared";
+const BEHAVIOR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["findings"],
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["fingerprint", "claim", "suggestedAllowedLine", "suggestedNotAllowedLine"],
+        properties: {
+          fingerprint: { type: "string", minLength: 1 },
+          claim: { type: "string", minLength: 1 },
+          suggestedAllowedLine: { type: "string", minLength: 1 },
+          suggestedNotAllowedLine: { type: "string", minLength: 1 },
+        },
+      },
+    },
+  },
+} as const;
+
+async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, projectItemId: string): Promise<void> {
+  const now = deps.clock();
+  const since = new Date(now.getTime() - BEHAVIOR_DRIFT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const snapshot = await deps.transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
+    const guidance = await deps.guidance.load(tx, projectItemId);
+    if (!guidance) throw new GuidanceMissingError(projectItemId);
+    const locale = await deps.references.requireUserLocale(tx, guidance.ownerUserId);
+    const groups = (await deps.toolCallUsage.listProjectToolCallGroups(tx, projectItemId, since))
+      .filter((group) => group.count >= BEHAVIOR_DRIFT_MIN_RUNS)
+      .map((group) => ({
+        ...group,
+        fingerprint: fingerprintGuidanceDriftSubject(projectItemId, "behavior", group.subject),
+      }));
+    return { guidance, locale, groups, sections: parseProjectAgentGuidanceMarkdown(guidance.markdown) };
+  });
+  const byFingerprint = new Map(snapshot.groups.map((group) => [group.fingerprint, group]));
+  const reported = new Map<string, { claim: string; suggestedAllowedLine: string; suggestedNotAllowedLine: string }>();
+  if (snapshot.groups.length) {
+    const request = {
+      projectItemId,
+      operation: "agent_behavior_drift",
+      temperature: 0,
+      system:
+        "Report only groups not mentioned in either guidance section. Write claim and both suggested lines in the owner's language. Copy each fingerprint exactly.",
+      messages: [
+        {
+          role: "user" as const,
+          content: JSON.stringify({
+            locale: snapshot.locale,
+            allowed: snapshot.sections.allowed,
+            notAllowed: snapshot.sections.notAllowed,
+            groups: snapshot.groups.map(({ fingerprint, subject, databaseName, count, toolName }) => ({
+              fingerprint,
+              subject,
+              databaseName,
+              count,
+              toolName,
+            })),
+          }),
+        },
+      ],
+      responseSchema: BEHAVIOR_SCHEMA,
+    };
+    if (Buffer.byteLength(JSON.stringify(request), "utf8") > BEHAVIOR_DRIFT_INPUT_BYTES)
+      throw new Error("Behavior drift gateway request exceeds its limit");
+    const result = await deps.gateway.complete(request);
+    const content = result.content;
+    if (typeof content !== "object" || content === null || !("findings" in content) || !Array.isArray(content.findings))
+      throw new Error("Invalid behavior drift response");
+    const entries: unknown[] = content.findings;
+    for (const entry of entries) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        !("fingerprint" in entry) ||
+        !("claim" in entry) ||
+        !("suggestedAllowedLine" in entry) ||
+        !("suggestedNotAllowedLine" in entry) ||
+        typeof entry.fingerprint !== "string" ||
+        !byFingerprint.has(entry.fingerprint) ||
+        reported.has(entry.fingerprint) ||
+        typeof entry.claim !== "string" ||
+        !entry.claim ||
+        typeof entry.suggestedAllowedLine !== "string" ||
+        !entry.suggestedAllowedLine ||
+        typeof entry.suggestedNotAllowedLine !== "string" ||
+        !entry.suggestedNotAllowedLine
+      )
+        throw new Error("Invalid behavior drift finding");
+      reported.set(entry.fingerprint, {
+        claim: entry.claim,
+        suggestedAllowedLine: entry.suggestedAllowedLine,
+        suggestedNotAllowedLine: entry.suggestedNotAllowedLine,
+      });
+    }
+  }
+  await deps.transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
+    const current = await deps.guidance.loadForUpdate(tx, projectItemId);
+    if (!current) throw new GuidanceMissingError(projectItemId);
+    if (current.ownerUserId !== snapshot.guidance.ownerUserId || current.updatedAt !== snapshot.guidance.updatedAt)
+      throw new GuidanceChangedError(projectItemId);
+    const linkHref = `/projects/${projectItemId}/agent-guidance`;
+    for (const [fingerprint, output] of reported) {
+      const group = byFingerprint.get(fingerprint);
+      if (!group) throw new Error("Missing behavior group");
+      const payload = {
+        kind: "behavior" as const,
+        subject: group.subject,
+        ...output,
+        evidence: { runIds: group.runIds, count: group.count },
+        severity: "warning" as const,
+      };
+      const { finding, transitionedToActive } = await deps.findings.upsertActive(tx, {
+        projectItemId,
+        fingerprint,
+        payload,
+        seenAt: now,
+      });
+      if (transitionedToActive) {
+        await deps.notifications.create(tx, {
+          userId: current.ownerUserId,
+          kind: "agent_guidance_drift",
+          linkHref,
+          sourceTable: "agent_guidance_drift_findings",
+          sourceId: finding.id,
+          transitionInstance: `${fingerprint}:${now.toISOString()}`,
+          payload: {
+            projectItemId,
+            fingerprint,
+            kind: "behavior",
+            ...output,
+            evidence: payload.evidence,
+            severity: "warning",
+          },
+        });
+        await deps.problems.raise(tx, {
+          userId: current.ownerUserId,
+          projectItemId,
+          fingerprint,
+          findingId: finding.id,
+          occurrenceKey: `${fingerprint}:${now.toISOString()}`,
+        });
+      }
+    }
+    for (const active of await deps.findings.listActive(tx, projectItemId)) {
+      if (active.payload.kind !== "behavior" || reported.has(active.fingerprint)) continue;
+      const { finding, transitionedToResolved } = await deps.findings.resolve(tx, active.id, now);
+      if (transitionedToResolved)
+        await deps.notifications.create(tx, {
+          userId: current.ownerUserId,
+          kind: "agent_guidance_drift_resolved",
+          linkHref,
+          sourceTable: "agent_guidance_drift_findings",
+          sourceId: finding.id,
+          transitionInstance: `${active.fingerprint}:${now.toISOString()}`,
+          payload: { projectItemId, fingerprint: active.fingerprint, kind: "behavior" },
+        });
+    }
+  });
 }

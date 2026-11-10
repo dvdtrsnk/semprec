@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { NumberFilterConfigSchema } from "@semprec/shared";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
@@ -23,13 +24,15 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
   if (!Array.isArray(options)) {
     throw new ValidationError("select/multi_select config.options must be an array", { field: "config" });
   }
-  for (const option of options) {
-    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+  const elements: unknown[] = options;
+  for (const option of elements) {
+    if (!isRecord(option)) {
       throw new ValidationError("each select/multi_select option must be an object of shape { key, label? }", {
         field: "config",
       });
     }
-    const { key, label } = option as { key?: unknown; label?: unknown };
+    const record: Record<string, unknown> = option;
+    const { key, label } = record;
     if (typeof key !== "string" || key.length === 0) {
       throw new ValidationError("each select/multi_select option requires a non-empty string 'key'", {
         field: "config",
@@ -40,7 +43,17 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
         field: "config",
       });
     }
+    if (Object.hasOwn(record, "color")) {
+      if (typeof record.color !== "string" || !/^#[0-9a-f]{6}$/i.test(record.color)) {
+        throw new ValidationError("a select/multi_select option's 'color' must be a hex color", { field: "config" });
+      }
+      record.color = record.color.toUpperCase();
+    }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Validates the optional create-time default against the property's storage type. */
@@ -74,9 +87,40 @@ function assertValidDefault(type: PropertyType, config: Record<string, unknown> 
   if (!valid) throw new ValidationError("Default does not match the property type or config", { field: "config" });
 }
 
+/**
+ * Issue #1622: a `number` property's `config.filterPresets` / `config.emptyPreset` must match the shared
+ * `NumberFilterConfigSchema`; `emptyPreset` without `filterPresets` fails it. Either key on any other type is
+ * refused. Other config keys are not looked at here.
+ */
+function assertValidNumberFilterConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
+  if (!config || (!Object.hasOwn(config, "filterPresets") && !Object.hasOwn(config, "emptyPreset"))) return;
+  if (type !== "number") {
+    throw new ValidationError("filterPresets and emptyPreset are allowed only on number properties", {
+      field: "config",
+    });
+  }
+  const parsed = NumberFilterConfigSchema.safeParse({
+    filterPresets: config.filterPresets,
+    emptyPreset: config.emptyPreset,
+  });
+  if (!parsed.success) {
+    throw new ValidationError("config.filterPresets/emptyPreset do not match the number filter preset shape", {
+      field: "config",
+    });
+  }
+}
+
 export function assertValidPropertyConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
   assertValidSelectOptions(type, config);
   assertValidDefault(type, config);
+  assertValidNumberFilterConfig(type, config);
+  if (
+    config &&
+    Object.hasOwn(config, "format") &&
+    (config.format !== "markdown" || (type !== "text" && type !== "longText"))
+  ) {
+    throw new ValidationError("config.format must be markdown on a text property", { field: "config" });
+  }
 }
 
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
@@ -167,7 +211,7 @@ export async function findPropertiesByKey(
 
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
   const { rows } = await client.query<PropertyDbRow>(
-    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`,
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY initial_position ASC NULLS LAST, key`,
     [databaseId],
   );
   return rows.map(mapPropertyRow);
@@ -186,7 +230,7 @@ export async function listPropertiesByDatabases(
   if (databaseIds.length === 0) return grouped;
 
   const { rows } = await client.query<PropertyDbRow>(
-    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, key`,
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, initial_position ASC NULLS LAST, key`,
     [databaseIds],
   );
   for (const row of rows) {
@@ -270,6 +314,21 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
     }
     throw err;
   }
+}
+
+/** Records the initial cohort position inside the collection-creation transaction. */
+export async function setInitialPosition(
+  client: PoolClient,
+  databaseId: string,
+  propertyId: string,
+  position: number,
+): Promise<void> {
+  const result = await client.query("UPDATE properties SET initial_position = $3 WHERE database_id = $1 AND id = $2", [
+    databaseId,
+    propertyId,
+    position,
+  ]);
+  requireAffectedRows(result, "initial property position update");
 }
 
 /** The label is always renamable — `locked` governs deletion / type change, never the display name. */

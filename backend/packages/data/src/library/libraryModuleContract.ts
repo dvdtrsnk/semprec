@@ -9,6 +9,7 @@ import { z } from "zod";
 export interface LibraryModuleContract {
   /** `type: 'image'`, `owner: 'system'` — `{ blobId }` over the shared `blobs` table. */
   coverKey: string;
+  automationFillableKeys?: string[];
   /** Shown under the title on the card: author for Books, year for Movies. */
   subtitleKey: string;
   /** The primary, purely user-entered rating; the heartbeat never touches it. */
@@ -26,6 +27,7 @@ export interface LibraryModuleContract {
 
 export const libraryModuleContractSchema = z.object({
   coverKey: z.string(),
+  automationFillableKeys: z.array(z.string()).optional(),
   subtitleKey: z.string(),
   ratingKey: z.string(),
   secondaryRatingKey: z.string().optional(),
@@ -37,6 +39,7 @@ export const libraryModuleContractSchema = z.object({
 
 export const BOOKS_LIBRARY_CONTRACT: LibraryModuleContract = {
   coverKey: "cover",
+  automationFillableKeys: ["author", "year", "isbn"],
   subtitleKey: "author",
   ratingKey: "rating",
   statusKey: "status",
@@ -45,6 +48,7 @@ export const BOOKS_LIBRARY_CONTRACT: LibraryModuleContract = {
 
 export const MOVIES_LIBRARY_CONTRACT: LibraryModuleContract = {
   coverKey: "cover",
+  automationFillableKeys: ["year", "type"],
   subtitleKey: "year",
   ratingKey: "rating",
   secondaryRatingKey: "secondaryRating",

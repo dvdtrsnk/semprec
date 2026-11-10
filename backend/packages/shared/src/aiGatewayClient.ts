@@ -6,24 +6,39 @@
  * reaches a provider.
  */
 
+/** A text block of a multi-block message. */
+export interface AiGatewayTextBlock {
+  type: "text";
+  text: string;
+}
+
+/** An image block: `data` is the base64 of a JPEG or PNG the caller already reduced; the gateway never reads a blob store. */
+export interface AiGatewayImageBlock {
+  type: "image";
+  mimeType: "image/jpeg" | "image/png";
+  data: string;
+}
+
+export type AiGatewayContentBlock = AiGatewayTextBlock | AiGatewayImageBlock;
+
 /** A single turn in the conversation sent to the gateway's structured-completion route. */
 export interface AiGatewayMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiGatewayContentBlock[];
 }
 
 export interface AiGatewayCompletionInput {
   /**
    * The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`.
    * `null` only for an operation the gateway attributes to no project
-   * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`).
-   * Required for `'agent_guidance_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
+   * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`, `'semp_thread_title'`).
+   * Required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
    */
   projectItemId: string | null;
   /**
-   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'inbox_proposal'`,
+   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'`,
    * `'inbox_attachment_extraction'`, `'transcript_summary'`, `'transcript_speaker_suggestion'`
-   * or `'transcript_event_pick'`.
+   * `'transcript_event_pick'` or `'semp_thread_title'`.
    */
   operation: string;
   temperature: number;

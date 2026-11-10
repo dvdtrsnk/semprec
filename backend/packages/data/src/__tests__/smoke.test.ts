@@ -39,6 +39,7 @@ describe("smoke: choke-point end to end", () => {
       "Mailboxes",
       "Processing proposals",
       "System settings",
+      "Threads",
     ]);
     // The ten hardcoded databases (issue #24) carry a stable key and a null name
     // (issue #235) instead of a hardcoded English label.
@@ -46,6 +47,8 @@ describe("smoke: choke-point end to end", () => {
       [
         "areas",
         "books",
+        // The Calendars system database (issue #1600).
+        "calendars",
         "companies",
         "events",
         "files",

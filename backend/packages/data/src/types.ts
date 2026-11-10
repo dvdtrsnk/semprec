@@ -52,6 +52,8 @@ export interface DatabaseRow {
   ownerModuleId: string | null;
   schemaLocked: boolean;
   system: boolean;
+  icon: string | null;
+  color: string | null;
   archivedAt: string | null;
 }
 
@@ -95,8 +97,15 @@ export interface ItemRow {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
+  /**
+   * When the row was inserted (`items.created_at`, set by the database); no item write changes it. A row
+   * that predates the column carries its `updated_at` at the time of the issue #1594 backfill instead.
+   */
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** Set by item reads and queries only: true when the item was created from an Inbox proposal. Absent on write results. */
+  fromInbox?: boolean;
 }
 
 export interface ItemRelationRow {
@@ -139,6 +148,9 @@ export interface DocRow {
   itemId: string;
   kind: DocKind;
   createdAt: string;
+  /** Time of the last recorded edit; equals `createdAt` when no edit was recorded. */
+  lastEditedAt: string;
+  lastEditedBy: CreatedBy | null;
 }
 
 /**

@@ -1,10 +1,18 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
+import {
+  EMAILS_MODULE_ID,
+  FOLDERS_MODULE_ID,
+  MAILBOXES_MODULE_ID,
+  THREADS_MODULE_ID,
+} from "../seed/emailModuleKeys.js";
 import {
   INBOX_ITEM_TYPES_MODULE_ID,
   INBOX_MODULE_ID,
@@ -23,7 +31,16 @@ import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
  * `libraryMailInboxModuleManifests.test.ts` each prove only within their own four/three-manifest
  * subset, never across all seven together.
  */
-const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
+const ALL_MODULE_IDS = [
+  "schemaCore",
+  "views",
+  "docs",
+  "systemDatabases",
+  "library",
+  "mailSync",
+  "inboxPipeline",
+  "calendar",
+];
 
 const MANIFEST_PATHS = [
   manifestPath("chokePoint/schemaCoreModuleManifest.js"),
@@ -33,6 +50,7 @@ const MANIFEST_PATHS = [
   manifestPath("library/libraryModuleManifest.js"),
   manifestPath("mail/mailModuleManifest.js"),
   manifestPath("inbox/inboxModuleManifest.js"),
+  manifestPath("calendar/calendarModuleManifest.js"),
 ];
 
 async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<ModuleRegistry> {
@@ -52,6 +70,29 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     await Promise.all(MANIFEST_PATHS.map((path) => import(path)));
   }, 30_000);
 
+  it("rejects an invalid link rule during full registry loading", async () => {
+    const original: unknown = Reflect.get(ModuleRegistry.prototype, "loadModule");
+    if (typeof original !== "function") throw new Error("Missing loadModule method");
+    const fixture = new URL(
+      "../../../module-registry/src/__tests__/fixtures/linkRulesUnknownDatabaseModule.js",
+      import.meta.url,
+    ).href;
+    const spy = vi.spyOn(ModuleRegistry.prototype, "loadModule").mockImplementation(async function (
+      this: ModuleRegistry,
+      path: string,
+    ) {
+      const id: unknown = await Reflect.apply(original, this, [path]);
+      if (typeof id !== "string") throw new Error("loadModule did not return an id");
+      if (id === "calendar") await Reflect.apply(original, this, [fixture]);
+      return id;
+    });
+    try {
+      await expect(loadFullModuleRegistry()).rejects.toThrow(/fixtureLink\.unknownDatabase.*noSuchDatabase/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("loads every manifest from #226/#227 into one registry with no cross-manifest collisions", async () => {
     const registry = await loadAll(alwaysActive);
 
@@ -66,9 +107,12 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         EMAILS_MODULE_ID,
         FOLDERS_MODULE_ID,
         MAILBOXES_MODULE_ID,
+        THREADS_MODULE_ID,
         INBOX_ITEM_TYPES_MODULE_ID,
         INBOX_MODULE_ID,
         PROCESSING_PROPOSALS_MODULE_ID,
+        CALENDARS_MODULE_ID,
+        PAGES_MODULE_ID,
       ].sort(),
     );
 

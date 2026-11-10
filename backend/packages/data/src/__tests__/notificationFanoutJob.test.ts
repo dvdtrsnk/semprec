@@ -1,13 +1,28 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { runInTenant } from "@semprec/shared";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { writeNotification } from "../notifications/notify.js";
-import { handleNotificationFanoutTask, notificationFanoutJobKey } from "../notifications/notificationFanoutJob.js";
+import {
+  handleNotificationFanoutTask,
+  notificationFanoutJobKey,
+  pushInterruptionLevelFor,
+} from "../notifications/notificationFanoutJob.js";
+import type { NotificationKind, NotificationKindPolicy } from "../notifications/notificationKinds.js";
+import {
+  patchNotificationPreferences,
+  type NotificationPreferences,
+  type NotificationPreferencesPatch,
+} from "../notifications/notificationPreferencesStore.js";
 import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import type { PushSenders } from "../push/pushSenders.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 
 let pool: Pool;
 
@@ -22,27 +37,43 @@ async function createTestUser(): Promise<string> {
   return user.id;
 }
 
-async function writeTestNotification(userId: string, sourceId: string): Promise<string> {
+/**
+ * Writes one notification and returns its id. The default is a critical Semp problem
+ * (`semp_problem`, severity in its payload), which the default preferences push; pass a warning
+ * problem or an approval to test the other rules.
+ */
+async function writeTestNotification(
+  userId: string,
+  sourceId: string,
+  kind: NotificationKind = "semp_problem",
+  sourceTable = "semp_problems",
+  payload: Record<string, unknown> = { severity: "critical" },
+): Promise<string> {
   await withTransaction(pool, (client) =>
     writeNotification(client, {
       userId,
-      kind: "heartbeat_error",
-      titleParams: { name: "Daily digest" },
-      linkHref: "?page=heartbeats",
-      sourceTable: "project_heartbeats",
+      kind,
+      linkHref: "?page=mailbox",
+      sourceTable,
       sourceId,
       transitionInstance: "job-1",
+      payload,
     }),
   );
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM notifications WHERE source_id = $1`, [sourceId]);
   return rows[0]!.id;
 }
 
+async function countRows(text: string, values: unknown[]): Promise<number> {
+  const { rows } = await pool.query<{ count: string }>(text, values);
+  return Number(rows[0]!.count);
+}
+
 interface FanoutJobRow {
   key: string;
   // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
   // it reaches `graphile_worker`'s own `jobs` table.
-  payload: { traceId: string; payload: { notificationId: string } };
+  payload: unknown;
 }
 
 async function fanoutJobs(): Promise<FanoutJobRow[]> {
@@ -65,6 +96,71 @@ describe("notificationFanout job (issue #151)", () => {
     await pool?.end();
   });
 
+  it("keeps the existing resolved notification on replay after its project is trashed", async () => {
+    const userId = await createTestUser();
+    await runInTenant(getTenantZeroId(), () => seedSystem(pool));
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects")),
+    );
+    if (!database) throw new Error("Missing Projects database");
+    const project = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } }),
+      ),
+    );
+    const input = {
+      userId,
+      kind: "agent_guidance_drift_resolved" as const,
+      linkHref: null,
+      sourceTable: "agent_guidance_drift_findings",
+      sourceId: "finding",
+      transitionInstance: "decision",
+      payload: { projectItemId: project.id, kind: "behavior" },
+    };
+    const write = () =>
+      runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => writeNotification(client, input)));
+    const first = await write();
+    const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+      [notificationFanoutJobKey(first)],
+    );
+    await runInTenant(getTenantZeroId(), () => createChokePoint(pool).softDeleteItem(database.id, project.id));
+    const second = await write();
+    expect(second).toBe(first);
+    expect(
+      (await pool.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [input.sourceId])).rows,
+    ).toEqual([{ id: first }]);
+    expect(
+      (
+        await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+          [notificationFanoutJobKey(first)],
+        )
+      ).rows,
+    ).toEqual(jobsBefore.rows);
+  });
+
+  it("rolls back a failed first enrichment even when a caller catches it", async () => {
+    const userId = await createTestUser();
+    const sourceId = "missing-project";
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        await expect(
+          writeNotification(client, {
+            userId,
+            kind: "agent_guidance_drift_resolved",
+            linkHref: null,
+            sourceTable: "agent_guidance_drift_findings",
+            sourceId,
+            transitionInstance: "decision",
+            payload: { projectItemId: "00000000-0000-4000-8000-000000000000", kind: "behavior" },
+          }),
+        ).rejects.toThrow("Guidance drift project not found");
+      }),
+    );
+    expect((await pool.query("SELECT id FROM notifications WHERE source_id = $1", [sourceId])).rows).toEqual([]);
+  });
+
   it("enqueues one notification-level fanout job when writeNotification actually inserts a row", async () => {
     const userId = await createTestUser();
     const notificationId = await writeTestNotification(userId, "hb-fanout-enqueue");
@@ -72,7 +168,7 @@ describe("notificationFanout job (issue #151)", () => {
     const jobs = await fanoutJobs();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.key).toBe(notificationFanoutJobKey(notificationId));
-    expect(jobs[0]!.payload.payload).toEqual({ notificationId });
+    expect(jobs[0]!.payload).toMatchObject({ traceId: expect.any(String), payload: { notificationId } });
   });
 
   it("does not enqueue a second job when the same transition replays", async () => {
@@ -124,12 +220,24 @@ describe("notificationFanout job (issue #151)", () => {
     expect(sendWebPush).toHaveBeenCalledTimes(1);
     expect(sendWebPush).toHaveBeenCalledWith(
       { endpoint: "https://push.example/web-1", p256dh: "p256dh-key", authSecret: "auth-secret" },
-      { notificationId, title: expect.any(String), linkHref: "?page=heartbeats" },
+      {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      },
     );
     expect(sendApns).toHaveBeenCalledTimes(1);
     expect(sendApns).toHaveBeenCalledWith(
       { deviceToken: "device-token-1", apnsEnvironment: "sandbox" },
-      { notificationId, title: expect.any(String), linkHref: "?page=heartbeats" },
+      {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      },
     );
 
     const { rows } = await pool.query(
@@ -139,6 +247,41 @@ describe("notificationFanout job (issue #151)", () => {
     expect(rows).toHaveLength(2);
     const deliveredIds = rows.filter((row) => row.delivered_at !== null).map((row) => row.push_subscription_id);
     expect(deliveredIds.sort()).toEqual([webPush.id, apns.id].sort());
+  });
+
+  it("sends the body rendered at write time in the recipient's locale, beside the title (issue #1773)", async () => {
+    const userId = await createTestUser();
+    await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId: null,
+      endpoint: "https://push.example/web-body",
+      p256dh: "p256dh-key",
+      authSecret: "auth-secret",
+    });
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: `?page=approvals&user=${userId}`,
+        sourceTable: "approval_requests",
+        sourceId: "approval-body-push",
+        transitionInstance: "approval-body-push",
+        bodyKey: "approval.viewDelete",
+        bodyParams: { viewName: "Open tasks", databaseName: "Tasks" },
+        bodySuffixKey: "notification.body.cannotUndo",
+      }),
+    );
+
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+    expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+      notificationId,
+      title: "Semp potřebuje schválení",
+      body: "Smazat pohled „Open tasks“ z „Tasks“. Semp tuto akci nedokáže vrátit zpět.",
+      linkHref: `?page=approvals&user=${userId}`,
+      interruptionLevel: "time-sensitive",
+    });
   });
 
   it("never dispatches an already-revoked registration", async () => {
@@ -332,5 +475,313 @@ describe("notificationFanout job (issue #151)", () => {
     ).resolves.toBeUndefined();
     expect(sendWebPush).not.toHaveBeenCalled();
     expect(sendApns).not.toHaveBeenCalled();
+  });
+
+  describe("honors preferences and sets the interruption level (issue #1443)", () => {
+    async function addWebPushRegistration(userId: string, label: string): Promise<void> {
+      await upsertWebPushSubscription(pool, {
+        userId,
+        sessionId: null,
+        endpoint: `https://push.example/${label}`,
+        p256dh: "p256dh-key",
+        authSecret: "auth-secret",
+      });
+    }
+
+    async function setPreferences(userId: string, patch: NotificationPreferencesPatch): Promise<void> {
+      await withTransaction(pool, (client) => patchNotificationPreferences(client, userId, patch));
+    }
+
+    it("stores an approval and sends nothing when approvals are switched off", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "approvals-off");
+      await setPreferences(userId, { approvals: false });
+      const notificationId = await writeTestNotification(
+        userId,
+        "approval-off",
+        "approval_pending",
+        "approval_requests",
+        {},
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const sendApns = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(sendApns).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("sends an approval as time-sensitive while approvals are switched on", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "approvals-on");
+      const notificationId = await writeTestNotification(
+        userId,
+        "approval-on",
+        "approval_pending",
+        "approval_requests",
+        {},
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+    });
+
+    it("drops a warning problem at the default critical level and sends a critical one time-sensitive with the summary on", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "problems-critical");
+      await setPreferences(userId, { problemsLevel: "critical", problemsSummary: true });
+      const warningId = await writeTestNotification(userId, "problem-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
+      const criticalId = await writeTestNotification(userId, "problem-critical");
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const senders: PushSenders = { sendWebPush, sendApns: vi.fn() };
+
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, senders);
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [warningId])).toBe(0);
+
+      await handleNotificationFanoutTask(pool, { notificationId: criticalId }, senders);
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: criticalId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+    });
+
+    it("sends a critical problem as active when the summary is switched off", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "summary-off");
+      await setPreferences(userId, { problemsSummary: false });
+      const notificationId = await writeTestNotification(userId, "problem-summary-off");
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "active",
+      });
+    });
+
+    it("never pushes an info kind, even when the problems level is all", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "info-kind");
+      await setPreferences(userId, { problemsLevel: "all" });
+      await seedSystem(pool);
+      const projectItemId = await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "projects");
+        if (!database) throw new Error("Missing projects database");
+        return (await createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } })).id;
+      });
+      const notificationId = await writeTestNotification(
+        userId,
+        "info-resolved",
+        "agent_guidance_drift_resolved",
+        "agent_guidance_drift_findings",
+        { projectItemId },
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("applies the defaults to a user with no preferences row, and a read does not create one", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "no-row");
+      const criticalId = await writeTestNotification(userId, "no-row-critical");
+      const warningId = await writeTestNotification(userId, "no-row-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const senders: PushSenders = { sendWebPush, sendApns: vi.fn() };
+      await handleNotificationFanoutTask(pool, { notificationId: criticalId }, senders);
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, senders);
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: criticalId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+      expect(await countRows(`SELECT count(*) FROM notification_preferences WHERE user_id = $1`, [userId])).toBe(0);
+    });
+
+    it("honors a preference changed after the notification was enqueued", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "changed-after-enqueue");
+      const notificationId = await writeTestNotification(userId, "changed-after-enqueue");
+      expect(await fanoutJobs()).toHaveLength(1);
+
+      await setPreferences(userId, { problemsLevel: "off" });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("reads a semp_problem's severity from its payload, so a warning passes at the all level as passive (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-warning");
+      await setPreferences(userId, { problemsLevel: "all" });
+      const warningId = await writeTestNotification(userId, "payload-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: warningId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "passive",
+      });
+    });
+
+    it("fails the job, sends nothing and claims no delivery when a semp_problem payload has no severity (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-missing");
+      const notificationId = await writeTestNotification(
+        userId,
+        "payload-missing",
+        "semp_problem",
+        "semp_problems",
+        {},
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await expect(
+        handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() }),
+      ).rejects.toThrow("has no severity in its payload");
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("fails the job, sends nothing and claims no delivery when a semp_problem payload names a severity no problem has (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-info");
+      const notificationId = await writeTestNotification(userId, "payload-info", "semp_problem", "semp_problems", {
+        severity: "info",
+      });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await expect(
+        handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() }),
+      ).rejects.toThrow("Unknown payload.severity");
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+  });
+});
+
+/**
+ * Pure rule table for `pushInterruptionLevelFor`. No kind uses the invites or reminders category yet,
+ * so their switches can only be tested on synthetic policies here; the invitation and reminder kinds
+ * that add a real policy will test them end to end through the job.
+ */
+describe("pushInterruptionLevelFor (issue #1443)", () => {
+  const defaults: NotificationPreferences = {
+    approvals: true,
+    invites: true,
+    reminders: true,
+    problemsLevel: "critical",
+    problemsSummary: true,
+    badgeApprovals: true,
+    badgeInvites: true,
+    badgeInbox: false,
+    updatedAt: null,
+  };
+  const approvals: NotificationKindPolicy = { category: "approvals", push: true };
+  const invites: NotificationKindPolicy = { category: "invites", push: true };
+  const reminders: NotificationKindPolicy = { category: "reminders", push: true };
+  const critical: NotificationKindPolicy = { category: "problems", severity: "critical", push: true };
+  const warning: NotificationKindPolicy = { category: "problems", severity: "warning", push: true };
+  const info: NotificationKindPolicy = { category: "problems", severity: "info", push: false };
+
+  it("sends an approval as time-sensitive only while the approvals switch is on", () => {
+    expect(pushInterruptionLevelFor(approvals, defaults)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(approvals, { ...defaults, approvals: false })).toBeNull();
+  });
+
+  it("follows the invites and reminders switches and sends them active", () => {
+    expect(pushInterruptionLevelFor(invites, defaults)).toBe("active");
+    expect(pushInterruptionLevelFor(invites, { ...defaults, invites: false })).toBeNull();
+    expect(pushInterruptionLevelFor(reminders, defaults)).toBe("active");
+    expect(pushInterruptionLevelFor(reminders, { ...defaults, reminders: false })).toBeNull();
+  });
+
+  it("never pushes an info policy, whatever the problems level", () => {
+    for (const problemsLevel of ["off", "critical", "all"] as const) {
+      expect(pushInterruptionLevelFor(info, { ...defaults, problemsLevel })).toBeNull();
+    }
+  });
+
+  it("honors the push flag on its own, even when the category switch is on", () => {
+    const approvalsWithoutPush: NotificationKindPolicy = { category: "approvals", push: false };
+    expect(pushInterruptionLevelFor(approvalsWithoutPush, defaults)).toBeNull();
+  });
+
+  it("sends no problem at all when the problems level is off", () => {
+    const off = { ...defaults, problemsLevel: "off" as const };
+    expect(pushInterruptionLevelFor(critical, off)).toBeNull();
+    expect(pushInterruptionLevelFor(warning, off)).toBeNull();
+  });
+
+  it("passes only critical problems at the critical level, time-sensitive with the summary on and active with it off", () => {
+    expect(pushInterruptionLevelFor(warning, defaults)).toBeNull();
+    expect(pushInterruptionLevelFor(critical, defaults)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(critical, { ...defaults, problemsSummary: false })).toBe("active");
+  });
+
+  it("passes critical and warning problems at the all level, warning passive with the summary on and active with it off", () => {
+    const all = { ...defaults, problemsLevel: "all" as const };
+    expect(pushInterruptionLevelFor(critical, all)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(warning, all)).toBe("passive");
+    expect(pushInterruptionLevelFor(critical, { ...all, problemsSummary: false })).toBe("active");
+    expect(pushInterruptionLevelFor(warning, { ...all, problemsSummary: false })).toBe("active");
   });
 });

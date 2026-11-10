@@ -32,6 +32,9 @@ describe("serve.ts startup runtime role check", () => {
         ANTHROPIC_API_KEY: "anthropic-key",
         AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR: "1",
         AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR: "1",
+        OPENAI_API_KEY: "openai-key",
+        AI_GATEWAY_OPENAI_STT_PRICE_PER_AUDIO_HOUR: "1",
+        AI_GATEWAY_OPENAI_TTS_PRICE_PER_AUDIO_HOUR: "1",
         AI_GLOBAL_DAILY_CAP_USD: "25",
         AI_GLOBAL_MONTHLY_CAP_USD: "400.5",
       });

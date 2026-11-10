@@ -1,6 +1,13 @@
 import * as Y from "yjs";
 
 /**
+ * Legacy flat-map block API: free-form `sys:flavour` and `sys:children`, no document order
+ * and no validation. New code uses the block model in `shared/block-model`
+ * (`@semprec/block-model`, see docs/adr/2026-10-28-block-model-for-page-documents.md).
+ * This API stays until its production caller, the page-content proposal path, moves over (#1681).
+ */
+
+/**
  * A block is its own `Y.Map` inside the doc's shared `blocks` map, keyed by id — the
  * page tree is a flat map of blocks plus id references, hierarchy arising from
  * `sys:children` rather than from nesting the data structure (issue #23, point 4).

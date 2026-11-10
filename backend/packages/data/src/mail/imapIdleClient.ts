@@ -1,5 +1,6 @@
 import type { ImapFlow } from "imapflow";
 import type { ImapIdleConnection, ImapIdleFolderTarget, ImapIdleTransport } from "./imapIdleLifecycle.js";
+import { logger } from "./logger.js";
 
 /**
  * Renewed well under the ~30-minute point most IMAP servers close an idle IDLE command at
@@ -33,11 +34,12 @@ export interface ImapIdleFlowOptions {
 }
 
 /**
- * Builds a connected, authenticated `ImapFlow` client — real host/auth resolution (the
- * mailbox's server settings, decrypting `credential`) is the composition root's job, same
- * delegation `MailSyncAdapterFactory.createImapClient` (mailSyncJob.ts) already uses; this
- * module only ever asks for the IDLE-specific options (`maxIdleTime`, `socketTimeout`) to be
- * applied on top of whatever connection options the composition root otherwise supplies.
+ * Builds a connected, authenticated `ImapFlow` client: the composition root's `createClient`
+ * returns `openImapFlow`'s result (mailServerConnections.ts), built with the mailbox's stored
+ * settings and the IDLE options (`maxIdleTime`, `socketTimeout`). Host and auth resolution is the
+ * composition root's job, same delegation `MailSyncAdapterFactory.createImapClient` (mailSyncJob.ts)
+ * already uses. The transport never connects a client it receives: it arrives connected
+ * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md).
  */
 export type CreateIdleTunedImapFlowClient = (
   mailboxItemId: string,
@@ -48,56 +50,178 @@ export type CreateIdleTunedImapFlowClient = (
 const SPECIAL_USE_INBOX = "\\Inbox";
 const SPECIAL_USE_ALL = "\\All";
 
-function endPromiseFor(client: ImapFlow): Promise<unknown> {
-  return new Promise((resolve) => {
-    const cleanup = () => {
+function endPromiseFor(client: ImapFlow): {
+  promise: Promise<unknown>;
+  closed: Promise<void>;
+  secondary: unknown[];
+  claimEnd: () => Promise<unknown>;
+  unclaimedError: () => { value: unknown } | undefined;
+  dispose: () => void;
+} {
+  let resolveEnd!: (error: unknown) => void;
+  let resolveClose!: () => void;
+  let endSettled = false;
+  let closeSettled = false;
+  let claimed = false;
+  let firstError: { value: unknown } | undefined;
+  const secondary: unknown[] = [];
+  const promise = new Promise<unknown>((resolve) => {
+    resolveEnd = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    resolveClose = resolve;
+  });
+  const onError = (error: unknown) => {
+    if (endSettled) secondary.push(error);
+    else {
+      firstError = { value: error };
+      endSettled = true;
+      resolveEnd(error === undefined ? { failure: undefined } : error);
+    }
+  };
+  const onClose = () => {
+    if (!endSettled) {
+      endSettled = true;
+      resolveEnd(undefined);
+    }
+    if (!closeSettled) {
+      closeSettled = true;
+      resolveClose();
+    }
+  };
+  client.on("error", onError);
+  client.on("close", onClose);
+  return {
+    promise,
+    closed,
+    secondary,
+    claimEnd: () => {
+      claimed = true;
+      return promise;
+    },
+    unclaimedError: () => (claimed ? undefined : firstError),
+    dispose: () => {
       client.off("error", onError);
       client.off("close", onClose);
-    };
-    const onError = (err: unknown) => {
-      cleanup();
-      resolve(err);
-    };
-    const onClose = () => {
-      cleanup();
-      resolve(undefined);
-    };
-    client.on("error", onError);
-    client.on("close", onClose);
-  });
+    },
+  };
 }
 
-async function closeQuietly(client: ImapFlow): Promise<void> {
+const IDLE_LOGOUT_TIMEOUT_MS = 10_000;
+
+async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromiseFor>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let logout: Promise<{ kind: "done"; value: unknown } | { kind: "failed"; error: unknown }>;
   try {
-    await client.logout();
-  } catch {
+    logout = client.logout().then(
+      (value: unknown) => ({ kind: "done" as const, value }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+  } catch (error) {
+    logout = Promise.resolve({ kind: "failed", error });
+  }
+  const deadline = new Promise<{ kind: "timeout" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), IDLE_LOGOUT_TIMEOUT_MS);
+  });
+  const failures = ended.secondary;
+  let closeRequested = false;
+  const requestClose = () => {
+    if (closeRequested) return;
+    closeRequested = true;
     try {
       client.close();
-    } catch {
-      // Already gone — nothing left to release.
+    } catch (error) {
+      failures.push(error);
     }
+  };
+  const diagnose = (category: "ambiguous" | "unresolved") => {
+    try {
+      logger.warn({ stage: "logout", category }, "IMAP IDLE provider cleanup observation");
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  try {
+    const outcome = await Promise.race([logout, deadline]);
+    if (outcome.kind === "failed") failures.push(outcome.error);
+    if (outcome.kind === "done" && outcome.value === false) diagnose("ambiguous");
+    if (outcome.kind === "failed" || (outcome.kind === "done" && outcome.value === false)) requestClose();
+    if (outcome.kind === "timeout") {
+      failures.push(new Error("IMAP IDLE logout timed out"));
+      diagnose("unresolved");
+      requestClose();
+      const settled = await logout;
+      if (settled.kind === "failed") failures.unshift(settled.error);
+      else if (settled.value === false) diagnose("ambiguous");
+      await ended.closed;
+    } else {
+      const closeResult = await Promise.race([
+        ended.closed.then(() => "closed" as const),
+        deadline.then(() => "timeout" as const),
+      ]);
+      if (closeResult === "timeout") {
+        failures.push(new Error("IMAP IDLE close observation timed out"));
+        diagnose("unresolved");
+        requestClose();
+        await ended.closed;
+      }
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
+  const unclaimed = ended.unclaimedError();
+  if (unclaimed) failures.unshift(unclaimed.value);
+  if (failures.length === 0) return;
+  if (failures.length === 1) throw failures[0];
+  throw new AggregateError(failures, "IMAP IDLE connection cleanup failed", { cause: failures[0] });
+}
+
+async function closeAfterFailure(
+  client: ImapFlow,
+  ended: ReturnType<typeof endPromiseFor>,
+  original: unknown,
+): Promise<never> {
+  try {
+    await closeClient(client, ended);
+  } catch (secondary) {
+    // Keep the operation failure first and retain the cleanup failure as a secondary.
+    // eslint-disable-next-line preserve-caught-error
+    throw new AggregateError([original, secondary], "IMAP IDLE operation and cleanup failed", { cause: original });
+  } finally {
+    ended.dispose();
+  }
+  throw original;
 }
 
 class ImapFlowIdleConnection implements ImapIdleConnection {
-  private readonly ended: Promise<unknown>;
-
   constructor(
     private readonly client: ImapFlow,
     private readonly detachSignalListeners: () => void,
-  ) {
-    this.ended = endPromiseFor(client);
-  }
+    private readonly ended: ReturnType<typeof endPromiseFor>,
+  ) {}
 
   waitForEnd(): Promise<unknown> {
-    return this.ended;
+    return this.ended.claimEnd();
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     // Detach exists/expunge/flags before logout so a final server push during BYE can't still
     // reach onSignal after the caller considers this connection closed.
-    this.detachSignalListeners();
-    return closeQuietly(this.client);
+    const failures: unknown[] = [];
+    try {
+      this.detachSignalListeners();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await closeClient(this.client, this.ended);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      this.ended.dispose();
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP IDLE cleanup failed");
   }
 }
 
@@ -114,21 +238,25 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
+      const ended = endPromiseFor(client);
+      let targets: ImapIdleFolderTarget[];
       try {
-        await client.connect();
         const list = await client.list();
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
-        const targets = [inbox, allMail]
-          .filter((f): f is NonNullable<typeof f> => Boolean(f))
-          .map((f) => ({ path: f.path }));
+        targets = [inbox, allMail].filter((f): f is NonNullable<typeof f> => Boolean(f)).map((f) => ({ path: f.path }));
         // A server with neither special-use attribute (plain IMAP without RFC 6154) still has
         // an INBOX by definition — falling back to it keeps this account under some IDLE
         // coverage instead of none.
-        return targets.length > 0 ? targets : [{ path: "INBOX" }];
-      } finally {
-        await closeQuietly(client);
+      } catch (error) {
+        return closeAfterFailure(client, ended, error);
       }
+      try {
+        await closeClient(client, ended);
+      } finally {
+        ended.dispose();
+      }
+      return targets.length > 0 ? targets : [{ path: "INBOX" }];
     },
 
     async connect(mailboxItemId, credential, folderPath, onSignal): Promise<ImapIdleConnection> {
@@ -136,12 +264,11 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
+      const ended = endPromiseFor(client);
       try {
-        await client.connect();
         await client.mailboxOpen(folderPath);
       } catch (err) {
-        await closeQuietly(client);
-        throw err;
+        return closeAfterFailure(client, ended, err);
       }
       // EXISTS (new message), EXPUNGE (deletion), and flags (read/flagged toggled from another
       // client) are exactly the three signal kinds issue #196's Task names; imapflow keeps
@@ -156,7 +283,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         client.off("expunge", onSignal);
         client.off("flags", onSignal);
       };
-      return new ImapFlowIdleConnection(client, detachSignalListeners);
+      return new ImapFlowIdleConnection(client, detachSignalListeners, ended);
     },
   };
 }

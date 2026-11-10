@@ -1,5 +1,6 @@
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { DRIFT_CHECK_ACTION_ID } from "./driftCheck.js";
+import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
@@ -18,6 +19,10 @@ import {
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
+import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
+import { PEOPLE_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
+import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29, same caveat as
@@ -38,19 +43,25 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   AGENT_GUIDANCE_DRIFT_ACTION_ID,
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+  TASKS_DAY_ROLLOVER_ACTION_ID,
 ]);
 
 /**
  * Same hand-maintained stand-in as `KNOWN_HEARTBEAT_ACTION_IDS` above, until the module registry
  * (issue #29) owns it: every `properties.owner_process` value the seeds and migrations write for a
  * system-owned property, so `moduleRegistry.checkDrift` has a real default to diff live
- * `owner_process` values against. The ten-database specs (seed/seedTenDatabases.ts) declare only
- * `TRANSCRIPTION_OWNER_PROCESS`.
+ * `owner_process` values against, including the ten-database Tasks and Transcripts owners.
  */
 export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
+  CALENDAR_MODULE_ID,
   EMAILS_MODULE_ID,
   FOLDERS_MODULE_ID,
   INBOX_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
   TRANSCRIPTION_OWNER_PROCESS,
+  TASKS_MODULE_ID,
+  PROJECTS_OWNER_PROCESS,
+  JOURNAL_EVENT_LINKS_OWNER_PROCESS,
+  // Issue #1660: People's derived `lastContact`, written only by people/lastContact.ts's recompute.
+  PEOPLE_MODULE_ID,
 ]);

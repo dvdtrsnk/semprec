@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -7,10 +8,21 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createUser, finishAgentRun, hashPassword } from "@semprec/data";
+import { createUser, finishAgentRun, hashPassword, type AgentRunRow } from "@semprec/data";
 import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@semprec/shared";
-import { SEMP_BUSY_ERROR_MESSAGE, SempConversation, type SempConversationOptions } from "../sempConversation.js";
+import {
+  SEMP_BUSY_ERROR_MESSAGE,
+  SempConversation,
+  createReconstructConversationHistory,
+  type SempConversationOptions,
+  type SempSendOptions,
+  type SempThread,
+  type SempThreadWake,
+} from "../sempConversation.js";
 import { logger } from "../logger.js";
+import { repairInterruptedRuns } from "../startupRepair.js";
+import { AgentRunCancelledError } from "../lifecycleAdapter.js";
+import type { CompactionAdapter } from "../compaction.js";
 import type {
   AgentMessage,
   AgentSession,
@@ -22,8 +34,28 @@ import type {
 let pool: Pool;
 let tenantZero: string;
 
-function sendInTenantZero(conversation: SempConversation, task: string) {
-  return runInTenant(tenantZero, () => conversation.send(task));
+let chatThread: SempThread;
+
+async function insertThread(adminPool: Pool, tenantId: string): Promise<SempThread> {
+  const { rows } = await adminPool.query<{ id: string }>(
+    "INSERT INTO semp_threads (tenant_id, kind) VALUES ($1, 'chat') RETURNING id",
+    [tenantId],
+  );
+  return { threadId: rows[0]!.id, kind: "chat" };
+}
+
+function sendInTenantZero(conversation: SempConversation, task: string, thread: SempThread = chatThread) {
+  return runInTenant(tenantZero, () => conversation.send(task, thread));
+}
+
+/** Runs the private TTL pause of the (only) live conversation of `tenantId`, in that tenant's scope. */
+function pauseTenant(conversation: SempConversation, tenantId: string): Promise<void> {
+  const internals = conversation as unknown as {
+    conversations: Map<string, { tenantId: string }>;
+    pause(state: unknown): Promise<void>;
+  };
+  const state = [...internals.conversations.values()].find((candidate) => candidate.tenantId === tenantId);
+  return runInTenant(tenantId, () => internals.pause(state));
 }
 
 const SEMPREC_PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
@@ -80,10 +112,235 @@ describe("SempConversation", () => {
     tenantZero = getTenantZeroId();
     const passwordHash = await hashPassword("s3cret-password");
     await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
+    chatThread = await insertThread(pool, tenantZero);
   });
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("wakes with persisted history after startup repair closes an idle session", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const compaction: CompactionAdapter = {
+      estimateContextTokens: (messages) => messages.length,
+      shouldCompact: () => false,
+      prepareCompaction: (entries) => entries,
+      compact: (entries) => entries as ConversationEntry[],
+      contextWindow: 1_000_000,
+      settings: {},
+    };
+    const scripted = scriptedSession(
+      [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
+      [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
+    );
+    const options = {
+      createAgentSessionForRun: async () => scripted.createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: createReconstructConversationHistory(compaction),
+    };
+    const beforeRestart = new SempConversation(runtimePool, options);
+    const afterRestart = new SempConversation(runtimePool, options);
+    let failure: { error: unknown } | undefined;
+    try {
+      expect(await sendInTenantZero(beforeRestart, "first")).toEqual({ ok: true, message: "first" });
+      beforeRestart.clear();
+      const repaired = await repairInterruptedRuns(runtimePool);
+      expect(repaired.closedIdleRunIds).toHaveLength(1);
+      const notifications = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM notifications WHERE kind = 'agent_run_error'",
+      );
+      expect(notifications.rows[0]?.count).toBe("0");
+      expect(await sendInTenantZero(afterRestart, "second")).toEqual({ ok: true, message: "second" });
+      expect(scripted.initialStates[1]?.messages.map((entry) => entry.message.kind)).toEqual([
+        "turn_start",
+        "message",
+        "turn_end",
+      ]);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      beforeRestart.clear();
+      afterRestart.clear();
+    }
+    try {
+      await runtimePool.end();
+    } catch (error) {
+      if (failure)
+        throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed", { cause: error });
+      throw error;
+    }
+    if (failure) throw failure.error;
+  });
+
+  it.each(["failure", "cancellation"] as const)(
+    "wakes after mid-tool %s using the immediately paired persisted history",
+    async (kind) => {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const compaction: CompactionAdapter = {
+        estimateContextTokens: (messages) => messages.length,
+        shouldCompact: () => false,
+        prepareCompaction: (entries) => entries,
+        compact: (entries) => entries as ConversationEntry[],
+        contextWindow: 1_000_000,
+        settings: {},
+      };
+      const next = scriptedSession([
+        { kind: "turn_start" },
+        { kind: "message", text: "recovered" },
+        { kind: "turn_end" },
+      ]);
+      const turnFailure = new Error("tool interrupted");
+      const controller = new AbortController();
+      let wakes = 0;
+      const conversation = new SempConversation(runtimePool, {
+        createAgentSessionForRun: async () => {
+          if (wakes++ > 0) return next.createAgentSession;
+          return () => ({
+            async *messages() {
+              yield { kind: "turn_start" };
+              yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
+              if (kind === "cancellation") {
+                controller.abort();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return;
+              }
+              throw turnFailure;
+            },
+          });
+        },
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        reconstructHistory: createReconstructConversationHistory(compaction),
+      });
+      let failure: { error: unknown } | undefined;
+      try {
+        const first = runInTenant(tenantZero, () =>
+          conversation.send("first", chatThread, { signal: controller.signal }),
+        );
+        if (kind === "cancellation") await expect(first).rejects.toBeInstanceOf(AgentRunCancelledError);
+        else await expect(first).rejects.toBe(turnFailure);
+        expect(await sendInTenantZero(conversation, "next")).toEqual({ ok: true, message: "recovered" });
+        const messages = next.initialStates[0]?.messages;
+        expect(messages?.map((entry) => entry.message.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
+        expect(messages?.[2]?.message).toMatchObject({
+          kind: "tool_result",
+          toolCallId: "call-1",
+          name: "search",
+          isError: true,
+          result: {
+            content: [
+              { type: "text", text: expect.stringContaining(kind === "cancellation" ? "cancelled" : "failed") },
+            ],
+            details: { error: true },
+          },
+        });
+      } catch (error) {
+        failure = { error };
+      } finally {
+        conversation.clear();
+      }
+      try {
+        await runtimePool.end();
+      } catch (error) {
+        if (failure)
+          throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed", { cause: error });
+        throw error;
+      }
+      if (failure) throw failure.error;
+    },
+  );
+
+  it("leaves failed pairing repairable and wakes the thread after startup repair", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const compaction: CompactionAdapter = {
+      estimateContextTokens: (messages) => messages.length,
+      shouldCompact: () => false,
+      prepareCompaction: (entries) => entries,
+      compact: (entries) => entries as ConversationEntry[],
+      contextWindow: 1_000_000,
+      settings: {},
+    };
+    const turnFailure = new Error("turn failed");
+    const next = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "recovered" },
+      { kind: "turn_end" },
+    ]);
+    let wakes = 0;
+    const options = {
+      createAgentSessionForRun: async (): Promise<CreateAgentSession> => {
+        if (wakes++ > 0) return next.createAgentSession;
+        return () => ({
+          async *messages() {
+            yield { kind: "turn_start" };
+            yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
+            throw turnFailure;
+          },
+        });
+      },
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: createReconstructConversationHistory(compaction),
+    };
+    const beforeRestart = new SempConversation(runtimePool, options);
+    const afterRestart = new SempConversation(runtimePool, options);
+    let failure: { error: unknown } | undefined;
+    try {
+      await pool.query(`CREATE FUNCTION batch15_reject_semp_result() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.kind = 'tool_result' THEN RAISE EXCEPTION 'pairing rejected'; END IF; RETURN NEW; END $$`);
+      await pool.query(`CREATE TRIGGER batch15_reject_semp_result BEFORE INSERT ON agent_run_events
+        FOR EACH ROW EXECUTE FUNCTION batch15_reject_semp_result()`);
+      const result: unknown = await sendInTenantZero(beforeRestart, "first").catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw new Error("Expected recovery failure");
+      expect(result.errors[0]).toBe(turnFailure);
+      expect(result.cause).toBe(turnFailure);
+      expect(result.errors[1]).toBeInstanceOf(Error);
+      const runs = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM agent_runs WHERE thread_id = $1",
+        [chatThread.threadId],
+      );
+      expect(runs.rows).toHaveLength(1);
+      expect(runs.rows[0]!.status).toBe("running");
+      const events = await pool.query<{ kind: string }>(
+        "SELECT kind FROM agent_run_events WHERE agent_run_id = $1 AND kind IN ('tool_result', 'run_status') ORDER BY id",
+        [runs.rows[0]!.id],
+      );
+      expect(events.rows).toEqual([{ kind: "run_status" }]);
+      const notices = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM notifications WHERE source_id = $1",
+        [runs.rows[0]!.id],
+      );
+      expect(notices.rows[0]?.count).toBe("0");
+      await pool.query("DROP TRIGGER batch15_reject_semp_result ON agent_run_events");
+      expect((await repairInterruptedRuns(runtimePool)).repairedRunIds).toContain(runs.rows[0]!.id);
+      expect(await sendInTenantZero(afterRestart, "next")).toEqual({ ok: true, message: "recovered" });
+      expect(next.initialStates[0]?.messages.map((entry) => entry.message.kind)).toEqual([
+        "turn_start",
+        "tool_use",
+        "tool_result",
+      ]);
+    } catch (error) {
+      failure = { error };
+    }
+    beforeRestart.clear();
+    afterRestart.clear();
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      () => pool.query("DROP TRIGGER IF EXISTS batch15_reject_semp_result ON agent_run_events"),
+      () => pool.query("DROP FUNCTION IF EXISTS batch15_reject_semp_result()"),
+      () => runtimePool.end(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Semp recovery test cleanup failed",
+      );
+    if (failure) throw failure.error;
   });
 
   it("wakes a session-unit, user-triggered agent_runs row on the first send and returns the final assistant message", async () => {
@@ -93,7 +350,7 @@ describe("SempConversation", () => {
       { kind: "turn_end" },
     ]);
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -124,7 +381,7 @@ describe("SempConversation", () => {
       [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
     );
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -161,7 +418,7 @@ describe("SempConversation", () => {
       },
     });
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -190,7 +447,7 @@ describe("SempConversation", () => {
       timestamp: 0,
       message: { kind: "message", text: "hello there" },
     };
-    const reconstructHistory = async (_pool: Pool, projectItemId: string) => {
+    const reconstructHistory = async (_pool: Pool, { projectItemId }: SempThreadWake) => {
       calls.push([projectItemId]);
       return calls.length === 1 ? null : { entries: [priorEntry], compacted: false };
     };
@@ -201,7 +458,11 @@ describe("SempConversation", () => {
     const ttlMs = 40;
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID, reconstructHistory },
+      {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        reconstructHistory,
+      },
       ttlMs,
     );
 
@@ -214,7 +475,7 @@ describe("SempConversation", () => {
 
       // Direct pause does not consume the scheduled TTL callback; cancel it before pausing.
       vi.clearAllTimers();
-      await runInTenant(tenantZero, () => conversation["pause"](tenantZero));
+      await pauseTenant(conversation, tenantZero);
 
       expect(await sendInTenantZero(conversation, "hi again")).toEqual({ ok: true, message: "second wake" });
 
@@ -243,7 +504,7 @@ describe("SempConversation", () => {
       { kind: "turn_end" },
     ]);
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
       reconstructHistory,
     });
@@ -265,6 +526,46 @@ describe("SempConversation", () => {
     conversation.clear();
   });
 
+  it("closes a new run if its compaction write fails before session creation", async () => {
+    const name = `reject_compaction_${randomUUID().replaceAll("-", "")}`;
+    const createAgentSessionForRun = vi.fn(async () => scriptedSession([]).createAgentSession);
+    const conversation = new SempConversation(pool, {
+      createAgentSessionForRun,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: async () => ({ entries: [], compacted: true }),
+    });
+    try {
+      await pool.query(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.kind = 'compaction' AND EXISTS (SELECT 1 FROM agent_runs WHERE id = NEW.agent_run_id AND task = 'compaction-failure-test') THEN
+            RAISE EXCEPTION 'compaction write refused';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER ${name} BEFORE INSERT ON agent_run_events FOR EACH ROW EXECUTE FUNCTION ${name}()`,
+      );
+      await expect(sendInTenantZero(conversation, "compaction-failure-test")).rejects.toThrow(
+        "compaction write refused",
+      );
+      expect(createAgentSessionForRun).not.toHaveBeenCalled();
+      const runs = await pool.query<{ id: string; status: string; error_code: string | null }>(
+        "SELECT id, status, error_code FROM agent_runs WHERE task = 'compaction-failure-test'",
+      );
+      expect(runs.rows).toHaveLength(1);
+      expect(runs.rows[0]).toMatchObject({ status: "error", error_code: "internal" });
+      const checkpoints = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+        [runs.rows[0]!.id],
+      );
+      expect(checkpoints.rows).toEqual([{ count: "0" }]);
+    } finally {
+      conversation.clear();
+      await pool.query(`DROP TRIGGER IF EXISTS ${name} ON agent_run_events`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${name}()`);
+    }
+  });
+
   it("pauses (not finishes) the conversation on TTL expiry: closes the wake run as done, and the next send opens a fresh one", async () => {
     const ttlMs = 60;
     // Two batches from one factory: the second wake calls createAgentSession() again for a
@@ -275,7 +576,10 @@ describe("SempConversation", () => {
     );
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
+      {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      },
       ttlMs,
     );
 
@@ -311,7 +615,10 @@ describe("SempConversation", () => {
     ]);
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
+      {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      },
       ttlMs,
     );
 
@@ -320,7 +627,7 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
 
@@ -346,7 +653,10 @@ describe("SempConversation", () => {
     );
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
+      {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      },
       ttlMs,
     );
 
@@ -371,7 +681,7 @@ describe("SempConversation", () => {
       { kind: "turn_end" },
     ]);
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -382,9 +692,7 @@ describe("SempConversation", () => {
     // the high-severity review finding required), so by the time `send()` below runs — the
     // very next synchronous statement — it already observes `busy` and is rejected instead of
     // reusing a session whose run pause() is concurrently finishing as `done`.
-    const pausePromise = runInTenant(tenantZero, () =>
-      (conversation as unknown as { pause(tenantId: string): Promise<void> }).pause(tenantZero),
-    );
+    const pausePromise = pauseTenant(conversation, tenantZero);
     const duringPause = await sendInTenantZero(conversation, "during pause");
     expect(duringPause).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
 
@@ -402,7 +710,7 @@ describe("SempConversation", () => {
   it("rejects a send that arrives while another is already in flight, without blocking or overwriting it", async () => {
     const { createAgentSession, release } = blockingSession();
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -429,7 +737,7 @@ describe("SempConversation", () => {
   it("rejects two concurrent first-time wakes without opening two runs", async () => {
     const { createAgentSession, release } = blockingSession();
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -461,19 +769,20 @@ describe("SempConversation", () => {
       },
     });
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
     await expect(sendInTenantZero(conversation, "fails")).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
       [SEMPREC_PROJECT_ITEM_ID],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
 
     conversation.clear();
   });
@@ -493,7 +802,7 @@ describe("SempConversation", () => {
       },
     });
     const conversation = new SempConversation(pool, {
-      createAgentSession,
+      createAgentSessionForRun: async () => createAgentSession,
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
     });
 
@@ -513,6 +822,197 @@ describe("SempConversation", () => {
 
     conversation.clear();
   });
+
+  describe("SempConversation per-run session and turn start", () => {
+    const turn = (text: string): AgentMessage[] => [
+      { kind: "turn_start" },
+      { kind: "message", text },
+      { kind: "turn_end" },
+    ];
+
+    function sendWith(conversation: SempConversation, task: string, options: SempSendOptions) {
+      return runInTenant(tenantZero, () => conversation.send(task, chatThread, options));
+    }
+
+    async function runStatuses(): Promise<Array<{ id: string; status: string }>> {
+      const { rows } = await pool.query<{ id: string; status: string }>(
+        `SELECT id, status FROM agent_runs WHERE project_item_id = $1`,
+        [SEMPREC_PROJECT_ITEM_ID],
+      );
+      return rows;
+    }
+
+    it("calls the factory with the turn's run row and passes the signal to the session", async () => {
+      const { createAgentSession } = scriptedSession(turn("hi"));
+      const seenRuns: AgentRunRow[] = [];
+      const seenSignals: Array<AbortSignal | undefined> = [];
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async (run) => {
+          seenRuns.push(run);
+          return (options) => {
+            seenSignals.push(options.signal);
+            return createAgentSession(options);
+          };
+        },
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+      const controller = new AbortController();
+
+      await sendWith(conversation, "hi", { signal: controller.signal });
+
+      const [row] = await runStatuses();
+      expect(seenRuns).toHaveLength(1);
+      expect(seenRuns[0]).toMatchObject({ id: row!.id, status: "running", task: "hi" });
+      expect(seenSignals).toEqual([controller.signal]);
+      conversation.clear();
+    });
+
+    it("reports the run and its first stored event once per turn, and a larger first event for a continuation", async () => {
+      const { createAgentSession } = scriptedSession(turn("one"), turn("two"));
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+      const starts: Array<{ agentRunId: string; firstEventId: string }> = [];
+      const repliesAtStart: string[] = [];
+      const onTurnStart: SempSendOptions["onTurnStart"] = async (start) => {
+        starts.push(start);
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT id FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'message'`,
+          [start.agentRunId],
+        );
+        repliesAtStart.push(String(rows.length));
+      };
+
+      await sendWith(conversation, "one", { onTurnStart });
+      await sendWith(conversation, "two", { onTurnStart });
+
+      const [row] = await runStatuses();
+      expect(starts).toHaveLength(2);
+      expect(starts[0]!.agentRunId).toBe(row!.id);
+      expect(starts[1]!.agentRunId).toBe(row!.id);
+      expect(BigInt(starts[1]!.firstEventId)).toBeGreaterThan(BigInt(starts[0]!.firstEventId));
+      // The first stored event of a turn is its turn_start row, before the reply is stored.
+      expect(repliesAtStart).toEqual(["0", "1"]);
+      const { rows: first } = await pool.query<{ kind: string }>(`SELECT kind FROM agent_run_events WHERE id = $1`, [
+        starts[0]!.firstEventId,
+      ]);
+      expect(first[0]!.kind).toBe("turn_start");
+      conversation.clear();
+    });
+
+    it("rejects, closes the run as error and drops the entry when the signal aborts a blocked prompt", async () => {
+      const neverEnds: CreateAgentSession = (): AgentSession => ({
+        async *messages() {
+          yield { kind: "turn_start" };
+          await new Promise<never>(() => {});
+        },
+      });
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async () => neverEnds,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+      const controller = new AbortController();
+      const sending = sendWith(conversation, "hi", {
+        signal: controller.signal,
+        onTurnStart: () => {
+          setTimeout(() => controller.abort(), 0);
+        },
+      });
+
+      await expect(sending).rejects.toThrow("account deactivated");
+
+      expect((await runStatuses()).map((r) => r.status)).toEqual(["error"]);
+      // The entry is gone, so the next send wakes a brand-new run.
+      const { createAgentSession } = scriptedSession(turn("again"));
+      const next = new SempConversation(pool, {
+        createAgentSessionForRun: async () => createAgentSession,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+      await expect(sendWith(next, "again", {})).resolves.toEqual({ ok: true, message: "again" });
+      conversation.clear();
+      next.clear();
+    });
+
+    it("drops a continuation entry when its signal aborts", async () => {
+      let wakes = 0;
+      const blockOnSecond: CreateAgentSession = (): AgentSession => {
+        wakes++;
+        return {
+          async *messages() {
+            yield* turn("first");
+          },
+          async *send() {
+            yield { kind: "turn_start" };
+            await new Promise<never>(() => {});
+          },
+        };
+      };
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async () => blockOnSecond,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+      await sendWith(conversation, "one", {});
+      const controller = new AbortController();
+      const sending = sendWith(conversation, "two", {
+        signal: controller.signal,
+        onTurnStart: () => {
+          setTimeout(() => controller.abort(), 0);
+        },
+      });
+
+      await expect(sending).rejects.toThrow("account deactivated");
+      expect((await runStatuses()).map((r) => r.status)).toEqual(["error"]);
+      await sendWith(conversation, "three", {}).catch(() => undefined);
+      expect(wakes).toBe(2);
+      conversation.clear();
+    });
+
+    it("closes the run as error and propagates when onTurnStart throws, without prompting further", async () => {
+      let afterFirstEvent = false;
+      const session: CreateAgentSession = (): AgentSession => ({
+        async *messages() {
+          yield { kind: "turn_start" };
+          afterFirstEvent = true;
+          yield { kind: "message", text: "should not happen" };
+        },
+      });
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async () => session,
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+
+      await expect(
+        sendWith(conversation, "hi", {
+          onTurnStart: () => {
+            throw new Error("record failed");
+          },
+        }),
+      ).rejects.toThrow("record failed");
+
+      expect(afterFirstEvent).toBe(false);
+      const { rows } = await pool.query<{ status: string; result: string | null }>(
+        `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+        [SEMPREC_PROJECT_ITEM_ID],
+      );
+      expect(rows).toEqual([{ status: "error", result: "record failed" }]);
+      conversation.clear();
+    });
+
+    it("closes the run as error when the factory rejects", async () => {
+      const conversation = new SempConversation(pool, {
+        createAgentSessionForRun: async () => {
+          throw new Error("compose failed");
+        },
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      });
+
+      await expect(sendWith(conversation, "hi", {})).rejects.toThrow("compose failed");
+
+      expect((await runStatuses()).map((r) => r.status)).toEqual(["error"]);
+      conversation.clear();
+    });
+  });
 });
 
 describe("SempConversation across tenants", () => {
@@ -521,6 +1021,7 @@ describe("SempConversation across tenants", () => {
   let tenantA: string;
   let tenantB: string;
   const projectByTenant = new Map<string, string>();
+  const threadByTenant = new Map<string, SempThread>();
 
   interface SessionRecord {
     tenantId: string;
@@ -568,7 +1069,7 @@ describe("SempConversation across tenants", () => {
     return new SempConversation(
       runtimePool,
       {
-        createAgentSession,
+        createAgentSessionForRun: async () => createAgentSession,
         resolveProjectItemId: async () => {
           const scope = currentTenantScope();
           if (scope?.kind !== "tenant") throw new Error("resolver ran outside a tenant scope");
@@ -581,7 +1082,7 @@ describe("SempConversation across tenants", () => {
   }
 
   const sendAs = (tenantId: string, conversation: SempConversation, task: string) =>
-    runInTenant(tenantId, () => conversation.send(task));
+    runInTenant(tenantId, () => conversation.send(task, threadByTenant.get(tenantId)!));
 
   async function runsOf(
     tenantId: string,
@@ -594,7 +1095,7 @@ describe("SempConversation across tenants", () => {
   }
 
   beforeEach(async () => {
-    adminPool = getTestPool();
+    adminPool ??= getTestPool();
     await resetDatabase(adminPool);
     runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
     tenantA = getTenantZeroId();
@@ -606,11 +1107,16 @@ describe("SempConversation across tenants", () => {
     ] as const) {
       await createUser(adminPool, { email, passwordHash, locale: "en", tenantId });
       projectByTenant.set(tenantId, project);
+      threadByTenant.set(tenantId, await insertThread(adminPool, tenantId));
     }
   });
 
   afterEach(async () => {
     await runtimePool?.end();
+  });
+
+  afterAll(async () => {
+    await adminPool?.end();
   });
 
   it("rejects send() with no scope or in a system scope, creating no run and not calling the resolver", async () => {
@@ -623,8 +1129,10 @@ describe("SempConversation across tenants", () => {
       },
     });
 
-    await expect(conversation.send("hi")).rejects.toThrow("SempConversation.send must run inside a tenant scope");
-    await expect(runAsSystem("test", () => conversation.send("hi"))).rejects.toThrow(
+    await expect(conversation.send("hi", threadByTenant.get(tenantA)!)).rejects.toThrow(
+      "SempConversation.send must run inside a tenant scope",
+    );
+    await expect(runAsSystem("test", () => conversation.send("hi", threadByTenant.get(tenantA)!))).rejects.toThrow(
       "SempConversation.send must run inside a tenant scope",
     );
 
@@ -679,10 +1187,227 @@ describe("SempConversation across tenants", () => {
     conversation.clear();
   });
 
+  describe("per-thread registry", () => {
+    const TTL_MS = 5_000;
+
+    async function threadRuns(
+      threadId: string,
+    ): Promise<Array<{ id: string; status: string; thread_id: string; project_item_id: string }>> {
+      const { rows } = await adminPool.query<{
+        id: string;
+        status: string;
+        thread_id: string;
+        project_item_id: string;
+      }>(`SELECT id, status, thread_id, project_item_id FROM agent_runs WHERE thread_id = $1 ORDER BY started_at`, [
+        threadId,
+      ]);
+      return rows;
+    }
+
+    function pauseThread(conversation: SempConversation, tenantId: string, threadId: string): Promise<void> {
+      const internals = conversation as unknown as {
+        conversations: Map<string, unknown>;
+        pause(state: unknown): Promise<void>;
+      };
+      const state = internals.conversations.get(`${tenantId}:${threadId}`);
+      return runInTenant(tenantId, () => internals.pause(state));
+    }
+
+    const sendThread = (tenantId: string, conversation: SempConversation, task: string, thread: SempThread) =>
+      runInTenant(tenantId, () => conversation.send(task, thread));
+
+    it("runs two threads of one tenant in parallel, each with its own run, thread id and reconstruction", async () => {
+      const threadOne = threadByTenant.get(tenantA)!;
+      const threadTwo = await insertThread(adminPool, tenantA);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { createAgentSession, sessions } = recordingSessions(new Map([["slow one", gate]]));
+      const reconstructed: string[] = [];
+      const conversation = conversationFor(createAgentSession, {
+        reconstructHistory: async (_pool, wake) => {
+          reconstructed.push(wake.threadId);
+          return null;
+        },
+      });
+
+      const inFlight = sendThread(tenantA, conversation, "slow one", threadOne);
+      const settledInFlight = Promise.allSettled([inFlight]);
+      let failure: { error: unknown } | undefined;
+      let settledFailure: { error: unknown } | undefined;
+      try {
+        await vi.waitFor(() => expect(sessions.some((session) => session.tasks.includes("slow one"))).toBe(true));
+        expect(await sendThread(tenantA, conversation, "other", threadTwo)).toEqual({
+          ok: true,
+          message: "reply to other",
+        });
+        expect(await sendThread(tenantA, conversation, "slow again", threadOne)).toEqual({
+          ok: false,
+          error: SEMP_BUSY_ERROR_MESSAGE,
+        });
+        release();
+        expect(await inFlight).toEqual({ ok: true, message: "reply to slow one" });
+        expect(reconstructed.sort()).toEqual([threadOne.threadId, threadTwo.threadId].sort());
+        for (const thread of [threadOne, threadTwo]) {
+          const runs = await threadRuns(thread.threadId);
+          expect(runs).toHaveLength(1);
+          expect(runs[0]!.project_item_id).toBe(projectByTenant.get(tenantA));
+        }
+      } catch (error) {
+        failure = { error };
+      } finally {
+        release();
+        const [settled] = await settledInFlight;
+        conversation.clear();
+        if (settled?.status === "rejected") settledFailure = { error: settled.reason };
+      }
+      if (failure && settledFailure && failure.error !== settledFailure.error) {
+        throw new AggregateError([failure.error, settledFailure.error]);
+      }
+      if (failure) throw failure.error;
+      if (settledFailure) throw settledFailure.error;
+    });
+
+    it("gives a tick thread's wake run the heartbeat's project and does not call the resolver", async () => {
+      const heartbeatProject = randomUUID();
+      const { rows: heartbeats } = await adminPool.query<{ id: string }>(
+        `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id)
+         VALUES ($1, 'hb', '{"kind":"dailyTime","at":"09:00"}'::jsonb, 'noop') RETURNING id`,
+        [heartbeatProject],
+      );
+      const { rows: threads } = await adminPool.query<{ id: string }>(
+        "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+        [heartbeats[0]!.id],
+      );
+      const tickThread: SempThread = { threadId: threads[0]!.id, kind: "tick", projectItemId: heartbeatProject };
+      const { createAgentSession } = recordingSessions();
+      let resolverCalls = 0;
+      const wakes: SempThreadWake[] = [];
+      const conversation = conversationFor(createAgentSession, {
+        resolveProjectItemId: async () => {
+          resolverCalls++;
+          return projectByTenant.get(tenantA)!;
+        },
+        reconstructHistory: async (_pool, wake) => {
+          wakes.push(wake);
+          return null;
+        },
+      });
+
+      await sendThread(tenantA, conversation, "tick", tickThread);
+
+      expect(resolverCalls).toBe(0);
+      expect(wakes).toEqual([{ threadId: tickThread.threadId, projectItemId: heartbeatProject }]);
+      const runs = await threadRuns(tickThread.threadId);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]!.project_item_id).toBe(heartbeatProject);
+      conversation.clear();
+    });
+
+    it("pauses only the thread whose TTL expired, leaving the other thread's session live", async () => {
+      const threadOne = threadByTenant.get(tenantA)!;
+      const threadTwo = await insertThread(adminPool, tenantA);
+      const { createAgentSession, sessions } = recordingSessions();
+      const conversation = conversationFor(createAgentSession, {}, TTL_MS);
+      await sendThread(tenantA, conversation, "one", threadOne);
+      await sendThread(tenantA, conversation, "two", threadTwo);
+
+      await pauseThread(conversation, tenantA, threadOne.threadId);
+
+      expect((await threadRuns(threadOne.threadId)).map((r) => r.status)).toEqual(["done"]);
+      expect((await threadRuns(threadTwo.threadId)).map((r) => r.status)).toEqual(["running"]);
+      await sendThread(tenantA, conversation, "two again", threadTwo);
+      expect(sessions).toHaveLength(2);
+      expect(sessions[1]!.tasks).toEqual(["two", "two again"]);
+      conversation.clear();
+    });
+
+    it("fires a thread's TTL timer inside the tenant context", async () => {
+      // The runtime role's row-level security hides the run outside a tenant scope, so a pause that
+      // ran without one could not close it as done.
+      const { createAgentSession } = recordingSessions();
+      const conversation = conversationFor(createAgentSession, {}, TTL_MS);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const threadId = threadByTenant.get(tenantB)!.threadId;
+        await sendAs(tenantB, conversation, "b one");
+        await vi.advanceTimersByTimeAsync(TTL_MS);
+        vi.useRealTimers();
+        await vi.waitFor(async () => {
+          expect((await threadRuns(threadId)).map((r) => r.status)).toEqual(["done"]);
+        });
+      } finally {
+        vi.useRealTimers();
+        conversation.clear();
+      }
+    });
+
+    it("drops every thread conversation of the tenant, clears their timers and leaves other tenants intact", async () => {
+      const aOne = threadByTenant.get(tenantA)!;
+      const aTwo = await insertThread(adminPool, tenantA);
+      const bOne = threadByTenant.get(tenantB)!;
+      const { createAgentSession } = recordingSessions();
+      const conversation = conversationFor(createAgentSession, {}, TTL_MS);
+      const setSpy = vi.spyOn(globalThis, "setTimeout");
+      const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+      try {
+        await sendThread(tenantA, conversation, "a1", aOne);
+        await sendThread(tenantA, conversation, "a2", aTwo);
+        await sendThread(tenantB, conversation, "b1", bOne);
+        const ttlTimers = setSpy.mock.calls.flatMap((call, index) =>
+          call[1] === TTL_MS ? [setSpy.mock.results[index]!.value as ReturnType<typeof setTimeout>] : [],
+        );
+        expect(ttlTimers).toHaveLength(3);
+
+        await conversation.dropTenant(tenantA);
+
+        expect(clearSpy).toHaveBeenCalledWith(ttlTimers[0]);
+        expect(clearSpy).toHaveBeenCalledWith(ttlTimers[1]);
+        expect(clearSpy).not.toHaveBeenCalledWith(ttlTimers[2]);
+        for (const thread of [aOne, aTwo]) {
+          expect((await threadRuns(thread.threadId)).map((r) => r.status)).toEqual(["error"]);
+        }
+        expect((await threadRuns(bOne.threadId)).map((r) => r.status)).toEqual(["running"]);
+        expect(await sendThread(tenantB, conversation, "b2", bOne)).toEqual({ ok: true, message: "reply to b2" });
+      } finally {
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+        conversation.clear();
+      }
+    });
+
+    it("lets an in-flight turn in one thread finish when the tenant is dropped, closing every thread's run", async () => {
+      const aOne = threadByTenant.get(tenantA)!;
+      const aTwo = await insertThread(adminPool, tenantA);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { createAgentSession } = recordingSessions(new Map([["slow", gate]]));
+      const conversation = conversationFor(createAgentSession, {}, TTL_MS);
+      await sendThread(tenantA, conversation, "idle", aTwo);
+      const inFlight = sendThread(tenantA, conversation, "slow", aOne);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      await conversation.dropTenant(tenantA);
+      expect((await threadRuns(aTwo.threadId)).map((r) => r.status)).toEqual(["error"]);
+      expect(await sendThread(tenantA, conversation, "late", aOne)).toEqual({
+        ok: false,
+        error: SEMP_BUSY_ERROR_MESSAGE,
+      });
+
+      release();
+      await inFlight;
+      expect((await threadRuns(aOne.threadId)).map((r) => r.status)).toEqual(["error"]);
+      conversation.clear();
+    });
+  });
+
   it("reconstructs a wake's history only from the waking tenant's prior runs", async () => {
     const { createAgentSession, sessions } = recordingSessions();
     const seenRuns: Array<{ tenantId: string; projectItemId: string }> = [];
-    const reconstructHistory = async (_pool: Pool, projectItemId: string) => {
+    const reconstructHistory = async (_pool: Pool, { projectItemId }: SempThreadWake) => {
       const scope = currentTenantScope();
       seenRuns.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : "none", projectItemId });
       const { rows } = await runtimePool.query<{ task: string }>(
@@ -802,6 +1527,11 @@ describe("SempConversation across tenants", () => {
       expect(await runRowsOf(tenantB)).toEqual([
         expect.objectContaining({ status: "error", result: "account deactivated" }),
       ]);
+      const { rows: codes } = await adminPool.query<{ error_code: string | null }>(
+        `SELECT error_code FROM agent_runs WHERE tenant_id = $1`,
+        [tenantB],
+      );
+      expect(codes).toEqual([{ error_code: "cancelled" }]);
       expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
 
       // B's entry is gone: its next send wakes a new session and run. A's continues its own.
@@ -903,10 +1633,28 @@ describe("SempConversation across tenants", () => {
       }
 
       function pauseOf(conversation: SempConversation, tenantId: string): Promise<void> {
-        return runInTenant(tenantId, () =>
-          (conversation as unknown as { pause(tenantId: string): Promise<void> }).pause(tenantId),
-        );
+        return pauseTenant(conversation, tenantId);
       }
+
+      it("preserves the actual pause failure for strict freshness and succeeds after recovery", async () => {
+        const { createAgentSession } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, 60_000);
+        try {
+          await sendAs(tenantB, conversation, "before");
+          await failRunCloses(tenantB, ["done"]);
+          const thread = threadByTenant.get(tenantB);
+          if (!thread) throw new Error("Missing thread");
+          await expect(runInTenant(tenantB, () => conversation.ensureFresh(thread.threadId, null))).rejects.toThrow(
+            "injected run close failure",
+          );
+          expect((await runRowsOf(tenantB)).map((run) => run.status)).toEqual(["running"]);
+          await healRunCloses();
+          await runInTenant(tenantB, () => conversation.ensureFresh(thread.threadId, null));
+          expect((await runRowsOf(tenantB)).map((run) => run.status)).toEqual(["done"]);
+        } finally {
+          conversation.clear();
+        }
+      });
 
       it("keeps an idle dropped entry when its close fails, rejects sends meanwhile, and retries the close", async () => {
         const { createAgentSession, sessions } = recordingSessions();
@@ -925,7 +1673,7 @@ describe("SempConversation across tenants", () => {
           ([, msg]) => msg === "SempConversation: failed to close dropped run, will retry",
         );
         expect(dropLogs[0]).toEqual([
-          { errorName: "error", tenantId: tenantB, agentRunId: expect.any(String) },
+          { errorName: "error", tenantId: tenantB, threadId: expect.any(String), agentRunId: expect.any(String) },
           "SempConversation: failed to close dropped run, will retry",
         ]);
         expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });

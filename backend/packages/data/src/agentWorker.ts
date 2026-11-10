@@ -27,6 +27,7 @@ export function createAgentTaskList(
   moduleRegistry?: ModuleRegistry,
   agentRunTask: AgentQueueTaskHandler = noopAgentQueueTask,
   delegatedAgentRunTask: AgentQueueTaskHandler = noopAgentQueueTask,
+  sempMessageTask: AgentQueueTaskHandler = noopAgentQueueTask,
 ): TaskList {
   const handlers: Record<string, Task> = {
     [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: createHeartbeatFireAgentTask(pool, actionRegistry, moduleRegistry),
@@ -35,6 +36,9 @@ export function createAgentTaskList(
     },
     [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: async (payload, helpers) => {
       await delegatedAgentRunTask(payload, { job: { id: String(helpers.job.id) } });
+    },
+    [AGENT_TASK_NAMES.SEMP_MESSAGE]: async (payload, helpers) => {
+      await sempMessageTask(payload, { job: { id: String(helpers.job.id) } });
     },
   };
 

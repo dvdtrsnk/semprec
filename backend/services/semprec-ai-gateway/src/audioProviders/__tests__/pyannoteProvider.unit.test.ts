@@ -43,6 +43,29 @@ describe("createPyannoteDiarizationProvider", () => {
     expect(diarizeBody.url).toMatch(/^media:\/\/semprec-/);
   });
 
+  it.each([
+    [{ exact: 2 }, { numSpeakers: 2 }],
+    [{ min: 3 }, { minSpeakers: 3 }],
+    [undefined, {}],
+  ])("sends the requested speaker limit %s", async (numSpeakers, expected) => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://upload.example/presigned" })))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ jobId: "job-1" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "succeeded", output: { diarization: [] } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = createPyannoteDiarizationProvider("test-key").diarize({ ...REQUEST, numSpeakers });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await pending;
+    const init: unknown = fetchMock.mock.calls[2]?.[1];
+    if (typeof init !== "object" || init === null || !("body" in init) || typeof init.body !== "string")
+      throw new Error("Missing request body");
+    const parsed: unknown = JSON.parse(init.body);
+    expect(parsed).toEqual({ url: expect.stringMatching(/^media:\/\/semprec-/), ...expected });
+  });
+
   it("fails when the media upload request itself fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("provider detail", { status: 400 })));
 

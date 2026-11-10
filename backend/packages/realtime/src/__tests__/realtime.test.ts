@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import { WebSocket, type RawData } from "ws";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import {
   setDocUpdateHook,
@@ -14,11 +16,18 @@ import {
   notifyNotificationCreated,
   notifySessionRevoked,
 } from "@semprec/data";
-import { createPool, withTransaction } from "@semprec/data";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createChokePoint, createDocStore, createPool, withTransaction } from "@semprec/data";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "../wireHooks.js";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
+import { createSyncServer } from "../syncServer.js";
 
 let pool: Pool;
 
@@ -34,6 +43,12 @@ function resetHooks(): void {
   setAgentRunEventHook(() => {});
 }
 
+function frameText(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  return Buffer.from(data).toString("utf8");
+}
+
 describe("realtime", () => {
   beforeEach(async () => {
     // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already has
@@ -47,6 +62,237 @@ describe("realtime", () => {
   afterAll(async () => {
     resetHooks();
     await pool?.end();
+  });
+
+  it("delivers a document write to an unsubscribed tenant socket and never to another tenant", async () => {
+    const owner = getTenantZeroId();
+    const foreign = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const api = createChokePoint(runtime);
+    const docs = createDocStore(runtime);
+    const fixture = await runInTenant(owner, async () => {
+      const database = await api.createDatabase({ name: "Pages" });
+      const item = await api.createItem({ databaseId: database.id, properties: {} });
+      await docs.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+      const doc = await docs.getDoc(item.id);
+      if (!doc) throw new Error("Document fixture was not created");
+      return { database, item, doc };
+    });
+    wireRealtimeHooks(runtime);
+    const server = await createSyncServer(runtime, {
+      authenticate: async (request) => ({
+        tenantId: request.url === "/owner" ? owner : foreign,
+        userId: randomUUID(),
+        sessionId: randomUUID(),
+      }),
+      revalidateSession: async () => true,
+    });
+    const http = createServer();
+    http.on("upgrade", (request, socket, head) => server.handleUpgrade(request, socket, head));
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP address");
+    const ownerSocket = new WebSocket(`ws://127.0.0.1:${address.port}/owner`);
+    const foreignSocket = new WebSocket(`ws://127.0.0.1:${address.port}/foreign`);
+    const open = (socket: WebSocket) =>
+      new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+    try {
+      await Promise.all([open(ownerSocket), open(foreignSocket)]);
+      const ownerFrames: unknown[] = [];
+      const foreignFrames: unknown[] = [];
+      ownerSocket.on("message", (data) => ownerFrames.push(JSON.parse(frameText(data))));
+      foreignSocket.on("message", (data) => foreignFrames.push(JSON.parse(frameText(data))));
+      await runInTenant(owner, () => docs.putBlock(fixture.item.id, { id: "next", flavour: "page" }, "user"));
+      await vi.waitFor(() => expect(ownerFrames).toHaveLength(1));
+      const updated = await runInTenant(owner, () => docs.getDoc(fixture.item.id));
+      expect(ownerFrames).toEqual([
+        {
+          type: "invalidate",
+          scope: "doc",
+          docId: fixture.doc.id,
+          itemId: fixture.item.id,
+          databaseId: fixture.database.id,
+          lastEditedAt: updated?.lastEditedAt,
+        },
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(foreignFrames).toEqual([]);
+      await runInTenant(owner, () =>
+        publishRealtimeMessage(runtime, {
+          type: "doc_update",
+          docId: randomUUID(),
+          updateId: "1",
+          createdBy: "user",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(ownerFrames).toHaveLength(1);
+      expect(foreignFrames).toEqual([]);
+
+      // Let the first leading window settle before observing a separate burst of real writes.
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      ownerFrames.length = 0;
+      const listener = await pool.connect();
+      const arrivals: number[] = [];
+      try {
+        await listener.query("LISTEN semprec_events");
+        listener.on("notification", (notification) => {
+          if (!notification.payload) return;
+          const value: unknown = JSON.parse(notification.payload);
+          if (typeof value !== "object" || value === null || !("tenantId" in value) || !("message" in value)) return;
+          const message = value.message;
+          if (
+            value.tenantId === owner &&
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            message.type === "doc_update" &&
+            "docId" in message &&
+            message.docId === fixture.doc.id
+          )
+            arrivals.push(performance.now());
+        });
+        const started = performance.now();
+        await runInTenant(owner, () =>
+          docs.putBlock(fixture.item.id, { id: "burst-leading", flavour: "page" }, "user"),
+        );
+        await vi.waitFor(() => expect(ownerFrames).toHaveLength(1));
+        await runInTenant(owner, () =>
+          Promise.all(
+            Array.from({ length: 99 }, (_, index) =>
+              docs.putBlock(fixture.item.id, { id: `burst-${index}`, flavour: "page" }, "user"),
+            ),
+          ),
+        );
+        expect(performance.now() - started).toBeLessThan(1000);
+        await vi.waitFor(() => expect(arrivals).toHaveLength(100));
+        expect(arrivals[99]! - arrivals[0]!).toBeLessThan(1000);
+        const lastWrite = await runInTenant(owner, () => docs.getDoc(fixture.item.id));
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        expect(ownerFrames).toHaveLength(2);
+        expect(ownerFrames.at(-1)).toMatchObject({
+          type: "invalidate",
+          scope: "doc",
+          docId: fixture.doc.id,
+          lastEditedAt: lastWrite?.lastEditedAt,
+        });
+        expect(foreignFrames).toEqual([]);
+      } finally {
+        // Destroy this dedicated LISTEN client so its subscription cannot leak into the pool.
+        listener.release(new Error("test listener complete"));
+      }
+
+      // The older transaction starts first but writes after the newer one commits.
+      ownerFrames.length = 0;
+      let unblock!: () => void;
+      let startedEarlier!: () => void;
+      const blocked = new Promise<void>((resolve) => (unblock = resolve));
+      const earlierStarted = new Promise<void>((resolve) => (startedEarlier = resolve));
+      let checkouts = 0;
+      const heldPool = new Proxy(runtime, {
+        get(target, property, receiver) {
+          if (property !== "connect") {
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            const checkout = ++checkouts;
+            return new Proxy(client, {
+              get(clientTarget, key, clientReceiver) {
+                if (key !== "query") {
+                  const value: unknown = Reflect.get(clientTarget, key, clientReceiver);
+                  return typeof value === "function" ? value.bind(clientTarget) : value;
+                }
+                return async (...args: unknown[]) => {
+                  const result: unknown = await Reflect.apply(
+                    clientTarget.query.bind(clientTarget),
+                    clientTarget,
+                    args,
+                  );
+                  if (checkout === 2 && args[0] === "BEGIN") {
+                    startedEarlier();
+                    await blocked;
+                  }
+                  return result;
+                };
+              },
+            });
+          };
+        },
+      });
+      const heldDocs = createDocStore(heldPool);
+      const earlierWrite = runInTenant(owner, () =>
+        heldDocs.putBlock(fixture.item.id, { id: "earlier-transaction", flavour: "page" }, "user"),
+      );
+      try {
+        await earlierStarted;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await runInTenant(owner, () =>
+          docs.putBlock(fixture.item.id, { id: "later-transaction", flavour: "page" }, "user"),
+        );
+        const later = await runInTenant(owner, () => docs.getDoc(fixture.item.id));
+        await vi.waitFor(() => expect(ownerFrames.length).toBeGreaterThan(0));
+        unblock();
+        await earlierWrite;
+        const final = await runInTenant(owner, () => docs.getDoc(fixture.item.id));
+        expect(final!.lastEditedAt < later!.lastEditedAt).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        expect(ownerFrames.at(-1)).toMatchObject({ lastEditedAt: final!.lastEditedAt });
+        expect(foreignFrames).toEqual([]);
+      } finally {
+        unblock();
+        await earlierWrite;
+      }
+    } finally {
+      ownerSocket.close();
+      foreignSocket.close();
+      await server.close();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+      resetHooks();
+      await runtime.end();
+    }
+  });
+
+  it("bounds relation notifications while retaining the PostgreSQL tenant envelope and user restriction", async () => {
+    const tenant = await createTestTenant(pool);
+    const scoped = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    const base = {
+      type: "invalidation",
+      scope: "relation",
+      databaseId: randomUUID(),
+      itemId: randomUUID(),
+      propertyKey: "",
+      op: "metadata",
+      userId: randomUUID(),
+    } as const;
+    const remaining = 7000 - Buffer.byteLength(JSON.stringify(base), "utf8");
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        scoped.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      await listener.query("LISTEN semprec_events");
+      for (const key of ["normal", "a".repeat(remaining), "a".repeat(remaining + 1), 'ě\\"'.repeat(4000)]) {
+        const received = new Promise<{ payload?: string }>((resolve) => listener.once("notification", resolve));
+        await runInTenant(tenant, () => publishRealtimeMessage(scoped, { ...base, propertyKey: key }));
+        const payload = (await received).payload;
+        if (payload === undefined) throw new Error("Expected notification payload");
+        expect(Buffer.byteLength(payload, "utf8")).toBeLessThan(8000);
+        const expectedKey =
+          Buffer.byteLength(JSON.stringify({ ...base, propertyKey: key }), "utf8") <= 7000 ? key : null;
+        expect(JSON.parse(payload)).toEqual({ tenantId: tenant, message: { ...base, propertyKey: expectedKey } });
+      }
+    } finally {
+      listener.release(true);
+      await scoped.end();
+    }
   });
 
   it("wireRealtimeHooks turns an item-scope invalidation event into a Postgres NOTIFY on the shared channel (issue #161)", async () => {

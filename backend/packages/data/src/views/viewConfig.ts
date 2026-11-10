@@ -13,6 +13,7 @@ const viewConfigSchema = z
     filter: filterNodeSchema.optional(),
     sort: z.array(sortSpecSchema).optional(),
     groupBy: z.string().optional(),
+    groupDirection: z.enum(["asc", "desc"]).optional(),
     membership: z.literal("manual").optional(),
   })
   .catchall(z.unknown());
@@ -24,6 +25,8 @@ export interface ViewConfig {
   filter?: FilterNode;
   sort?: SortSpec[];
   groupBy?: string;
+  /** Direction of the leading group sort; defaults to `asc`. */
+  groupDirection?: "asc" | "desc";
   membership?: "manual";
   [key: string]: unknown;
 }

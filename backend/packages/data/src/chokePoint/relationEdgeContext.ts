@@ -10,6 +10,7 @@ import type { PropertyRow, RelationDefinitionRow } from "../types.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
+import { assertValueLinkHandoff, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 
 /** Shared by every relation-edge mutation: both the caller's own database and the edge's target database must be unarchived, since an edge write touches an item on each side. */
 export async function assertRelationDatabasesNotArchived(
@@ -95,4 +96,19 @@ export function assertRelationPropertyWritable(
       "owner_violation",
     );
   }
+}
+
+/**
+ * The handoff check for the `valueLinks` process: it may write a user-owned relation property only
+ * while an `on` link exists for the caller item and that property key. Any other property or
+ * caller is unaffected; `owner: 'system'` properties keep the check above.
+ */
+export async function assertRelationValueLinkHandoff(
+  client: PoolClient,
+  property: PropertyRow,
+  context: SystemRelationWriteContext | undefined,
+  callerItemId: string,
+): Promise<void> {
+  if (property.owner !== "user" || context?.ownerProcess !== VALUE_LINKS_OWNER_PROCESS) return;
+  await assertValueLinkHandoff(client, { itemId: callerItemId, propertyKey: property.key, lockMode: "none" });
 }

@@ -1,5 +1,7 @@
+import { reserveInboxTypeCards, resolveInboxTypeCardConfiguration } from "./inboxTypeCardReservation.js";
+import { lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 import type { PoolClient } from "pg";
-import type { Queryable } from "../db/pool.js";
+import { markManagedTransactionRollbackOnly, type Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -7,7 +9,16 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
-import { TEN_DATABASE_MODULE_IDS, type TenDatabaseModuleId } from "../seed/tenDatabaseKeys.js";
+import {
+  AREAS_MODULE_ID,
+  COMPANIES_MODULE_ID,
+  EVENTS_MODULE_ID,
+  FILES_MODULE_ID,
+  HEALTH_RECORDS_MODULE_ID,
+  PEOPLE_MODULE_ID,
+  PROJECTS_MODULE_ID,
+  TASKS_MODULE_ID,
+} from "../seed/tenDatabaseKeys.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -15,6 +26,10 @@ export interface InboxTypeSummary {
   id: string;
   emoji: string;
   label: string;
+  /** The stored `processingMethod` (issue #1436 validates it on write), or `null` when the type has none. */
+  processingMethod: string | null;
+  /** The stored `targetDatabase` canonical key, or `null` when the type has no target. */
+  targetDatabaseKey: string | null;
 }
 
 /** An Inbox item type's processing method (issue #102) — replaces the mock's hardcoded label-text comparison. */
@@ -22,19 +37,39 @@ export const PROCESSING_METHODS = ["pageContent", "database"] as const;
 export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 
 /**
+ * The system databases an Inbox item type with `processingMethod: 'database'` may target (issue #1436).
+ * An explicit list, not the module registry: `journal` and `transcripts` are not processing targets here.
+ * A journal entry will get its own processing method in issue #1975, and a recording will be a card the tick
+ * makes for an audio attachment in issue #1978. A database that a later issue makes a target is added here
+ * together with its select option.
+ */
+export const INBOX_TYPE_TARGET_DATABASES = [
+  AREAS_MODULE_ID,
+  PROJECTS_MODULE_ID,
+  TASKS_MODULE_ID,
+  PEOPLE_MODULE_ID,
+  FILES_MODULE_ID,
+  EVENTS_MODULE_ID,
+  HEALTH_RECORDS_MODULE_ID,
+  COMPANIES_MODULE_ID,
+] as const;
+export type InboxTypeTargetDatabase = (typeof INBOX_TYPE_TARGET_DATABASES)[number];
+
+/**
  * Cross-field validation for `processingMethod`/`targetDatabase` — the schema engine has no
- * generic cross-field concept (see chokePoint.ts's `assertWritableProperties`), the same
- * reason `inboxStore.ts`'s `createInboxItemWithClient` hand-validates `date`/`time`.
+ * generic cross-field concept (see chokePoint.ts's `assertWritableProperties`). It is not part of
+ * the generic write path: `inbox/inboxTypeWriteHook.ts` calls it from the item create and update
+ * hooks, inside the write's own transaction (issue #1436).
  * `processingMethod` and `targetDatabase` are both `select` properties (not `relation` — a
  * relation's target database is fixed at property-creation time, but this must point at any
- * one of the ten hardcoded databases; see seedInboxPipeline.ts's comment), so nothing about
+ * one of `INBOX_TYPE_TARGET_DATABASES`; see seedInboxPipeline.ts's comment), so nothing about
  * the generic write path enforces their combination either.
  *
  * `resolvedMethod`/`resolvedTarget` are the values that would be in effect *after* the write
  * (already merged with the existing item on an update) — this only judges that final state,
  * never a partial patch in isolation.
  */
-function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTarget: unknown): void {
+export function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTarget: unknown): void {
   if (resolvedMethod === undefined || resolvedMethod === null) {
     if (resolvedTarget !== undefined && resolvedTarget !== null) {
       throw new ValidationError("'targetDatabase' requires 'processingMethod' to be 'database'", {
@@ -51,10 +86,10 @@ function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTarget: un
   if (resolvedMethod === "database") {
     if (
       typeof resolvedTarget !== "string" ||
-      !(TEN_DATABASE_MODULE_IDS as readonly string[]).includes(resolvedTarget)
+      !(INBOX_TYPE_TARGET_DATABASES as readonly string[]).includes(resolvedTarget)
     ) {
       throw new ValidationError(
-        `processingMethod 'database' requires 'targetDatabase' to be one of ${TEN_DATABASE_MODULE_IDS.join(", ")}`,
+        `processingMethod 'database' requires 'targetDatabase' to be one of ${INBOX_TYPE_TARGET_DATABASES.join(", ")}`,
         {
           field: "targetDatabase",
         },
@@ -73,13 +108,14 @@ export interface CreateInboxTypeInput {
   emoji: string;
   status?: "active" | "archived";
   processingMethod: ProcessingMethod;
-  targetDatabase?: TenDatabaseModuleId;
+  targetDatabase?: InboxTypeTargetDatabase;
 }
 
-/** The Inbox item type creation logic (issue #102), mirroring `inbox/inboxStore.ts`'s `createInboxItemWithClient`. */
+/**
+ * The Inbox item type creation logic (issue #102), mirroring `inbox/inboxStore.ts`'s `createInboxItemWithClient`.
+ * The processing-config check runs in the item create hook (issue #1436), not here.
+ */
 export async function createInboxTypeWithClient(client: PoolClient, input: CreateInboxTypeInput): Promise<ItemRow> {
-  assertValidProcessingConfig(input.processingMethod, input.targetDatabase);
-
   return createItemWithClient(client, {
     databaseId: input.inboxItemTypesDatabaseId,
     properties: {
@@ -99,25 +135,15 @@ export interface UpdateInboxTypeInput {
 }
 
 /**
- * The Inbox item type update logic (issue #102). Merges the patch onto the item's current
- * `processingMethod`/`targetDatabase` before validating, so a patch that only touches one of
- * the two fields is judged against the resulting whole, not the patch in isolation — e.g.
- * patching `targetDatabase` alone on a type that is already `processingMethod: 'database'`
- * is valid; patching it alone on a `pageContent` type is rejected.
+ * The Inbox item type update logic (issue #102). The processing-config check runs in the item update
+ * hook (issue #1436), which judges the item as the patch leaves it, so a patch that only touches one of
+ * the two fields is judged against the resulting whole, not the patch in isolation — e.g. patching
+ * `targetDatabase` alone on a type that is already `processingMethod: 'database'` is valid; patching it
+ * alone on a `pageContent` type is rejected.
  */
 export async function updateInboxTypeWithClient(client: PoolClient, input: UpdateInboxTypeInput): Promise<ItemRow> {
   const current = await itemsStore.getItemById(client, input.inboxItemTypesDatabaseId, input.itemId);
   if (!current) throw new NotFoundError(`Inbox item type ${input.itemId} not found`);
-
-  const resolvedMethod =
-    "processingMethod" in input.propertiesPatch
-      ? input.propertiesPatch.processingMethod
-      : current.properties.processingMethod;
-  const resolvedTarget =
-    "targetDatabase" in input.propertiesPatch
-      ? input.propertiesPatch.targetDatabase
-      : current.properties.targetDatabase;
-  assertValidProcessingConfig(resolvedMethod, resolvedTarget);
 
   return updateItemWithClient(client, {
     databaseId: input.inboxItemTypesDatabaseId,
@@ -160,59 +186,29 @@ export async function deleteInboxTypeWithClient(
   const typeRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id);
   if (!typeRelationDefinition) throw new NotFoundError(`Property '${typeProperty.id}' has no relation definition`);
 
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
-    client,
-    input.processingProposalsDatabaseId,
-    "sourceInbox",
-  );
-  if (!sourceInboxProperty)
-    throw new NotFoundError(
-      `Processing proposals database ${input.processingProposalsDatabaseId} has no 'sourceInbox' relation property`,
-    );
-  const sourceInboxRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-    client,
-    sourceInboxProperty.id,
-  );
-  if (!sourceInboxRelationDefinition)
-    throw new NotFoundError(`Property '${sourceInboxProperty.id}' has no relation definition`);
-
-  const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
-  const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId));
-
-  // One query for every referencing Inbox item's proposal edges, instead of one query per
-  // Inbox item — the same N+1 `proposalIdsByInboxItem` below then avoids.
-  const proposalEdges = await relationsStore.listRelationsForItems(
-    client,
-    sourceInboxRelationDefinition.id,
-    inboxItemIds,
-  );
-  const inboxItemIdSet = new Set(inboxItemIds);
-  const proposalIdsByInboxItem = new Map<string, string[]>(inboxItemIds.map((inboxItemId) => [inboxItemId, []]));
-  const allProposalIds: string[] = [];
-  for (const edge of proposalEdges) {
-    const inboxItemId = inboxItemIdSet.has(edge.itemA) ? edge.itemA : edge.itemB;
-    const proposalItemId = relationsStore.otherSide(edge, inboxItemId);
-    proposalIdsByInboxItem.get(inboxItemId)?.push(proposalItemId);
-    allProposalIds.push(proposalItemId);
+  let configuration: Awaited<ReturnType<typeof resolveInboxTypeCardConfiguration>>;
+  try {
+    configuration = await resolveInboxTypeCardConfiguration(client, input.processingProposalsDatabaseId);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
   }
 
-  // One query for every referenced proposal, instead of one `getItemById` per proposal edge.
-  const proposals = await itemsStore.getItemsByIdsInDatabaseIncludingDeleted(
-    client,
-    input.processingProposalsDatabaseId,
-    allProposalIds,
-  );
-  const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
+  const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
+  const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId)).sort();
 
   for (const inboxItemId of inboxItemIds) {
-    const locked = (proposalIdsByInboxItem.get(inboxItemId) ?? []).some((proposalItemId) => {
-      const proposal = proposalById.get(proposalItemId);
-      return (
-        proposal !== undefined &&
-        typeof proposal.properties.status === "string" &&
-        LOCKED_PROPOSAL_STATUSES.has(proposal.properties.status)
-      );
-    });
+    if (!(await lockInboxSourceIfPresent(client, inboxItemId, true))) continue;
+    let cards: ItemRow[];
+    try {
+      cards = await reserveInboxTypeCards(client, inboxItemId, configuration);
+    } catch (error) {
+      markManagedTransactionRollbackOnly(client, error);
+      throw error;
+    }
+    const locked = cards.some(
+      (card) => typeof card.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(card.properties.status),
+    );
     if (locked) continue;
 
     await deleteRelationWithClient(client, {
@@ -238,6 +234,8 @@ export async function deleteInboxTypeWithClient(
  * up via i18n — unlike a structural, system-defined vocabulary entry, an Inbox item type is
  * user-managed content, the same as any other item's `name`. Relations always store `id`,
  * never `emoji` — renaming a type's emoji afterwards cannot break an Inbox item's relation.
+ * `processingMethod` and `targetDatabaseKey` are the stored values (issue #1439); the target's
+ * display name is not read here, `createInboxTypesRouteHandler` resolves it in the caller's locale.
  */
 export async function listActiveInboxTypes(
   client: Queryable,
@@ -262,5 +260,7 @@ export async function listActiveInboxTypes(
     id: item.id,
     emoji: typeof item.properties.emoji === "string" ? item.properties.emoji : "",
     label: typeof item.properties.name === "string" ? item.properties.name : "",
+    processingMethod: typeof item.properties.processingMethod === "string" ? item.properties.processingMethod : null,
+    targetDatabaseKey: typeof item.properties.targetDatabase === "string" ? item.properties.targetDatabase : null,
   }));
 }

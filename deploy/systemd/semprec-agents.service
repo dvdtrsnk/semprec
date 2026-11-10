@@ -47,6 +47,7 @@ EnvironmentFile=/opt/semprec/current/release.env
 Environment=SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock
 SyslogIdentifier=semprec-agents
 ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-agents/dist/serve.js
+TimeoutStopSec=120
 Restart=on-failure
 RestartSec=5s
 

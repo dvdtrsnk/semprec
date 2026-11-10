@@ -12,6 +12,10 @@ import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelope
 import { runTenantCutoverMigrations } from "./tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
+import { enqueueMailGmailPseudoFolderCleanup } from "../mail/gmailPseudoFolderCleanupJob.js";
+import { enqueueMailMessagePreviewBackfill } from "../mail/mailMessagePreviewBackfillJob.js";
+import { enqueueMailThreadBackfill } from "../mail/mailThreadBackfillJob.js";
+import { enqueueMailSearchTextReindex } from "../mail/mailSearchTextReindexJob.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -40,13 +44,20 @@ try {
     await runDocHistoryCutoverMigration(pool);
     await runAgentRunsActorUserIdCutoverMigration(pool);
     await runApprovalRequestExecutionStatusCutoverMigration(pool);
-    await runTenantCutoverMigrations(tenantPool);
     // Issue #243: graphile-worker's own schema doesn't exist until ensureQueueSchema creates it, so
     // semprec_side's grants on it can't live in the SQL migrations above — this CLI is the real-deploy
     // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
+    // They run before the tenant cutovers, whose writes queue search jobs: ensureQueueSchema registers
+    // the search task identifiers a search enqueue requires
+    // (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md).
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
-    await runItemSearchBackfillCutover(tenantPool);
+    await runTenantCutoverMigrations(tenantPool);
+    await runItemSearchBackfillCutover(tenantPool, false);
+    await enqueueMailMessagePreviewBackfill(pool);
+    await enqueueMailGmailPseudoFolderCleanup(pool);
+    await enqueueMailThreadBackfill(pool);
+    await enqueueMailSearchTextReindex(pool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);

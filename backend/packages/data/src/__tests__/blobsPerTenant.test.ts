@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
@@ -44,8 +44,10 @@ class RecordingBlobStorage implements BlobStorageWriter {
     this.bytesByKey.delete(storageKey);
   }
 
-  readStream(): Readable {
-    throw new Error("not used by these tests");
+  readStream(storageKey: string, range?: { start: number; end: number }): Readable {
+    const bytes = this.bytesByKey.get(storageKey);
+    if (!bytes) throw new Error(`no bytes stored for ${storageKey}`);
+    return Readable.from([range ? bytes.subarray(range.start, range.end + 1) : bytes]);
   }
 }
 
@@ -180,28 +182,30 @@ describe("blobs are stored and deduplicated per tenant", () => {
     const mailboxItemId = randomUUID();
     const storage = new RecordingBlobStorage();
 
-    const result = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: ids.filesDatabaseId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId,
-        messageId: "<tenant-prefixed-attachment@x>",
-        envelope: {},
-        attachments: [
-          {
-            filename: "invoice.pdf",
-            contentType: "application/pdf",
-            contentId: null,
-            disposition: "attachment",
-            openStream: () => Readable.from(Buffer.from("invoice-bytes")),
-          },
-        ],
-        storage,
-        storageKeyPrefix: mailboxItemId,
-      }),
+    const result = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: ids.filesDatabaseId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId,
+          messageId: "<tenant-prefixed-attachment@x>",
+          envelope: {},
+          attachments: [
+            {
+              filename: "invoice.pdf",
+              contentType: "application/pdf",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from(Buffer.from("invoice-bytes")),
+            },
+          ],
+          storage,
+          storageKeyPrefix: mailboxItemId,
+        }),
+      ),
     );
 
     const { rows } = await pool.query<{ storage_key: string }>(

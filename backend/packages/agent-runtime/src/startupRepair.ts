@@ -1,15 +1,64 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem } from "@semprec/shared";
 import {
+  finishAgentRun,
   finishAgentRunWithErrorNotification,
   forEachActiveTenant,
   insertAgentRunEvent,
   listAgentRunEvents,
   listRunningAgentRuns,
+  repairInterruptedSempMessages,
   withTransaction,
+  type AgentRunEventRow,
+  type AgentRunRow,
 } from "@semprec/data";
+import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";
 
 const INTERRUPTED_REASON = "interrupted_by_restart";
+
+const INTERRUPTION_TEXT = `Run interrupted by service restart before this tool call completed (${INTERRUPTED_REASON}).`;
+
+/**
+ * A thread session between turns: a user-triggered run bound to a thread whose last event is
+ * `turn_end`. It holds no work, so closing it loses nothing and the thread wakes a new run.
+ */
+function isIdleThreadSession(run: AgentRunRow, last: AgentRunEventRow | undefined): boolean {
+  return run.threadId !== null && run.triggeredBy === "user" && last?.kind === "turn_end";
+}
+
+/** Closes an idle thread session as `done` with its `run_status` event; false when another closer won. */
+async function closeIdleSession(client: PoolClient, runId: string): Promise<boolean> {
+  if (!(await finishAgentRun(client, runId, "done", null))) return false;
+  await insertAgentRunEvent(client, runId, "run_status", { kind: "run_status", status: "done" });
+  return true;
+}
+
+/**
+ * Graceful-shutdown sweep: closes every idle thread session (see `isIdleThreadSession`) of every
+ * active tenant as `done`, without an `agent_run_error` notification, and returns their ids. A
+ * session that is mid-turn is left running. Each tenant is swept in its own transaction; a tenant
+ * whose sweep fails does not stop the others, and once all were attempted the call rejects with an
+ * `AggregateError`.
+ */
+export async function closeIdleThreadSessions(pool: Pool): Promise<{ closedRunIds: string[] }> {
+  return runAsSystem("agents:closeIdleThreadSessions", async () => {
+    const closedRunIds: string[] = [];
+    await forEachActiveTenant(pool, async () => {
+      const tenantClosedIds = await withTransaction(pool, async (client) => {
+        const closed: string[] = [];
+        for (const run of await listRunningAgentRuns(client)) {
+          const events = await listAgentRunEvents(client, run.id);
+          if (isIdleThreadSession(run, events[events.length - 1]) && (await closeIdleSession(client, run.id))) {
+            closed.push(run.id);
+          }
+        }
+        return closed;
+      });
+      closedRunIds.push(...tenantClosedIds);
+    });
+    return { closedRunIds };
+  });
+}
 
 /**
  * Startup orphan repair: the in-memory session registry is always empty right after a
@@ -27,12 +76,13 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  * credential's expiry sweep, not here; repairing it would revoke every live MCP credential and
  * emit a spurious `agent_run_error` notification on each restart.
  *
- * Two repairs, per orphaned run:
- *  1. If its last logged event is an unpaired `tool_use`, append a synthetic
- *     `tool_result` so the stored transcript keeps the invariant that every
- *     `tool_use` has a matching `tool_result` (needed for #119's reconstruction and
- *     #118's failed-state handling). This comes first because only a `running` run
- *     accepts non-`run_status` events.
+ * An idle thread session (see `isIdleThreadSession`) is not an orphan either: it is closed as
+ * `done` with no notification and reported in `closedIdleRunIds`, so its thread wakes again.
+ * Two repairs, per other orphaned run:
+ *  1. For every unpaired `tool_use` in its log, append a synthetic `tool_result` so the stored
+ *     transcript keeps the invariant that every `tool_use` has a matching `tool_result` (needed
+ *     for #119's reconstruction and #118's failed-state handling). This comes first because only
+ *     a `running` run accepts non-`run_status` events.
  *  2. Close it out as `error` with reason `interrupted_by_restart`, writing the
  *     `agent_run_error` notification (issue #149) in the same transaction.
  *
@@ -45,41 +95,41 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  * to start rather than run a queue over unrepaired runs, and the ids of tenants that did commit are
  * not returned. Runs of tenants that are not active are left untouched.
  */
-export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunIds: string[] }> {
+export async function repairInterruptedRuns(
+  pool: Pool,
+): Promise<{ repairedRunIds: string[]; closedIdleRunIds: string[] }> {
   return runAsSystem("agents:startupRepair", async () => {
     const repairedRunIds: string[] = [];
+    const closedIdleRunIds: string[] = [];
     await forEachActiveTenant(pool, async () => {
-      const tenantRunIds = await repairCurrentTenant(pool);
-      repairedRunIds.push(...tenantRunIds);
+      const tenant = await repairCurrentTenant(pool);
+      repairedRunIds.push(...tenant.repaired);
+      closedIdleRunIds.push(...tenant.closedIdle);
     });
-    return { repairedRunIds };
+    return { repairedRunIds, closedIdleRunIds };
   });
 }
 
-async function repairCurrentTenant(pool: Pool): Promise<string[]> {
+async function repairCurrentTenant(pool: Pool): Promise<{ repaired: string[]; closedIdle: string[] }> {
   return withTransaction(pool, async (client) => {
     const orphaned = (await listRunningAgentRuns(client)).filter((run) => run.triggeredBy !== "mcp");
+    const repaired: string[] = [];
+    const closedIdle: string[] = [];
     for (const run of orphaned) {
       const events = await listAgentRunEvents(client, run.id);
-      const last = events[events.length - 1];
-      if (last && last.kind === "tool_use") {
-        // `payload` is untyped JSONB; a corrupted or unexpectedly-shaped row must not throw
-        // or silently drop the tool_use's identifying fields into the synthetic result.
-        const toolUsePayload =
-          typeof last.payload === "object" && last.payload !== null && !Array.isArray(last.payload)
-            ? (last.payload as Record<string, unknown>)
-            : {};
-        await insertAgentRunEvent(client, run.id, "tool_result", {
-          ...toolUsePayload,
-          kind: "tool_result",
-          error: true,
-          result: `Run interrupted by service restart before this tool call completed (${INTERRUPTED_REASON}).`,
-        });
+      if (isIdleThreadSession(run, events[events.length - 1])) {
+        if (await closeIdleSession(client, run.id)) closedIdle.push(run.id);
+        continue;
+      }
+      for (const toolUse of findDanglingToolUses(events)) {
+        await insertAgentRunEvent(client, run.id, "tool_result", syntheticToolResult(toolUse, INTERRUPTION_TEXT));
       }
 
-      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);
+      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON, "interrupted");
+      repaired.push(run.id);
     }
 
-    return orphaned.map((run) => run.id);
+    await repairInterruptedSempMessages(client);
+    return { repaired, closedIdle };
   });
 }

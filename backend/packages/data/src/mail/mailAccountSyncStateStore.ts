@@ -1,6 +1,8 @@
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { ChokePointError, ValidationError } from "../errors.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
+import type { PoolClient } from "pg";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
@@ -29,6 +31,9 @@ export function defaultSyncModeForProvider(provider: string): SyncMode {
   }
 }
 
+export const MAIL_SYNC_FAILURE_KINDS = ["reauthorization", "connectionLimit", "other"] as const;
+export type MailSyncFailureKind = (typeof MAIL_SYNC_FAILURE_KINDS)[number];
+
 export interface MailAccountSyncStateRow {
   itemId: string;
   syncMode: SyncMode;
@@ -41,6 +46,10 @@ export interface MailAccountSyncStateRow {
   lastError: string | null;
   lastActivityAt: string | null;
   nextExpectedActivityAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  failingSince: string | null;
+  initialSyncCompletedAt: string | null;
+  lastFailureKind: MailSyncFailureKind | null;
 }
 
 /** The raw `mail_account_sync_state` row shape this module reads back from Postgres. */
@@ -56,6 +65,10 @@ type MailAccountSyncStateDbRow = {
   last_error: string | null;
   last_activity_at: Date | null;
   next_expected_activity_at: Date | null;
+  last_successful_sync_at: Date | null;
+  failing_since: Date | null;
+  initial_sync_completed_at: Date | null;
+  last_failure_kind: string | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -71,11 +84,18 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
     lastError: row.last_error,
     lastActivityAt: row.last_activity_at?.toISOString() ?? null,
     nextExpectedActivityAt: row.next_expected_activity_at?.toISOString() ?? null,
+    lastSuccessfulSyncAt: row.last_successful_sync_at?.toISOString() ?? null,
+    failingSince: row.failing_since?.toISOString() ?? null,
+    initialSyncCompletedAt: row.initial_sync_completed_at?.toISOString() ?? null,
+    lastFailureKind:
+      row.last_failure_kind === null
+        ? null
+        : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -109,6 +129,18 @@ export async function getMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** Locks the current account state for a transition in the caller's transaction. */
+export async function lockMailAccountSyncState(
+  client: PoolClient,
+  itemId: string,
+): Promise<MailAccountSyncStateRow | null> {
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 export async function setSyncMode(client: Queryable, itemId: string, syncMode: SyncMode): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
@@ -132,7 +164,9 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
   await client.query(
     `UPDATE mail_account_sync_state
      SET gmail_history_id = $2, gmail_watch_expires_at = COALESCE($3, gmail_watch_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
     [input.itemId, input.historyId, input.watchExpiresAt ?? null, input.nextExpectedActivityAt],
   );
@@ -170,6 +204,68 @@ export async function recordGmailWatchRegistration(
     [itemId, input.expiresAt, input.historyId, input.emailAddress],
   );
   requireAffectedRows(result, `gmail watch registration for item ${itemId}`);
+}
+
+const PROVIDER_ACCOUNT_ADDRESS_INDEX = "mail_account_sync_state_tenant_provider_address_uq";
+
+/**
+ * Another mailbox of the same tenant already records this provider account address (issue #1454,
+ * migration 0125). The connect flows (#1686, #1736) will map it to "already connected".
+ */
+export class ProviderAccountAlreadyConnectedError extends ChokePointError {
+  constructor() {
+    super(
+      409,
+      "provider_account_already_connected",
+      "This provider account is already connected to a mailbox in this tenant",
+    );
+    this.name = "ProviderAccountAlreadyConnectedError";
+  }
+}
+
+function isProviderAccountAddressConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505" &&
+    "constraint" in error &&
+    error.constraint === PROVIDER_ACCOUNT_ADDRESS_INDEX
+  );
+}
+
+/**
+ * Records the provider-verified account address of a mailbox, normalized with `normalizeEmailAddress`
+ * (issue #1454). The row must already exist (`ensureMailAccountSyncState`). A second mailbox of the
+ * same tenant that records the same address, in any letter case, fails with
+ * `ProviderAccountAlreadyConnectedError`; the refused UPDATE changes nothing on that row. Postgres
+ * aborts the whole caller transaction on that conflict, so the caller must roll it back rather than
+ * run further statements in it. Any other error propagates unchanged.
+ */
+export async function recordProviderAccountAddress(client: Queryable, itemId: string, address: string): Promise<void> {
+  const normalized = normalizeEmailAddress(address);
+  if (normalized.length === 0) {
+    throw new ValidationError("A provider account address must not be empty", { field: "providerAccountAddress" });
+  }
+  try {
+    const result = await client.query(
+      `UPDATE mail_account_sync_state SET provider_account_address = $2 WHERE item_id = $1`,
+      [itemId, normalized],
+    );
+    requireAffectedRows(result, `provider account address for item ${itemId}`);
+  } catch (error) {
+    if (isProviderAccountAddressConflict(error)) throw new ProviderAccountAlreadyConnectedError();
+    throw error;
+  }
+}
+
+/** The provider account address recorded for a mailbox, or null when none is recorded yet (or no sync state row exists). */
+export async function getProviderAccountAddress(client: Queryable, itemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ provider_account_address: string | null }>(
+    `SELECT provider_account_address FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
+  return rows[0]?.provider_account_address ?? null;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -225,7 +321,9 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
      SET graph_delta_link = $2,
          graph_subscription_id = COALESCE($3, graph_subscription_id),
          graph_subscription_expires_at = COALESCE($4, graph_subscription_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
     [
       input.itemId,
@@ -313,7 +411,11 @@ export interface RecordImapActivityInput {
 
 export async function recordImapActivity(client: Queryable, input: RecordImapActivityInput): Promise<void> {
   await client.query(
-    `UPDATE mail_account_sync_state SET last_error = NULL, last_activity_at = now(), next_expected_activity_at = $2 WHERE item_id = $1`,
+    `UPDATE mail_account_sync_state
+     SET last_error = NULL, last_activity_at = now(), next_expected_activity_at = $2,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
+     WHERE item_id = $1`,
     [input.itemId, input.nextExpectedActivityAt],
   );
 }
@@ -325,13 +427,24 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
  * would make the sweep hammer the same broken account every cycle instead of settling into a
  * bounded retry cadence.
  */
-export async function recordSyncError(client: Queryable, itemId: string, error: string): Promise<void> {
-  await client.query(
+export async function recordSyncError(
+  client: Queryable,
+  itemId: string,
+  error: string,
+  failureKind: MailSyncFailureKind,
+): Promise<Date | null> {
+  const result = await client.query<{ failing_since: Date }>(
     `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes'
-     WHERE item_id = $1`,
-    [itemId, error],
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes',
+         failing_since = COALESCE(failing_since, now()), last_failure_kind = $3
+     WHERE item_id = $1
+     RETURNING failing_since`,
+    [itemId, error, failureKind],
   );
+  // Zero rows is a valid outcome: the state row was removed while the pass ran. Otherwise returns the
+  // start of the failure streak, kept from an earlier failure.
+  if (!result.rowCount) return null;
+  return result.rows[0]?.failing_since ?? null;
 }
 
 /**
@@ -347,13 +460,28 @@ export async function recordConnectionLimitBackoff(
   itemId: string,
   error: string,
   delaySeconds: number,
+  failureKind: MailSyncFailureKind,
 ): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3)
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3),
+         failing_since = COALESCE(failing_since, now()), last_failure_kind = $4
      WHERE item_id = $1`,
-    [itemId, error, delaySeconds],
+    [itemId, error, delaySeconds, failureKind],
   );
+}
+
+/** Repairs one bounded page of unclassified stored errors after the normal sweep enqueues. */
+export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Promise<void> {
+  await client.query(`WITH page AS (
+    SELECT tenant_id, item_id FROM mail_account_sync_state
+    WHERE tenant_id = app_tenant_default() AND last_error IS NOT NULL
+      AND last_activity_at IS NULL AND last_failure_kind IS NULL
+    ORDER BY item_id LIMIT 200 FOR UPDATE SKIP LOCKED
+  )
+  UPDATE mail_account_sync_state AS state SET last_failure_kind = 'other'
+  FROM page WHERE state.tenant_id = page.tenant_id AND state.item_id = page.item_id
+    AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
 }
 
 /** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */

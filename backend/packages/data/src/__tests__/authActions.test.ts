@@ -1,16 +1,31 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
-import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
+import {
+  getActiveSessionByTokenHash,
+  isSessionActive,
+  listActiveSessionsForUser,
+  listSessionsForUser,
+} from "../auth/sessionsStore.js";
 import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
-import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
+import {
+  login,
+  verifySessionToken,
+  logout,
+  revokeUserSession,
+  revokeOtherUserSessions,
+  bootstrapFirstAccount,
+} from "../auth/authActions.js";
+import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
+import { SESSION_IDLE_TTL_SECONDS_BY_PLATFORM, SESSION_MAX_LIFETIME_SECONDS } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
@@ -34,6 +49,36 @@ describe("auth actions (issue #140)", () => {
     await pool?.end();
   });
 
+  describe("active session listing", () => {
+    it("filters by owner, expiry and revocation and sorts by last activity", async () => {
+      const user = await makeUser();
+      const other = await makeUser("other@example.com");
+      const signIn = (email: string) =>
+        login(pool, { email, password: "s3cret-password", platform: "web", ip: "127.0.0.1" });
+      const [first, second, revoked, expired, foreign] = await Promise.all([
+        signIn(user.email),
+        signIn(user.email),
+        signIn(user.email),
+        signIn(user.email),
+        signIn(other.email),
+      ]);
+      await pool.query("UPDATE sessions SET last_seen_at = now() - interval '1 hour' WHERE id = $1", [
+        first.session.id,
+      ]);
+      await pool.query("UPDATE sessions SET revoked_at = now() WHERE id = $1", [revoked.session.id]);
+      await pool.query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1", [
+        expired.session.id,
+      ]);
+      expect((await listActiveSessionsForUser(pool, user.id)).map((session) => session.id)).toEqual([
+        second.session.id,
+        first.session.id,
+      ]);
+      expect((await listActiveSessionsForUser(pool, other.id)).map((session) => session.id)).toEqual([
+        foreign.session.id,
+      ]);
+    });
+  });
+
   describe("login", () => {
     it("creates a session and returns an opaque token that later verifies", async () => {
       const user = await makeUser();
@@ -45,13 +90,54 @@ describe("auth actions (issue #140)", () => {
         ip: "127.0.0.1",
       });
 
-      expect(result.user).toEqual({ id: user.id, email: user.email, locale: user.locale, createdAt: user.createdAt });
+      expect(result.user).toEqual({
+        id: user.id,
+        email: user.email,
+        displayName: null,
+        locale: user.locale,
+        createdAt: user.createdAt,
+      });
+      expect(result.role).toBe("member");
       expect(result.token).toBeTruthy();
       expect((result.user as { passwordHash?: unknown }).passwordHash).toBeUndefined();
 
       const identity = await verifySessionToken(pool, result.token);
       expect(identity.user.id).toBe(user.id);
       expect(identity.session.id).toBe(result.session.id);
+    });
+
+    it("persists the device passed to login, and leaves the device columns NULL without one", async () => {
+      const user = await makeUser();
+      const device = {
+        deviceId: "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+        deviceName: "iPad Air",
+        deviceKind: "ipad",
+        osVersion: "26.0",
+        appVersion: "2.0.0",
+      } as const;
+
+      const withDevice = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+        device,
+      });
+      expect(withDevice.session).toMatchObject(device);
+
+      const without = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      expect(without.session).toMatchObject({
+        deviceId: null,
+        deviceName: null,
+        deviceKind: null,
+        osVersion: null,
+        appVersion: null,
+      });
     });
 
     it("records a successful attempt", async () => {
@@ -93,6 +179,56 @@ describe("auth actions (issue #140)", () => {
       expect(first.session.id).not.toBe(second.session.id);
       const sessions = await listSessionsForUser(pool, user.id);
       expect(sessions).toHaveLength(2);
+    });
+  });
+
+  describe("display name and role (issue #1387)", () => {
+    it("createUser returns a null displayName for an account created without one", async () => {
+      const user = await makeUser();
+      expect(user.displayName).toBeNull();
+    });
+
+    it("login and verifySessionToken return the displayName stored on the account", async () => {
+      const user = await makeUser();
+      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      expect(result.user.displayName).toBe("Ada Lovelace");
+
+      const identity = await verifySessionToken(pool, result.token);
+      expect(identity.user.displayName).toBe("Ada Lovelace");
+    });
+
+    it("login returns the role of the account, admin or member", async () => {
+      const admin = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "admin@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        role: "admin",
+      });
+      const member = await makeUser("member@example.com");
+
+      const adminLogin = await login(pool, {
+        email: admin.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      const memberLogin = await login(pool, {
+        email: member.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+
+      expect(adminLogin.role).toBe("admin");
+      expect(memberLogin.role).toBe("member");
     });
   });
 
@@ -242,6 +378,97 @@ describe("auth actions (issue #140)", () => {
 
       const active = await getActiveSessionByTokenHash(pool, session.tokenHash);
       expect(active?.lastSeenAt).not.toBe(before);
+    });
+  });
+
+  describe("sliding session expiry (issue #1512)", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    async function loginAs(platform: "web" | "ios" | "macos") {
+      const user = await makeUser(`${platform}-slide@example.com`);
+      return login(pool, { email: user.email, password: "s3cret-password", platform, ip: "1.1.1.1" });
+    }
+
+    // Raw SQL: production cannot age a session, and the test needs created_at/expires_at in the past.
+    async function setTimes(id: string, createdDaysAgo: number, expiresInDays: number): Promise<void> {
+      await withTransaction(pool, (client) =>
+        client.query(
+          `UPDATE sessions SET created_at = now() - make_interval(days => $2::int),
+                               expires_at = now() + make_interval(days => $3::int) WHERE id = $1`,
+          [id, createdDaysAgo, expiresInDays],
+        ),
+      );
+    }
+
+    async function expiresAtMs(id: string): Promise<number> {
+      const { rows } = await pool.query<{ expires_at: Date }>(`SELECT expires_at FROM sessions WHERE id = $1`, [id]);
+      return rows[0]!.expires_at.getTime();
+    }
+
+    it.each([
+      ["ios", 90],
+      ["macos", 90],
+      ["web", 30],
+    ] as const)("pushes a %s session expiry to about %i days ahead", async (platform, days) => {
+      const { token, session } = await loginAs(platform);
+      expect(SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[platform]).toBe(days * 86400);
+      await setTimes(session.id, 0, 1);
+
+      await verifySessionToken(pool, token);
+
+      const delta = (await expiresAtMs(session.id)) - Date.now();
+      expect(Math.abs(delta - days * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("sets the initial expiry from the platform idle window", async () => {
+      const ios = await loginAs("ios");
+      const web = await loginAs("web");
+      expect(Math.abs(Date.parse(ios.session.expiresAt) - Date.now() - 90 * DAY_MS)).toBeLessThan(60_000);
+      expect(Math.abs(Date.parse(web.session.expiresAt) - Date.now() - 30 * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("caps expiry at created_at + 365 days for a session created 364 days ago", async () => {
+      const { token, session } = await loginAs("ios");
+      await setTimes(session.id, 364, 1);
+
+      await verifySessionToken(pool, token);
+
+      const { rows } = await pool.query<{ capped: boolean }>(
+        `SELECT expires_at = created_at + make_interval(secs => $2::double precision) AS capped FROM sessions WHERE id = $1`,
+        [session.id, SESSION_MAX_LIFETIME_SECONDS],
+      );
+      expect(rows[0]?.capped).toBe(true);
+    });
+
+    it("never moves expires_at earlier when it is below the ceiling", async () => {
+      const { token, session } = await loginAs("web");
+      // Idle window would give now()+30d, but the row already expires later than that.
+      await setTimes(session.id, 0, 200);
+      const before = await expiresAtMs(session.id);
+
+      await verifySessionToken(pool, token);
+
+      expect(await expiresAtMs(session.id)).toBeGreaterThanOrEqual(before);
+    });
+
+    it("clamps a synthetic above-ceiling expiry to the absolute ceiling", async () => {
+      const { token, session } = await loginAs("web");
+      // Synthetic boundary: production login does not create an expiry beyond the absolute ceiling.
+      await setTimes(session.id, 0, 400);
+      await verifySessionToken(pool, token);
+      const { rows } = await pool.query<{ capped: boolean }>(
+        "SELECT expires_at = created_at + interval '365 days' AS capped FROM sessions WHERE id = $1",
+        [session.id],
+      );
+      expect(rows).toEqual([{ capped: true }]);
+    });
+
+    it("rejects a token unused for longer than its idle window with 401", async () => {
+      const { token, session } = await loginAs("web");
+      await setTimes(session.id, 31, -1);
+
+      await expect(verifySessionToken(pool, token)).rejects.toThrow(UnauthorizedError);
+      expect(await expiresAtMs(session.id)).toBeLessThan(Date.now());
     });
   });
 
@@ -488,6 +715,124 @@ describe("auth actions (issue #140)", () => {
     it("returns false for an unknown session id", async () => {
       const user = await makeUser();
       expect(await revokeUserSession(pool, user.id, "00000000-0000-0000-0000-000000000000")).toBe(false);
+    });
+  });
+
+  describe("revokeOtherUserSessions (issue #1650)", () => {
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
+    const password = "s3cret-password";
+
+    async function threeSessions(email = "person@example.com") {
+      const user = await makeUser(email, password);
+      const sessions = [];
+      for (const platform of ["web", "ios", "macos"] as const) {
+        sessions.push(await login(pool, { email: user.email, password, platform, ip: "1.1.1.1" }));
+      }
+      const [current, ...others] = sessions;
+      if (!current) throw new Error("no session");
+      return { user, current, others };
+    }
+
+    async function registration(userId: string, sessionId: string | null) {
+      return upsertWebPushSubscription(pool, {
+        userId,
+        sessionId,
+        endpoint: `https://push.example.test/${randomUUID()}`,
+        p256dh: "key",
+        authSecret: "secret",
+      });
+    }
+
+    async function revokedAt(id: string): Promise<Date | null> {
+      const { rows } = await pool.query<{ revoked_at: Date | null }>(
+        "SELECT revoked_at FROM push_subscriptions WHERE id = $1",
+        [id],
+      );
+      const row = rows[0];
+      if (!row) throw new Error("registration not found");
+      return row.revoked_at;
+    }
+
+    it("revokes every other session and its push registrations, keeping the caller's own and sessionless ones", async () => {
+      const { user, current, others } = await threeSessions();
+      const ownRegistration = await registration(user.id, current.session.id);
+      const otherRegistrations = await Promise.all(others.map((other) => registration(user.id, other.session.id)));
+      const sessionless = await registration(user.id, null);
+
+      const count = await withTransaction(pool, (client) =>
+        revokeOtherUserSessions(client, user.id, current.session.id),
+      );
+
+      expect(count).toBe(2);
+      expect((await verifySessionToken(pool, current.token)).session.id).toBe(current.session.id);
+      for (const other of others)
+        await expect(verifySessionToken(pool, other.token)).rejects.toThrow(UnauthorizedError);
+      for (const other of otherRegistrations) expect(await revokedAt(other.id)).toBeInstanceOf(Date);
+      expect(await revokedAt(ownRegistration.id)).toBeNull();
+      expect(await revokedAt(sessionless.id)).toBeNull();
+    });
+
+    it("fires one session-revoked event per revoked session, only after the commit", async () => {
+      const { user, current, others } = await threeSessions();
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      let beforeCommit: SessionRevokedEvent[] | undefined;
+
+      await withTransaction(pool, async (client) => {
+        await revokeOtherUserSessions(client, user.id, current.session.id);
+        beforeCommit = [...events];
+      });
+
+      expect(beforeCommit).toEqual([]);
+      expect(events.map((event) => event.sessionId).sort()).toEqual(others.map((other) => other.session.id).sort());
+    });
+
+    it("never revokes another user's sessions", async () => {
+      const { user, current } = await threeSessions("caller@example.com");
+      const otherUser = await threeSessions("other@example.com");
+      const theirRegistration = await registration(otherUser.user.id, otherUser.others[0]!.session.id);
+
+      await withTransaction(pool, (client) => revokeOtherUserSessions(client, user.id, current.session.id));
+
+      for (const session of [otherUser.current, ...otherUser.others]) {
+        expect((await verifySessionToken(pool, session.token)).session.id).toBe(session.session.id);
+      }
+      expect(await revokedAt(theirRegistration.id)).toBeNull();
+    });
+
+    it("returns 0 and fires nothing when the caller has no other active session", async () => {
+      const user = await makeUser("single@example.com", password);
+      const only = await login(pool, { email: user.email, password, platform: "ios", ip: "1.1.1.1" });
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+
+      expect(await withTransaction(pool, (client) => revokeOtherUserSessions(client, user.id, only.session.id))).toBe(
+        0,
+      );
+      expect(events).toEqual([]);
+      expect(await isSessionActive(pool, only.session.id)).toBe(true);
+    });
+
+    it("revokes nothing and fires no event when its transaction rolls back", async () => {
+      const { user, current, others } = await threeSessions();
+      const otherRegistration = await registration(user.id, others[0]!.session.id);
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      const rollback = new Error("roll back");
+
+      await expect(
+        withTransaction(pool, async (client) => {
+          expect(await revokeOtherUserSessions(client, user.id, current.session.id)).toBe(2);
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+
+      expect(events).toEqual([]);
+      for (const other of others) expect(await isSessionActive(pool, other.session.id)).toBe(true);
+      expect(await revokedAt(otherRegistration.id)).toBeNull();
     });
   });
 

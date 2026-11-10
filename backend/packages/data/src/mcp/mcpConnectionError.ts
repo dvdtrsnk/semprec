@@ -23,16 +23,32 @@ export const MCP_CONNECTION_ERROR_REASONS = [
   // so the SDK gives this factory no way to tell a transport-open failure apart from a handshake
   // failure — both map to this single reason.
   "handshake_failed",
+  // The handshake did not finish within the connect timeout (issue #1444); told apart from
+  // `handshake_failed` by the timeout marker the factory raises, never by parsing a message.
+  "connect_timeout",
 ] as const;
+
+/** Default bound on `Client.connect()` (transport open plus `initialize` handshake). */
+export const MCP_DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
 export type McpConnectionErrorReason = (typeof MCP_CONNECTION_ERROR_REASONS)[number];
 
 export class McpConnectionError extends Error {
   readonly reason: McpConnectionErrorReason;
+  /** The 401/403 status the server rejected the connect with, when the transport reported one (issue #1444); a number only, never a message. */
+  readonly httpStatus?: number;
 
-  constructor(reason: McpConnectionErrorReason, message: string) {
+  constructor(reason: McpConnectionErrorReason, message: string, httpStatus?: number) {
     super(message);
     this.name = "McpConnectionError";
     this.reason = reason;
+    if (httpStatus !== undefined) this.httpStatus = httpStatus;
+  }
+}
+
+/** A typed SDK authorization failure during the handshake, without an invented HTTP status. */
+export class McpConnectionAuthenticationError extends McpConnectionError {
+  constructor(message: string) {
+    super("handshake_failed", message);
   }
 }

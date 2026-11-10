@@ -8,7 +8,7 @@ export {
   AgentRunCancelledError,
   type RunAgentSessionInput,
 } from "./lifecycleAdapter.js";
-export { repairInterruptedRuns } from "./startupRepair.js";
+export { closeIdleThreadSessions, repairInterruptedRuns } from "./startupRepair.js";
 export {
   DelegationRegistry,
   BUSY_ERROR_MESSAGE,
@@ -27,7 +27,12 @@ export {
   SempConversation,
   SEMP_BUSY_ERROR_MESSAGE,
   createReconstructConversationHistory,
+  createBoundedSempHistory,
   type SempConversationOptions,
+  type SempSendOptions,
+  type SempThread,
+  type SempThreadWake,
+  type SempTurnStart,
   type SempTurnResult,
   type ReconstructConversationHistory,
 } from "./sempConversation.js";

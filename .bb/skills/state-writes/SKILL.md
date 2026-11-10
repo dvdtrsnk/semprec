@@ -75,14 +75,17 @@ bypasses the owner bypasses whatever invariants the owner enforces, and the
 next change to the owner silently stops covering it.
 
 A derived `owner: 'system'` field that must always reflect other properties on the
-same item (e.g. Tasks' `time`, computed from `timeFrom`/`timeTo`) is computed
-inline inside the choke-point's create/update path, keyed off the database's
-`ownerModuleId`, in the same transaction as the write that changed its inputs —
-not via a second writer reacting after the fact. This is distinct from the
+same item (e.g. Tasks' `time`, computed from `timeFrom`/`timeTo`) is computed by a
+pre-write transform the owning module registers under its module id
+(`registerItemPreWriteTransform` in `chokePoint/hooks.ts`, wired in
+`domainWriteHooks.ts`). The transform runs inside the create/update path, before the
+row is written, in the same transaction as the write that changed its inputs — not
+via a second writer reacting after the fact. This is distinct from the
 `allowedSystemKeys` escape hatch (which only relaxes the permission check for a
 caller that already computed the value); a derived field needs the value computed
 automatically regardless of caller. See
-`docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md`.
+`docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md`, which
+supersedes `docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md`.
 
 ## 3. Agent code proposes, humans (or grants) confirm
 

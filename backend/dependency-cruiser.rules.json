@@ -190,13 +190,25 @@
     {
       "name": "chokepoint-knows-no-domain",
       "severity": "error",
-      "comment": "Issue #659 (pre-tenancy-groundwork batch): docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md forbids a choke-point domain module importing another one, but nothing previously stopped a choke-point module from importing a domain folder directly. A domain's own transactional side effect reaches the choke point through chokePoint/hooks.ts's per-process registry (registered by domainWriteHooks.ts), never a direct import back the other way. The domain list is explicit, so a new domain folder must be added here to be covered. schemaCoreModuleManifest.ts is exempt because it legitimately wires domain route handlers and tools; itemTrash.ts is exempt because its cascade delete/restore/purge imports of blobs/docs/library are the itemDeleteWithClient path, which this issue deliberately leaves without a hook (no domain needs a delete hook today). scheduler/, rollup/, views/, seed/, tasks/, migrationJob/ and the root-level systemSettings.ts/timezone.ts/realtimeHook.ts are deliberately not listed — they are imported by several choke-point modules today and are not this issue's concern.",
+      "comment": "Issue #659 (pre-tenancy-groundwork batch): docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md forbids a choke-point domain module importing another one, but nothing previously stopped a choke-point module from importing a domain folder directly. A domain's own transactional side effect reaches the choke point through chokePoint/hooks.ts's per-process registry (registered by domainWriteHooks.ts), never a direct import back the other way. The domain list is explicit, so a new domain folder must be added here (and to item-trash-domain-imports-are-purge-only below) to be covered. schemaCoreModuleManifest.ts is exempt because it legitimately wires domain route handlers and tools. itemTrash.ts is exempt only for the listed-domain imports its permanent purge (deleteItemDependents) still needs; its trash and restore cascades reach domains through the item delete and restore hooks of chokePoint/hooks.ts (issue #1601, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md), and item-trash-domain-imports-are-purge-only below refuses any other listed-domain import there. scheduler/, rollup/, views/, seed/, tasks/, migrationJob/ and the root-level systemSettings.ts/timezone.ts/realtimeHook.ts are deliberately not listed — they are imported by several choke-point modules today and are not this issue's concern.",
       "from": {
         "path": "^packages/data/src/chokePoint/",
         "pathNot": "^packages/data/src/chokePoint/(schemaCoreModuleManifest|itemTrash)\\.ts$"
       },
       "to": {
-        "path": "^packages/data/src/(mail|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
+        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
+      }
+    },
+    {
+      "name": "item-trash-domain-imports-are-purge-only",
+      "severity": "error",
+      "comment": "Issue #1601 / docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md: itemTrash.ts is exempt from chokepoint-knows-no-domain only for the seven listed-domain modules its permanent purge (deleteItemDependents) calls today. A domain that must act on a trash or restore registers an item delete or restore hook in domainWriteHooks.ts instead of being imported here. The domain list mirrors chokepoint-knows-no-domain above.",
+      "from": {
+        "path": "^packages/data/src/chokePoint/itemTrash\\.ts$"
+      },
+      "to": {
+        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/",
+        "pathNot": "^packages/data/src/(blobs/blobsStore|docs/docsStore|inbox/inboxAttachmentsStore|inbox/itemOriginsStore|library/itemAutomationStore|transcription/recordingIntake|transcription/transcriptionComputedKeys)\\.ts$"
       }
     },
     {

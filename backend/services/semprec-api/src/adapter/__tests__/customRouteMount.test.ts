@@ -1,10 +1,28 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
-import { createUser, hashPassword, login } from "@semprec/data";
+import {
+  createUser,
+  hashPassword,
+  loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
+  login,
+  noopPasswordResetMailer,
+} from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
-import { mountCustomRoutes, type CustomRouteHandlerFactory } from "../customRouteMount.js";
+import { createDispatcher } from "../../app.js";
+import {
+  CustomRouteConfigurationError,
+  createCustomRouteDependencies,
+  mountCustomRoutes,
+  requireCustomRouteDependency,
+  type CustomRouteDependencies,
+  type CustomRouteHandlerFactory,
+} from "../customRouteMount.js";
 
 let pool: Pool;
 
@@ -18,6 +36,26 @@ async function tokenFor(email: string): Promise<string> {
   });
   const result = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
   return result.token;
+}
+
+/** Mounts `definitions` with `dependencies` on a real in-memory server; a path matching none of them answers 404. */
+async function listen(
+  definitions: ModuleCustomRouteDefinition[],
+  dependencies: CustomRouteDependencies,
+): Promise<Server> {
+  const dispatchCustomRoute = mountCustomRoutes(pool, definitions, dependencies);
+  const server = createServer((req, res) => {
+    if (dispatchCustomRoute(req, res)) return;
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  return server;
+}
+
+function baseUrlOf(server: Server): string {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+  return `http://127.0.0.1:${address.port}`;
 }
 
 /** A fixture handler factory echoing the extracted `:id` path parameter back as the response body. */
@@ -48,6 +86,38 @@ const DEFINITIONS: ModuleCustomRouteDefinition[] = [
   },
 ];
 
+/** Reads the `oauth` member when it runs, never when the factory is mounted. */
+const redirectBaseFactory: CustomRouteHandlerFactory = (_pool, dependencies) => async () => {
+  const oauth = requireCustomRouteDependency(dependencies, "oauth");
+  return { status: 200, body: { redirectBaseUrl: oauth.redirectBaseUrl } };
+};
+
+/** Reads the `mailLiveSync` member when it runs, never when the factory is mounted. */
+const startMailboxFactory: CustomRouteHandlerFactory = (_pool, dependencies) => async () => {
+  const liveSync = requireCustomRouteDependency(dependencies, "mailLiveSync");
+  await liveSync.startMailbox("tenant-fixture", "mailbox-fixture");
+  return { status: 200, body: { started: true } };
+};
+
+const REDIRECT_DEFINITION: ModuleCustomRouteDefinition = {
+  moduleId: "fixture-module",
+  name: "fixtureRedirectBase",
+  method: "GET",
+  path: "/api/fixture-redirect",
+  handler: redirectBaseFactory,
+};
+
+const DEPENDENT_DEFINITIONS: ModuleCustomRouteDefinition[] = [
+  REDIRECT_DEFINITION,
+  {
+    moduleId: "fixture-module",
+    name: "fixtureStartMailbox",
+    method: "POST",
+    path: "/api/fixture-mailbox/start",
+    handler: startMailboxFactory,
+  },
+];
+
 describe("custom route mount (issue #239)", () => {
   let server: Server;
   let baseUrl: string;
@@ -56,23 +126,12 @@ describe("custom route mount (issue #239)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
 
-    const dispatchCustomRoute = mountCustomRoutes(pool, DEFINITIONS);
-    server = createServer((req, res) => {
-      if (dispatchCustomRoute(req, res)) return;
-      res.writeHead(404).end();
-    });
-    await new Promise<void>((resolve) => server.listen(0, resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-    baseUrl = `http://127.0.0.1:${address.port}`;
+    server = await listen(DEFINITIONS, createCustomRouteDependencies());
+    baseUrl = baseUrlOf(server);
   });
 
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
-
-  afterAll(async () => {
-    await pool?.end();
   });
 
   it("extracts a `:id` path parameter and authenticates through the shared adapter", async () => {
@@ -114,5 +173,197 @@ describe("custom route mount (issue #239)", () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("composition-root dependencies of custom routes (issue gh-1460)", () => {
+  const openServers: Server[] = [];
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+  });
+
+  afterEach(async () => {
+    for (const server of openServers.splice(0)) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    vi.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("hands each factory the pool and the container given to the mount", () => {
+    const seen: { pool?: Pool; dependencies?: CustomRouteDependencies } = {};
+    const container = createCustomRouteDependencies();
+    const capturing: CustomRouteHandlerFactory = (factoryPool, dependencies) => {
+      seen.pool = factoryPool;
+      seen.dependencies = dependencies;
+      return async () => ({ status: 200, body: {} });
+    };
+
+    mountCustomRoutes(pool, [{ ...REDIRECT_DEFINITION, handler: capturing }], container);
+
+    expect(seen.pool).toBe(pool);
+    expect(seen.dependencies).toBe(container);
+  });
+
+  it("mounts a route whose member is absent without failing at startup", () => {
+    expect(() => mountCustomRoutes(pool, DEPENDENT_DEFINITIONS, createCustomRouteDependencies())).not.toThrow();
+  });
+
+  it("a route that needs a member reads the substitute container it was mounted with", async () => {
+    const token = await tokenFor("deps-substitute@example.com");
+    const server = await listen(DEPENDENT_DEFINITIONS, {
+      oauth: { redirectBaseUrl: "https://app.example.test" },
+    });
+    openServers.push(server);
+
+    const res = await fetch(`${baseUrlOf(server)}/api/fixture-redirect`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ redirectBaseUrl: "https://app.example.test" });
+  });
+
+  it("a route whose member the root did not configure answers 500, and other routes still work", async () => {
+    const token = await tokenFor("deps-missing@example.com");
+    const server = await listen([...DEFINITIONS, ...DEPENDENT_DEFINITIONS], {
+      oauth: { redirectBaseUrl: "https://app.example.test" },
+    });
+    openServers.push(server);
+    const baseUrl = baseUrlOf(server);
+
+    const missing = await fetch(`${baseUrl}/api/fixture-mailbox/start`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(missing.status).toBe(500);
+    expect(await missing.json()).toEqual({ error: { code: "internal_error" } });
+
+    const configured = await fetch(`${baseUrl}/api/fixture-redirect`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(configured.status).toBe(200);
+    expect(await configured.json()).toEqual({ redirectBaseUrl: "https://app.example.test" });
+
+    const untouched = await fetch(`${baseUrl}/api/fixture-things/abc-123`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(untouched.status).toBe(200);
+    expect(await untouched.json()).toEqual({ id: "abc-123" });
+  });
+
+  it("requireCustomRouteDependency returns the member the container holds", () => {
+    const fakeFetch: typeof fetch = async () => new Response("ok");
+
+    expect(requireCustomRouteDependency({ outboundHttp: fakeFetch }, "outboundHttp")).toBe(fakeFetch);
+  });
+
+  it("requireCustomRouteDependency throws a configuration error that names a member the root did not configure", () => {
+    expect(() => requireCustomRouteDependency({}, "mailLiveSync")).toThrow(CustomRouteConfigurationError);
+    expect(() => requireCustomRouteDependency({}, "mailLiveSync")).toThrow(/"mailLiveSync"/);
+  });
+
+  it("createDispatcher copies the caller container and supplies its own registry provider", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
+    const seen: { pool?: Pool; dependencies?: CustomRouteDependencies } = {};
+    const capturing: CustomRouteHandlerFactory = (factoryPool, dependencies) => {
+      seen.pool = factoryPool;
+      seen.dependencies = dependencies;
+      return async () => ({ status: 200, body: {} });
+    };
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue([
+      { ...REDIRECT_DEFINITION, handler: capturing },
+    ]);
+    const callerProvider = vi.fn(async () => new Map());
+    const container: CustomRouteDependencies = {
+      oauth: { redirectBaseUrl: "https://app.example.test" },
+      heartbeatRuleKinds: callerProvider,
+    };
+
+    await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+      customRouteDependencies: container,
+    });
+
+    expect(seen.pool).toBe(pool);
+    expect(seen.dependencies).not.toBe(container);
+    expect(seen.dependencies?.oauth).toBe(container.oauth);
+    expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    expect(container.oauth).toEqual({ redirectBaseUrl: "https://app.example.test" });
+    expect(Object.keys(container).sort()).toEqual(["heartbeatRuleKinds", "oauth"]);
+    expect(container.heartbeatRuleKinds).toBe(callerProvider);
+    expect(registryRules).not.toHaveBeenCalled();
+    await seen.dependencies?.heartbeatRuleKinds?.();
+    expect(registryRules).toHaveBeenCalledOnce();
+    expect(callerProvider).not.toHaveBeenCalled();
+  });
+
+  it("uses the injected mailbox control through the dispatcher and factory on a request", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue(DEPENDENT_DEFINITIONS);
+    const startMailbox = vi.fn(async () => {});
+    const stopMailbox = vi.fn(async () => {});
+    const dispatcher = await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+      customRouteDependencies: { mailLiveSync: { startMailbox, stopMailbox } },
+    });
+    const server = createServer(dispatcher);
+    openServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const token = await tokenFor("dispatcher-control@example.com");
+    const response = await fetch(`${baseUrlOf(server)}/api/fixture-mailbox/start`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ started: true });
+    expect(startMailbox).toHaveBeenCalledExactlyOnceWith("tenant-fixture", "mailbox-fixture");
+    expect(stopMailbox).not.toHaveBeenCalled();
+  });
+
+  it("createDispatcher supplies only its registry provider when the caller gives no container", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
+    const seen: { dependencies?: CustomRouteDependencies } = {};
+    const capturing: CustomRouteHandlerFactory = (_factoryPool, dependencies) => {
+      seen.dependencies = dependencies;
+      return async () => ({ status: 200, body: {} });
+    };
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue([
+      { ...REDIRECT_DEFINITION, handler: capturing },
+    ]);
+
+    await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+    });
+
+    expect(Object.keys(seen.dependencies ?? {})).toEqual(["heartbeatRuleKinds"]);
+    expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    expect(registryRules).not.toHaveBeenCalled();
+    await seen.dependencies?.heartbeatRuleKinds?.();
+    expect(registryRules).toHaveBeenCalledOnce();
   });
 });

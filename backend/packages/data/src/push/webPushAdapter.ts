@@ -48,7 +48,13 @@ export async function sendWebPushNotification(
   try {
     await webpush.sendNotification(
       { endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.authSecret } },
-      JSON.stringify({ title: payload.title, linkHref: payload.linkHref, notificationId: payload.notificationId }),
+      JSON.stringify({
+        title: payload.title,
+        // Omitted, not null, when the notification has no body (issue #1773).
+        ...(payload.body === null ? {} : { body: payload.body }),
+        linkHref: payload.linkHref,
+        notificationId: payload.notificationId,
+      }),
       {
         vapidDetails: {
           subject: resolvedConfig.subject,

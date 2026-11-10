@@ -5,10 +5,62 @@ import {
   type TenantScope,
   type TransactionIsolationLevel,
 } from "@semprec/shared";
+import {
+  addPreparedJob,
+  assertSearchTaskIdentifiersRegistered,
+  SEARCH_TASK_IDENTIFIERS,
+  type PreparedJob,
+} from "@semprec/queue";
 import { logger } from "./logger.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 /** Anything a query can run against: a pool, or a client already inside a transaction. */
 export type Queryable = Pool | PoolClient;
+
+interface TransactionOwner {
+  client: PoolClient;
+  active: boolean;
+  failure?: { error: unknown };
+  keyedCallbacks: Map<symbol, Map<string, { callback: () => void }>>;
+  /** The tenant of the scope this invocation was opened in; `null` for a system or unscoped one. */
+  tenantId: string | null;
+  /** Search-lane enqueues registered while the body ran, in registration order. */
+  searchJobs: PreparedJob[];
+}
+
+/**
+ * The two-key advisory lock classes of the search flush (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md):
+ * a tenant's flush locks `(SEARCH_FLUSH_TENANT_LOCK_CLASS, hashtext(tenant id))`, a system one
+ * `(SEARCH_FLUSH_SYSTEM_LOCK_CLASS, 0)`. `seedSystem.ts` holds the only other two-key class (2331);
+ * PostgreSQL keeps two-key advisory locks apart from the single-key ones the other owners take.
+ */
+export const SEARCH_FLUSH_TENANT_LOCK_CLASS = 2332;
+export const SEARCH_FLUSH_SYSTEM_LOCK_CLASS = 2333;
+
+const SEARCH_IDENTIFIERS: ReadonlySet<string> = new Set<string>(SEARCH_TASK_IDENTIFIERS);
+
+const transactionOwner = new AsyncLocalStorage<TransactionOwner>();
+
+/** Internal ownership check for protected operations on supplied clients. */
+export function requireManagedTransaction(client: PoolClient): void {
+  const owner = transactionOwner.getStore();
+  if (!owner?.active || owner.client !== client)
+    throw new Error("Protected relation requires an active managed transaction");
+}
+
+/** Internal rollback-only state belongs to the invocation, not a PostgreSQL savepoint. */
+export function markManagedTransactionRollbackOnly(client: PoolClient, error: unknown): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (!owner) throw new Error("Protected relation requires an active managed transaction");
+  owner.failure ??= { error };
+}
+
+export function assertManagedTransactionCommittable(client: PoolClient): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (owner?.failure) throw owner.failure.error;
+}
 
 /** How long `pool.connect()` waits for a connection before rejecting. */
 export const CONNECTION_TIMEOUT_MS = 10_000;
@@ -52,6 +104,22 @@ function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
+function releaseTransactionClient(
+  client: PoolClient,
+  releaseError: Error | undefined,
+  hasPrimaryFailure: boolean,
+): void {
+  try {
+    client.release(releaseError);
+  } catch (error) {
+    if (!hasPrimaryFailure) throw error;
+    logger.error(
+      { errorCategory: error instanceof Error ? "error" : "non_error" },
+      "withTransaction: release failed while handling a transaction error",
+    );
+  }
+}
+
 /** Acquires a client from a `createPool` pool without the session-level tenant hook; plain pools connect normally. */
 const rawConnectors = new WeakMap<Pool, () => Promise<PoolClient>>();
 
@@ -72,7 +140,9 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
     connectionString,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
     Client: DetachedScopeClient,
-    ...(options.role ? { options: `-c role=${options.role}` } : {}),
+    // A startup option holds for every pooled connection from its first statement, so a
+    // `timestamptz` cast of an offset-less string never depends on the server's configured zone.
+    options: options.role ? `-c TimeZone=UTC -c role=${options.role}` : "-c TimeZone=UTC",
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
   });
   // pg's Pool emits 'error' when an idle client is dropped by the server (restart,
@@ -223,6 +293,81 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
   }
 }
 
+/** Registers one replaceable callback slot owned by the active managed transaction. */
+export function runAfterCommitKeyed(client: PoolClient, namespace: symbol, key: string, callback: () => void): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (!owner) throw new Error("Protected relation requires an active managed transaction");
+  let keyed = owner.keyedCallbacks.get(namespace);
+  if (!keyed) {
+    keyed = new Map();
+    owner.keyedCallbacks.set(namespace, keyed);
+  }
+  const slot = keyed.get(key);
+  if (slot) {
+    slot.callback = callback;
+  } else {
+    const next = { callback };
+    keyed.set(key, next);
+    runAfterCommit(client, () => next.callback());
+  }
+}
+
+/**
+ * Registers one search-lane enqueue on the active managed transaction of `client`; the job is added
+ * at that transaction's pre-commit flush, after its body succeeded. Refused, before anything is
+ * registered: a client that is not the active owner's (an unmanaged client, another transaction's,
+ * a body that already returned, work started from it after it returned, an after-commit callback),
+ * a task outside `SEARCH_TASK_IDENTIFIERS`, a job stamped with another tenant than the
+ * transaction's, and a key already registered for another task.
+ */
+export function registerSearchJob(client: PoolClient, job: PreparedJob): void {
+  const owner = transactionOwner.getStore();
+  if (!owner?.active || owner.client !== client)
+    throw new Error("A search-lane enqueue requires the active managed transaction of its client");
+  if (!SEARCH_IDENTIFIERS.has(job.identifier))
+    throw new Error(`Only an item-search task can be registered for the pre-commit flush: ${job.identifier}`);
+  if (job.tenantId !== owner.tenantId)
+    throw new Error("A search-lane enqueue must carry the tenant its transaction was opened in");
+  if (owner.searchJobs.some((other) => other.jobKey === job.jobKey && other.identifier !== job.identifier))
+    throw new Error(`Search-lane job key ${job.jobKey} is already registered for another task`);
+  owner.searchJobs.push(job);
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * The pre-commit flush: checks that the search task identifiers are registered, takes the
+ * transaction's tenant lock, then adds the registered jobs grouped by job key, groups in
+ * (identifier, key) order and each group's calls in registration order. It runs only these
+ * statements.
+ */
+async function flushSearchJobs(client: PoolClient, owner: TransactionOwner): Promise<void> {
+  const jobs = owner.searchJobs.splice(0);
+  if (jobs.length === 0) return;
+  await assertSearchTaskIdentifiersRegistered(client);
+  if (owner.tenantId === null)
+    await client.query("SELECT pg_advisory_xact_lock($1::int4, 0)", [SEARCH_FLUSH_SYSTEM_LOCK_CLASS]);
+  else
+    await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
+      SEARCH_FLUSH_TENANT_LOCK_CLASS,
+      owner.tenantId,
+    ]);
+  // `registerSearchJob` keeps one identifier per key, so a group's identifier is that of every call in it.
+  const groups = new Map<string, { identifier: string; jobKey: string; calls: PreparedJob[] }>();
+  for (const job of jobs) {
+    const group = groups.get(job.jobKey);
+    if (group) group.calls.push(job);
+    else groups.set(job.jobKey, { identifier: job.identifier, jobKey: job.jobKey, calls: [job] });
+  }
+  const ordered = [...groups.values()].sort(
+    (a, b) => compareCodeUnits(a.identifier, b.identifier) || compareCodeUnits(a.jobKey, b.jobKey),
+  );
+  for (const group of ordered) for (const job of group.calls) await addPreparedJob(client, job);
+}
+
 export interface WithTransactionOptions {
   /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
   isolation?: TransactionIsolationLevel;
@@ -241,6 +386,10 @@ export interface WithTransactionOptions {
  * With a tenant scope active (`runInTenant`/`runAsSystem`) it sets the transaction-local
  * `app.tenant_id` right after `BEGIN`; see `docs/adr/2026-10-05-tenant-scope-propagation.md`.
  *
+ * Search-lane enqueues registered in `fn` (`registerSearchJob`) are added after `fn` succeeded and
+ * no rollback-only failure was recorded, right before `COMMIT`; a failure of that flush rolls the
+ * transaction back like a failure of `fn`.
+ *
  * On failure (from `fn` or from `COMMIT`) the original error is what propagates, even when the
  * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
  * released with that error — which makes `pg` destroy it — and never goes back into the pool.
@@ -253,6 +402,7 @@ export async function withTransaction<T>(
   const scope = enforceTenantScope("withTransaction");
   const client = await connectWithoutScopeHook(pool);
   let releaseError: Error | undefined;
+  let primaryFailure: { error: unknown } | undefined;
   try {
     if (options.isolation === "serializable") {
       await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -261,9 +411,25 @@ export async function withTransaction<T>(
     } else {
       await client.query("BEGIN");
     }
+    let owner: TransactionOwner | undefined;
     try {
       if (scope) await client.query(SET_TENANT_SQL, [scopeGucValue(scope), true]);
-      const result = await fn(client);
+      owner = {
+        client,
+        active: true,
+        keyedCallbacks: new Map(),
+        tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
+        searchJobs: [],
+      };
+      let result: T;
+      try {
+        result = await transactionOwner.run(owner, () => fn(client));
+        if (owner.failure) throw owner.failure.error;
+      } finally {
+        // Closes registration before the flush: nothing can register or mark the owner from here on.
+        owner.active = false;
+      }
+      await flushSearchJobs(client, owner);
       await client.query("COMMIT");
       const callbacks = afterCommitCallbacks.get(client);
       afterCommitCallbacks.delete(client);
@@ -290,9 +456,15 @@ export async function withTransaction<T>(
         logger.error({ err: rollbackErr }, "withTransaction: ROLLBACK failed; discarding the connection");
       }
       throw err;
+    } finally {
+      owner?.keyedCallbacks.clear();
+      owner?.searchJobs.splice(0);
     }
+  } catch (error) {
+    primaryFailure = { error };
+    throw error;
   } finally {
-    client.release(releaseError);
+    releaseTransactionClient(client, releaseError, primaryFailure !== undefined);
   }
 }
 

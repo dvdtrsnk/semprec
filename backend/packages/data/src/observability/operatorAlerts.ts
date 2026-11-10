@@ -3,6 +3,7 @@ import { runInTenant } from "@semprec/shared";
 import { listAdminRecipients } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { writeNotification } from "../notifications/notify.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { logger } from "./logger.js";
 
 export interface OperatorAlertInput {
@@ -13,6 +14,18 @@ export interface OperatorAlertInput {
   transitionInstance: string;
   /** Content-free: operator alerts reach every admin, so no tenant content may be in it. */
   payload: Record<string, unknown>;
+  /**
+   * The Semp status problem to raise for each admin, in the same per-recipient transaction as the
+   * notification (issue #1465). Omit it for an alert that raises none (`queue_backlog`).
+   */
+  problem?: {
+    kind: string;
+    category: "agents" | "backup";
+    severity: "critical" | "warning";
+    dedupeKey: string;
+    /** Identifies this transition; the admin's user id is appended like the notification's. */
+    occurrenceKey: string;
+  };
 }
 
 /**
@@ -45,8 +58,8 @@ export async function writeOperatorAlert(pool: Pool, client: PoolClient, input: 
   for (const admin of admins) {
     try {
       const id = await runInTenant(admin.tenantId, () =>
-        withTransaction(pool, (c) =>
-          writeNotification(c, {
+        withTransaction(pool, async (c) => {
+          const notificationId = await writeNotification(c, {
             userId: admin.userId,
             kind: input.kind,
             linkHref: null,
@@ -54,8 +67,21 @@ export async function writeOperatorAlert(pool: Pool, client: PoolClient, input: 
             sourceId: input.checkId,
             transitionInstance: `${input.transitionInstance}:${admin.userId}`,
             payload: input.payload,
-          }),
-        ),
+          });
+          if (input.problem) {
+            await raiseProblem(c, {
+              userId: admin.userId,
+              category: input.problem.category,
+              kind: input.problem.kind,
+              severity: input.problem.severity,
+              sourceTable: "observability_checks",
+              sourceId: input.checkId,
+              dedupeKey: input.problem.dedupeKey,
+              occurrenceKey: `${input.problem.occurrenceKey}:${admin.userId}`,
+            });
+          }
+          return notificationId;
+        }),
       );
       ids.push(id);
     } catch (err) {

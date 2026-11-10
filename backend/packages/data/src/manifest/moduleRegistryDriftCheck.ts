@@ -11,7 +11,9 @@ export async function findUnknownHeartbeatActionIds(
   client: PoolClient,
   activeHeartbeatActionIds: ReadonlySet<string>,
 ): Promise<string[]> {
-  const { rows } = await client.query<{ action_id: string }>(`SELECT DISTINCT action_id FROM project_heartbeats`);
+  const { rows } = await client.query<{ action_id: string }>(
+    `SELECT DISTINCT action_id FROM project_heartbeats WHERE tenant_id = app_tenant_default()`,
+  );
   return rows.map((row) => row.action_id).filter((actionId) => !activeHeartbeatActionIds.has(actionId));
 }
 
@@ -21,7 +23,7 @@ export async function findOrphanedOwnerProcessIds(
   activeProcessIds: ReadonlySet<string>,
 ): Promise<string[]> {
   const { rows } = await client.query<{ owner_process: string }>(
-    `SELECT DISTINCT owner_process FROM properties WHERE owner = 'system' AND owner_process IS NOT NULL`,
+    `SELECT DISTINCT owner_process FROM properties WHERE tenant_id = app_tenant_default() AND owner = 'system' AND owner_process IS NOT NULL`,
   );
   return rows.map((row) => row.owner_process).filter((ownerProcess) => !activeProcessIds.has(ownerProcess));
 }
@@ -40,7 +42,7 @@ export interface CreateModuleRegistryDriftCheckOptions {
  * the registry's current active ids and republishes/resolves findings accordingly; this is
  * deliberately narrower than manifest/driftCheck.ts's `core.driftCheck` (which additionally
  * anchors its orphan check to one project's freshly generated manifest) — this check is
- * global and purely mechanical, comparing ids/values only. It must never compare prose
+ * tenant-wide and purely mechanical, comparing ids/values only. It must never compare prose
  * (AGENT.md) guidance to permissions; that semantic half belongs to a separate, later check.
  *
  * Idempotent under concurrent runs: `publishFinding` dedupes new findings on

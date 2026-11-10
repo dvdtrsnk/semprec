@@ -1,4 +1,5 @@
-import type { Queryable } from "../db/pool.js";
+import type { PoolClient } from "pg";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { createMailThread, reassignThread } from "./mailMessageMetaStore.js";
 
 /**
@@ -8,7 +9,9 @@ import { createMailThread, reassignThread } from "./mailMessageMetaStore.js";
  * staying unthreaded, and that thread self-heals the moment the missing ancestor arrives —
  * this function checks both directions (do any of *my* `In-Reply-To`/`References` already
  * have a thread? does any *already-synced* message reference *me*?) and merges whatever it
- * finds into one thread. Must be called and its result stored (via `upsertMailMessageMeta`'s
+ * finds into one thread. A row with the same `message_id` in another mailbox (the same message
+ * delivered to several of the user's mailboxes) is consulted first: its thread (lowest
+ * `thread_id` if several differ) becomes the merge target. Must be called and its result stored (via `upsertMailMessageMeta`'s
  * `threadId`) before this message's own `mail_message_meta` row exists, so the "does anyone
  * reference me" query below only sees genuinely prior messages, never itself.
  *
@@ -24,12 +27,21 @@ export interface ThreadResolutionInput {
   subjectHint?: string;
 }
 
-export async function resolveThreadId(client: Queryable, input: ThreadResolutionInput): Promise<string> {
+export async function resolveThreadId(client: PoolClient, input: ThreadResolutionInput): Promise<string> {
+  await lockMailThreadMutation(client);
   const ancestorIds = [
     ...new Set([input.inReplyTo ?? undefined, ...(input.references ?? [])].filter((v): v is string => Boolean(v))),
   ];
 
   const foundThreadIds = new Set<string>();
+
+  // Strongest evidence first: another copy of this very message (same `Message-ID`, any
+  // mailbox). Lowest thread id first so the merge target is deterministic when several differ.
+  const { rows: sameMessageRows } = await client.query<{ thread_id: string }>(
+    `SELECT DISTINCT thread_id FROM mail_message_meta WHERE message_id = $1 AND thread_id IS NOT NULL ORDER BY thread_id`,
+    [input.messageId],
+  );
+  for (const row of sameMessageRows) foundThreadIds.add(row.thread_id);
 
   if (ancestorIds.length > 0) {
     const { rows } = await client.query<{ thread_id: string | null }>(

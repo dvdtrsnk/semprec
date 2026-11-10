@@ -14,6 +14,7 @@ import {
 } from "./approvalRequestsStore.js";
 import { resolveGrantedMcpTool } from "./mcpToolInvocation.js";
 import { executeMcpInvocation } from "./mcpToolExecution.js";
+import { postApprovalOutcomeMessage } from "./approvalOutcomeMessage.js";
 
 const logger = createLogger("mcp");
 
@@ -98,12 +99,14 @@ export async function handleApprovalRequestExecuteTask(
       return;
     }
     // No replay handler configured: fail the request instead of leaving it `queued` forever with no way to progress.
-    const recorded = await withTransaction(pool, (client) =>
-      recordApprovalRequestOutcome(client, request.id, {
+    const recorded = await withTransaction(pool, async (client) => {
+      const changed = await recordApprovalRequestOutcome(client, request.id, {
         error: true,
         result: "No generic-operation approval replay handler is configured for this worker.",
-      }),
-    );
+      });
+      if (changed) await postApprovalOutcomeMessage(client, request, "conflict");
+      return changed;
+    });
     if (!recorded) {
       logger.warn(
         { approvalRequestId: request.id },
@@ -117,9 +120,15 @@ export async function handleApprovalRequestExecuteTask(
     claimApprovalRequestExecution(client, input.approvalRequestId),
   );
   if (!claimed) {
-    const verdict = await withTransaction(pool, (client) =>
-      settleStaleApprovalRequestClaim(client, input.approvalRequestId, MCP_APPROVAL_CLAIM_STALE_AFTER_MS),
-    );
+    const verdict = await withTransaction(pool, async (client) => {
+      const settled = await settleStaleApprovalRequestClaim(
+        client,
+        input.approvalRequestId,
+        MCP_APPROVAL_CLAIM_STALE_AFTER_MS,
+      );
+      if (settled === "settled") await postApprovalOutcomeMessage(client, request, "conflict");
+      return settled;
+    });
     if (verdict === "settled") {
       logger.warn(
         { approvalRequestId: input.approvalRequestId },
@@ -149,17 +158,27 @@ export async function handleApprovalRequestExecuteTask(
 
   const noLongerAvailableOutcome: ApprovalRequestOutcome = {
     error: true,
+    outcomeKind: "toolUnavailable",
+    failure: { failureKind: "unavailable", mcpServerItemId: payload.mcpServerItemId },
     result:
       "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.",
   };
-  const outcome: ApprovalRequestOutcome =
-    target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName
-      ? await executeMcpInvocation(pool, { serverItem: target.serverItem, toolName: claimed.toolName }, payload.args, {
-          idempotencyKey: claimed.id,
-        })
-      : noLongerAvailableOutcome;
+  let outcome: ApprovalRequestOutcome = noLongerAvailableOutcome;
+  if (target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName) {
+    const invoked = await executeMcpInvocation(
+      pool,
+      { serverItem: target.serverItem, toolName: claimed.toolName },
+      payload.args,
+      { idempotencyKey: claimed.id },
+    );
+    outcome = invoked.error ? { ...invoked, outcomeKind: "callFailed" } : invoked;
+  }
 
-  const recorded = await withTransaction(pool, (client) => recordApprovalRequestOutcome(client, claimed.id, outcome));
+  const recorded = await withTransaction(pool, async (client) => {
+    const changed = await recordApprovalRequestOutcome(client, claimed.id, outcome);
+    if (changed) await postApprovalOutcomeMessage(client, claimed, outcome.error ? "conflict" : "executed");
+    return changed;
+  });
   if (!recorded) {
     logger.warn(
       { approvalRequestId: claimed.id },

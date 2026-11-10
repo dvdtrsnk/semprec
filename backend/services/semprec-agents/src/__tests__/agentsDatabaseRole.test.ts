@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
@@ -10,6 +11,10 @@ import {
   seedSystem,
 } from "@semprec/data";
 import { createGenericOperationAgentTools } from "@semprec/agent-runtime";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 /**
  * semprec-agents hosts the choke point in-process, so its pool must authenticate as `semprec_data`
@@ -79,7 +84,7 @@ describe("semprec-agents database role", () => {
 
   it("persists an agent run's item.create when the pool authenticates as semprec_data", async () => {
     const { runId, databaseId } = await createFixtures();
-    const tools = createGenericOperationAgentTools(dataPool, await loadFullModuleRegistry());
+    const tools = createGenericOperationAgentTools(dataPool, await loadFullModuleRegistry(), testMetadataResolver);
 
     const outcome = await tools["item.create"](runId, { databaseId, properties: {} });
 
@@ -89,7 +94,7 @@ describe("semprec-agents database role", () => {
 
   it("reports permission denied and writes nothing when the pool authenticates as semprec_side", async () => {
     const { runId, databaseId } = await createFixtures();
-    const tools = createGenericOperationAgentTools(sidePool, await loadFullModuleRegistry());
+    const tools = createGenericOperationAgentTools(sidePool, await loadFullModuleRegistry(), testMetadataResolver);
 
     const outcome = await tools["item.create"](runId, { databaseId, properties: {} });
 

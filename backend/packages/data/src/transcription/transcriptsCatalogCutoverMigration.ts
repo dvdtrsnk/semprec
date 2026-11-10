@@ -1,8 +1,55 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import {
+  COMPANIES_MODULE_ID,
+  PEOPLE_MODULE_ID,
+  PROJECTS_MODULE_ID,
+  TRANSCRIPTS_MODULE_ID,
+} from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "./transcriptionJob.js";
+
+/**
+ * A bidirectional relation pair between Transcripts and another database (issue #1470),
+ * mirroring the `relate(...)` calls in `seedTenDatabases.ts`. `transcriptsIsSideA` is true when
+ * the Transcripts property is property A of the relation definition; for `one_to_many` A is the
+ * "one" side, so `Projects.transcripts` is A and `Transcripts.project` is B.
+ */
+const TRANSCRIPT_RELATION_PAIRS = [
+  {
+    otherModuleId: PROJECTS_MODULE_ID,
+    transcriptsKey: "project",
+    otherKey: "transcripts",
+    cardinality: "one_to_many",
+    transcriptsIsSideA: false,
+  },
+  {
+    otherModuleId: COMPANIES_MODULE_ID,
+    transcriptsKey: "company",
+    otherKey: "transcripts",
+    cardinality: "one_to_many",
+    transcriptsIsSideA: false,
+  },
+  {
+    otherModuleId: PEOPLE_MODULE_ID,
+    transcriptsKey: "people",
+    otherKey: "transcripts",
+    cardinality: "many_to_many",
+    transcriptsIsSideA: true,
+  },
+] as const;
+
+async function insertUserRelationProperty(client: PoolClient, databaseId: string, key: string): Promise<string> {
+  // `name` is NULL like the seed's (`relate` passes `name: null`); labels come from the seed i18n.
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
+     VALUES ($1, $2, NULL, 'relation', '{}'::jsonb, false, 'user', NULL)
+     RETURNING id`,
+    [databaseId, key],
+  );
+  return requireSingleRow(rows, "properties row").id;
+}
 
 /**
  * One-time populated-upgrade cutover for issue #180's Transcripts catalog extension
@@ -40,11 +87,21 @@ export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise
       [transcripts.id, TRANSCRIPTION_OWNER_PROCESS, ["status", "date", "link"]],
     );
 
-    const { rows: statusRows } = await client.query<{
-      id: string;
-      config: { options?: { key: string }[] };
-    }>(`SELECT id, config FROM properties WHERE database_id = $1 AND key = 'status'`, [transcripts.id]);
-    const statusProperty = statusRows[0];
+    const { rows: statusRows } = await client.query<Record<string, unknown>>(
+      `SELECT id, config FROM properties WHERE database_id = $1 AND key = 'status'`,
+      [transcripts.id],
+    );
+    const rawStatus = statusRows[0];
+    const statusProperty = rawStatus
+      ? z
+          .object({
+            id: z.string(),
+            config: z
+              .object({ options: z.array(z.object({ key: z.string() }).passthrough()).optional() })
+              .passthrough(),
+          })
+          .parse(rawStatus)
+      : undefined;
     if (statusProperty) {
       const options = statusProperty.config.options ?? [];
       if (!options.some((option) => option.key === "error")) {
@@ -91,6 +148,42 @@ export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise
           [propertyId, relationDefinitionId, people.id],
         );
         requireAffectedRows(result, "properties.speakers config backfill");
+      }
+    }
+
+    // Issue #1470: project, company and people pairs; each is skipped when its Transcripts-side
+    // property exists already or the other database does not exist yet.
+    for (const pair of TRANSCRIPT_RELATION_PAIRS) {
+      const { rows: existing } = await client.query<{ id: string }>(
+        `SELECT id FROM properties WHERE database_id = $1 AND key = $2`,
+        [transcripts.id, pair.transcriptsKey],
+      );
+      if (existing.length > 0) continue;
+      const other = await getDatabaseByModuleId(client, pair.otherModuleId);
+      if (!other) continue;
+
+      const transcriptsPropertyId = await insertUserRelationProperty(client, transcripts.id, pair.transcriptsKey);
+      const otherPropertyId = await insertUserRelationProperty(client, other.id, pair.otherKey);
+      const { rows: relationRows } = await client.query<{ id: string }>(
+        `INSERT INTO relation_definitions (property_id_a, property_id_b, cardinality)
+         VALUES ($1, $2, $3)
+         RETURNING id`,
+        pair.transcriptsIsSideA
+          ? [transcriptsPropertyId, otherPropertyId, pair.cardinality]
+          : [otherPropertyId, transcriptsPropertyId, pair.cardinality],
+      );
+      const relationDefinitionId = requireSingleRow(relationRows, "relation_definitions row").id;
+      for (const [propertyId, targetDatabaseId] of [
+        [transcriptsPropertyId, other.id],
+        [otherPropertyId, transcripts.id],
+      ] as const) {
+        const result = await client.query(
+          `UPDATE properties
+             SET config = jsonb_build_object('relationDefinitionId', $2::uuid, 'targetDatabaseId', $3::uuid)
+           WHERE id = $1`,
+          [propertyId, relationDefinitionId, targetDatabaseId],
+        );
+        requireAffectedRows(result, `properties.${pair.transcriptsKey} config backfill`);
       }
     }
   });

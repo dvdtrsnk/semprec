@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PoolClient } from "pg";
 import type { PropertyRow } from "../types.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
+import { sortKeyCast } from "./sortCompiler.js";
 import type { FilterProperties } from "./filterCompiler.js";
 
 /**
@@ -52,7 +53,12 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
   const filterProperties: FilterProperties = new Map();
   for (const property of properties) {
     if (property.type !== "relation") {
-      filterProperties.set(property.key, { type: property.type });
+      filterProperties.set(
+        property.key,
+        property.type === "rollup"
+          ? { type: property.type, numericRollup: sortKeyCast(property) === "::numeric" }
+          : { type: property.type },
+      );
       continue;
     }
     const definition = definitions.get(property.id);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PropertyRow, PropertyType } from "../../types.js";
-import { buildItemSearchDocument, type ItemSearchDocumentInput } from "../itemSearchDocument.js";
+import { buildItemSearchBody, buildItemSearchDocument, type ItemSearchDocumentInput } from "../itemSearchDocument.js";
 
 function property(key: string, type: PropertyType, config: Record<string, unknown> = {}): PropertyRow {
   return {
@@ -145,5 +145,57 @@ describe("item search document", () => {
     expect(
       buildItemSearchDocument({ ...journal, item: { properties: { type: "day" }, computed: { inboxItems: null } } }),
     ).toBe("");
+  });
+
+  it("appends the stored page text after the other parts", () => {
+    expect(
+      buildItemSearchDocument(
+        input({
+          properties: [property("name", "title")],
+          relatedTitles: ["Related"],
+          pageText: "Page words",
+          item: { properties: { name: "Item" }, computed: {} },
+        }),
+      ),
+    ).toBe("Item Related Page words");
+  });
+
+  it("omits a missing or blank page text from the document", () => {
+    const base = input({
+      properties: [property("name", "title")],
+      item: { properties: { name: "Item" }, computed: {} },
+    });
+    expect(buildItemSearchDocument({ ...base, pageText: null })).toBe("Item");
+    expect(buildItemSearchDocument({ ...base, pageText: "  " })).toBe("Item");
+  });
+});
+
+describe("item search body", () => {
+  it("is a Journal day's Inbox entry texts followed by its page text", () => {
+    expect(
+      buildItemSearchBody({
+        databaseKey: "journal",
+        item: { properties: { type: "day" }, computed: { inboxItems: [{ text: "Inbox note" }, { text: "Second" }] } },
+        pageText: "Page text",
+      }),
+    ).toBe("Inbox note Second Page text");
+  });
+
+  it("is the page text alone for an item that is not a Journal day", () => {
+    const item = { properties: { type: "day" }, computed: { inboxItems: [{ text: "Inbox note" }] } };
+    expect(buildItemSearchBody({ databaseKey: "tasks", item, pageText: "Page text" })).toBe("Page text");
+    expect(
+      buildItemSearchBody({
+        databaseKey: "journal",
+        item: { ...item, properties: { type: "week" } },
+        pageText: "Page text",
+      }),
+    ).toBe("Page text");
+  });
+
+  it("is null when neither a page text nor an Inbox entry exists", () => {
+    const item = { properties: { type: "day" }, computed: {} };
+    expect(buildItemSearchBody({ databaseKey: "journal", item, pageText: null })).toBeNull();
+    expect(buildItemSearchBody({ databaseKey: "tasks", item, pageText: "   " })).toBeNull();
   });
 });

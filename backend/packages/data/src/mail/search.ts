@@ -1,6 +1,7 @@
 import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
-import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
+import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { DRAFTS_AND_SENT_SPECIAL_PURPOSES, FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 
 /**
  * Full-text search over synced message content (issue #26's scope: Emails only — the
@@ -17,10 +18,13 @@ export interface ReindexItemSearchInput {
 }
 
 export async function reindexItemSearch(client: Queryable, input: ReindexItemSearchInput): Promise<void> {
+  // A repeat rebuild keeps the timestamp when both vector and database are unchanged.
   await client.query(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, updated_at)
-     VALUES ($1, $2, to_tsvector('czech', $3), now())
-     ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, database_id = EXCLUDED.database_id, updated_at = now()`,
+     VALUES ($1, $2, to_tsvector('czech', $3) || to_tsvector('czech_simple', $3), now())
+     ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, database_id = EXCLUDED.database_id, updated_at = now()
+     WHERE item_search_index.search_vector IS DISTINCT FROM EXCLUDED.search_vector
+        OR item_search_index.database_id IS DISTINCT FROM EXCLUDED.database_id`,
     [input.itemId, input.databaseId, input.text],
   );
 }
@@ -80,6 +84,7 @@ export interface ParsedMailSearchQuery {
   after?: string;
   read?: boolean;
   flagged?: boolean;
+  contradictory?: boolean;
 }
 
 const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
@@ -93,12 +98,16 @@ const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
  * leaving the token in free text, the same as any other unrecognized operator, rather than
  * silently discarding it as if it were a no-op filter.
  */
-function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean {
+function applyIsOperator(parsed: ParsedMailSearchQuery, value: string, allowContradictions: boolean): boolean {
   switch (value.toLowerCase()) {
     case "read":
     case "unread": {
       const next = value.toLowerCase() === "read";
       if (parsed.read !== undefined && parsed.read !== next) {
+        if (allowContradictions) {
+          parsed.contradictory = true;
+          return true;
+        }
         throw new ValidationError("Contradictory is:read/is:unread search operators", {
           field: "is:read",
           conflict: ["read", "unread"],
@@ -111,6 +120,10 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean 
     case "unflagged": {
       const next = value.toLowerCase() === "flagged";
       if (parsed.flagged !== undefined && parsed.flagged !== next) {
+        if (allowContradictions) {
+          parsed.contradictory = true;
+          return true;
+        }
         throw new ValidationError("Contradictory is:flagged/is:unflagged search operators", {
           field: "is:flagged",
           conflict: ["flagged", "unflagged"],
@@ -124,7 +137,7 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean 
   }
 }
 
-export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
+export function parseMailSearchQuery(query: string, allowContradictions = false): ParsedMailSearchQuery {
   const parsed: ParsedMailSearchQuery = { freeText: "" };
   const freeText = query
     .replace(OPERATOR_PATTERN, (_match, operator: string, value: string) => {
@@ -142,7 +155,7 @@ export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
           parsed.after = value;
           return "";
         case "is":
-          return applyIsOperator(parsed, value) ? "" : _match;
+          return applyIsOperator(parsed, value, allowContradictions) ? "" : _match;
         default:
           return _match;
       }
@@ -192,6 +205,20 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
   if (parsed.read !== undefined) {
     params.push(parsed.read);
     conditions.push(`coalesce((i.properties ->> '${READ_PROPERTY_KEY}')::boolean, false) = $${params.length}`);
+    if (parsed.read === false) {
+      // is:unread leaves out a message linked to any Drafts or Sent folder (issue #1461): those are read by
+      // definition, so a Sent message that was never marked read is not unread. The check is per edge, so a
+      // message that is also in an Inbox is left out too.
+      params.push(FOLDERS_MODULE_ID, DRAFTS_AND_SENT_SPECIAL_PURPOSES);
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM item_relations r
+        JOIN items f ON f.id = CASE WHEN r.item_a = s.item_id THEN r.item_b ELSE r.item_a END
+        WHERE (r.item_a = s.item_id OR r.item_b = s.item_id)
+          AND f.database_id = (SELECT id FROM databases WHERE owner_module_id = $${params.length - 1})
+          AND f.deleted_at IS NULL
+          AND f.properties ->> 'specialPurpose' = ANY($${params.length}::text[])
+      )`);
+    }
   }
   if (parsed.flagged !== undefined) {
     params.push(parsed.flagged);
@@ -204,7 +231,7 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
   const { rows } = await client.query<{ item_id: string; rank: number }>(
     `SELECT s.item_id, ${rankWithRecency} AS rank
      FROM item_search_index s
-     LEFT JOIN items i ON i.id = s.item_id AND i.database_id = s.database_id
+     JOIN items i ON i.id = s.item_id AND i.database_id = s.database_id AND i.deleted_at IS NULL
      WHERE ${conditions.join(" AND ")}
      ORDER BY rank DESC
      LIMIT $${params.length}`,

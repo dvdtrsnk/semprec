@@ -76,7 +76,10 @@ describe("AI usage account metadata (gh-1376)", () => {
 
   async function report(tenantId = tenant) {
     return runInTenant(tenantId, () =>
-      createAiUsageRouteHandler(runtime)({ req: { url: `/api/ai-usage?from=${FROM}&to=${TO}` } }),
+      createAiUsageRouteHandler(runtime)({
+        req: { url: `/api/ai-usage?from=${FROM}&to=${TO}` },
+        identity: { user: { locale: "en" } },
+      }),
     );
   }
 
@@ -105,7 +108,10 @@ describe("AI usage account metadata (gh-1376)", () => {
 
   it("falls back to the normalized from when both sources are empty", async () => {
     const result = await runInTenant(tenant, () =>
-      createAiUsageRouteHandler(runtime)({ req: { url: `/api/ai-usage?from=2026-01-02T00:00:00%2B01:00&to=${TO}` } }),
+      createAiUsageRouteHandler(runtime)({
+        req: { url: `/api/ai-usage?from=2026-01-02T00:00:00%2B01:00&to=${TO}` },
+        identity: { user: { locale: "en" } },
+      }),
     );
     expect(result).toMatchObject({ body: { accountStartedAt: FROM, from: FROM } });
   });
@@ -163,6 +169,21 @@ describe("AI usage account metadata (gh-1376)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: [{ operation: "other", label: "Other", costUsd: 1, share: 1, callCount: 1 }],
+        byModel: [
+          {
+            provider: "anthropic",
+            model: "test-model",
+            displayName: "test-model",
+            callCount: 1,
+            costUsd: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            audioSeconds: null,
+            operations: ["other"],
+          },
+        ],
+        estimated: false,
         totalCostUsd: 1,
         dailyCostUsd: [{ day: "2026-01-02", costUsd: 1 }],
         dailyTokenUsage: [{ day: "2026-01-02", inputTokens: 10, outputTokens: 5 }],

@@ -1,10 +1,28 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
+import { z } from "zod";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import {
   moduleManifestSchema,
+  type AreaFilterTemplate,
   type CustomRouteMethod,
+  type EditorSchemaDescriptor,
+  type ModuleDatabaseDescriptor,
+  type ModuleLinkRuleDescriptor,
   type ModuleManifest,
+  type ModuleRelatedOrderDescriptor,
   type ModuleTaskAffinity,
 } from "./manifest.js";
+
+export interface ModuleLinkRuleProjection extends ModuleLinkRuleDescriptor {
+  moduleId: string;
+}
+
+/** A module's editor schema for one base kind, of an active module. */
+export interface ModuleEditorSchemaProjection {
+  moduleId: string;
+  baseKind: string;
+  schema: EditorSchemaDescriptor;
+}
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -12,12 +30,32 @@ export interface ModuleDatabaseProjection {
   name: string;
   defaultViewType?: string;
   searchFields?: string[];
+  relatedOrder?: ModuleRelatedOrderDescriptor;
+  icon?: string;
+  color?: string;
+  overviewOrder?: number | null;
+  switcherOrder?: number | null;
+  clientVisible?: boolean;
+  areaFilter?: AreaFilterTemplate;
+  quickFilters?: ModuleDatabaseDescriptor["quickFilters"];
+  defaultSort?: ModuleDatabaseDescriptor["defaultSort"];
+  dateLabels?: ModuleDatabaseDescriptor["dateLabels"];
+  collectionFilter?: ModuleDatabaseDescriptor["collectionFilter"];
+  pickerFilter?: ModuleDatabaseDescriptor["pickerFilter"];
 }
 
 export interface ModuleAgentToolProjection {
   moduleId: string;
   name: string;
   handlerExport: string;
+}
+
+export interface ModuleAgentToolDefinition {
+  moduleId: string;
+  name: string;
+  handler: unknown;
+  argumentSchema: Record<string, unknown>;
+  parseArguments: (value: unknown) => { success: true; data: unknown } | { success: false };
 }
 
 export interface ModuleTaskProjection {
@@ -86,15 +124,40 @@ export interface ModuleHeartbeatRuleKindDefinition {
 }
 
 /**
+ * What the module data migration runner passes a converter besides the item's `properties`
+ * (`docs/adr/2026-10-29-module-data-migration-converter-context.md`). `timezone` is the tenant's
+ * configured time zone, read once per run after the run's advisory lock is taken. `itemId` is the
+ * id of the item being converted. `log` writes one structured entry carrying the item id and
+ * `reason`; `reason` is a short code, and no property value may be passed in it.
+ */
+export interface ModuleDataMigrationConverterContext {
+  timezone: string;
+  itemId: string;
+  log: (reason: string) => void;
+}
+
+/**
+ * A module data migration converter, `(properties, context) => properties`. A converter that does
+ * not use `context` may declare only `properties`. Every converter must be idempotent:
+ * `converter(converter(p))` deep-equals `converter(p)` (see
+ * `docs/adr/2026-09-28-two-pass-skip-locked-module-data-migration.md`). The context is read-only
+ * and carries no database access.
+ */
+export type ModuleDataMigrationConverter = (
+  properties: Record<string, unknown>,
+  context: ModuleDataMigrationConverterContext,
+) => Record<string, unknown>;
+
+/**
  * A module data migration's converter resolved to the actual imported function, for the
- * module data migration runner (issue #111) to call once per item's `properties`.
+ * module data migration runner (issue #111) to call once per item.
  */
 export interface ModuleDataMigrationDefinition {
   moduleId: string;
   databaseKey: string;
   fromVersion: string;
   toVersion: string;
-  converter: (properties: Record<string, unknown>) => Record<string, unknown>;
+  converter: ModuleDataMigrationConverter;
 }
 
 export interface ModuleRegistryOptions {
@@ -137,6 +200,9 @@ export class ModuleRegistry {
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
   /** Keyed by `"<method> <path>"` — the fail-fast collision surface issue #239's Task requires. */
   private readonly customRouteOwners = new Map<string, string>();
+  /** Keyed by a card's base kind; one owner per base kind across every loaded module. */
+  private readonly editorSchemaBaseKindOwners = new Map<string, string>();
+  private readonly linkRuleKeyOwners = new Map<string, string>();
   private readonly catalogsById = new Map<string, ModuleCatalogs>();
   private readonly catalogKeyOwners = new Map<string, string>();
   private readonly reservedTaskNames: ReadonlySet<string>;
@@ -188,9 +254,11 @@ export class ModuleRegistry {
 
     this.assertCatalogKeysAvailable(path, catalogs);
     this.assertCustomRoutesAvailable(path, manifest);
+    this.assertEditorSchemaBaseKindsAvailable(path, manifest);
     this.claimCrossModuleIdentifiers(path, manifest);
     this.commitCatalogKeys(manifest.id, catalogs);
     this.commitCustomRoutes(manifest);
+    this.commitEditorSchemaBaseKinds(manifest);
 
     this.modulesById.set(manifest.id, { manifest, exports: imported });
     this.moduleIdByName.set(manifest.name, manifest.id);
@@ -201,6 +269,10 @@ export class ModuleRegistry {
   private assertExportsExist(path: string, manifest: ModuleManifest, imported: Record<string, unknown>): void {
     for (const tool of manifest.agentTools) {
       this.requireFunctionExport(imported, tool.handlerExport, path, `agent tool "${tool.name}"`);
+      const schema = this.requireExport(imported, tool.argumentSchemaExport, path, `agent tool "${tool.name}"`);
+      if (!(schema instanceof z.ZodType))
+        throw new Error(`Module at "${path}" agent tool "${tool.name}" has invalid argument schema`);
+      z.toJSONSchema(schema);
     }
     for (const task of manifest.taskNames ?? []) {
       this.requireExport(imported, task.payloadSchemaExport, path, `task "${task.name}"`);
@@ -253,6 +325,28 @@ export class ModuleRegistry {
   private commitCustomRoutes(manifest: ModuleManifest): void {
     for (const route of manifest.customRoutes ?? []) {
       this.customRouteOwners.set(`${route.method} ${route.path}`, manifest.id);
+    }
+  }
+
+  /**
+   * A base kind may only ever be declared by one loaded module, whether or not that module is
+   * active: the owner is fixed at load time, as for custom routes, and checked before anything
+   * commits so a rejected module never leaves a base kind claimed.
+   */
+  private assertEditorSchemaBaseKindsAvailable(path: string, manifest: ModuleManifest): void {
+    for (const baseKind of Object.keys(manifest.editorSchemas ?? {})) {
+      const existingOwner = this.editorSchemaBaseKindOwners.get(baseKind);
+      if (existingOwner !== undefined) {
+        throw new Error(
+          `Duplicate editor schema base kind "${baseKind}" loading "${path}": module "${manifest.id}" and module "${existingOwner}" both declare it`,
+        );
+      }
+    }
+  }
+
+  private commitEditorSchemaBaseKinds(manifest: ModuleManifest): void {
+    for (const baseKind of Object.keys(manifest.editorSchemas ?? {})) {
+      this.editorSchemaBaseKindOwners.set(baseKind, manifest.id);
     }
   }
 
@@ -378,6 +472,11 @@ export class ModuleRegistry {
         label: "heartbeat rule kind",
         reserved: this.reservedHeartbeatRuleKinds,
       })),
+      ...(manifest.linkRules ?? []).map((rule) => ({
+        owners: this.linkRuleKeyOwners,
+        key: rule.key,
+        label: "link rule key",
+      })),
     ];
 
     // Two entries of the same kind declared twice within this one manifest (e.g. two
@@ -430,8 +529,99 @@ export class ModuleRegistry {
         name: db.name,
         ...(db.defaultViewType !== undefined ? { defaultViewType: db.defaultViewType } : {}),
         ...(db.searchFields !== undefined ? { searchFields: [...db.searchFields] } : {}),
+        ...(db.relatedOrder !== undefined ? { relatedOrder: structuredClone(db.relatedOrder) } : {}),
+        ...(db.icon !== undefined ? { icon: db.icon } : {}),
+        ...(db.color !== undefined ? { color: db.color } : {}),
+        ...(db.overviewOrder !== undefined ? { overviewOrder: db.overviewOrder } : {}),
+        ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
+        ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
+        ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
+        ...(db.quickFilters !== undefined ? { quickFilters: structuredClone(db.quickFilters) } : {}),
+        ...(db.defaultSort !== undefined ? { defaultSort: structuredClone(db.defaultSort) } : {}),
+        ...(db.dateLabels !== undefined ? { dateLabels: structuredClone(db.dateLabels) } : {}),
+        ...(db.collectionFilter !== undefined ? { collectionFilter: structuredClone(db.collectionFilter) } : {}),
+        ...(db.pickerFilter !== undefined ? { pickerFilter: structuredClone(db.pickerFilter) } : {}),
       })),
     );
+  }
+
+  /** Declared related order of an active database, retaining only known, active database keys. */
+  async getRelatedOrder(databaseKey: string): Promise<Required<ModuleRelatedOrderDescriptor> | undefined> {
+    const databases = await this.getDatabases();
+    const declared = databases.find((db) => db.key === databaseKey)?.relatedOrder;
+    if (declared === undefined) return undefined;
+    const activeKeys = new Set(databases.map((db) => db.key));
+    return {
+      order: declared.order.filter((key) => activeKeys.has(key)),
+      omit: (declared.omit ?? []).filter((key) => activeKeys.has(key)),
+    };
+  }
+
+  /** Link rules of active modules, in load order then manifest order. */
+  async getLinkRules(): Promise<ModuleLinkRuleProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.linkRules ?? []).map((rule) => ({
+        moduleId: loaded.manifest.id,
+        key: rule.key,
+        source: { ...rule.source },
+        target: { ...rule.target },
+        via: { ...rule.via },
+      })),
+    );
+  }
+
+  /**
+   * Validates every loaded module's link rules together, once all modules are loaded: a rule
+   * may name a database of another module, which a single `loadModule` cannot see. Covers all
+   * loaded modules regardless of activation. Throws on an unknown database key, a `via`
+   * database that is neither the source's nor the target's, or a cycle in the property graph
+   * (one node per `databaseKey.propertyKey`, one edge per rule from source to target).
+   */
+  validateLinkRules(): void {
+    const rules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
+    for (const rule of rules) {
+      for (const [role, databaseKey] of [
+        ["source", rule.source.databaseKey],
+        ["target", rule.target.databaseKey],
+        ["via", rule.via.databaseKey],
+      ] as const) {
+        if (!this.databaseKeyOwners.has(databaseKey)) {
+          throw new Error(`Link rule "${rule.key}" ${role} names unknown database key "${databaseKey}"`);
+        }
+      }
+      if (rule.via.databaseKey !== rule.source.databaseKey && rule.via.databaseKey !== rule.target.databaseKey) {
+        throw new Error(
+          `Link rule "${rule.key}" via database "${rule.via.databaseKey}" is neither its source database "${rule.source.databaseKey}" nor its target database "${rule.target.databaseKey}"`,
+        );
+      }
+    }
+
+    const nodeOf = (endpoint: { databaseKey: string; propertyKey: string }): string =>
+      `${endpoint.databaseKey}.${endpoint.propertyKey}`;
+    const outgoing = new Map<string, Array<{ rule: string; to: string }>>();
+    for (const rule of rules) {
+      const from = nodeOf(rule.source);
+      const edges = outgoing.get(from) ?? [];
+      edges.push({ rule: rule.key, to: nodeOf(rule.target) });
+      outgoing.set(from, edges);
+    }
+
+    const done = new Set<string>();
+    const stack: Array<{ node: string; viaRule: string }> = [];
+    const visit = (node: string, viaRule: string): void => {
+      const onStackAt = stack.findIndex((entry) => entry.node === node);
+      if (onStackAt !== -1) {
+        const cycleRules = [...stack.slice(onStackAt + 1).map((entry) => entry.viaRule), viaRule];
+        throw new Error(`Link rules form a cycle: ${cycleRules.map((key) => `"${key}"`).join(" -> ")}`);
+      }
+      if (done.has(node)) return;
+      stack.push({ node, viaRule });
+      for (const edge of outgoing.get(node) ?? []) visit(edge.to, edge.rule);
+      stack.pop();
+      done.add(node);
+    };
+    for (const node of outgoing.keys()) visit(node, "");
   }
 
   async getCapabilities(): Promise<string[]> {
@@ -439,9 +629,56 @@ export class ModuleRegistry {
     return [...new Set(active.flatMap((loaded) => loaded.manifest.capabilities))];
   }
 
+  async getModuleCapabilityDeclarations(): Promise<
+    { moduleId: string; capabilities: string[]; databaseKeys: string[] }[]
+  > {
+    const active = await this.getActiveModules();
+    return active.map(({ manifest }) => ({
+      moduleId: manifest.id,
+      capabilities: [...manifest.capabilities],
+      databaseKeys: manifest.databases.map((db) => db.key),
+    }));
+  }
+
+  async getActiveAgentToolNames(): Promise<string[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap(({ manifest }) => manifest.agentTools.map((tool) => tool.name));
+  }
+
+  async getAgentToolDefinitions(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolDefinition[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap(({ manifest, exports }) =>
+      manifest.agentTools
+        .filter(
+          (tool) =>
+            tool.approval === "none" &&
+            (tool.capability === undefined ||
+              (grantedCapabilities.has(tool.capability) &&
+                (manifest.capabilities.includes(tool.capability) ||
+                  CAPABILITY_IDS.some((id) => id === tool.capability)))),
+        )
+        .map((tool) => {
+          const schema = exports[tool.argumentSchemaExport];
+          const handler = exports[tool.handlerExport];
+          if (!(schema instanceof z.ZodType) || typeof handler !== "function")
+            throw new Error(`Invalid agent tool exports for ${tool.name}`);
+          return {
+            moduleId: manifest.id,
+            name: tool.name,
+            handler,
+            argumentSchema: z.toJSONSchema(schema),
+            parseArguments: (value: unknown) => {
+              const result = schema.safeParse(value);
+              return result.success ? { success: true as const, data: result.data } : { success: false as const };
+            },
+          };
+        }),
+    );
+  }
+
   /**
-   * `grantedCapabilities` is the set of capabilities actually granted in the current context
-   * (a later module-contract issue wires this to real grants). A tool whose `capability` isn't
+   * `grantedCapabilities` is the set of capabilities actually granted in the current context.
+   * A tool whose `capability` isn't
    * in that set is filtered out entirely, never returned in a denied state.
    */
   async getAgentTools(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolProjection[]> {
@@ -562,6 +799,21 @@ export class ModuleRegistry {
         method: route.method,
         path: route.path,
         handler: loaded.exports[route.handlerExport],
+      })),
+    );
+  }
+
+  /**
+   * Editor schemas of active modules, in load order then declaration order. Each schema is a deep
+   * copy, so a caller cannot change what the registry holds.
+   */
+  async getEditorSchemas(): Promise<ModuleEditorSchemaProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      Object.entries(loaded.manifest.editorSchemas ?? {}).map(([baseKind, schema]) => ({
+        moduleId: loaded.manifest.id,
+        baseKind,
+        schema: structuredClone(schema),
       })),
     );
   }

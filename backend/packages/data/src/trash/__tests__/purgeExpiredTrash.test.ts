@@ -424,6 +424,24 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(deleteMock).not.toHaveBeenCalled();
     });
 
+    it("keeps a blob an image property of a live item names and never deletes its bytes", async () => {
+      const filesDb = await chokePoint.createDatabase({ name: "Files" });
+      const recipes = await chokePoint.createDatabase({ name: "Recipes" });
+      await chokePoint.createProperty({ databaseId: recipes.id, key: "photo", name: "Photo", type: "image" });
+      const blob = await createBlob(pool, { mimeType: "image/png", byteSize: 3, storageKey: "image-key" });
+      const purgedFile = await makeFilesItem(filesDb.id, blob.id);
+      await chokePoint.createItem({ databaseId: recipes.id, properties: { photo: { blobId: blob.id } } });
+      await chokePoint.softDeleteItem(filesDb.id, purgedFile.id);
+      await ageDeletion(purgedFile.id, 31, filesDb.id);
+
+      const { storage, deleteMock } = fakeStorage();
+      const purgedCount = await purgeExpiredTrash(pool, storage);
+
+      expect(purgedCount).toBe(1);
+      expect(await countRows("blobs WHERE id = $1", [blob.id])).toBe(1);
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
     it("deletes an unshared blob's row in the purge transaction and its bytes after that transaction commits", async () => {
       const db = await chokePoint.createDatabase({ name: "Files" });
       const blob = await createBlob(pool, { mimeType: "text/plain", byteSize: 3, storageKey: "unshared-key" });
@@ -443,6 +461,146 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(deleteMock).toHaveBeenCalledTimes(1);
       expect(deleteMock).toHaveBeenCalledWith("unshared-key");
       expect(blobRowsSeenByDelete).toEqual([0]);
+    });
+
+    describe("derived audio blobs", () => {
+      async function setComputed(itemId: string, prepare: Record<string, string>) {
+        await pool.query(`UPDATE items SET computed = jsonb_build_object('prepare', $2::jsonb) WHERE id = $1`, [
+          itemId,
+          JSON.stringify(prepare),
+        ]);
+      }
+      const newBlob = (storageKey: string) => createBlob(pool, { mimeType: "audio/ogg", byteSize: 3, storageKey });
+      async function trash(databaseId: string, itemId: string) {
+        await chokePoint.softDeleteItem(databaseId, itemId);
+        await ageDeletion(itemId, 31, databaseId);
+      }
+
+      it("removes the original, normalized and playback rows and their bytes after the commit", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const [original, normalized, playback] = [
+          await newBlob("orig-key"),
+          await newBlob("norm-key"),
+          await newBlob("play-key"),
+        ];
+        const file = await makeFilesItem(db.id, original.id);
+        await setComputed(file.id, { normalizedBlobId: normalized.id, playbackBlobId: playback.id });
+        await trash(db.id, file.id);
+
+        const rowsSeenByDelete: number[] = [];
+        const { storage, deleteMock } = fakeStorage(async () => {
+          rowsSeenByDelete.push(
+            await countRows("blobs WHERE id = ANY($1::uuid[])", [[original.id, normalized.id, playback.id]]),
+          );
+        });
+        expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+
+        expect(await countRows("blobs WHERE id = ANY($1::uuid[])", [[original.id, normalized.id, playback.id]])).toBe(
+          0,
+        );
+        expect(deleteMock.mock.calls.map(([key]) => key).sort()).toEqual(["norm-key", "orig-key", "play-key"]);
+        expect(rowsSeenByDelete).toEqual([0, 0, 0]);
+      });
+
+      it("keeps the Files item and all blobs and skips byte deletion when the purge transaction rolls back", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const file = await makeFilesItem(db.id, (await newBlob("rollback-orig-key")).id);
+        const originalId = (
+          await pool.query<{ blob_id: string }>(
+            "SELECT properties #>> '{file,blobId}' AS blob_id FROM items WHERE id = $1",
+            [file.id],
+          )
+        ).rows[0]?.blob_id;
+        if (!originalId) throw new Error("Files fixture did not retain its original blob id");
+        const normalized = await newBlob("rollback-norm-key");
+        const playback = await newBlob("rollback-play-key");
+        await setComputed(file.id, { normalizedBlobId: normalized.id, playbackBlobId: playback.id });
+        const inlineDb = await chokePoint.createInlineDatabase({ name: "Rollback blocker", parentItemId: file.id });
+        await trash(db.id, file.id);
+
+        // This test-only FK makes the final inline-database cleanup fail, after deleteItemDependents
+        // has deleted all three blob rows inside the same purge transaction.
+        await pool.query(
+          "CREATE TABLE purge_rollback_database_guard (database_id uuid NOT NULL REFERENCES databases(id))",
+        );
+        await pool.query("INSERT INTO purge_rollback_database_guard (database_id) VALUES ($1)", [inlineDb.id]);
+
+        const { storage, deleteMock } = fakeStorage();
+        const purgeError = vi.spyOn(logger, "error").mockImplementation(() => {});
+        try {
+          expect(await purgeExpiredTrash(pool, storage)).toBe(0);
+          expect(purgeError).toHaveBeenCalledWith(
+            expect.objectContaining({
+              err: expect.objectContaining({
+                code: "23503",
+                constraint: "purge_rollback_database_guard_database_id_fkey",
+              }),
+              itemId: file.id,
+            }),
+            "Failed to purge trashed item",
+          );
+
+          const { rows: fileRows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE id = $1", [file.id]);
+          expect(fileRows.map((row) => row.id)).toEqual([file.id]);
+          const { rows: blobRows } = await pool.query<{ id: string }>(
+            "SELECT id FROM blobs WHERE id = ANY($1::uuid[])",
+            [[originalId, normalized.id, playback.id]],
+          );
+          expect(blobRows.map((row) => row.id).sort()).toEqual([originalId, normalized.id, playback.id].sort());
+          expect(deleteMock).not.toHaveBeenCalled();
+        } finally {
+          purgeError.mockRestore();
+          await pool.query("DROP TABLE purge_rollback_database_guard");
+        }
+      });
+
+      it("behaves as before for an item without a checkpoint", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const original = await newBlob("only-key");
+        const file = await makeFilesItem(db.id, original.id);
+        await trash(db.id, file.id);
+        const { storage, deleteMock } = fakeStorage();
+        expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+        expect(deleteMock.mock.calls).toEqual([["only-key"]]);
+      });
+
+      it("deletes a playback blob equal to the original once", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const original = await newBlob("same-key");
+        const normalized = await newBlob("norm2-key");
+        const file = await makeFilesItem(db.id, original.id);
+        await setComputed(file.id, { normalizedBlobId: normalized.id, playbackBlobId: original.id });
+        await trash(db.id, file.id);
+        const { storage, deleteMock } = fakeStorage();
+        expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+        expect(deleteMock.mock.calls.map(([key]) => key).sort()).toEqual(["norm2-key", "same-key"]);
+      });
+
+      it("keeps the original shared with another Files item while still removing derived blobs", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const original = await newBlob("shared2-key");
+        const normalized = await newBlob("norm3-key");
+        const file = await makeFilesItem(db.id, original.id);
+        await makeFilesItem(db.id, original.id);
+        await setComputed(file.id, { normalizedBlobId: normalized.id });
+        await trash(db.id, file.id);
+        const { storage, deleteMock } = fakeStorage();
+        expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+        expect(await countRows("blobs WHERE id = $1", [original.id])).toBe(1);
+        expect(await countRows("blobs WHERE id = $1", [normalized.id])).toBe(0);
+        expect(deleteMock.mock.calls).toEqual([["norm3-key"]]);
+      });
+
+      it("does not touch a derived blob of an item that was not purged", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const normalized = await newBlob("live-norm-key");
+        const live = await makeFilesItem(db.id, (await newBlob("live-key")).id);
+        await setComputed(live.id, { normalizedBlobId: normalized.id });
+        const { storage, deleteMock } = fakeStorage();
+        await purgeExpiredTrash(pool, storage);
+        expect(await countRows("blobs WHERE id = $1", [normalized.id])).toBe(1);
+        expect(deleteMock).not.toHaveBeenCalled();
+      });
     });
 
     it("keeps a blob a mail attachment references", async () => {

@@ -19,11 +19,84 @@ export async function findOrphanedOwnerProcessProperties(
   activeProcessIds?: ReadonlySet<string>,
 ): Promise<OrphanedOwnerProcessProperty[]> {
   const { rows } = await client.query<{ id: string; database_id: string; key: string; owner_process: string | null }>(
-    `SELECT id, database_id, key, owner_process FROM properties WHERE owner = 'system'`,
+    `SELECT id, database_id, key, owner_process FROM properties
+      WHERE tenant_id = app_tenant_default() AND owner = 'system'`,
   );
   return rows
     .filter((row) => !row.owner_process || (activeProcessIds && !activeProcessIds.has(row.owner_process)))
     .map((row) => ({ propertyId: row.id, databaseId: row.database_id, key: row.key, ownerProcess: row.owner_process }));
+}
+
+export const LINK_RULE_SCHEMA_DRIFT_FINDING_KIND = "link_rule_schema_drift";
+
+export type InvalidLinkRuleReasonKind =
+  | "missingSourceProperty"
+  | "missingTargetProperty"
+  | "missingViaProperty"
+  | "viaNotRelation"
+  | "viaDoesNotLeadToOtherDatabase";
+
+export interface InvalidLinkRuleReference {
+  ruleKey: string;
+  moduleId: string;
+  reason: InvalidLinkRuleReasonKind;
+  /** The `databaseKey.propertyKey` the reason is about. */
+  property: string;
+}
+
+/**
+ * Checks every link rule of an active module against the tenant's seeded schema: its source,
+ * target and `via` relation properties must exist in the named databases, the `via` property
+ * must be a relation, and that relation (its `config.targetDatabaseId`) must lead to the other
+ * database of the rule. Reports every problem; one rule can appear more than once.
+ */
+export async function findInvalidLinkRuleReferences(
+  client: PoolClient,
+  registry: ModuleRegistry,
+): Promise<InvalidLinkRuleReference[]> {
+  const rules = await registry.getLinkRules();
+  if (rules.length === 0) return [];
+
+  const { rows } = await client.query<{
+    database_id: string;
+    database_key: string;
+    key: string;
+    type: string;
+    target_database_id: string | null;
+  }>(
+    `SELECT d.id AS database_id, d.key AS database_key, p.key, p.type, p.config->>'targetDatabaseId' AS target_database_id
+     FROM properties p JOIN databases d ON d.id = p.database_id AND d.tenant_id = p.tenant_id
+     WHERE p.tenant_id = app_tenant_default() AND d.tenant_id = app_tenant_default() AND d.key IS NOT NULL`,
+  );
+  const propertyByName = new Map(rows.map((row) => [`${row.database_key}.${row.key}`, row]));
+  const databaseIdByKey = new Map(rows.map((row) => [row.database_key, row.database_id]));
+
+  const findings: InvalidLinkRuleReference[] = [];
+  for (const rule of rules) {
+    const report = (reason: InvalidLinkRuleReasonKind, property: string): void => {
+      findings.push({ ruleKey: rule.key, moduleId: rule.moduleId, reason, property });
+    };
+    const sourceName = `${rule.source.databaseKey}.${rule.source.propertyKey}`;
+    const targetName = `${rule.target.databaseKey}.${rule.target.propertyKey}`;
+    const viaName = `${rule.via.databaseKey}.${rule.via.relationKey}`;
+    if (!propertyByName.has(sourceName)) report("missingSourceProperty", sourceName);
+    if (!propertyByName.has(targetName)) report("missingTargetProperty", targetName);
+    const via = propertyByName.get(viaName);
+    if (!via) {
+      report("missingViaProperty", viaName);
+      continue;
+    }
+    if (via.type !== "relation") {
+      report("viaNotRelation", viaName);
+      continue;
+    }
+    const otherDatabaseKey =
+      rule.via.databaseKey === rule.target.databaseKey ? rule.source.databaseKey : rule.target.databaseKey;
+    if (via.target_database_id !== databaseIdByKey.get(otherDatabaseKey)) {
+      report("viaDoesNotLeadToOtherDatabase", viaName);
+    }
+  }
+  return findings;
 }
 
 export interface CreateDriftCheckActionOptions {
@@ -82,6 +155,16 @@ export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActi
           `INSERT INTO manifest_drift_findings (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`,
           [JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned })],
         );
+      }
+
+      if (options.moduleRegistry) {
+        const invalidLinkRules = await findInvalidLinkRuleReferences(client, options.moduleRegistry);
+        if (invalidLinkRules.length > 0) {
+          await client.query(`INSERT INTO manifest_drift_findings (kind, payload) VALUES ($1, $2::jsonb)`, [
+            LINK_RULE_SCHEMA_DRIFT_FINDING_KIND,
+            JSON.stringify({ projectItemId: context.projectItemId, invalidLinkRules }),
+          ]);
+        }
       }
     });
   };

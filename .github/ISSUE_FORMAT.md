@@ -1,5 +1,16 @@
 # Canonical issue format
 
+## Scoped backend delivery program
+
+The owner-directed program in `issues/batches/backend/README.md` uses larger
+technical implementation records containing complete source requirement
+snapshots. Its sequential acceptance barriers and multiple-mechanism Tasks are
+the scoped exception documented in
+`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`. The default DAG,
+single-mechanism and concurrent-worker conventions below still apply outside
+that program. Identity, approval, model metadata and canonical section checks
+remain unchanged inside it.
+
 ## Repository-record envelope during migration
 
 The same self-contained body is used inside `issues/items/<id>.md`; see

@@ -5,6 +5,12 @@ import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation } from "./schemas.js";
 import {
   DatabaseArchiveInputSchema,
+  PageRestoreVersionInputSchema,
+  PageGetInputSchema,
+  PageEnsureInputSchema,
+  PageCreateSubpageInputSchema,
+  PageInsertInputSchema,
+  PageChangesInputSchema,
   DatabaseCreateInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
@@ -23,7 +29,10 @@ import {
   PropertyListInputSchema,
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
   RelationPutInputSchema,
+  RelationSetInputSchema,
+  ValueLinkInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -48,7 +57,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 29 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 38 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -60,6 +69,19 @@ export type GenericOperationBindings = {
  * against its target type in both directions.
  */
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
+  "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },
+  "page.insert": { input: PageInsertInputSchema, invoke: (service, actor, input) => service.insertPage(actor, input) },
+  "page.changes": {
+    input: PageChangesInputSchema,
+    invoke: (service, actor, input) => service.listPageChanges(actor, input),
+  },
+  "page.createSubpage": {
+    input: PageCreateSubpageInputSchema,
+    invoke: (service, actor, input) => service.createSubpage(actor, input),
+  },
+  "page.get": { input: PageGetInputSchema, invoke: (service, actor, input) => service.getPage(actor, input) },
+  "link.unlink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.unlinkValue(actor, input) },
+  "link.relink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.relinkValue(actor, input) },
   "database.list": {
     input: DatabaseListInputSchema,
     invoke: (service, actor, input) => service.listDatabases(actor, input),
@@ -172,8 +194,20 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
     input: RelationPutInputSchema,
     invoke: (service, actor, input) => service.putRelation(actor, input),
   },
+  "relation.set": {
+    input: RelationSetInputSchema,
+    invoke: (service, actor, input) => service.setRelation(actor, input),
+  },
   "relation.delete": {
     input: RelationDeleteInputSchema,
     invoke: (service, actor, input) => service.deleteRelation(actor, input),
+  },
+  "relation.list": {
+    input: RelationListInputSchema,
+    invoke: (service, actor, input) => service.listRelations(actor, input),
+  },
+  "page.restoreVersion": {
+    input: PageRestoreVersionInputSchema,
+    invoke: (service, actor, input) => service.restorePageVersion(actor, input),
   },
 };

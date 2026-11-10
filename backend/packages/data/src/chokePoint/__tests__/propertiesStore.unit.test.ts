@@ -68,3 +68,57 @@ describe("property config defaults", () => {
     expect(() => assertValidPropertyConfig("relation", undefined)).not.toThrow();
   });
 });
+
+describe("select option colors", () => {
+  it.each(["select", "multi_select"] as const)("normalizes %s colors on write", (type) => {
+    const config = { options: [{ key: "red", color: "#ff3b30" }, { key: "plain" }] };
+    assertValidPropertyConfig(type, config);
+    expect(config.options).toEqual([{ key: "red", color: "#FF3B30" }, { key: "plain" }]);
+  });
+  it.each(["red", "#FFF", "#GGGGGG", 1, null, undefined])("rejects invalid color %j", (color) => {
+    expect(() => assertValidPropertyConfig("select", { options: [{ key: "x", color }] })).toThrow(
+      expect.objectContaining({ code: "validation_failed", details: { field: "config" } }),
+    );
+  });
+});
+
+describe("number filter presets (issue #1622)", () => {
+  const preset = { value: 5, op: "gte", labelKey: "property.books.rating.preset.5" };
+  const emptyPreset = { labelKey: "property.books.rating.preset.none", matchZero: true };
+  const rejected = expect.objectContaining({ code: "validation_failed", status: 400, details: { field: "config" } });
+
+  it.each([
+    [{ filterPresets: [preset] }],
+    [{ filterPresets: [preset, { value: 15, op: "lte", labelKey: "k", label: "Up to 15 min" }], emptyPreset }],
+    [{ filterPresets: [preset], emptyPreset: { ...emptyPreset, label: "No rating" }, default: 0 }],
+    [{ filterPresets: Array.from({ length: 10 }, (_, value) => ({ value, op: "gte", labelKey: "k" })) }],
+  ])("accepts %j on a number property", (config) => {
+    expect(() => assertValidPropertyConfig("number", config)).not.toThrow();
+  });
+
+  it.each([
+    ["op eq", { filterPresets: [{ ...preset, op: "eq" }] }],
+    ["a non-numeric value", { filterPresets: [{ ...preset, value: "5" }] }],
+    ["an infinite value", { filterPresets: [{ ...preset, value: Infinity }] }],
+    ["an empty array", { filterPresets: [] }],
+    ["more than 10 presets", { filterPresets: Array.from({ length: 11 }, () => preset) }],
+    ["an unknown preset key", { filterPresets: [{ ...preset, color: "#FF0000" }] }],
+    ["an empty labelKey", { filterPresets: [{ ...preset, labelKey: "" }] }],
+    ["an empty label", { filterPresets: [{ ...preset, label: "" }] }],
+    ["a filterPresets object", { filterPresets: preset }],
+    ["emptyPreset without filterPresets", { emptyPreset }],
+    ["an unknown emptyPreset key", { filterPresets: [preset], emptyPreset: { ...emptyPreset, value: 0 } }],
+    ["emptyPreset without matchZero", { filterPresets: [preset], emptyPreset: { labelKey: "k" } }],
+  ])("rejects %s with 400 on config", (_case, config) => {
+    expect(() => assertValidPropertyConfig("number", config)).toThrow(rejected);
+  });
+
+  it.each(["text", "select", "date"] as const)("rejects presets on a %s property", (type) => {
+    expect(() => assertValidPropertyConfig(type, { filterPresets: [preset] })).toThrow(rejected);
+    expect(() => assertValidPropertyConfig(type, { emptyPreset })).toThrow(rejected);
+  });
+
+  it("leaves a number config without presets alone", () => {
+    expect(() => assertValidPropertyConfig("number", { default: 3 })).not.toThrow();
+  });
+});

@@ -38,6 +38,8 @@ async function createTestUser(): Promise<string> {
 }
 
 const CONTRADICTION: GuidanceDriftContradiction = {
+  kind: "permission",
+  subject: { operation: "files.delete", databaseId: null },
   claim: "The agent can delete files without approval.",
   guidanceExcerpt: "Agents may delete any file directly.",
   manifestFacts: ["capability.files.delete requires approval"],
@@ -190,5 +192,18 @@ describe("createGuidanceNotificationWriter (issue #85)", () => {
     const unread = await listUnreadNotificationsForUser(pool, ownerUserId);
     const activeNotifications = unread.filter((n) => n.kind === "agent_guidance_drift");
     expect(activeNotifications).toHaveLength(2);
+    const project = await pool.query<{ name: string }>("SELECT properties->>'name' AS name FROM items WHERE id = $1", [
+      projectItemId,
+    ]);
+    expect(unread.filter((n) => n.kind === "agent_guidance_drift_resolved")).toMatchObject([
+      {
+        payload: {
+          projectItemId,
+          fingerprint,
+          kind: "permission",
+          resolutionTitle: `Pokyny projektu ${project.rows[0]?.name} opět odpovídají oprávněním`,
+        },
+      },
+    ]);
   });
 });

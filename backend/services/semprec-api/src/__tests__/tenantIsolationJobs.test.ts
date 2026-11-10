@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
+import * as Y from "yjs";
+import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
+import { REALTIME_CHANNEL, wireRealtimeHooks } from "@semprec/realtime";
 import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
@@ -16,13 +20,21 @@ import {
   type TaskList,
   type TaskTenancy,
 } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  currentTenantScope,
+  runAsSystem,
+  runInTenant,
+  type AiGatewayClientPort,
+  type AiGatewayCompletionInput,
+} from "@semprec/shared";
 import {
   DEFAULT_COMPACTION_THRESHOLD,
   JOURNAL_MODULE_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
+  MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
   assertTaskListMatchesAffinity,
   beginTenantDeletion,
+  claimSempMessage,
   createAgentRun,
   createApiCoreTaskList,
   createChokePoint,
@@ -34,32 +46,46 @@ import {
   decideAndEnqueueApprovalRequest,
   ensureItemAutomation,
   finishAgentRun,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   getOrCreateJournalItem,
+  getSystemTimezone,
   insertAgentRunEvent,
+  instantToWallClock,
   loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
   mergeModuleTaskListForAffinity,
   mintMcpRunCredential,
+  mutateYDoc,
   provisionTenant,
+  resolveMailModuleIds,
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
+  sendSempMessage,
+  startSempMessageTurn,
   upsertWebPushSubscription,
   withTransaction,
   writeNotification,
   type ChokePoint,
   type DocStore,
+  type BlobStorageWriter,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  ensureFolderItem,
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
   storeCredential,
+  upsertMailMessageMeta,
+  writePageTextBlocks,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
+import { createMailSyncAdapters } from "../mailSyncAdapters.js";
+import { runTranscriptionFixture } from "./transcriptionHttpFixture.js";
 
 /**
  * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side
@@ -156,6 +182,14 @@ const previousEnv = new Map<string, string | undefined>();
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
+const titlePortCalls: { tenantId: string | null; input: AiGatewayCompletionInput }[] = [];
+const titlePort: AiGatewayClientPort = {
+  async complete(input) {
+    const scope = currentTenantScope();
+    titlePortCalls.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, input });
+    return { content: { title: "Tenant title" }, usage: { inputTokens: 1, outputTokens: 1 } };
+  },
+};
 
 const moduleRegistry = await loadFullModuleRegistry();
 
@@ -398,7 +432,7 @@ async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
   return row.id;
 }
 
-async function createMailbox(tenant: Tenant): Promise<string> {
+async function createMailbox(tenant: Tenant, syncMode: "imap" | "gmail_api" = "imap"): Promise<string> {
   const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
@@ -406,8 +440,12 @@ async function createMailbox(tenant: Tenant): Promise<string> {
         databaseId: mailboxesId,
         properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
       });
-      await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
-      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
+      await storeCredential(client, {
+        itemId: mailbox.id,
+        credentialType: syncMode === "gmail_api" ? "oauth2_refresh_token" : "app_password",
+        plaintext: "s3cr3t",
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode });
       return mailbox.id;
     }),
   );
@@ -444,7 +482,7 @@ async function createRetrySweepHeartbeat(tenant: Tenant): Promise<string> {
         name: `Isolation ${randomUUID()}`,
         rule: { kind: "dailyTime", at: "09:00" },
         actionId: LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
-        actionConfig: { databaseId: database.id, source: "test", coverKey: "cover" },
+        actionConfig: { databaseId: database.id, source: "tmdb", coverKey: "cover" },
       }),
     );
   });
@@ -508,6 +546,48 @@ async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: s
 }
 
 /** A trashed item whose `deleted_at` lies past the 30-day retention. */
+/**
+ * A person of `tenant` linked to an Event dated `date` (and starting at `timeFrom`, when given) through
+ * `Events.people`, through the choke point. The link queues the person's `lastContact` recompute; it is
+ * removed here, so only the job under test can set the value.
+ */
+async function createPersonWithEvent(
+  tenant: Tenant,
+  date: string,
+  timeFrom?: string,
+): Promise<{ personId: string; eventId: string }> {
+  const peopleId = await requireModuleDatabaseId(tenant, "people");
+  const eventsId = await requireModuleDatabaseId(tenant, "events");
+  return inTenant(tenant, async () => {
+    const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Contact" } });
+    const event = await chokePoint.createItem({
+      databaseId: eventsId,
+      properties: { name: "Meeting", date, ...(timeFrom === undefined ? {} : { timeFrom }) },
+    });
+    const peopleProperty = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "people");
+    if (!peopleProperty) throw new Error("expected Events.people to be seeded");
+    await chokePoint.createRelation({
+      relationPropertyId: peopleProperty.id,
+      callerItemId: event.id,
+      targetItemId: person.id,
+    });
+    await removeJob(`people-last-contact:${person.id}`);
+    return { personId: person.id, eventId: event.id };
+  });
+}
+
+async function lastContactOf(tenant: Tenant, personId: string): Promise<unknown> {
+  const found = await rows<{ last_contact: unknown }>(
+    tenant,
+    "SELECT properties -> 'lastContact' AS last_contact FROM items WHERE id = $1",
+    [personId],
+  );
+  return found[0]?.last_contact;
+}
+
+/** A date with a fixed past value, so the case does not depend on the wall clock. */
+const PAST_EVENT_DATE = "2025-06-15";
+
 async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
   const { databaseId, itemId } = await inTenant(tenant, async () => {
     const database = await chokePoint.createDatabase({ name: `Trash ${randomUUID()}` });
@@ -530,6 +610,76 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
 let journalDaysSeeded = 0;
 
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      titlePortCalls.length = 0;
+      return runInTenant(tenant.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const turn = await sendSempMessage(client, { text: "Tenant question", context: [], hasContext: false });
+          expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
+          const run = await createAgentRun(client, {
+            triggeredBy: "user",
+            unit: "session",
+            task: "Tenant question",
+            threadId: turn.threadId,
+          });
+          const event = await insertAgentRunEvent(client, run.id, "message", {
+            kind: "message",
+            text: "Tenant answer",
+          });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: "Tenant answer",
+              lastEventId: event.id,
+            }),
+          ).toBe(true);
+          return { threadId: turn.threadId };
+        }),
+      );
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows(tenant, "SELECT title FROM semp_threads WHERE id = $1", [requirePayloadString(payload, "threadId")]),
+      ).toEqual([{ title: "Tenant title" }]);
+      expect(titlePortCalls).toHaveLength(1);
+      expect(titlePortCalls[0]).toMatchObject({
+        tenantId: tenant.tenantId,
+        input: {
+          operation: "semp_thread_title",
+          projectItemId: null,
+          messages: [
+            { role: "user", content: "Tenant question" },
+            { role: "assistant", content: "Tenant answer" },
+          ],
+        },
+      });
+      titlePortCalls.length = 0;
+    },
+  },
+  // The production catalog has no configured link rules: this exercises registered refusal,
+  // not successful propagation (covered by the configured-rule data tests).
+  [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: {
+    tenancy: "tenant",
+    expectedError: /Value link rule is unavailable/,
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+        if (!areas) throw new Error("Areas database was not seeded");
+        const source = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "Link source" } });
+        return { ruleKey: "unconfigured.fixture", sourceItemId: source.id, hop: 1 };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ name: string }>(tenant, "SELECT properties->>'name' AS name FROM items WHERE id = $1", [
+          requirePayloadString(payload, "sourceItemId"),
+        ]),
+      ).toEqual([{ name: "Link source" }]);
+    },
+  },
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -575,6 +725,93 @@ const cases: Record<string, TaskCase> = {
           [requirePayloadString(payload, "databaseId")],
         ),
       ).toEqual([{ title: "Legacy searchable", matches: true }]);
+    },
+  },
+  [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const projectsId = await requireModuleDatabaseId(tenant, "projects");
+        const tasksId = await requireModuleDatabaseId(tenant, "tasks");
+        const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Původní" } });
+        const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Závislý úkol" } });
+        const projectProperty = (await chokePoint.listProperties(tasksId)).find((p) => p.key === "project");
+        if (!projectProperty) throw new Error("expected Tasks.project");
+        await chokePoint.createRelation({
+          relationPropertyId: projectProperty.id,
+          callerItemId: task.id,
+          targetItemId: project.id,
+        });
+        // A project title that changed while its dependents' documents were not rebuilt yet: written
+        // directly, so the task's document is stale until this job runs.
+        const renamed = await pool.query(
+          "UPDATE items SET properties = properties || jsonb_build_object('name', 'Přejmenovaný') WHERE id = $1",
+          [project.id],
+        );
+        expect(renamed.rowCount).toBe(1);
+        return { kind: "referrers", itemId: project.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ matches: boolean }>(
+          tenant,
+          `SELECT s.search_vector @@ plainto_tsquery('czech_simple', 'Přejmenovaný') AS matches
+           FROM item_relations r JOIN item_search_index s ON s.item_id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
+           WHERE r.item_a = $1 OR r.item_b = $1`,
+          [requirePayloadString(payload, "itemId")],
+        ),
+      ).toEqual([{ matches: true }]);
+    },
+  },
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
+        const item = await chokePoint.createItem({ databaseId, properties: { name: "Isolated page" } });
+        await writePageTextBlocks(pool, item.id, ["Stránka tenanta A"]);
+        return { itemId: item.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ page_text: string | null }>(tenant, "SELECT page_text FROM item_search_index WHERE item_id = $1", [
+          requirePayloadString(payload, "itemId"),
+        ]),
+      ).toEqual([{ page_text: "Stránka tenanta A" }]);
+    },
+  },
+  [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
+        const host = await chokePoint.createItem({ databaseId, properties: { name: "Mirror host" } });
+        const docStore = createDocStore(pool);
+        const created = await docStore.createSubpage({ parent: { itemId: host.id }, title: "Before" }, "user");
+        const blockId = created.pages[0]?.blockId;
+        const doc = await docStore.getDoc(host.id);
+        if (!blockId || !doc) throw new Error("expected a subpage block in the host document");
+        // A title typed into the parent document, as a sync client writes it; the Pages item still holds the old one.
+        await mutateYDoc(pool, doc.id, "user", (ydoc) => {
+          const title = ydoc.getMap<Y.Map<unknown>>("blocks").get(blockId)?.get("text");
+          if (!(title instanceof Y.Text)) throw new Error("expected the page block title to be a Y.Text");
+          title.delete(0, title.length);
+          title.insert(0, "Stránka tenanta A");
+        });
+        return { itemId: host.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ title: string }>(
+          tenant,
+          `SELECT i.properties ->> 'title' AS title FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'pages' AND i.properties ->> 'parentItemId' = $1`,
+          [requirePayloadString(payload, "itemId")],
+        ),
+      ).toEqual([{ title: "Stránka tenanta A" }]);
     },
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {
@@ -645,7 +882,7 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const { databaseId, itemId } = await createItemWithAutomation(tenant);
-      return { itemId, databaseId, config: { source: "test", coverKey: "cover" } };
+      return { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } };
     },
     async expectDone(tenant, payload) {
       expect(
@@ -671,6 +908,59 @@ const cases: Record<string, TaskCase> = {
           mailboxItemId,
         ]),
       ).toEqual([{ user_id: tenant.userId }]);
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const address = `${randomUUID()}@example.test`;
+      const peopleDatabaseId = await requireModuleDatabaseId(tenant, "people");
+      const { itemId } = await createEmail(tenant);
+      const personId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const role = await client.query<{ name: string; bypass: boolean; superuser: boolean }>(
+            "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+          );
+          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+          const person = await createItemWithClient(client, {
+            databaseId: peopleDatabaseId,
+            properties: { name: "Mail person", emails: address },
+          });
+          await upsertMailMessageMeta(client, {
+            itemId,
+            mailboxItemId: null,
+            messageId: `<${randomUUID()}@example.test>`,
+            envelope: { from: { address }, to: [{ address }] },
+            migrationStatus: "partial",
+          });
+          return person.id;
+        }),
+      );
+      const action = createApiActionRegistry(pool, moduleRegistry).get(MAIL_REINDEX_PERSON_EMAILS_ACTION_ID);
+      if (!action) throw new Error("Missing person email reindex action");
+      await inTenant(tenant, () =>
+        action({ peopleDatabaseId }, { heartbeatId: "test", projectItemId: "test", itemId: personId }),
+      );
+      expect(await rows(tenant, "SELECT item_id FROM person_email_index WHERE email = $1", [address])).toEqual([
+        { item_id: personId },
+      ]);
+      expect(
+        await rows(tenant, "SELECT id FROM item_relations WHERE item_a = $1 AND item_b = $2", [itemId, personId]),
+      ).toEqual([]);
+      return { personId, addresses: [address] };
+    },
+    async expectDone(tenant, payload) {
+      const personId = requirePayloadString(payload, "personId");
+      const parsed = z.object({ addresses: z.array(z.string()).length(1) }).parse(payload);
+      expect(
+        await rows(
+          tenant,
+          `SELECT p.key FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+           JOIN properties p ON p.id = d.property_id_a JOIN mail_message_meta m ON m.item_id = r.item_a
+           WHERE r.item_b = $1 AND m.envelope @> $2::jsonb ORDER BY p.key`,
+          [personId, JSON.stringify({ from: { address: parsed.addresses[0] } })],
+        ),
+      ).toEqual([{ key: "recipientsPeople" }, { key: "senderPeople" }]);
     },
   },
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: {
@@ -752,12 +1042,14 @@ const cases: Record<string, TaskCase> = {
         const notificationId = await withTransaction(pool, (client) =>
           writeNotification(client, {
             userId: tenant.userId,
-            kind: "heartbeat_error",
-            titleParams: { name: "Daily digest" },
+            // A critical Semp problem: the default preferences push it, a warning would not be pushed
+            // (issues #1443 and #1466).
+            kind: "semp_problem",
             linkHref: null,
-            sourceTable: "project_heartbeats",
+            sourceTable: "semp_problems",
             sourceId: randomUUID(),
             transitionInstance: randomUUID(),
+            payload: { severity: "critical" },
           }),
         );
         return { notificationId };
@@ -865,6 +1157,83 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const { itemId } = await createEmail(tenant);
+      // A row from before preview_text/ingested_at existed: no production path writes one without them.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(
+            tenant,
+            "SELECT preview_text IS NOT NULL AS has_preview, ingested_at IS NOT NULL AS has_time FROM mail_message_meta WHERE item_id = $1",
+            [itemId],
+          ),
+        ).toEqual([{ has_preview: true, has_time: true }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const itemId = randomUUID();
+      // A sent message stored before #1474 gave sends a thread. No production writer leaves thread_id NULL now.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(tenant, "SELECT thread_id IS NOT NULL AS threaded FROM mail_message_meta WHERE item_id = $1", [
+            itemId,
+          ]),
+        ).toEqual([{ threaded: true }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant, "gmail_api");
+      // The folder an earlier Gmail sync created for a label that is not a real folder.
+      const folderItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const moduleIds = await resolveMailModuleIds(client);
+          const { rows } = await client.query<{ id: string }>(
+            "SELECT id FROM properties WHERE database_id = $1 AND key = 'mailbox'",
+            [moduleIds.foldersDatabaseId],
+          );
+          const mailboxRelationPropertyId = rows[0]?.id;
+          if (!mailboxRelationPropertyId) throw new Error("expected the Folders mailbox relation property");
+          return ensureFolderItem(client, {
+            foldersDatabaseId: moduleIds.foldersDatabaseId,
+            mailboxItemId,
+            mailboxRelationPropertyId,
+            providerId: "UNREAD",
+            name: "Unread",
+            behavior: "label",
+            specialPurpose: "none",
+          });
+        }),
+      );
+      return marked([folderItemId], async () => {
+        expect(
+          await rows(tenant, "SELECT 1 AS present FROM items WHERE id = $1 AND deleted_at IS NULL", [folderItemId]),
+        ).toEqual([]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -875,6 +1244,37 @@ const cases: Record<string, TaskCase> = {
         expect(
           await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
         ).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const stateId = randomUUID();
+      // The row is inserted already expired; production only creates states valid for ten minutes.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO mail_oauth_states
+             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at)
+           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute')`,
+          [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
+        ),
+      );
+      return marked([stateId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId])).toEqual([]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const { itemId } = await createEmail(tenant);
+      return marked([itemId], async () => {
+        expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
+          { present: 1 },
+        ]);
       });
     },
   },
@@ -901,6 +1301,48 @@ const cases: Record<string, TaskCase> = {
     tenancy: "system",
     touchesTenantTables: true,
     seed: createExpiredTrash,
+  },
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const blobId = randomUUID();
+      // A standalone upload (`<tenantId>/blobs/...`) nothing references; only its age is back-dated,
+      // because the sweep leaves anything younger than 24 hours alone.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO blobs (id, mime_type, byte_size, storage_key, created_at)
+           VALUES ($1, 'image/png', 1, $2, now() - interval '25 hours')`,
+          [blobId, `${tenant.tenantId}/blobs/${randomUUID()}`],
+        ),
+      );
+      return marked([blobId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId])).toEqual([]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const { personId } = await createPersonWithEvent(tenant, PAST_EVENT_DATE);
+      return { personId };
+    },
+    async expectDone(tenant, payload) {
+      expect(await lastContactOf(tenant, requirePayloadString(payload, "personId"))).toBe(PAST_EVENT_DATE);
+    },
+  },
+  [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      // An Event that started an hour ago, inside the sweep's last 24 hours.
+      const zone = await inTenant(tenant, () => withTransaction(pool, getSystemTimezone));
+      const start = instantToWallClock(new Date(Date.now() - 60 * 60 * 1000), zone);
+      const { personId, eventId } = await createPersonWithEvent(tenant, start.date, start.time);
+      return marked([personId, eventId], async () => {
+        expect(await lastContactOf(tenant, personId)).toBe(start.date);
+      });
+    },
   },
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: {
     tenancy: "system",
@@ -976,6 +1418,23 @@ const cases: Record<string, TaskCase> = {
             runId,
           ]),
         ).toEqual([{ kind: "compaction" }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const problemId = randomUUID();
+      await adminPool.query(
+        `INSERT INTO semp_problems (id, tenant_id, user_id, category, kind, severity, source_table, source_id,
+                                    dedupe_key, resolved_at, resolution_kind)
+         VALUES ($1, $2, $3, 'mail', 'mailSyncFailed', 'warning', 'mail_account_sync_state', $4, $5,
+                 now() - interval '31 days', 'recovered')`,
+        [problemId, tenant.tenantId, tenant.userId, randomUUID(), `mail:sync:${problemId}`],
+      );
+      return marked([problemId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM semp_problems WHERE id = $1", [problemId])).toEqual([]);
       });
     },
   },
@@ -1089,22 +1548,45 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     await ensureQueueSchema(adminPool);
     await grantQueueSchemaPrivileges(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:title-registry-role", () =>
+      pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
     tenantTables = await loadTenantTables();
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
 
     // Composed exactly as createApiQueueRuntime composes it.
     const actionRegistry = createApiActionRegistry(pool, moduleRegistry);
+    const gmailAdapters = createMailSyncAdapters({
+      pool,
+      env: { GMAIL_OAUTH_CLIENT_ID: "test-client", GMAIL_OAUTH_CLIENT_SECRET: "test-secret" },
+      fetchImpl: async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({ access_token: "test-access", expires_in: 3600, token_type: "Bearer" });
+        }
+        if (url === "https://gmail.googleapis.com/gmail/v1/users/me/labels") {
+          return Response.json({ labels: [{ id: "UNREAD", name: "Unread", type: "system" }] });
+        }
+        throw new Error("Unexpected fake provider request");
+      },
+    });
     const coreTaskList = createApiCoreTaskList(
       pool,
       actionRegistry,
       undefined,
-      undefined,
+      { loadGmailLabels: gmailAdapters.loadGmailLabels },
       undefined,
       undefined,
       moduleRegistry,
       undefined,
       replayApprovedGenericOperation,
+      undefined,
+      undefined,
+      titlePort,
     );
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
@@ -1124,6 +1606,124 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     }
     if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
+  });
+
+  it("purges rendered audio through the queued tenant sweep while preserving another tenant's live bytes", async () => {
+    const first = await buildTenant(await createTestTenant(adminPool));
+    const second = await buildTenant(await createTestTenant(adminPool));
+    const root = join(blobRoot, "files");
+    let primary: unknown;
+    let failed = false;
+    try {
+      const a = await runTranscriptionFixture(
+        { mode: "failure", source: "ogg", tenantId: first.tenantId, storageRoot: root },
+        adminPool,
+      );
+      const b = await runTranscriptionFixture(
+        { mode: "failure", source: "ogg", tenantId: second.tenantId, storageRoot: root },
+        adminPool,
+      );
+      const inspect = async (tenant: Tenant, itemId: string) =>
+        inTenant(tenant, async () => {
+          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+          if (!files) throw new Error("Missing Files database");
+          const item = await chokePoint.getItem(files.id, itemId);
+          if (!item) throw new Error("Missing rendered source");
+          const original = z.object({ blobId: z.uuid() }).parse(item.properties.file).blobId;
+          const prepare = z
+            .object({ normalizedBlobId: z.uuid(), playbackBlobId: z.uuid() })
+            .parse(item.computed.prepare);
+          const ids = [original, prepare.normalizedBlobId, prepare.playbackBlobId];
+          expect(new Set(ids).size).toBe(3);
+          const found = await withTransaction(pool, (client) =>
+            client.query<Record<string, unknown>>(
+              "SELECT id, storage_key FROM blobs WHERE id = ANY($1::uuid[]) ORDER BY id",
+              [ids],
+            ),
+          );
+          const blobs = z.array(z.object({ id: z.uuid(), storage_key: z.string() })).parse(found.rows);
+          expect(blobs).toHaveLength(3);
+          for (const blob of blobs) {
+            expect(blob.storage_key.startsWith(`${tenant.tenantId}/`)).toBe(true);
+            expect((await readFile(join(root, blob.storage_key))).length).toBeGreaterThan(0);
+          }
+          return { filesId: files.id, ids, blobs };
+        });
+      const aBefore = await inspect(first, a.result.fileItemId);
+      const bBefore = await inspect(second, b.result.fileItemId);
+      expect(aBefore.ids).toContain(a.result.playbackBlobId);
+      expect(bBefore.ids).toContain(b.result.playbackBlobId);
+      await inTenant(first, async () => {
+        await chokePoint.softDeleteItem(aBefore.filesId, a.result.fileItemId);
+        await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1", [
+          a.result.fileItemId,
+        ]);
+      });
+      await discardQueuedJobs();
+      const actualStorage = new LocalFsBlobStorageWriter(root);
+      const observed: Array<{ key: string; remaining: number }> = [];
+      const storage: BlobStorageWriter = {
+        writeStream: (key, source, options) => actualStorage.writeStream(key, source, options),
+        readStream: (key, range) => actualStorage.readStream(key, range),
+        async delete(key) {
+          const rows = await adminPool.query("SELECT id FROM blobs WHERE storage_key = $1", [key]);
+          observed.push({ key, remaining: rows.rows.length });
+          await actualStorage.delete(key);
+        },
+      };
+      const registry = createApiActionRegistry(pool, moduleRegistry);
+      const tasks = createApiCoreTaskList(
+        pool,
+        registry,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        moduleRegistry,
+        undefined,
+        replayApprovedGenericOperation,
+        storage,
+      );
+      const key = randomUUID();
+      await runAsSystem("test:enqueue-rendered-purge", () =>
+        enqueueJob(pool, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}, { jobKey: key }),
+      );
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect(await jobOutcome(key)).toEqual({ attempts: null, lastError: null });
+      for (const blob of aBefore.blobs) {
+        expect(observed).toContainEqual({ key: blob.storage_key, remaining: 0 });
+        await expect(readFile(join(root, blob.storage_key))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(await inTenant(first, () => chokePoint.getItem(aBefore.filesId, a.result.fileItemId))).toBeNull();
+      expect(
+        await inTenant(first, () =>
+          withTransaction(pool, (client) =>
+            client.query("SELECT id FROM blobs WHERE id = ANY($1::uuid[])", [aBefore.ids]),
+          ),
+        ).then((result) => result.rows),
+      ).toEqual([]);
+      const bAfter = await inspect(second, b.result.fileItemId);
+      expect(bAfter.blobs).toEqual(bBefore.blobs);
+      expect(observed.some((entry) => bBefore.blobs.some((blob) => blob.storage_key === entry.key))).toBe(false);
+    } catch (error) {
+      primary = error;
+      failed = true;
+    }
+    try {
+      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = ANY($1::uuid[])", [
+        [first.tenantId, second.tenantId],
+      ]);
+    } catch (error) {
+      if (failed) process.stderr.write(`Could not suspend fixture tenants: ${String(error)}\n`);
+      else {
+        primary = error;
+        failed = true;
+      }
+    }
+    if (failed) {
+      if (primary instanceof Error) throw primary;
+      throw new Error("Rendered purge scenario failed with a non-error value", { cause: primary });
+    }
   });
 
   it("has exactly one case per task of the api affinity set", async () => {
@@ -1147,6 +1747,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       async (name, c) => {
         const payload = await c.seed(tenantA);
         await discardQueuedJobs();
+        const beforeA = name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE ? await fingerprint(tenantA) : undefined;
         const beforeB = await fingerprint(tenantB);
         const beforeZero = await fingerprint(tenantZero);
         const notificationsBefore = await notifications(tenantA);
@@ -1157,10 +1758,12 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         await removeJob(jobKey);
         if (c.expectedError) {
           expect(outcome.lastError).toMatch(c.expectedError);
+          if (name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE) expect(outcome.attempts).toBe(1);
         } else {
           expect(outcome).toEqual({ attempts: null, lastError: null });
         }
         await c.expectDone(tenantA, payload);
+        if (beforeA) expect(await fingerprint(tenantA)).toEqual(beforeA);
         expect(await fingerprint(tenantB)).toEqual(beforeB);
         expect(await fingerprint(tenantZero)).toEqual(beforeZero);
         await expectNewNotificationsAddressedTo(tenantA, notificationsBefore);
@@ -1178,9 +1781,80 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
+        if (name === CORE_TASK_NAMES.SEMP_THREAD_TITLE) {
+          expect(titlePortCalls).toEqual([]);
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+          titlePortCalls.length = 0;
+        }
+        if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },
     );
+  });
+
+  it("publishes the title registry case's committed invalidation for its tenant", async () => {
+    const titleCase = cases[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
+    if (!titleCase || !isTenantCase(titleCase)) throw new Error("Missing title tenant case");
+    const payload = await titleCase.seed(tenantA);
+    await discardQueuedJobs();
+    const listener = await adminPool.connect();
+    const observed: { tenantId: string; threadId: string }[] = [];
+    listener.on("notification", (notification) => {
+      if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
+      const parsed: unknown = JSON.parse(notification.payload);
+      const envelope = z
+        .object({
+          tenantId: z.string(),
+          message: z.object({ type: z.literal("invalidation"), scope: z.literal("sempThread"), threadId: z.string() }),
+        })
+        .safeParse(parsed);
+      if (envelope.success)
+        observed.push({ tenantId: envelope.data.tenantId, threadId: envelope.data.message.threadId });
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+      wireRealtimeHooks(pool);
+      const jobKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
+      await titleCase.expectDone(tenantA, payload);
+      const threadId = requirePayloadString(payload, "threadId");
+      const repeatedKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
+      expect(await jobOutcome(repeatedKey)).toEqual({ attempts: null, lastError: null });
+      expect(titlePortCalls).toEqual([]);
+      expect(await rows(tenantA, "SELECT title FROM semp_threads WHERE id = $1", [threadId])).toEqual([
+        { title: "Tenant title" },
+      ]);
+      const deadline = Date.now() + 5_000;
+      while (
+        !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
+        Date.now() < deadline
+      )
+        await sleep(25);
+      expect(observed).toContainEqual({ tenantId: tenantA.tenantId, threadId });
+      expect(observed.filter((event) => event.tenantId === tenantB.tenantId)).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      listener.release(true);
+    } catch (error) {
+      if (failure) {
+        // Keep the assertion failure primary while retaining the cleanup failure.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure.error, error], "Title invalidation cleanup failed", { cause: failure.error });
+      }
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   describe("system tasks", () => {

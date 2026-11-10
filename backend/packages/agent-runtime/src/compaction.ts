@@ -11,8 +11,8 @@ export type CompactionSettings = Record<string, unknown>;
 export type PreparedCompaction = unknown;
 
 /**
- * Seams for pi-agent-core's public, low-level compaction API (not yet published — see
- * `CreateAgentSession`'s note in `types.ts` for the same situation). The Task for #119 is
+ * Historical seams for pi-agent-core's low-level compaction API. The currently published API
+ * has different native types and needs an explicit integration. The Task for #119 is
  * explicit that these are the *public* `estimateContextTokens`/`shouldCompact`/
  * `prepareCompaction`/`compact` functions, not the unfinished `AgentLane.compact()` wrapper or
  * any unexported pi-agent-core internal — so this stays four narrow function seams rather than

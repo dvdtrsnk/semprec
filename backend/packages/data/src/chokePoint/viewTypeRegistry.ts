@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import { galleryViewConfigSchema } from "../views/galleryViewConfig.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29), same pattern as
@@ -8,7 +9,7 @@ import type { ZodType } from "zod";
  * always known without registration; any other `type` must be registered here before a
  * view of that type can be created.
  */
-export const BUILTIN_VIEW_TYPES = ["table", "board", "calendar", "list"] as const;
+export const BUILTIN_VIEW_TYPES = ["table", "board", "calendar", "list", "gallery"] as const;
 
 export interface ViewTypeService {
   /** Called with the view's already schema-validated common config, before it is persisted. */
@@ -27,6 +28,11 @@ export interface ViewTypeDefinition {
 
 export type ViewTypeRegistry = Map<string, ViewTypeDefinition>;
 
+/** Definitions of built-in types that validate their own config; the other built-ins only use the common fields. */
+export const BUILTIN_VIEW_TYPE_DEFINITIONS: Readonly<Record<string, ViewTypeDefinition>> = {
+  gallery: { configSchema: galleryViewConfigSchema, clientComponent: "galleryGrid" },
+};
+
 export function createViewTypeRegistry(): ViewTypeRegistry {
   return new Map();
 }
@@ -37,6 +43,12 @@ export function isBuiltinViewType(type: string): boolean {
 
 export function isKnownViewType(registry: ViewTypeRegistry, type: string): boolean {
   return isBuiltinViewType(type) || registry.has(type);
+}
+
+/** The registry entry for `type`, else the built-in definition (if it has one). */
+export function getViewTypeDefinition(registry: ViewTypeRegistry, type: string): ViewTypeDefinition | undefined {
+  if (registry.has(type)) return registry.get(type);
+  return Object.hasOwn(BUILTIN_VIEW_TYPE_DEFINITIONS, type) ? BUILTIN_VIEW_TYPE_DEFINITIONS[type] : undefined;
 }
 
 export function registerViewType(registry: ViewTypeRegistry, type: string, definition: ViewTypeDefinition): void {

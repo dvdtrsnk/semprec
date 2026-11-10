@@ -1,4 +1,8 @@
+import type { GmailMoveResult } from "./mailMoveProviderAdapters.js";
+import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
+import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
@@ -40,6 +44,8 @@ export interface GmailHistoryResult {
 }
 
 export interface GmailMailClient {
+  observeMoveMessage?(messageId: string): Promise<GmailMoveResult>;
+  applyMoveStep?(messageId: string, step: "trash" | "untrash" | "add_inbox" | "remove_inbox"): Promise<GmailMoveResult>;
   /** Used only when no `historyId` is stored yet (first sync, or right after an invalidation-triggered reset). */
   getCurrentHistoryId(): Promise<string>;
   listHistorySince(startHistoryId: string): Promise<GmailHistoryResult>;
@@ -51,13 +57,42 @@ export interface GmailMailClient {
   modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void>;
 }
 
+/** The Gmail system labels that are real places mail lives in; every other system label (UNREAD, STARRED, IMPORTANT, CATEGORY_*, CHAT) is a flag or a tab, not a folder. */
+const GMAIL_SYSTEM_FOLDER_PURPOSES: Record<string, string> = {
+  INBOX: "inbox",
+  SENT: "sent",
+  SPAM: "junk",
+  TRASH: "trash",
+  DRAFT: "drafts",
+};
+
+/** Provider id of the synthetic Archive folder (Gmail has no archive label: archived mail is mail without INBOX). */
+export const GMAIL_ARCHIVE_PROVIDER_ID = "semprec:archive";
+
+/** Provider ids of the five system labels; a message carrying none of them is archived. */
+export const GMAIL_PLACEMENT_LABEL_IDS: readonly string[] = Object.keys(GMAIL_SYSTEM_FOLDER_PURPOSES);
+
+/** Serializes participating Gmail folder writers for one tenant and mailbox until transaction end. */
+export async function lockGmailFolderState(client: PoolClient, mailboxItemId: string): Promise<void> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Gmail folder state requires a tenant scope");
+  const key = `gmail-folder-state:v1:${scope.tenantId.toLowerCase()}:${mailboxItemId.toLowerCase()}`;
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [key]);
+}
+
 function specialPurposeForLabel(label: GmailLabelRef): string {
-  const known: Record<string, string> = { INBOX: "inbox", SENT: "sent", SPAM: "junk", TRASH: "trash", DRAFT: "drafts" };
-  return known[label.id] ?? "none";
+  return GMAIL_SYSTEM_FOLDER_PURPOSES[label.id] ?? "none";
+}
+
+/** A label becomes a Folder only when it is a user label or one of the five system folders. */
+function isFolderLabel(label: GmailLabelRef): boolean {
+  return label.type === "user" || Object.hasOwn(GMAIL_SYSTEM_FOLDER_PURPOSES, label.id);
 }
 
 export interface ReconcileGmailAccountParams {
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
+  moveBaseline?: MailMoveBaseline;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -89,6 +124,14 @@ export async function reconcileGmailAccount(
   gmail: GmailMailClient,
   params: ReconcileGmailAccountParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
+  await lockGmailFolderState(dbClient, params.mailboxItemId);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
@@ -98,6 +141,7 @@ export async function reconcileGmailAccount(
   const labels = await gmail.listLabels();
   const folderItemIdByLabel = new Map<string, string>();
   for (const label of labels) {
+    if (!isFolderLabel(label)) continue;
     const folderItemId = await ensureFolderItem(dbClient, {
       foldersDatabaseId: params.foldersDatabaseId,
       mailboxItemId: params.mailboxItemId,
@@ -109,6 +153,15 @@ export async function reconcileGmailAccount(
     });
     folderItemIdByLabel.set(label.id, folderItemId);
   }
+  const archiveFolderItemId = await ensureFolderItem(dbClient, {
+    foldersDatabaseId: params.foldersDatabaseId,
+    mailboxItemId: params.mailboxItemId,
+    mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+    providerId: GMAIL_ARCHIVE_PROVIDER_ID,
+    name: "Archive",
+    behavior: "label",
+    specialPurpose: "archive",
+  });
 
   let changedIds: string[];
   let removedIds: string[] = [];
@@ -147,6 +200,9 @@ export async function reconcileGmailAccount(
     const mappedFolderIds = fetched.labelIds
       .map((labelId) => folderItemIdByLabel.get(labelId))
       .filter((v): v is string => Boolean(v));
+    // No INBOX/SPAM/TRASH/SENT/DRAFT label = archived (also a message with no labels at all).
+    if (!fetched.labelIds.some((labelId) => GMAIL_PLACEMENT_LABEL_IDS.includes(labelId)))
+      mappedFolderIds.push(archiveFolderItemId);
     let itemId: string | null = null;
     for (const folderItemId of mappedFolderIds) {
       const result = await ingestEmailMessage(dbClient, {
@@ -156,6 +212,7 @@ export async function reconcileGmailAccount(
         attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
         folderItemId,
         mailboxItemId: params.mailboxItemId,
+        protectedMoveMessageIds: protectedMoveMessageIds,
         providerMessageId: fetched.id,
         providerThreadId: fetched.threadId,
         storage: params.storage,
@@ -166,9 +223,8 @@ export async function reconcileGmailAccount(
       itemId = result.itemId;
     }
 
-    // A message whose current labelIds map to zero known Folder items (e.g. it lost every
-    // label it had, or briefly carries one this pass hasn't discovered yet) is never ingested
-    // fresh above — but if it was already known from a prior pass, its stale folder edges
+    // A message whose current labelIds map to zero known Folder items (a placement label this
+    // pass hasn't discovered yet) is never ingested fresh above — but if it was already known from a prior pass, its stale folder edges
     // still need dropping, the same as any other label removal.
     if (!itemId) {
       const existing = await getMailMessageMetaByProviderMessageId(dbClient, fetched.id);
@@ -176,7 +232,7 @@ export async function reconcileGmailAccount(
     }
 
     // Drop any folder edge for a label this message no longer carries.
-    if (itemId) {
+    if (itemId && !protectedMoveMessageIds?.has(itemId) && !(await hasUnsettledMailMove(dbClient, itemId))) {
       const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, itemId);
       const mappedSet = new Set(mappedFolderIds);
       for (const edge of currentEdges) {
@@ -194,7 +250,8 @@ export async function reconcileGmailAccount(
 
   for (const id of removedIds) {
     const meta = await getMailMessageMetaByProviderMessageId(dbClient, id);
-    if (!meta) continue;
+    if (!meta || protectedMoveMessageIds?.has(meta.itemId) || (await hasUnsettledMailMove(dbClient, meta.itemId)))
+      continue;
     const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
     for (const edge of currentEdges) {
       const folderItemId = otherSide(edge, meta.itemId);
@@ -218,6 +275,11 @@ export async function reconcileGmailAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
+    if (
+      protectedMoveMessageIds?.has(pending.messageItemId) ||
+      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
+    )
+      continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

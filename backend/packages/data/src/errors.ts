@@ -34,6 +34,27 @@ export class ConflictError extends ChokePointError {
   }
 }
 
+export class ProposalLockedError extends ChokePointError {
+  constructor() {
+    super(409, "proposal_locked", "Proposal is locked");
+    this.name = "ProposalLockedError";
+  }
+}
+
+export class ApprovalResourceBusyError extends ChokePointError {
+  constructor() {
+    super(409, "approval_resource_busy", "Approval resource is busy");
+    this.name = "ApprovalResourceBusyError";
+  }
+}
+
+export class ValueLinkBusyError extends ChokePointError {
+  constructor() {
+    super(409, "value_link_busy", "Value-link relation is busy");
+    this.name = "ValueLinkBusyError";
+  }
+}
+
 /** Raised when an edge write would violate its relation definition's declared cardinality (see item_relations' `enforce_relation_cardinality` trigger). */
 export class CardinalityViolationError extends ChokePointError {
   constructor(message: string, details?: unknown) {
@@ -123,6 +144,18 @@ export class ApprovalRequiredError extends ChokePointError {
   }
 }
 
+export interface ApprovalWriteReason {
+  kind: string;
+}
+
+/** Internal refusal of a flagged write; the gateway creates the approval after rollback. */
+export class ApprovalRequiredForWrite extends Error {
+  constructor(readonly reasons: readonly ApprovalWriteReason[]) {
+    super("The flagged write requires approval");
+    this.name = "ApprovalRequiredForWrite";
+  }
+}
+
 /**
  * The `heartbeat_event_triggered` code of the REST error contract (issue #238) — a manual trigger
  * of an `onItemEvent` heartbeat, which only ever fires from the write that produced the event,
@@ -136,6 +169,44 @@ export class HeartbeatEventTriggeredError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(409, "heartbeat_event_triggered", message, details);
     this.name = "HeartbeatEventTriggeredError";
+  }
+}
+
+/**
+ * The `heartbeat_disabled` code of the REST error contract (issue #1453) — a manual trigger of a
+ * heartbeat the user disabled. Kept distinct from `heartbeat_event_triggered` and `validation_failed`
+ * so a client can offer "enable it first" instead of a generic bad-request message.
+ */
+export class HeartbeatDisabledError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "heartbeat_disabled", message, details);
+    this.name = "HeartbeatDisabledError";
+  }
+}
+
+/**
+ * The run of a heartbeat that is still active, as the REST error contract shows it: ids, status and
+ * timestamps only. The run's task text and result stay out of an error response.
+ */
+export interface ActiveHeartbeatRunSummary {
+  id: string;
+  status: string;
+  triggeredBy: string;
+  startedAt: string;
+  threadId: string | null;
+}
+
+/**
+ * The `heartbeat_running` code of the REST error contract (issue #1453) — a manual trigger while a
+ * run of the heartbeat is running or a fire job of it is already waiting. `details.activeRun` is the
+ * running run, or `null` while only a job is waiting for a worker to create the run.
+ */
+export class HeartbeatRunningError extends ChokePointError {
+  declare readonly details: { activeRun: ActiveHeartbeatRunSummary | null };
+
+  constructor(message: string, details: { activeRun: ActiveHeartbeatRunSummary | null }) {
+    super(409, "heartbeat_running", message, details);
+    this.name = "HeartbeatRunningError";
   }
 }
 

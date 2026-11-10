@@ -1,5 +1,17 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import type { ItemReadInclude } from "@semprec/shared";
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError, type Actor } from "@semprec/data";
+import {
+  createChokePoint,
+  createDocStore,
+  ForbiddenError,
+  NotFoundError,
+  PAGES_MODULE_ID,
+  ValidationError,
+  type Actor,
+  type InitialItemRelation,
+  type WriterIdentity,
+} from "@semprec/data";
 import type {
   AuthenticatedActor,
   Database,
@@ -16,7 +28,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 29-operation catalog's business logic.
+ * path into the 39-operation catalog's business logic.
  */
 
 /**
@@ -49,8 +61,12 @@ function paginate<T extends { id: string }>(rows: readonly T[], cursor: string |
   return { items: windowRows, nextCursor };
 }
 
-export function createGenericApplicationService(pool: Pool): GenericApplicationPort {
+export function createGenericApplicationService(
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): GenericApplicationPort {
   const chokePoint = createChokePoint(pool);
+  const docStore = createDocStore(pool);
 
   async function requireItem(itemId: string): Promise<Item> {
     const item = await chokePoint.findItem(itemId);
@@ -64,6 +80,29 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     return item;
   }
 
+  /** Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
+  async function withLinks<T extends Item>(items: T[], include: ItemReadInclude): Promise<T[]> {
+    const links = Array.isArray(include) ? include.includes("links") : include?.links === true;
+    const derived = Array.isArray(include) ? include.includes("derived") : include?.derived === true;
+    const automation = Array.isArray(include) ? include.includes("automation") : include?.automation === true;
+    if (!links && !derived && !automation) return items;
+    const ids = items.map((item) => item.id);
+    const valuesByItem = derived ? await chokePoint.getDerivedValuesForItems(ids) : undefined;
+    const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived, valuesByItem) : undefined;
+    const automationByItem = automation ? await chokePoint.readAutomationForItems(ids) : undefined;
+    return items.map((item) => ({
+      ...item,
+      ...(linksByItem !== undefined ? { links: linksByItem.get(item.id) ?? {} } : {}),
+      ...(valuesByItem !== undefined ? { derived: valuesByItem.get(item.id) ?? {} } : {}),
+      ...(automationByItem?.has(item.id) ? { automation: automationByItem.get(item.id) } : {}),
+    }));
+  }
+
+  function expansion(include: ItemReadInclude) {
+    return include && !Array.isArray(include) && include.relations !== undefined
+      ? { relations: include.relations, resolver }
+      : undefined;
+  }
   return {
     // ---- databases ----
     async listDatabases(_actor, input) {
@@ -82,15 +121,31 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async createDatabase(actor, input) {
-      return chokePoint.createDatabase({ name: input.name, parentItemId: input.parentItemId }, actor.userId);
+      const databaseInput = {
+        name: input.name,
+        parentItemId: input.parentItemId,
+        icon: input.icon,
+        color: input.color,
+      };
+      if (input.properties === undefined) return chokePoint.createDatabase(databaseInput, actor.userId);
+      // `database.create` holds the database-write capability; property creation needs the separate
+      // schema-write capability, so only a human REST session may create properties through it.
+      if (actor.restSession !== true) {
+        throw new ForbiddenError("Creating a database with properties requires a user session", {
+          field: "properties",
+        });
+      }
+      return chokePoint.createDatabaseWithProperties(
+        databaseInput,
+        input.titlePropertyName ?? "Name",
+        input.properties,
+        actor.userId,
+      );
     },
 
     async patchDatabase(actor, input) {
       assertNonEmptyPatch(input.patch);
-      // `input.patch` is `.strict()` with `name` as its only field, so a non-empty patch means
-      // `name` is present — TypeScript can't see that through `assertNonEmptyPatch`'s generic
-      // `Record<string, unknown>` parameter, hence the assertion rather than a real narrowing check.
-      return chokePoint.renameDatabase(input.databaseId, input.patch.name!, actor.userId);
+      return chokePoint.patchDatabase(input.databaseId, input.patch, actor.userId);
     },
 
     async archiveDatabase(actor, input) {
@@ -227,14 +282,21 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return chokePoint.deleteView({ id: input.viewId, actor: toActor(actor), actingUserId: actor.userId });
     },
 
-    async queryView(_actor, input) {
-      return chokePoint.queryViewItems(input.viewId, {
-        filter: input.filter,
-        sort: input.sort,
-        cursor: input.cursor,
-        limit: input.limit,
-        inTrash: input.inTrash,
-      });
+    async queryView(actor, input) {
+      const page = await chokePoint.queryViewItems(
+        input.viewId,
+        {
+          locale: await chokePoint.findUserLocale(actor.userId),
+          filter: input.filter,
+          sort: input.sort,
+          cursor: input.cursor,
+          limit: input.limit,
+          inTrash: input.inTrash,
+          includeCount: input.includeCount,
+        },
+        expansion(input.include),
+      );
+      return { ...page, items: await withLinks(page.items, input.include) };
     },
 
     async addViewItem(actor, input) {
@@ -262,14 +324,37 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     // ---- items ----
     async getItem(_actor, input) {
-      return requireItem(input.itemId);
+      const item = await chokePoint.findItem(input.itemId, expansion(input.include));
+      if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
+      const [withItemLinks] = await withLinks([item], input.include);
+      return withItemLinks ?? item;
     },
 
     async createItem(actor, input) {
+      if (input.relations !== undefined) {
+        const properties = await chokePoint.listProperties(input.databaseId);
+        const relations = input.relations.map<InitialItemRelation>(({ propertyKey, targetItemIds }) => {
+          const property = properties.find((entry) => entry.key === propertyKey && entry.type === "relation");
+          if (!property) return { kind: "unresolved" };
+          return { kind: "resolved", relationPropertyId: property.id, targetItemIds };
+        });
+        return chokePoint.createItemWithRelations(
+          {
+            databaseId: input.databaseId,
+            properties: input.properties,
+            idempotencyKey: input.idempotencyKey,
+            relations,
+          },
+          actor.userId,
+          humanWriterUserIdOf(actor),
+          writerIdentityOf(actor),
+        );
+      }
       return chokePoint.createItem(
         { databaseId: input.databaseId, properties: input.properties, idempotencyKey: input.idempotencyKey },
         actor.userId,
         humanWriterUserIdOf(actor),
+        writerIdentityOf(actor),
       );
     },
 
@@ -284,55 +369,85 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         },
         actor.userId,
         humanWriterUserIdOf(actor),
+        writerIdentityOf(actor),
       );
     },
 
     async deleteItem(actor, input) {
       const existing = await requireItemIncludingDeleted(input.itemId);
-      const item = await chokePoint.softDeleteItem(existing.databaseId, input.itemId, actor.userId);
+      const item = await chokePoint.softDeleteItem(
+        existing.databaseId,
+        input.itemId,
+        actor.userId,
+        writerIdentityOf(actor),
+      );
       if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return item;
     },
 
     async restoreItem(actor, input) {
       const existing = await requireItemIncludingDeleted(input.itemId);
-      const item = await chokePoint.restoreItem(existing.databaseId, input.itemId, actor.userId);
+      const item = await chokePoint.restoreItem(
+        existing.databaseId,
+        input.itemId,
+        actor.userId,
+        writerIdentityOf(actor),
+      );
       if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return item;
     },
 
-    async queryDatabase(_actor, input) {
+    async queryDatabase(actor, input) {
       const database = await chokePoint.getDatabase(input.databaseId);
       if (!database)
         throw new NotFoundError(`Database ${input.databaseId} not found`, {
           resource: "database",
           databaseId: input.databaseId,
         });
-      return chokePoint.queryDatabaseItems(input.databaseId, {
-        filter: input.filter,
-        sort: input.sort,
-        cursor: input.cursor,
-        limit: input.limit,
-        inTrash: input.inTrash,
-      });
+      const page = await chokePoint.queryDatabaseItems(
+        input.databaseId,
+        {
+          locale: await chokePoint.findUserLocale(actor.userId),
+          filter: input.filter,
+          sort: input.sort,
+          cursor: input.cursor,
+          limit: input.limit,
+          inTrash: input.inTrash,
+          includeCount: input.includeCount,
+        },
+        expansion(input.include),
+      );
+      return { ...page, items: await withLinks(page.items, input.include) };
     },
 
     // ---- relations ----
-    async putRelation(_actor, input) {
-      return chokePoint.createRelation({
-        relationPropertyId: input.relationPropertyId,
-        callerItemId: input.callerItemId,
-        targetItemId: input.targetItemId,
-        metadata: input.metadata,
-      });
+    async setRelation(actor, input) {
+      return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
     },
 
-    async deleteRelation(_actor, input) {
-      const edge = await chokePoint.deleteRelation({
-        relationPropertyId: input.relationPropertyId,
-        callerItemId: input.callerItemId,
-        targetItemId: input.targetItemId,
-      });
+    async putRelation(actor, input) {
+      return chokePoint.createRelation(
+        {
+          relationPropertyId: input.relationPropertyId,
+          callerItemId: input.callerItemId,
+          targetItemId: input.targetItemId,
+          metadata: input.metadata,
+        },
+        writerIdentityOf(actor),
+        actor.userId,
+      );
+    },
+
+    async deleteRelation(actor, input) {
+      const edge = await chokePoint.deleteRelation(
+        {
+          relationPropertyId: input.relationPropertyId,
+          callerItemId: input.callerItemId,
+          targetItemId: input.targetItemId,
+        },
+        writerIdentityOf(actor),
+        actor.userId,
+      );
       if (!edge) {
         throw new NotFoundError(`Relation edge not found`, {
           resource: "relationEdge",
@@ -343,7 +458,109 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       }
       return edge;
     },
+
+    /** The choke point answers `null` for an unknown, trashed or foreign item; that is the same not-found `requireItem` gives, so no caller can tell the three apart. */
+    async listRelations(_actor, input) {
+      const relations = await chokePoint.listItemRelations(input.itemId, input.relationPropertyId);
+      if (!relations)
+        throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
+      return relations;
+    },
+
+    async unlinkValue(actor, input) {
+      return chokePoint.unlinkValue(
+        input,
+        writerIdentityOf(actor).writerKind === "user" ? "user" : "agent",
+        actor.userId,
+      );
+    },
+    async relinkValue(actor, input) {
+      return chokePoint.relinkValue(input, actor.userId);
+    },
+
+    async getPage(actor, input) {
+      const item = await requireItem(input.itemId);
+      if (input.format === "markdown") {
+        const { docId, markdown, etag } = await docStore.readPageMarkdown(item.id);
+        return { docId, kind: "page", markdown, etag };
+      }
+      const summary = await docStore.getPageSummary(
+        item.id,
+        (await chokePoint.findUserLocale(actor.userId)) ?? "en",
+        input.limit,
+      );
+      const path = await chokePoint.getItemPath(item.id);
+      let hostedByPagesDatabase = false;
+      const breadcrumbs = await Promise.all(
+        path.map(async (entry) => {
+          const database = await chokePoint.getDatabase(entry.databaseId);
+          const properties = await chokePoint.listProperties(entry.databaseId);
+          const titleKey = properties
+            .filter((property) => property.type === "title")
+            .map((property) => property.key)
+            .sort()[0];
+          const titleValue = entry.properties[titleKey ?? "name"];
+          const title = typeof titleValue === "string" ? titleValue : "";
+          if (entry.id === item.id) hostedByPagesDatabase = database?.ownerModuleId === PAGES_MODULE_ID;
+          const journal =
+            database?.ownerModuleId === "journal" &&
+            typeof entry.properties.type === "string" &&
+            typeof entry.properties.period === "string"
+              ? { type: entry.properties.type, period: entry.properties.period }
+              : undefined;
+          return { itemId: entry.id, title, databaseKey: database?.key ?? null, ...(journal ? { journal } : {}) };
+        }),
+      );
+      // A Pages item always has breadcrumbs, even the one-element trail of a page whose parent is missing or trashed.
+      const hasTrail = breadcrumbs.length > 1 || breadcrumbs[0]?.journal || hostedByPagesDatabase;
+      return { ...summary, breadcrumbs: hasTrail ? breadcrumbs : null };
+    },
+
+    /** The change list of one page; the docs module resolves the item in the caller's tenant and bounds the replay. */
+    async listPageChanges(_actor, input) {
+      return docStore.listPageChanges(input.itemId, { since: new Date(input.since), by: input.by, limit: input.limit });
+    },
+
+    async ensurePage(_actor, input) {
+      return docStore.ensurePage(input.itemId);
+    },
+
+    /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
+    async createSubpage(actor, input) {
+      return docStore.createSubpage(input, toActor(actor).type);
+    },
+
+    /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */
+    async insertPage(actor, input) {
+      const { itemId, placement, markdown, blockIds } = input;
+      return docStore.insertPageMarkdown(itemId, { placement, markdown, blockIds, origin: toActor(actor).type });
+    },
+
+    // ---- pages ----
+    /** The docs module refuses an unknown or non-page item (404), a future `at` (400) and an `at` outside the retained window (410). */
+    async restorePageVersion(_actor, input) {
+      return docStore.restoreVersion(input.itemId, new Date(input.at));
+    },
   } satisfies GenericApplicationPort;
+}
+
+/**
+ * The one derivation of who wrote, from the caller identity the transport's composition root
+ * built (never from a request body): an actor carrying both run ids is an agent run; a REST
+ * session is a person; anything else (`/mcp` on a human session, no run credential) is still an
+ * agent, an MCP client, without run ids. Every agent value names the user it acts for.
+ */
+export function writerIdentityOf(actor: AuthenticatedActor): WriterIdentity {
+  if (actor.runId !== undefined && actor.agentProjectItemId !== undefined) {
+    return {
+      writerKind: "agent",
+      agentRunId: actor.runId,
+      agentProjectItemId: actor.agentProjectItemId,
+      onBehalfOfUserId: actor.userId,
+    };
+  }
+  if (actor.restSession === true) return { writerKind: "user" };
+  return { writerKind: "agent", onBehalfOfUserId: actor.userId };
 }
 
 /** The writer id the choke point's hooks may trust as human: only a REST session actor that is not acting for an agent. */

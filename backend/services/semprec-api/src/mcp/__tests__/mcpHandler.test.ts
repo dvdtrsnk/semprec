@@ -1,4 +1,7 @@
+import { ModuleRegistry } from "@semprec/module-registry";
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -25,6 +28,10 @@ import { createGenericOperationGateway, type GenericOperationGateway } from "@se
 import { CAPABILITY_IDS, currentTenantScope, type CapabilityId } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
 import { SESSION_COOKIE_NAME } from "../../authHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const ALL_CAPABILITIES: ReadonlySet<CapabilityId> = new Set(CAPABILITY_IDS);
@@ -57,7 +64,9 @@ async function tenantZeroUserId(): Promise<string> {
 async function startServer(
   grantedCapabilities: ReadonlySet<CapabilityId>,
 ): Promise<{ server: Server; baseUrl: string }> {
-  const server = createServer(createMcpRequestListener(pool, gateway, grantedCapabilities));
+  const server = createServer(
+    await createMcpRequestListener(pool, gateway, grantedCapabilities, new ModuleRegistry(() => new Set())),
+  );
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -87,7 +96,7 @@ describe("createMcpRequestListener (issue #220)", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
-    gateway = createGenericOperationGateway(pool);
+    gateway = createGenericOperationGateway(pool, testMetadataResolver);
     servers = [];
   });
 
@@ -99,13 +108,14 @@ describe("createMcpRequestListener (issue #220)", () => {
     await pool?.end();
   });
 
-  it("rejects a non-POST method with 404", async () => {
+  it("rejects a non-POST method with 405 and Allow: POST", async () => {
     const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
     servers.push(server);
 
     const res = await fetch(`${baseUrl}/mcp`, { method: "GET" });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST");
   });
 
   it("rejects an unauthenticated request", async () => {
@@ -157,6 +167,198 @@ describe("createMcpRequestListener (issue #220)", () => {
     expect(body.error?.code).toBe(-32700);
   });
 
+  describe("initialize", () => {
+    const initialize = (protocolVersion: unknown) => ({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "initialize",
+      params: { protocolVersion, capabilities: {}, clientInfo: { name: "c", version: "1" } },
+    });
+
+    it("returns the same initialize result for a human session and a real run credential", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const human = await authHeader();
+      const sessionRows = await pool.query<{ id: string }>("SELECT id FROM sessions");
+      const callerSessionId = sessionRows.rows[0]?.id;
+      if (!callerSessionId || sessionRows.rows.length !== 1) throw new Error("Expected the caller session");
+      await authHeader();
+      const userId = await tenantZeroUserId();
+      const projectItemId = await createTestProjectItem(pool);
+      const credential = await withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+      );
+      const request = initialize("2025-06-18");
+      const snapshot = async () => {
+        const { rows } = await pool.query<{
+          items: unknown;
+          databases: unknown;
+          properties: unknown;
+          users: unknown;
+          runs: unknown;
+          credentials: unknown;
+          sessions: unknown;
+        }>(`
+          SELECT
+            (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]'::jsonb) FROM items i) AS items,
+            (SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.id), '[]'::jsonb) FROM databases d) AS databases,
+            (SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id), '[]'::jsonb) FROM properties p) AS properties,
+            (SELECT coalesce(jsonb_agg(to_jsonb(u) - 'password_hash' ORDER BY u.id), '[]'::jsonb) FROM users u) AS users,
+            (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb) FROM agent_runs r) AS runs,
+            (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
+            (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
+        `);
+        if (!rows[0]) throw new Error("Missing persistence snapshot");
+        return rows[0];
+      };
+      const before = await snapshot();
+
+      const humanResponse = await rpc(baseUrl, human, request);
+      const afterHuman = await snapshot();
+      const runResponse = await rpc(baseUrl, { Authorization: `Bearer ${credential.token}` }, request);
+      const afterRun = await snapshot();
+
+      expect(humanResponse.status).toBe(200);
+      expect(runResponse.status).toBe(200);
+      const humanBody: unknown = await humanResponse.json();
+      const runBody: unknown = await runResponse.json();
+      expect(humanBody).toMatchObject({
+        result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "semprec" } },
+      });
+      expect(runBody).toEqual(humanBody);
+      expect(afterHuman.items).toEqual(before.items);
+      expect(afterHuman.databases).toEqual(before.databases);
+      expect(afterHuman.properties).toEqual(before.properties);
+      expect(afterHuman.users).toEqual(before.users);
+      expect(afterHuman.runs).toEqual(before.runs);
+      expect(JSON.stringify(afterHuman.credentials) === JSON.stringify(before.credentials)).toBe(true);
+      // Authentication is allowed to touch the caller's session timestamps and no other fields.
+      const stableSessions = (value: unknown): unknown => {
+        if (!Array.isArray(value)) throw new Error("Expected session snapshot array");
+        return value.map((row: unknown) => {
+          if (typeof row !== "object" || row === null || Array.isArray(row)) throw new Error("Invalid session row");
+          if (!("id" in row) || typeof row.id !== "string") throw new Error("Missing session id");
+          return row.id === callerSessionId
+            ? Object.fromEntries(Object.entries(row).filter(([key]) => key !== "last_seen_at" && key !== "expires_at"))
+            : row;
+        });
+      };
+      expect(
+        JSON.stringify(stableSessions(afterHuman.sessions)) === JSON.stringify(stableSessions(before.sessions)),
+      ).toBe(true);
+      expect(JSON.stringify(afterRun) === JSON.stringify(afterHuman)).toBe(true);
+    });
+
+    it.each(["2025-06-18", "2025-03-26", "2024-11-05"])("echoes the supported version %s", async (version) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), initialize(version));
+      const manifest: unknown = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+      if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        !("version" in manifest) ||
+        typeof manifest.version !== "string"
+      ) {
+        throw new Error("API package version is missing");
+      }
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonRpcResponse;
+      expect(body.id).toBe(7);
+      expect(body.result).toMatchObject({
+        protocolVersion: version,
+        capabilities: { tools: {} },
+        serverInfo: { name: "semprec", version: manifest.version },
+      });
+    });
+
+    it("answers the newest version for an unsupported one", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), initialize("1999-01-01"));
+
+      const body = (await res.json()) as JsonRpcResponse;
+      expect((body.result as { protocolVersion: string }).protocolVersion).toBe("2025-06-18");
+    });
+
+    it.each([
+      ["missing params", undefined],
+      ["null params", null],
+      ["non-object params", "x"],
+      ["non-string protocolVersion", { protocolVersion: 5 }],
+      ["missing protocolVersion", {}],
+    ])("answers -32602 for %s", async (_label, params) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), { jsonrpc: "2.0", id: 1, method: "initialize", params });
+
+      const body = (await res.json()) as JsonRpcResponse;
+      expect(body.error?.code).toBe(-32602);
+    });
+
+    it("is rejected without credentials exactly like tools/list", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, {}, initialize("2025-06-18"));
+      const list = await rpc(baseUrl, {}, { jsonrpc: "2.0", id: 7, method: "tools/list" });
+
+      expect(res.status).toBe(401);
+      expect(list.status).toBe(res.status);
+      expect(await list.json()).toEqual(await res.json());
+    });
+
+    it("succeeds for a human session and writes nothing", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const headers = await authHeader();
+      const count = async () =>
+        (await pool.query<{ n: string }>("SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM sessions) AS n"))
+          .rows[0]?.n;
+      const before = await count();
+
+      const res = await rpc(baseUrl, headers, initialize("2025-06-18"));
+
+      expect(res.status).toBe(200);
+      expect(await count()).toBe(before);
+    });
+  });
+
+  describe("notifications", () => {
+    it.each(["notifications/initialized", "notifications/anything"])("%s answers 202 with no body", async (method) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const headers = await authHeader();
+      const before = await rpc(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const beforeBody: unknown = await before.json();
+
+      const res = await rpc(baseUrl, headers, { jsonrpc: "2.0", method });
+
+      expect(res.status).toBe(202);
+      expect(await res.text()).toBe("");
+
+      const list = await rpc(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const afterBody: unknown = await list.json();
+      expect(beforeBody).toMatchObject({
+        result: { tools: expect.arrayContaining([expect.objectContaining({ name: "semprec.item.create" })]) },
+      });
+      expect(afterBody).toEqual(beforeBody);
+    });
+
+    it("rejects an unauthenticated notification", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, {}, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      expect(res.status).toBe(401);
+    });
+  });
+
   describe("tools/list", () => {
     it("returns every operation prefixed 'semprec.' for the granted capabilities", async () => {
       const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
@@ -169,6 +371,8 @@ describe("createMcpRequestListener (issue #220)", () => {
       const tools = (body.result as { tools: { name: string }[] }).tools;
       expect(tools.some((t) => t.name === "semprec.item.create")).toBe(true);
       expect(tools.some((t) => t.name === "semprec.item.delete")).toBe(true);
+      expect(tools.some((t) => t.name === "semprec.relation.list")).toBe(true);
+      expect(tools.some((t) => t.name === "semprec.page.restoreVersion")).toBe(true);
       expect(tools.every((t) => t.name.startsWith("semprec."))).toBe(true);
     });
 

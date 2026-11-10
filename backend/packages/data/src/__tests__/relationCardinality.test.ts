@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { CardinalityViolationError, ValidationError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -139,61 +140,91 @@ describe("relation cardinality enforcement (issue #82)", () => {
   /**
    * Drives the exact race the trigger's advisory lock exists to prevent: two overlapping
    * transactions each inserting a conflicting edge for the same relation definition. Ordering
-   * is made deterministic (not timing-dependent) by having `clientX` explicitly take the same
-   * advisory lock the trigger itself uses (`pg_advisory_xact_lock(hashtextextended(...))`)
-   * *before* `clientY`'s insert is even issued — X is then guaranteed to hold the lock when
-   * Y's trigger tries to acquire it, so Y blocks until X commits or rolls back, regardless of
-   * how fast either connection's earlier queries happen to run. X's own insert re-acquires the
-   * same lock afterward, which succeeds immediately since Postgres advisory locks are
-   * reentrant within one session/transaction.
+   * is made deterministic by holding the trigger's existing advisory lock in X and observing
+   * Y's backend blocked by X before allowing X to insert and commit. Both transactions use the
+   * managed owner required by after-commit effects.
    */
   async function assertLosesRaceOnConflict(input: {
     relationDefinitionId: string;
     winner: { relationPropertyId: string; callerItemId: string; targetItemId: string };
     loser: { relationPropertyId: string; callerItemId: string; targetItemId: string };
   }): Promise<void> {
-    const clientX = await pool.connect();
-    const clientY = await pool.connect();
+    let winnerPid: number | undefined;
+    let loserPid: number | undefined;
+    let releaseWinner = () => {};
+    const winnerGate = new Promise<void>((resolve) => {
+      releaseWinner = resolve;
+    });
+    const winner = withTransaction(pool, async (client) => {
+      await client.query("SET LOCAL statement_timeout = '15s'");
+      const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const pid = rows[0]?.pid;
+      if (pid === undefined) throw new Error("Missing winner backend PID");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.relationDefinitionId]);
+      winnerPid = pid;
+      await winnerGate;
+      return createRelationWithClient(client, input.winner);
+    }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let loser: Promise<{ ok: true; value: unknown } | { ok: false; error: unknown }> | undefined;
+    let primary: { error: unknown } | undefined;
     try {
-      await clientX.query("BEGIN");
-      await clientX.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.relationDefinitionId]);
-
-      await clientY.query("BEGIN");
-      const pendingY = createRelationWithClient(clientY, input.loser);
-      // Attach a handler synchronously so Node never flags this as an unhandled rejection: Y's
-      // INSERT can settle (once X's COMMIT below unblocks it) well before the `await
-      // expect(pendingY)...` below runs, especially under a loaded test run. The real assertion
-      // is the `.rejects` check further down; multiple handlers on the same promise are fine.
-      pendingY.catch(() => {});
-
-      // Each client's own transaction is closed in its own try/catch/finally — if an
-      // assertion throws partway through, both clients still leave the pool with no open
-      // transaction (node-postgres does not roll back on release), rather than X sitting
-      // uncommitted or Y's already-failed INSERT leaving its aborted transaction unclosed.
-      try {
-        const resultX = await createRelationWithClient(clientX, input.winner);
-        await clientX.query("COMMIT");
-        expect(resultX).toBeDefined();
-      } catch (err) {
-        await clientX.query("ROLLBACK").catch(() => {});
-        throw err;
-      }
-
-      try {
-        await expect(pendingY).rejects.toBeInstanceOf(CardinalityViolationError);
-      } finally {
-        await clientY.query("ROLLBACK").catch(() => {});
-      }
-
-      const { rows } = await pool.query(
-        "SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1",
-        [input.relationDefinitionId],
+      await vi.waitFor(() => expect(winnerPid).toBeTypeOf("number"), { timeout: 5_000 });
+      loser = withTransaction(pool, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '15s'");
+        const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        const pid = rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing contender backend PID");
+        loserPid = pid;
+        return createRelationWithClient(client, input.loser);
+      }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
       );
-      expect(rows[0].n).toBe(1);
+      await vi.waitFor(
+        async () => {
+          if (winnerPid === undefined || loserPid === undefined) throw new Error("Waiting for both backend PIDs");
+          const { rows } = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::integer = ANY(pg_blocking_pids($2::integer)) AS blocked",
+            [winnerPid, loserPid],
+          );
+          expect(rows).toEqual([{ blocked: true }]);
+        },
+        { timeout: 5_000 },
+      );
+    } catch (error) {
+      primary = { error };
     } finally {
-      clientX.release();
-      clientY.release();
+      releaseWinner();
     }
+    const winnerResult = await winner;
+    const loserResult = loser ? await loser : undefined;
+    const unexpectedLoser = loserResult && !loserResult.ok && !(loserResult.error instanceof CardinalityViolationError);
+    const describeError = (error: unknown) => (error instanceof Error ? error.name : typeof error);
+    if (primary) {
+      if (!winnerResult.ok || unexpectedLoser)
+        console.error("A concurrent relation fixture also failed during settlement", {
+          winner: winnerResult.ok ? null : describeError(winnerResult.error),
+          loser: unexpectedLoser && loserResult && !loserResult.ok ? describeError(loserResult.error) : null,
+        });
+      throw primary.error;
+    }
+    if (!winnerResult.ok) {
+      if (unexpectedLoser && loserResult && !loserResult.ok)
+        console.error("The contender also failed during settlement", { error: describeError(loserResult.error) });
+      throw winnerResult.error;
+    }
+    expect(winnerResult.value).toBeDefined();
+    if (!loserResult) throw new Error("Contender did not start");
+    if (loserResult.ok) throw new Error("Contender unexpectedly succeeded");
+    expect(loserResult.error).toBeInstanceOf(CardinalityViolationError);
+    const { rows } = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1",
+      [input.relationDefinitionId],
+    );
+    expect(rows).toEqual([{ n: 1 }]);
   }
 
   it("under concurrency, a losing racer against a one_to_many conflict (same item_b, different item_a) is rejected, not silently corrupted", async () => {

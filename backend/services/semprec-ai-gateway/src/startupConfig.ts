@@ -7,6 +7,14 @@ import type { CompleteHandlerOptions } from "./completeHandler.js";
 import type { AudioHandlerOptions } from "./audioHandler.js";
 import { createPyannoteDiarizationProvider } from "./audioProviders/pyannoteProvider.js";
 import { createDeepInfraWhisperProvider } from "./audioProviders/deepInfraWhisperProvider.js";
+import { createOpenAiStreamingTranscriptionProvider } from "./audioProviders/openAiStreamingTranscriptionProvider.js";
+import {
+  DEFAULT_STT_CHUNK_SECONDS,
+  MAX_CONCURRENT_STT_STREAMS,
+  type SttStreamHandlerOptions,
+} from "./sttStreamHandler.js";
+import { createOpenAiSpeechSynthesisProvider } from "./audioProviders/openAiSpeechSynthesisProvider.js";
+import { MAX_CONCURRENT_TTS_STREAMS, type TtsStreamHandlerOptions } from "./ttsStreamHandler.js";
 import type { PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
 /** Every provider this deployment of `semprec-ai-gateway` knows how to construct, keyed by id. */
@@ -47,6 +55,8 @@ export interface StartupConfig {
   handlerOptions: CompleteHandlerOptions;
   audioHandlerOptions: AudioHandlerOptions;
   piHandlerOptions: PiMessagesHandlerOptions;
+  sttStreamHandlerOptions: SttStreamHandlerOptions;
+  ttsStreamHandlerOptions: TtsStreamHandlerOptions;
 }
 
 export function resolveStartupConfig(
@@ -89,6 +99,14 @@ export function resolveStartupConfig(
   const pyannotePricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR");
   const deepInfraPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR");
 
+  const sttPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_OPENAI_STT_PRICE_PER_AUDIO_HOUR");
+  const sttChunkSeconds =
+    env.AI_GATEWAY_STT_CHUNK_SECONDS === undefined
+      ? DEFAULT_STT_CHUNK_SECONDS
+      : requirePositiveFloat(env, "AI_GATEWAY_STT_CHUNK_SECONDS");
+
+  const ttsPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_OPENAI_TTS_PRICE_PER_AUDIO_HOUR");
+
   // The operator-wide safety caps over all tenants' spend: required, so a deploy without them
   // cannot start rather than run with no global cap.
   const globalCaps: GlobalAiCaps = {
@@ -122,6 +140,21 @@ export function resolveStartupConfig(
       // `streamSimple`, not `stream`: the pi-messages `reasoning` level is a provider-neutral
       // option that only the simple entry point maps onto Anthropic's thinking parameters.
       streamFn: streamSimple,
+      globalCaps,
+    },
+    sttStreamHandlerOptions: {
+      internalToken,
+      provider: createOpenAiStreamingTranscriptionProvider(requireEnv(env, "OPENAI_API_KEY")),
+      pricePerAudioHour: sttPricePerAudioHour,
+      chunkSeconds: sttChunkSeconds,
+      maxConcurrentStreams: MAX_CONCURRENT_STT_STREAMS,
+      globalCaps,
+    },
+    ttsStreamHandlerOptions: {
+      internalToken,
+      provider: createOpenAiSpeechSynthesisProvider(requireEnv(env, "OPENAI_API_KEY")),
+      pricePerAudioHour: ttsPricePerAudioHour,
+      maxConcurrentStreams: MAX_CONCURRENT_TTS_STREAMS,
       globalCaps,
     },
   };

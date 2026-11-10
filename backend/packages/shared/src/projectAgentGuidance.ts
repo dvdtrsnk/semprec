@@ -53,8 +53,10 @@ export interface TransactionRunner<Tx> {
  */
 export interface ProjectAgentGuidanceStore<Tx> {
   load(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
+  loadForUpdate(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
   upsert(tx: Tx, row: Omit<ProjectAgentGuidance, "updatedAt">): Promise<ProjectAgentGuidance>;
   transfer(tx: Tx, projectItemId: string, newOwnerUserId: string): Promise<ProjectAgentGuidance>;
+  delete(tx: Tx, projectItemId: string): Promise<void>;
 }
 
 /**
@@ -96,4 +98,69 @@ export interface GuidanceReferenceStore<Tx> {
  */
 export interface GuidanceHeartbeatStore<Tx> {
   upsertDriftHeartbeat(tx: Tx, projectItemId: string): Promise<void>;
+  disableDriftHeartbeat(tx: Tx, projectItemId: string): Promise<void>;
+}
+
+/** The four sections of a project's agent guidance, in the order the canonical Markdown lists them (issue #1449). */
+export const PROJECT_AGENT_GUIDANCE_SECTION_KEYS = ["purpose", "allowed", "notAllowed", "generalInstructions"] as const;
+
+export type ProjectAgentGuidanceSectionKey = (typeof PROJECT_AGENT_GUIDANCE_SECTION_KEYS)[number];
+
+/** The reserved level-2 heading that opens each section of the canonical Markdown. */
+export const PROJECT_AGENT_GUIDANCE_HEADINGS: Readonly<Record<ProjectAgentGuidanceSectionKey, string>> = {
+  purpose: "## Purpose",
+  allowed: "## Allowed",
+  notAllowed: "## Not allowed",
+  generalInstructions: "## General instructions",
+};
+
+/** The text of each section, without its heading. */
+export type ProjectAgentGuidanceSections = Record<ProjectAgentGuidanceSectionKey, string>;
+
+/**
+ * Renders the canonical guidance Markdown: the reserved headings in order, each section's text trimmed,
+ * empty sections omitted, sections separated by one blank line and the document ending with one newline.
+ * Sections that all hold no text render as the empty string.
+ */
+export function composeProjectAgentGuidanceMarkdown(sections: ProjectAgentGuidanceSections): string {
+  const blocks = PROJECT_AGENT_GUIDANCE_SECTION_KEYS.flatMap((key) => {
+    const text = sections[key].trim();
+    return text === "" ? [] : [`${PROJECT_AGENT_GUIDANCE_HEADINGS[key]}\n${text}`];
+  });
+  return blocks.length === 0 ? "" : `${blocks.join("\n\n")}\n`;
+}
+
+/** Parses reserved whole-line headings, retaining any preamble in general instructions. */
+export function parseProjectAgentGuidanceMarkdown(markdown: string): ProjectAgentGuidanceSections {
+  const chunks: Record<ProjectAgentGuidanceSectionKey, string[]> = {
+    purpose: [],
+    allowed: [],
+    notAllowed: [],
+    generalInstructions: [],
+  };
+  let current: ProjectAgentGuidanceSectionKey = "generalInstructions";
+  for (const line of markdown.split(/\r\n|\r|\n/)) {
+    const heading = PROJECT_AGENT_GUIDANCE_SECTION_KEYS.find((key) => PROJECT_AGENT_GUIDANCE_HEADINGS[key] === line);
+    if (heading) current = heading;
+    else chunks[current].push(line);
+  }
+  return {
+    purpose: chunks.purpose.join("\n").trim(),
+    allowed: chunks.allowed.join("\n").trim(),
+    notAllowed: chunks.notAllowed.join("\n").trim(),
+    generalInstructions: chunks.generalInstructions.join("\n").trim(),
+  };
+}
+
+/** Identifies the first section containing a reserved whole-line heading. */
+export function findReservedHeading(sections: ProjectAgentGuidanceSections): ProjectAgentGuidanceSectionKey | null {
+  return (
+    PROJECT_AGENT_GUIDANCE_SECTION_KEYS.find((key) =>
+      sections[key]
+        .split(/\r\n|\r|\n/)
+        .some((line) =>
+          PROJECT_AGENT_GUIDANCE_SECTION_KEYS.some((heading) => PROJECT_AGENT_GUIDANCE_HEADINGS[heading] === line),
+        ),
+    ) ?? null
+  );
 }

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +18,8 @@ import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { BLOCK_TYPES } from "@semprec/block-model";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -54,6 +57,22 @@ async function choosePort(): Promise<number> {
 /** vitest globalSetup: one embedded Postgres instance for the whole test run. */
 export default async function setup(): Promise<() => Promise<void>> {
   preserveFailingExitCode();
+  const sharedPath = fileURLToPath(new URL("../../../shared/src/index.ts", import.meta.url));
+  const queuePath = fileURLToPath(new URL("../../../queue/src/index.ts", import.meta.url));
+  const registryPath = fileURLToPath(new URL("../../../module-registry/src/index.ts", import.meta.url));
+  const blockPath = fileURLToPath(new URL("../../../../../shared/block-model/src/index.ts", import.meta.url));
+  const sourceRunAsSystem: unknown = (await import(sharedPath)).runAsSystem;
+  const sourceEnsureQueueSchema: unknown = (await import(queuePath)).ensureQueueSchema;
+  const SourceModuleRegistry: unknown = (await import(registryPath)).ModuleRegistry;
+  const sourceBlockTypes: unknown = (await import(blockPath)).BLOCK_TYPES;
+  if (
+    runAsSystem !== sourceRunAsSystem ||
+    ensureQueueSchema !== sourceEnsureQueueSchema ||
+    ModuleRegistry !== SourceModuleRegistry ||
+    BLOCK_TYPES !== sourceBlockTypes
+  ) {
+    throw new Error("Global setup workspace roots must resolve to source modules");
+  }
 
   const removedStaleDirs = await sweepStalePostgresDirs({ tmpDir: tmpdir() });
   if (removedStaleDirs.length > 0) {
@@ -70,6 +89,9 @@ export default async function setup(): Promise<() => Promise<void>> {
     password: "postgres",
     port,
     persistent: false,
+    // ICU collations (`cs-x-icu`, `und-x-icu`; issue #1524) are unusable in a SQL_ASCII database,
+    // which is what initdb picks on a host with the C locale; production (postgres:16-alpine) is UTF8.
+    initdbFlags: ["--encoding=UTF8"],
   });
 
   async function removeDatabaseDir(): Promise<void> {
@@ -102,9 +124,27 @@ export default async function setup(): Promise<() => Promise<void>> {
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
 
-    await pg.createDatabase("semprec_test");
+    const bootstrap = pg.getPgClient("postgres", "127.0.0.1");
+    let bootstrapFailure: { error: unknown } | undefined;
+    try {
+      await bootstrap.connect();
+      await bootstrap.query('CREATE DATABASE "semprec_test"');
+    } catch (error) {
+      bootstrapFailure = { error };
+    }
+    try {
+      await bootstrap.end();
+    } catch (error) {
+      if (bootstrapFailure) {
+        throw new AggregateError([bootstrapFailure.error, error], "Test database bootstrap and client cleanup failed", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+    if (bootstrapFailure) throw bootstrapFailure.error;
 
-    const connectionString = `postgresql://postgres:postgres@localhost:${port}/semprec_test`;
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/semprec_test`;
     process.env.TEST_DATABASE_URL = connectionString;
     // Existing suites call data-layer functions without a tenant scope, and an unset mode is strict
     // since issue #1067. The isolation suites of #1053, #1054 and #1056 set `strict` for themselves
@@ -122,9 +162,10 @@ export default async function setup(): Promise<() => Promise<void>> {
         await runDocHistoryCutoverMigration(pool);
         await runAgentRunsActorUserIdCutoverMigration(pool);
         await runApprovalRequestExecutionStatusCutoverMigration(pool);
-        await runTenantCutoverMigrations(tenantPool);
+        // Before the tenant cutovers, as in runMigrationsCli.ts: their writes queue search jobs.
         await ensureQueueSchema(pool);
         await grantQueueSchemaPrivileges(pool);
+        await runTenantCutoverMigrations(tenantPool);
         await runHeartbeatFireQueueSplitMigration(pool);
         await runLegacyJobEnvelopeStampMigration(pool);
       });

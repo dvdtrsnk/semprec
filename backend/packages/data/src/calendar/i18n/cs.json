@@ -1,0 +1,23 @@
+{
+  "database.calendars.name": "Kalendáře",
+  "property.calendars.name.name": "Název",
+  "property.calendars.color.name": "Barva",
+  "property.calendars.notify.name": "Upozornění",
+  "property.calendars.hidden.name": "Skrytý",
+  "property.calendars.isDefault.name": "Výchozí",
+  "property.calendars.kind.name": "Druh",
+  "property.calendars.kind.option.own": "Vlastní",
+  "property.calendars.kind.option.system": "Systémový",
+  "property.calendars.kind.option.subscription": "Odběr",
+  "property.calendars.systemKey.name": "Systémový klíč",
+  "property.calendars.events.name": "Události",
+  "seed.calendars.project.name": "Kalendář",
+  "seed.calendars.personal.name": "Osobní",
+  "seed.calendars.work.name": "Práce",
+  "seed.calendars.family.name": "Rodina",
+  "seed.calendars.health.name": "Zdraví",
+  "seed.calendars.birthdays.name": "Narozeniny",
+  "seed.calendars.tasks.name": "Úkoly",
+  "seed.calendars.sleep.name": "Spánek",
+  "seed.calendars.holidaysCz.name": "Státní svátky - Česko"
+}

@@ -4,6 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { applyRollupConfig, validateRollupConfig } from "../rollup/config.js";
 import { ValidationError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 
 let pool: Pool;
@@ -25,12 +26,7 @@ async function readDependencies(client: PoolClient, rollupPropertyId: string): P
 }
 
 async function withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    return await fn(client);
-  } finally {
-    client.release();
-  }
+  return withTransaction(pool, fn);
 }
 
 describe("applyRollupConfig", () => {

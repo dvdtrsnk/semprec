@@ -1,8 +1,12 @@
 import type { Pool } from "pg";
+import { isRiskClass } from "@semprec/shared";
 import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
   createPendingApprovalRequest,
+  approvalNotificationBody,
+  buildMcpInvokeApprovalDescription,
+  APPROVAL_REQUEST_REASON_MAX_LENGTH,
   withTransaction,
   executeMcpInvocation,
   getTenantUserId,
@@ -16,7 +20,15 @@ import {
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "@semprec/data";
 export { executeMcpInvocation } from "@semprec/data";
 
-export type McpInvokeTool = (args: McpInvokeArgs, signal?: AbortSignal) => Promise<McpInvokeResult>;
+/** An MCP result that also names the approval request the call created, when it was deferred to a human. */
+export type McpInvokeToolResult = McpInvokeResult & { approvalRequestId?: string };
+
+export type McpInvokeTool = (
+  args: McpInvokeArgs,
+  signal?: AbortSignal,
+  /** `toolCallId`: the model-runtime tool call, stored on an approval request the call creates. */
+  invokeOptions?: { toolCallId?: string },
+) => Promise<McpInvokeToolResult>;
 
 /**
  * The outbound MCP-invoke adapter (issue #128): resolves `mcpToolRegistrationId` against
@@ -109,8 +121,8 @@ function validateArguments(target: McpToolInvocationTarget, args: McpInvokeArgs)
   return errors.map((e) => `${e.instancePath || "(root)"} ${e.message ?? "is invalid"}`).join("; ");
 }
 
-function rejection(result: string): RejectedMcpInvocation {
-  return { ok: false, result: { error: true, result } };
+function rejection(result: string, failure?: McpInvokeResult["failure"]): RejectedMcpInvocation {
+  return { ok: false, result: { error: true, result, ...(failure ? { failure } : {}) } };
 }
 
 /**
@@ -130,7 +142,10 @@ export async function resolveMcpInvocation(
     resolveGrantedMcpTool(client, projectItemId, mcpToolRegistrationId),
   );
   if (!target) {
-    return rejection("This MCP tool is unavailable: it is unknown, inactive, or no longer granted to this project.");
+    // No registration was resolved, so no server item id is known to attach.
+    return rejection("This MCP tool is unavailable: it is unknown, inactive, or no longer granted to this project.", {
+      failureKind: "unavailable",
+    });
   }
 
   const validationError = validateArguments(target, args);
@@ -163,15 +178,38 @@ export function createMcpInvokeTool(
 }
 
 /**
+ * The reserved argument an agent may add to an approval-gated MCP tool call to say why it asks
+ * (issue #1420). A third-party tool's own parameters are free-form, so a plain `reason` could
+ * collide with a real one; the wrapper removes this key before validation, storage and invocation.
+ */
+export const MCP_APPROVAL_REASON_KEY = "semprecReason";
+
+type ReasonExtraction = { ok: true; args: McpInvokeArgs; reason: string | null } | { ok: false; error: string };
+
+function extractReason(args: McpInvokeArgs): ReasonExtraction {
+  if (!(MCP_APPROVAL_REASON_KEY in args)) return { ok: true, args, reason: null };
+  const { [MCP_APPROVAL_REASON_KEY]: raw, ...rest } = args;
+  if (raw === undefined || raw === null) return { ok: true, args: rest, reason: null };
+  if (typeof raw !== "string" || Array.from(raw).length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `Invalid argument '${MCP_APPROVAL_REASON_KEY}': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,
+    };
+  }
+  return { ok: true, args: rest, reason: raw };
+}
+
+/**
  * Formats the synthetic result a caller sees for a call this issue deferred to a human: shaped
  * exactly like a real `McpInvokeResult` (`error: false` — the *tool call itself* succeeded in the
  * sense that a request now exists, even though the underlying tool has not run) so the agent
  * turn and run complete normally as `done`, per the issue's Task, instead of the run treating
  * this as a failure.
  */
-function pendingApprovalResult(requestId: string, toolName: string): McpInvokeResult {
+function pendingApprovalResult(requestId: string, toolName: string): McpInvokeToolResult {
   return {
     error: false,
+    approvalRequestId: requestId,
     result: `Tool '${toolName}' requires human approval before it can run. Approval request ${requestId} has been created and is awaiting a decision; this call has not been executed.`,
   };
 }
@@ -198,10 +236,31 @@ export function createApprovalGatedMcpInvokeTool(
   projectItemId: string,
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
+  knownServerItemId?: string,
 ): McpInvokeTool {
-  return async function invoke(args, signal) {
+  if (
+    knownServerItemId !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(knownServerItemId)
+  ) {
+    throw new Error("Invalid MCP server item id");
+  }
+  return async function invoke(rawArgs, signal, invokeOptions) {
+    const extracted = extractReason(rawArgs);
+    if (!extracted.ok) return { error: true, result: extracted.error };
+    const { args, reason } = extracted;
+
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
-    if (!resolution.ok) return resolution.result;
+    if (!resolution.ok) {
+      const result = resolution.result;
+      if (result.failure?.failureKind === "unavailable" && knownServerItemId !== undefined) {
+        return {
+          error: true,
+          result: result.result,
+          failure: { failureKind: "unavailable", mcpServerItemId: knownServerItemId },
+        };
+      }
+      return result;
+    }
 
     const { target } = resolution;
     if (target.requiresApproval) {
@@ -209,7 +268,7 @@ export function createApprovalGatedMcpInvokeTool(
         const created = await createPendingApprovalRequest(client, {
           agentRunId,
           toolName: target.toolName,
-          riskClass: target.riskClass,
+          riskClass: isRiskClass(target.riskClass) ? target.riskClass : "unclassified",
           payload: {
             mcpToolRegistrationId: target.mcpToolRegistrationId,
             mcpServerItemId: target.mcpServerItemId,
@@ -219,13 +278,19 @@ export function createApprovalGatedMcpInvokeTool(
           // introduced that concept for the five generic-operation kinds) — this placeholder just
           // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
+          reason,
+          toolCallId: invokeOptions?.toolCallId ?? null,
+          description: buildMcpInvokeApprovalDescription(
+            typeof target.serverItem.properties.name === "string" ? target.serverItem.properties.name : null,
+            target.toolName,
+          ),
         });
         const userId = await getTenantUserId(client);
         if (userId) {
           await writeNotification(client, {
             userId,
             kind: "approval_pending",
-            titleParams: { toolName: created.toolName },
+            ...approvalNotificationBody(created),
             linkHref: `?page=approvals&user=${userId}`,
             sourceTable: "approval_requests",
             sourceId: created.id,

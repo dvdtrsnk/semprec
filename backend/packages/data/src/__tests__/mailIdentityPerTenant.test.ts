@@ -1,7 +1,11 @@
+import { runInTenant } from "@semprec/shared";
+import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
 import {
   getMailMessageMetaByItemId,
   getMailMessageMetaByProviderMessageId,
@@ -135,55 +139,76 @@ describe("mail identities stay within a tenant", () => {
     });
   });
 
+  async function withSeededTenants(run: (runtime: Pool, a: string, b: string) => Promise<void>): Promise<void> {
+    const a = await createTestTenant(pool);
+    const b = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      for (const tenant of [a, b]) await runInTenant(tenant, () => seedSystem(runtime));
+      await run(runtime, a, b);
+    } finally {
+      await runtime.end();
+    }
+  }
+
   it("does not join another tenant's thread through an ancestor Message-ID", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client);
-      await scopeTo(client, a);
-      const threadA = await resolveThreadId(client, { messageId: "<m1@x>" });
-      const rowA = await insertMessage(client, "<m1@x>", { threadId: threadA });
-
-      await scopeTo(client, b);
-      const threadB = await resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<m1@x>" });
-      expect(threadB).not.toBe(threadA);
-
-      await scopeTo(client, a);
-      expect(await threadIdOf(client, rowA.itemId)).toBe(threadA);
+    await withSeededTenants(async (runtime, a, b) => {
+      const first = await runInTenant(a, () =>
+        withTransaction(runtime, async (client) => {
+          const thread = await resolveThreadId(client, { messageId: "<m1@x>" });
+          const row = await insertMessage(client, "<m1@x>", { threadId: thread });
+          return { thread, itemId: row.itemId };
+        }),
+      );
+      const other = await runInTenant(b, () =>
+        withTransaction(runtime, (client) => resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<m1@x>" })),
+      );
+      expect(other).not.toBe(first.thread);
+      expect(await runInTenant(a, () => withTransaction(runtime, (client) => threadIdOf(client, first.itemId)))).toBe(
+        first.thread,
+      );
     });
   });
 
   it("does not merge another tenant's thread through a descendant reference", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client);
-      await scopeTo(client, a);
-      const threadA = await resolveThreadId(client, { messageId: "<child@x>", references: ["<m2@x>"] });
-      const rowA = await insertMessage(client, "<child@x>", { threadId: threadA, references: ["<m2@x>"] });
-
-      await scopeTo(client, b);
-      const threadB = await resolveThreadId(client, { messageId: "<m2@x>" });
-      expect(threadB).not.toBe(threadA);
-
-      await scopeTo(client, a);
-      expect(await threadExists(client, threadA)).toBe(true);
-      expect(await threadIdOf(client, rowA.itemId)).toBe(threadA);
+    await withSeededTenants(async (runtime, a, b) => {
+      const first = await runInTenant(a, () =>
+        withTransaction(runtime, async (client) => {
+          const thread = await resolveThreadId(client, { messageId: "<child@x>", references: ["<m2@x>"] });
+          const row = await insertMessage(client, "<child@x>", { threadId: thread, references: ["<m2@x>"] });
+          return { thread, itemId: row.itemId };
+        }),
+      );
+      const other = await runInTenant(b, () =>
+        withTransaction(runtime, (client) => resolveThreadId(client, { messageId: "<m2@x>" })),
+      );
+      expect(other).not.toBe(first.thread);
+      await runInTenant(a, () =>
+        withTransaction(runtime, async (client) => {
+          expect(await threadExists(client, first.thread)).toBe(true);
+          expect(await threadIdOf(client, first.itemId)).toBe(first.thread);
+        }),
+      );
     });
   });
 
   it("still merges two threads of one tenant bridged by a message and deletes the emptied thread", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { b } = await twoTenantsAsRuntimeRole(client);
-      await scopeTo(client, b);
-      const thread1 = await resolveThreadId(client, { messageId: "<x1@x>" });
-      const row1 = await insertMessage(client, "<x1@x>", { threadId: thread1 });
-      const thread2 = await resolveThreadId(client, { messageId: "<x2@x>" });
-      const row2 = await insertMessage(client, "<x2@x>", { threadId: thread2 });
-      expect(thread2).not.toBe(thread1);
-
-      const bridged = await resolveThreadId(client, { messageId: "<bridge@x>", references: ["<x1@x>", "<x2@x>"] });
-
-      expect(bridged).toBe(thread1);
-      expect(await threadIdOf(client, row1.itemId)).toBe(thread1);
-      expect(await threadIdOf(client, row2.itemId)).toBe(thread1);
-      expect(await threadExists(client, thread2)).toBe(false);
+    await withSeededTenants(async (runtime, _a, b) => {
+      await runInTenant(b, () =>
+        withTransaction(runtime, async (client) => {
+          const thread1 = await resolveThreadId(client, { messageId: "<x1@x>" });
+          const row1 = await insertMessage(client, "<x1@x>", { threadId: thread1 });
+          const thread2 = await resolveThreadId(client, { messageId: "<x2@x>" });
+          const row2 = await insertMessage(client, "<x2@x>", { threadId: thread2 });
+          expect(thread2).not.toBe(thread1);
+          const bridged = await resolveThreadId(client, { messageId: "<bridge@x>", references: ["<x1@x>", "<x2@x>"] });
+          expect([thread1, thread2]).toContain(bridged);
+          expect(await threadIdOf(client, row1.itemId)).toBe(bridged);
+          expect(await threadIdOf(client, row2.itemId)).toBe(bridged);
+          expect(await threadExists(client, bridged)).toBe(true);
+          expect(await threadExists(client, bridged === thread1 ? thread2 : thread1)).toBe(false);
+        }),
+      );
     });
   });
 });

@@ -1,0 +1,17 @@
+{
+  "model.claudeSonnet": "Claude Sonnet",
+  "model.claudeHaiku": "Claude Haiku",
+  "model.whisper": "Whisper",
+  "model.diarization": "Diarizace",
+  "operation.agent_turn": "Semp – chat a automatické úlohy",
+  "operation.transcription_transcribe": "Přepis nahrávek",
+  "operation.transcription_diarize": "Rozpoznání mluvčích",
+  "operation.transcript_summary": "Shrnutí schůzek",
+  "operation.transcript_speaker_suggestion": "Návrhy mluvčích",
+  "operation.agent_guidance_drift": "Kontrola instrukcí AGENT.md",
+  "operation.agent_behavior_drift": "Kontrola instrukcí AGENT.md",
+  "operation.voice": "Hlas",
+  "operation.voice_transcribe_stream": "Hlas",
+  "operation.voice_synthesize": "Hlas",
+  "operation.other": "Ostatní"
+}

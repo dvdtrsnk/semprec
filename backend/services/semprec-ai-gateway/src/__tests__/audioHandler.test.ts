@@ -1,5 +1,6 @@
 import { createServer, request, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { Pool } from "pg";
 import { seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
@@ -210,6 +211,25 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     await pool?.end();
   });
 
+  it.each([{ exact: 2 }, { min: 3 }, undefined])("passes speaker choice %s to the provider", async (numSpeakers) => {
+    startServer(diarizationProvider, transcriptionProvider);
+    await listen();
+    const response = await post("/internal/diarize", { ...VALID_DIARIZE_BODY, numSpeakers });
+    expect(response.status).toBe(200);
+    expect(diarizationProvider.calls[0]?.numSpeakers).toEqual(numSpeakers);
+  });
+
+  it.each([{ exact: 0 }, { min: -1 }, { exact: 1.5 }, { exact: 2, min: 3 }, {}, "2"])(
+    "rejects invalid speaker choice %s",
+    async (numSpeakers) => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+      const response = await post("/internal/diarize", { ...VALID_DIARIZE_BODY, numSpeakers });
+      expect(response.status).toBe(400);
+      expect(diarizationProvider.calls).toHaveLength(0);
+    },
+  );
+
   it("rejects a missing bearer token with 401 and never calls the provider", async () => {
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
@@ -265,6 +285,52 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
         expect(getProvider().calls).toHaveLength(0);
       },
     );
+  });
+
+  describe.each([
+    ["/internal/diarize", VALID_DIARIZE_BODY, () => diarizationProvider],
+    ["/internal/transcribe", VALID_TRANSCRIBE_BODY, () => transcriptionProvider],
+  ])("%s bounded base64 validation", (path, validBody, getProvider) => {
+    it("dispatches eight million valid characters without changing the decoded bytes", async () => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+      const audioBase64 = "QUJD".repeat(2_000_000);
+      const res = await post(path, { ...validBody, audioBase64 });
+      expect(res.status).toBe(200);
+      expect(z.record(z.string(), z.unknown()).safeParse(await res.json()).success).toBe(true);
+      expect(getProvider().calls).toHaveLength(1);
+      expect(getProvider().calls[0]?.audio).toEqual(new Uint8Array(Buffer.from(audioBase64, "base64")));
+    });
+
+    it.each([
+      ["a large invalid tail", `${"QUJD".repeat(1_999_999)}QUJ!`],
+      ["an invalid alphabet character", "QUJ_"],
+      ["a non-multiple-of-four length", "QUJ"],
+      ["padding in the middle", "QU==QUJD"],
+      ["excess padding", "Q==="],
+      ["a character after padding", "QU=J"],
+    ])("rejects %s without dispatching", async (_label, audioBase64) => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+      const res = await post(path, { ...validBody, audioBase64 });
+      expect(res.status).toBe(400);
+      const result = z.object({
+        code: z.literal("validation_failed"),
+        details: z.object({ field: z.literal("audioBase64") }),
+      });
+      expect(result.safeParse(await res.json()).success).toBe(true);
+      expect(getProvider().calls).toHaveLength(0);
+    });
+
+    it("retains acceptance of unused nonzero padding bits", async () => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+      const res = await post(path, { ...validBody, audioBase64: "Zh==" });
+      expect(res.status).toBe(200);
+      expect(z.record(z.string(), z.unknown()).safeParse(await res.json()).success).toBe(true);
+      expect(getProvider().calls).toHaveLength(1);
+      expect(getProvider().calls[0]?.audio).toEqual(new Uint8Array([102]));
+    });
   });
 
   it("rejects a non-positive audioSeconds with 400 validation_failed", async () => {

@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -17,6 +18,10 @@ import { mountRoutes } from "../adapter/routeTable.js";
 import { dispatchGenericOperation, restActor } from "../adapter/genericBinding.js";
 import { createItemRoutes } from "../itemsHandler.js";
 import { createViewRoutes } from "../viewsHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const value = "11111111-1111-4111-8111-111111111111";
 const valid = { type: "relation_path_contains", path: ["project", "area"], value };
@@ -69,8 +74,11 @@ describe("relation path query validation at the REST operation boundary", () => 
         .token;
     });
 
-    const service = createGenericApplicationService(pool);
-    const dispatch = mountRoutes(pool, [...createItemRoutes(service, pool), ...createViewRoutes(service)]);
+    const service = createGenericApplicationService(pool, testMetadataResolver);
+    const dispatch = mountRoutes(pool, [
+      ...createItemRoutes(service, pool, testMetadataResolver),
+      ...createViewRoutes(service, pool),
+    ]);
     server = createServer((req, res) => {
       if (!dispatch(req, res)) res.writeHead(404).end();
     });
@@ -110,7 +118,7 @@ describe("relation path query validation at the REST operation boundary", () => 
           const body: unknown = await response.json();
           expect(body).toEqual({ error: { code: "validation_failed", details: { field: "filter" } } });
 
-          const gateway = createGenericOperationGateway(pool);
+          const gateway = createGenericOperationGateway(pool, testMetadataResolver);
           await expect(
             runInTenant(getTenantZeroId(), () =>
               gateway.invoke(
@@ -133,7 +141,7 @@ describe("relation path query validation at the REST operation boundary", () => 
         await expect(
           runInTenant(getTenantZeroId(), () =>
             dispatchGenericOperation(
-              createGenericApplicationService(pool),
+              createGenericApplicationService(pool, testMetadataResolver),
               operation,
               restActor(userId),
               input(filter),
@@ -149,7 +157,12 @@ describe("relation path query validation at the REST operation boundary", () => 
         const body: unknown = await response.json();
         expect(body).toEqual({ error: { code: "validation_failed", details: { field: "filter.value" } } });
         await expect(
-          dispatchGenericOperation(createGenericApplicationService(pool), operation, restActor(userId), input(filter)),
+          dispatchGenericOperation(
+            createGenericApplicationService(pool, testMetadataResolver),
+            operation,
+            restActor(userId),
+            input(filter),
+          ),
         ).rejects.toBeInstanceOf(ValidationError);
       });
 

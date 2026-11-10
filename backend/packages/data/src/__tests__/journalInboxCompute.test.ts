@@ -25,6 +25,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { JOURNAL_INBOX_COMPUTED_KEY, recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import type { JournalInboxItemSummary } from "../inbox/journalInboxCompute.js";
+import { AiGatewayFailedError } from "@semprec/shared";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -99,8 +100,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text,
@@ -176,8 +175,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-29",
           time: "09:00",
           text: "Day two item",
@@ -244,7 +241,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("confirmed");
+    expect(items![0]).toMatchObject({ status: "confirmed", processing: "confirmed", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is rejected", async () => {
@@ -272,7 +269,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("rejected");
+    expect(items![0]).toMatchObject({ status: "rejected", processing: "rejected", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is revised", async () => {
@@ -280,7 +277,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     const item = await captureItem("A thought");
     const dayId = await journalDayIdFor(item.id);
     await runTick(item.id, async () => {
-      throw new Error("computeProposal should not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     const proposal = (await findProposalForItem(item.id))!;
     expect(proposal.properties.status).toBe("needsClarification");
@@ -378,6 +375,290 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       await expect(recomputeJournalInboxDay(pool, randomUUID())).resolves.toBeUndefined();
 
       expect(events).toEqual([]);
+    });
+  });
+
+  describe("processing state and proposal summary (issue #1489)", () => {
+    let filesId: string;
+    let projectsId: string;
+    let areasId: string;
+
+    beforeEach(async () => {
+      filesId = await databaseIdFor("files");
+      projectsId = await databaseIdFor("projects");
+      areasId = await databaseIdFor("areas");
+    });
+
+    async function createType(name: string, emoji: string, targetDatabase: "tasks" | "files"): Promise<string> {
+      const type = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: typesId,
+            name,
+            emoji,
+            processingMethod: "database",
+            targetDatabase,
+          }),
+        ),
+      );
+      return type.id;
+    }
+
+    /** A two-operation answer: the primary Files create carries `relations`, the second step is a follow-up. */
+    function filesComputation(relations: Record<string, string[]>): ComputeSemprecProposalFn {
+      return async () => ({
+        properties: {},
+        operations: [
+          { op: "create", database: "files", alias: "file", properties: { name: "Invoice" }, relations },
+          { op: "create", database: "tasks", alias: "payment", properties: { name: "Pay invoice" } },
+        ],
+      });
+    }
+
+    async function cardIdFor(itemId: string): Promise<string> {
+      const card = await findProposalForItem(itemId);
+      if (!card) throw new Error(`No Processing proposal card for Inbox item ${itemId}`);
+      return card.id;
+    }
+
+    /**
+     * Sets a card's `proposal` directly. The tick cannot store these envelopes (a page target, an unknown kind, a
+     * primary update step written by hand), so the test checks how the summary reads them.
+     */
+    async function setCardProposal(cardId: string, proposal: unknown): Promise<void> {
+      const { rows } = await pool.query<{ id: string }>(
+        "UPDATE items SET properties = jsonb_set(properties, '{proposal}', $2::jsonb) WHERE id = $1 RETURNING id",
+        [cardId, JSON.stringify(proposal)],
+      );
+      expect(rows).toHaveLength(1);
+    }
+
+    /** Sets a card's `status` directly: no production path writes `computing` yet, so the display rule is checked on that state. */
+    async function setCardStatus(cardId: string, status: string): Promise<void> {
+      const { rows } = await pool.query<{ id: string }>(
+        "UPDATE items SET properties = jsonb_set(properties, '{status}', $2::jsonb) WHERE id = $1 RETURNING id",
+        [cardId, JSON.stringify(status)],
+      );
+      expect(rows).toHaveLength(1);
+    }
+
+    it("is pending for an item with no card yet", async () => {
+      const item = await captureItem("Buy milk");
+      const dayId = await journalDayIdFor(item.id);
+
+      await drainQueue();
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry).toMatchObject({ status: null, processing: "pending", proposalSummary: null });
+    });
+
+    it("is pending while the card is computing, with no summary", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardStatus(await cardIdFor(item.id), "computing");
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry).toMatchObject({ status: "computing", processing: "pending", proposalSummary: null });
+    });
+
+    it("is failed when the card's computation failed, with no summary", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+
+      await runTick(item.id, async () => {
+        throw new AiGatewayFailedError("budget_exceeded");
+      });
+      await drainQueue();
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry).toMatchObject({ status: "computeFailed", processing: "failed", proposalSummary: null });
+    });
+
+    it("summarises a proposed Files card: target database, project, area and the follow-up step", async () => {
+      const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Renovation" } });
+      const area = await chokePoint.createItem({ databaseId: areasId, properties: { name: "Home" } });
+      const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
+      const dayId = await journalDayIdFor(item.id);
+
+      await runTick(item.id, filesComputation({ projects: [project.id], area: [area.id] }));
+      await drainQueue();
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry).toMatchObject({ status: "proposed", processing: "proposed" });
+      expect(entry.proposalSummary).toEqual({
+        entityKind: "database",
+        documentKind: null,
+        targetDatabaseKey: "files",
+        targetItemId: null,
+        targetItemName: null,
+        projectItemId: project.id,
+        projectName: "Renovation",
+        areaItemId: area.id,
+        areaName: "Home",
+        followUps: [{ databaseKey: "tasks", name: "Pay invoice", amount: null, currency: null }],
+      });
+    });
+
+    it("leaves the area unknown when the Files card names only a project", async () => {
+      const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Renovation" } });
+      const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
+      const dayId = await journalDayIdFor(item.id);
+
+      await runTick(item.id, filesComputation({ projects: [project.id] }));
+      await drainQueue();
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary).toMatchObject({
+        projectItemId: project.id,
+        projectName: "Renovation",
+        areaItemId: null,
+        areaName: null,
+      });
+    });
+
+    it("summarises a single-step proposal with no project, area or follow-up", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await drainQueue();
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary).toEqual({
+        entityKind: "database",
+        documentKind: null,
+        targetDatabaseKey: "tasks",
+        targetItemId: null,
+        targetItemName: null,
+        projectItemId: null,
+        projectName: null,
+        areaItemId: null,
+        areaName: null,
+        followUps: [],
+      });
+    });
+
+    it("gives an empty summary for a stored envelope of an unknown kind", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardProposal(await cardIdFor(item.id), {
+        entityKind: "futureKind",
+        target: randomUUID(),
+        properties: {},
+      });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary).toEqual({
+        entityKind: null,
+        documentKind: null,
+        targetDatabaseKey: null,
+        targetItemId: null,
+        targetItemName: null,
+        projectItemId: null,
+        projectName: null,
+        areaItemId: null,
+        areaName: null,
+        followUps: [],
+      });
+    });
+
+    it("reads a page target and its database from a stored pageContent envelope", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      const page = await chokePoint.createItem({ databaseId: filesId, properties: { name: "Scan" } });
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardProposal(await cardIdFor(item.id), { entityKind: "pageContent", target: page.id, properties: {} });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary).toMatchObject({
+        entityKind: "pageContent",
+        targetItemId: page.id,
+        targetItemName: "Scan",
+        targetDatabaseKey: "files",
+      });
+    });
+
+    it("uses a target's declared title instead of an unrelated name property", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      const database = await chokePoint.createDatabase({ name: "Custom pages" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "headline", name: "Headline", type: "title" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const page = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { headline: "Actual title", name: "Different name" },
+      });
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardProposal(await cardIdFor(item.id), { entityKind: "pageContent", target: page.id, properties: {} });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      expect((await computedInboxItems(dayId))![0]!.proposalSummary).toMatchObject({
+        targetItemId: page.id,
+        targetItemName: "Actual title",
+      });
+    });
+
+    it("reads the existing item of a primary update step as the target", async () => {
+      const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
+      const dayId = await journalDayIdFor(item.id);
+      const existing = await chokePoint.createItem({ databaseId: filesId, properties: { name: "Scan" } });
+      await runTick(item.id, async () => ({ properties: { name: "Invoice" } }));
+      await setCardProposal(await cardIdFor(item.id), {
+        entityKind: "database",
+        target: filesId,
+        properties: { name: "Scan" },
+        operations: [
+          { ref: "primary", op: "update", itemId: existing.id, role: "primary", properties: { name: "Scan" } },
+        ],
+      });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary).toMatchObject({
+        entityKind: "database",
+        targetDatabaseKey: "files",
+        targetItemId: existing.id,
+        targetItemName: "Scan",
+      });
+    });
+
+    it("reads the amount and currency that a follow-up step carries", async () => {
+      const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
+      const dayId = await journalDayIdFor(item.id);
+      await runTick(item.id, async () => ({ properties: { name: "Invoice" } }));
+      // No seeded database has an `amount` property, so the follow-up is written as the summary reads it.
+      await setCardProposal(await cardIdFor(item.id), {
+        entityKind: "database",
+        target: filesId,
+        properties: { name: "Invoice" },
+        operations: [
+          { ref: "primary", op: "create", databaseKey: "files", role: "primary", properties: { name: "Invoice" } },
+          {
+            ref: "payment",
+            op: "create",
+            databaseKey: "tasks",
+            role: "secondary",
+            properties: { name: "Pay invoice", amount: 250, currency: "CZK" },
+          },
+        ],
+      });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const entry = (await computedInboxItems(dayId))![0]!;
+      expect(entry.proposalSummary?.followUps).toEqual([
+        { databaseKey: "tasks", name: "Pay invoice", amount: 250, currency: "CZK" },
+      ]);
     });
   });
 });

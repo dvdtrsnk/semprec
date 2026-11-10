@@ -12,11 +12,14 @@
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
     "@semprec/agent-runtime": "workspace:*",
+    "@semprec/block-model": "workspace:*",
     "@semprec/data": "workspace:*",
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
+    "@semprec/realtime": "workspace:*",
     "@semprec/shared": "workspace:*",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "sharp": "0.34.5"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",

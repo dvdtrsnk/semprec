@@ -52,9 +52,11 @@ async function notifyHeartbeatError(
 /**
  * Resolved fresh on every call (never cached) so a module activated or deactivated between
  * two sweeps/fires is reflected immediately — the same "always evaluate current activation"
- * contract `ModuleRegistry`'s own projections make.
+ * contract `ModuleRegistry`'s own projections make. Also the rule-kind registry every production
+ * caller of `getSempThread` passes, so a tick thread's header validates its rule as the scheduler does
+ * (issue #1562).
  */
-async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
+export async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
   if (!moduleRegistry) return new Map();
   const definitions = await moduleRegistry.getHeartbeatRuleKindDefinitions();
   return new Map(definitions.map((def) => [def.kind, { schema: def.schema, nextFireAt: def.nextFireAt }]));
@@ -74,7 +76,7 @@ async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<
  * handles at most active tenants × 5 000 rows and one tenant's backlog cannot use up another's tick.
  * See `docs/adr/2026-10-06-system-work-fans-out-per-tenant.md`.
  */
-const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
+export const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
 
 /** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
 export async function handleHeartbeatSweepTask(
@@ -116,9 +118,10 @@ function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity):
  * total), a failure is recorded to `last_error` and a `heartbeat_error` notification
  * is written in the same transaction — whether it came from the handler itself or from the
  * preparation (scheduled path only), the affinity check, or the handler lookup that precede it.
- * `payload` carries exactly one of three discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
- * fire, or `triggeredByRunId` for a `heartbeat.trigger` manual fire — zero or more than one is
- * rejected with `validation_failed` rather than guessed at.
+ * `payload` carries exactly one of four discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
+ * fire, `triggeredByRunId` for a `heartbeat.trigger` manual fire by an agent, or `triggeredByUserId`
+ * for a manual fire by a person (issue #1453) — zero or more than one is rejected with
+ * `validation_failed` rather than guessed at.
  *
  * Shared by both of `heartbeatFire`'s split task names (issue #222) — `createHeartbeatFireCoreTask`
  * and `createHeartbeatFireAgentTask` below are thin wrappers over this with their own
@@ -156,10 +159,16 @@ function createHeartbeatFireTaskForAffinity(
     if (rawTriggeredByRunId !== undefined && typeof rawTriggeredByRunId !== "string") {
       throw new Error("heartbeat fire job payload field 'triggeredByRunId' must be a string when present");
     }
-    const discriminators = [rawOccurrenceId, rawItemId, rawTriggeredByRunId].filter((v) => v !== undefined);
+    const rawTriggeredByUserId = record?.triggeredByUserId;
+    if (rawTriggeredByUserId !== undefined && typeof rawTriggeredByUserId !== "string") {
+      throw new Error("heartbeat fire job payload field 'triggeredByUserId' must be a string when present");
+    }
+    const discriminators = [rawOccurrenceId, rawItemId, rawTriggeredByRunId, rawTriggeredByUserId].filter(
+      (v) => v !== undefined,
+    );
     if (discriminators.length !== 1) {
       throw new ValidationError(
-        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId'",
+        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId', 'triggeredByUserId'",
       );
     }
     const payload = {
@@ -168,6 +177,7 @@ function createHeartbeatFireTaskForAffinity(
       generation: rawGeneration as number | undefined,
       itemId: rawItemId,
       triggeredByRunId: rawTriggeredByRunId,
+      triggeredByUserId: rawTriggeredByUserId,
     };
 
     const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
@@ -215,6 +225,7 @@ function createHeartbeatFireTaskForAffinity(
         projectItemId: heartbeat.projectItemId,
         itemId: payload.itemId,
         triggeredByRunId: payload.triggeredByRunId,
+        triggeredByUserId: payload.triggeredByUserId,
         isFinalAttempt,
       });
       await recordHeartbeatSuccess(pool, heartbeat.id);
@@ -318,6 +329,8 @@ async function runScheduledOccurrenceFire(
       heartbeatId: heartbeat.id,
       projectItemId: heartbeat.projectItemId,
       isFinalAttempt,
+      occurrenceId,
+      attempt: helpers.job.attempts,
     });
     await withTransaction(pool, async (client) => {
       await recordHeartbeatSuccess(client, heartbeat.id);

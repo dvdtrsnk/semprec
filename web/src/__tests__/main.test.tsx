@@ -22,7 +22,7 @@ vi.mock("react-dom/client", async (importOriginal) => {
   };
 });
 
-describe("password-reset composition-root routing", () => {
+describe("composition-root routing for secret-fragment pages", () => {
   const originalUrl = window.location.href;
   const originalHistoryState: unknown = window.history.state;
   let container: HTMLDivElement;
@@ -66,5 +66,32 @@ describe("password-reset composition-root routing", () => {
     });
 
     expect(app).toHaveBeenCalledWith(expect.objectContaining({ passwordReset: undefined, login: true }), undefined);
+  });
+
+  it.each([
+    { hash: "#token=abc", token: "abc" },
+    { hash: "#token=", token: null },
+    { hash: "", token: null },
+  ])("passes token=$token for an invitation route with hash '$hash' (issue #1088)", async ({ hash, token }) => {
+    window.history.replaceState(null, "", `/?page=invite${hash}`);
+
+    await act(async () => {
+      await import("../main.js");
+    });
+
+    expect(app).toHaveBeenCalledWith(
+      expect.objectContaining({ invite: expect.objectContaining({ token }) }),
+      undefined,
+    );
+  });
+
+  it("does not create an invitation route for another page, even with a token fragment", async () => {
+    window.history.replaceState(null, "", "/?page=password-reset#token=abc");
+
+    await act(async () => {
+      await import("../main.js");
+    });
+
+    expect(app).toHaveBeenCalledWith(expect.objectContaining({ invite: undefined }), undefined);
   });
 });

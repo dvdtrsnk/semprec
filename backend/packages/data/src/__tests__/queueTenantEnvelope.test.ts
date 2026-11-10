@@ -1,8 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { ensureQueueSchema, enqueueJob, registerTask, runOnce, runWorker, type TaskList } from "@semprec/queue";
+import { runInTenant, withTraceContext } from "@semprec/shared";
+import {
+  addPreparedJob,
+  assertSearchTaskIdentifiersRegistered,
+  ensureQueueSchema,
+  enqueueJob,
+  prepareJob,
+  registerTask,
+  runOnce,
+  runWorker,
+  SEARCH_TASK_IDENTIFIERS,
+  type TaskList,
+} from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getTenantZeroId, resetDatabase } from "../testSupport/testDb.js";
@@ -86,6 +97,46 @@ describe("queue tenant envelope", () => {
     await runOnce({ pgPool: pool }, probeTaskList(observed));
     expect(observed).toEqual([]);
     expect(await probeJobCount()).toBe(0);
+  });
+
+  it("keeps a prepared job's own tenant and trace when another scope adds it (R1 D1)", async () => {
+    const tenantZero = getTenantZeroId();
+    const traceId = randomUUID();
+    const job = runInTenant(tenantZero, () =>
+      withTraceContext({ traceId }, () => prepareJob(TASK, { a: 1 }, { jobKey: "prepared-probe" })),
+    );
+    await runInTenant(randomUUID(), () => withTraceContext({ traceId: randomUUID() }, () => addPreparedJob(pool, job)));
+
+    expect(await readJobPayloadsByIdentifier(pool, TASK)).toEqual([
+      { traceId, tenantId: tenantZero, payload: { a: 1 } },
+    ]);
+    const observed: Array<string | null> = [];
+    await runOnce({ pgPool: pool }, probeTaskList(observed));
+    expect(observed).toEqual([tenantZero]);
+  });
+
+  it("registers the search task identifiers idempotently, without a job, also beside a worker's own registration (R1 D1)", async () => {
+    const jobsBefore = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs");
+    await ensureQueueSchema(pool);
+    await ensureQueueSchema(pool);
+    await expect(assertSearchTaskIdentifiersRegistered(pool)).resolves.toBeUndefined();
+
+    // A worker registers the identifiers of its own task list on its first fetch; with nothing
+    // queued its handlers never run.
+    const ran: string[] = [];
+    const searchTaskList: TaskList = Object.fromEntries(
+      SEARCH_TASK_IDENTIFIERS.map((identifier) => [
+        identifier,
+        registerTask(identifier, async () => {
+          ran.push(identifier);
+        }),
+      ]),
+    );
+    await Promise.all([ensureQueueSchema(pool), runOnce({ pgPool: pool }, searchTaskList)]);
+    await expect(assertSearchTaskIdentifiersRegistered(pool)).resolves.toBeUndefined();
+    expect(ran).toEqual([]);
+    const jobsAfter = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs");
+    expect(jobsAfter.rows).toEqual(jobsBefore.rows);
   });
 
   it("runs ensureQueueSchema, runWorker and the runner's stop() with no scope in strict mode", async () => {

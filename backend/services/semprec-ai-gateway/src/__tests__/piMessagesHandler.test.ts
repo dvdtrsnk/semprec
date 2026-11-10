@@ -1,6 +1,8 @@
 import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -23,8 +25,25 @@ import {
   type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as piClientStream } from "@earendil-works/pi-ai/compat";
-import { createAgentRun, createUser, hashPassword, seedSystem } from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
+import {
+  createAgentRun,
+  createSempChatThread,
+  createUser,
+  hashPassword,
+  insertSempUserTurn,
+  seedSystem,
+  withTransaction,
+} from "@semprec/data";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+  withTenantTransaction,
+} from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
@@ -78,6 +97,7 @@ interface AiGatewayCallRow {
   model: string;
   operation: string | null;
   agent_run_id: string | null;
+  semp_message_id: string | null;
   project_item_id: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -86,7 +106,7 @@ interface AiGatewayCallRow {
 
 async function gatewayCalls(): Promise<AiGatewayCallRow[]> {
   const { rows } = await pool.query<AiGatewayCallRow>(
-    "SELECT status, provider, model, operation, agent_run_id, project_item_id, input_tokens, output_tokens, cost_usd FROM ai_gateway_calls",
+    "SELECT status, provider, model, operation, agent_run_id, semp_message_id, project_item_id, input_tokens, output_tokens, cost_usd FROM ai_gateway_calls",
   );
   return rows;
 }
@@ -124,6 +144,7 @@ function fauxStreamFn(): StreamFunction<Api, SimpleStreamOptions> {
 function startServer(
   streamFn: StreamFunction<Api, SimpleStreamOptions> = fauxStreamFn(),
   overrides: Partial<PiMessagesHandlerOptions> = {},
+  servingPool: Pool = pool,
 ): void {
   const piOptions: PiMessagesHandlerOptions = {
     internalToken: TOKEN,
@@ -133,7 +154,7 @@ function startServer(
     streamFn,
     ...overrides,
   };
-  server = createServer(createDispatcher(pool, FAKE_COMPLETE_OPTIONS, FAKE_AUDIO_OPTIONS, piOptions));
+  server = createServer(createDispatcher(servingPool, FAKE_COMPLETE_OPTIONS, FAKE_AUDIO_OPTIONS, piOptions));
 }
 
 function setUpFaux(options: Partial<RegisterFauxProviderOptions> = {}): void {
@@ -303,7 +324,96 @@ describe("POST /internal/pi/messages", () => {
 
     const rows = await waitForStatus("settled");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: "settled", agent_run_id: null });
+    expect(rows[0]).toMatchObject({ status: "settled", agent_run_id: null, semp_message_id: null });
+  });
+
+  it("records the attributed Semp message id", async () => {
+    const messageId = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const threadId = await createSempChatThread(client);
+        return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
+      }),
+    );
+    faux.setResponses([fauxAssistantMessage("hi")]);
+    startServer();
+    await listen();
+    const res = await post({ model: MODEL_ID, context: CONTEXT }, TOKEN, { "x-semprec-semp-message-id": messageId });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(await waitForStatus("settled")).toMatchObject([{ semp_message_id: messageId }]);
+  });
+
+  it("rejects a malformed Semp message header before contacting the provider", async () => {
+    startServer();
+    await listen();
+    const res = await post({ model: MODEL_ID, context: CONTEXT }, TOKEN, { "x-semprec-semp-message-id": "bad" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "validation_failed" });
+    expect(streamCalls).toHaveLength(0);
+    expect(await gatewayCalls()).toHaveLength(0);
+  });
+
+  it("refuses foreign and unknown message ids identically under the runtime role", async () => {
+    const tenantA = await createTestTenant(pool);
+    const tenantB = await createTestTenant(pool);
+    await setTenantAiBudget(pool, tenantA);
+    await setTenantAiBudget(pool, tenantB);
+    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    let sidePool: Pool | undefined;
+    let primary: unknown;
+    let failed = false;
+    try {
+      const side = await createRuntimeRolePool(pool, "semprec_side");
+      sidePool = side;
+      const roles = await runAsSystem("test:role", () =>
+        side.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(roles.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const makeMessage = (tenantId: string) =>
+        runInTenant(tenantId, () =>
+          withTenantTransaction(dataPool, tenantId, async (client) => {
+            const threadId = await createSempChatThread(client);
+            return (await insertSempUserTurn(client, threadId, "Question", [])).assistantMessageId;
+          }),
+        );
+      const foreignId = await makeMessage(tenantA);
+      const ownId = await makeMessage(tenantB);
+      faux.setResponses([fauxAssistantMessage("hi")]);
+      startServer(fauxStreamFn(), {}, side);
+      await listen();
+      const call = (id: string) =>
+        post({ model: MODEL_ID, context: CONTEXT }, TOKEN, {
+          "x-semprec-tenant-id": tenantB,
+          "x-semprec-semp-message-id": id,
+        });
+      const unknown = await call(randomUUID());
+      const unknownBody = await unknown.text();
+      const foreign = await call(foreignId);
+      expect(foreign.status).toBe(403);
+      expect(unknown.status).toBe(foreign.status);
+      const stableHeaders = (response: Response) => [...response.headers.entries()].filter(([name]) => name !== "date");
+      expect(stableHeaders(foreign)).toEqual(stableHeaders(unknown));
+      expect(await foreign.text()).toBe(unknownBody);
+      const parsed: unknown = JSON.parse(unknownBody);
+      expect(z.object({ code: z.literal("attribution_refused") }).parse(parsed).code).toBe("attribution_refused");
+      expect(await gatewayCalls()).toHaveLength(0);
+      expect(streamCalls).toHaveLength(0);
+      const own = await call(ownId);
+      expect(own.status).toBe(200);
+      await own.text();
+      expect(await waitForStatus("settled")).toMatchObject([{ semp_message_id: ownId }]);
+    } catch (error) {
+      primary = error;
+      failed = true;
+    }
+    const cleanup = await Promise.allSettled([dataPool.end(), ...(sidePool ? [sidePool.end()] : [])]);
+    const failures = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failed && failures.length)
+      throw new AggregateError([primary, ...failures], "Test and runtime pool cleanup failed", { cause: primary });
+    if (failed) throw primary;
+    if (failures.length) throw new AggregateError(failures, "Runtime pool cleanup failed", { cause: failures[0] });
   });
 
   it("rejects a malformed run header with 400 validation_failed before contacting the provider", async () => {
@@ -665,7 +775,8 @@ describe("POST /internal/pi/messages", () => {
       const res = await post({ model: MODEL_ID, context: CONTEXT });
 
       expect(res.status).toBe(403);
-      expect(((await res.json()) as { code: string }).code).toBe("budget_exceeded");
+      expect(res.headers.get("x-semprec-error-code")).toBe("budget_exceeded");
+      expect(await res.json()).toEqual({ error: "AI budget exceeded", code: "budget_exceeded" });
       expect(streamCalls).toHaveLength(0);
       const rows = await gatewayCalls();
       expect(rows).toHaveLength(1); // only the seeded row

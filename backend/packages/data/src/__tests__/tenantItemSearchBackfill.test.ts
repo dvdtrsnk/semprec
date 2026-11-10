@@ -25,6 +25,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { reindexItemSearch } from "../mail/search.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
+import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
 import {
   enqueueItemSearchBackfill,
   handleItemSearchBackfillTask,
@@ -194,6 +195,53 @@ describe("item search create/update hooks", () => {
       await cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { name: "Replacement" } });
       expect(await has(item.id, "Replacement")).toBe(true);
       expect(await has(item.id, "Old")).toBe(false);
+    });
+  });
+
+  it("indexes Task descriptions on create and update without exposing foreign or missing items", async () => {
+    async function search(itemId: string, text: string): Promise<boolean> {
+      const query = buildItemSearchQuery(text, 2);
+      const result = await withTransaction(pool, (client) =>
+        client.query<{ matched: boolean }>(
+          `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
+          [itemId, ...query.params],
+        ),
+      );
+      return result.rows[0]?.matched ?? false;
+    }
+    const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    const other = await createTestTenant(admin);
+    const item = await runInTenant(tenant, async () => {
+      const databaseId = await db("tasks");
+      const created = await cp.createItem({ databaseId, properties: { name: "Task", description: "Copperbadger" } });
+      expect(await search(created.id, "Copperbadger")).toBe(true);
+      await cp.updateItem({ databaseId, itemId: created.id, propertiesPatch: { description: "Silverfalcon" } });
+      expect(await search(created.id, "Copperbadger")).toBe(false);
+      expect(await search(created.id, "Silverfalcon")).toBe(true);
+      return created;
+    });
+    await runInTenant(other, async () => {
+      const before = await rows();
+      expect(await search(item.id, "Silverfalcon")).toBe(false);
+      expect(await search(randomUUID(), "Silverfalcon")).toBe(false);
+      await expect(
+        cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { description: "Intrusion" } }),
+      ).rejects.toThrow();
+      await expect(
+        cp.updateItem({
+          databaseId: item.databaseId,
+          itemId: randomUUID(),
+          propertiesPatch: { description: "Intrusion" },
+        }),
+      ).rejects.toThrow();
+      expect(await rows()).toEqual(before);
+    });
+    await runInTenant(tenant, async () => {
+      expect(await search(item.id, "Silverfalcon")).toBe(true);
+      expect(await search(item.id, "Intrusion")).toBe(false);
     });
   });
 
@@ -394,10 +442,8 @@ describe("item search create/update hooks", () => {
       await withTransaction(pool, async (client) => {
         await createInboxItemWithClient(client, {
           inboxDatabaseId,
-          journalDatabaseId: databaseId,
           date: "2026-10-27",
           time: "12:00",
-          timezone: "UTC",
           text: "Journal Inbox observation",
         });
       });
@@ -421,19 +467,60 @@ describe("item search create/update hooks", () => {
     });
   });
 
+  it("indexes normalized People phone numbers for spaced and unspaced queries", async () => {
+    await runInTenant(tenant, async () => {
+      const person = await cp.createItem({
+        databaseId: await db("people"),
+        properties: { name: "Person", phones: "777 123 456" },
+      });
+      for (const text of ["777123456", "777 123 456"]) {
+        const query = buildItemSearchQuery(text, 2);
+        const result = await withTransaction(pool, (client) =>
+          client.query<{ matched: boolean }>(
+            `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
+            [person.id, ...query.params],
+          ),
+        );
+        expect(result.rows[0]?.matched).toBe(true);
+      }
+    });
+  });
+
   it("declares seeded title/text/select fields and the requested relation fields for all ten databases", async () => {
     await runInTenant(tenant, async () => {
       expect(manifest.databases).toHaveLength(10);
       for (const descriptor of manifest.databases) {
-        const props = await pool.query<{ key: string }>(
-          "SELECT key FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
+        const props = await pool.query<{ key: string; type: string; owner: string; owner_process: string | null }>(
+          "SELECT key, type, owner, owner_process FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
           [await db(descriptor.key), ["title", "text", "longText", "url", "select", "multi_select"]],
         );
-        for (const property of props.rows) expect(descriptor.searchFields).toContain(property.key);
+        if (descriptor.key === "tasks") {
+          expect(props.rows.find((property) => property.key === "seriesId")).toEqual({
+            key: "seriesId",
+            type: "text",
+            owner: "system",
+            owner_process: "tasks",
+          });
+        }
+        for (const property of props.rows) {
+          // An event's place is an address or a call link; it is deliberately not searched (asserted below).
+          if (descriptor.key === "events" && property.key === "place") continue;
+          // An area's icon is a closed key validated by the area write hook, not searchable free text.
+          if (descriptor.key === "areas" && property.key === "icon") continue;
+          if (descriptor.key === "tasks" && property.key === "seriesId") {
+            continue;
+          }
+          // An event's iCalendar UID is a system identifier (issue #1599), not searchable text (asserted below).
+          if (descriptor.key === "events" && property.key === "icalUid") continue;
+          expect(descriptor.searchFields).toContain(property.key);
+        }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
+      expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
+      expect(manifest.databases.find((d) => d.key === "tasks")?.searchFields).not.toContain("seriesId");
+      expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
-      expect(manifest.databases.find((d) => d.key === "people")?.searchFields).not.toContain("phones");
+      expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({
         tasks: ["project"],
         events: ["project", "people"],
@@ -643,8 +730,11 @@ describe("tenant item search backfill task", () => {
       const item = await cp.createItem({ databaseId: database.id, properties: { title: "Foreign secret" } });
       foreignId = item.id;
       foreignDb = database.id;
-      await removeIndex([item.id]);
     });
+    // Issue #1652: the title property queued the other tenant's own backfill of its collection. Run it
+    // before simulating a pre-deploy item, so only this tenant's jobs run below.
+    await runQueuedBackfill();
+    await runInTenant(other, () => removeIndex([foreignId]));
     await runInTenant(tenant, async () => {
       const live = await task("Tenant visible");
       const trashed = await task("Trashed");
@@ -696,6 +786,79 @@ describe("tenant item search backfill task", () => {
       /row-level security/,
     );
     expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
+  });
+
+  it("full and missing-only deploy jobs retain distinct keys and preserve stored page text", async () => {
+    const item = await runInTenant(tenant, async () => {
+      const created = await task("Rebuild target");
+      await withTransaction(pool, (client) => indexItem(client, created.id, { pageText: "Retained page projection" }));
+      await withTransaction(pool, (client) =>
+        reindexItemSearch(client, { itemId: created.id, databaseId: created.databaseId, text: "Stale vector" }),
+      );
+      return created;
+    });
+    await runAsSystem("test missing-only enqueue", () => runItemSearchBackfillCutover(pool));
+    await runAsSystem("test full enqueue", () => runItemSearchBackfillCutover(pool, false));
+    const jobs = await readJobPayloadsByIdentifier(admin, taskName);
+    expect(jobs).toHaveLength(2);
+    expect(jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: true } }),
+        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: false } }),
+      ]),
+    );
+    // Both jobs share a serial lane; each runOnce drains one available job on that lane.
+    await runQueuedBackfill();
+    await runQueuedBackfill();
+    await runInTenant(tenant, async () => {
+      expect(await has(item.id, "Rebuild target")).toBe(true);
+      expect(await has(item.id, "Stale vector")).toBe(false);
+      const result = await withTransaction(pool, (client) =>
+        client.query<{ body: string; page_text: string }>(
+          "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+          [item.id],
+        ),
+      );
+      expect(result.rows[0]).toEqual({ body: "Retained page projection", page_text: "Retained page projection" });
+    });
+  });
+
+  it("retains distinct legacy body and page projections during a full queued rebuild", async () => {
+    const fixtures = await runInTenant(tenant, async () => {
+      const withPage = await task("With page");
+      const withoutPage = await task("Without page");
+      for (const [item, body, page] of [
+        [withPage, "Legacy body needle", "Different page needle"],
+        [withoutPage, "Only body needle", null],
+      ] as const) {
+        const result = await withTransaction(pool, (client) =>
+          client.query("UPDATE item_search_index SET body = $2, page_text = $3 WHERE item_id = $1", [
+            item.id,
+            body,
+            page,
+          ]),
+        );
+        expect(result.rowCount).toBe(1);
+      }
+      return { withPage, withoutPage };
+    });
+    await runAsSystem("test full legacy rebuild", () => runItemSearchBackfillCutover(pool, false));
+    await runQueuedBackfill();
+    await runInTenant(tenant, async () => {
+      for (const [item, body, page] of [
+        [fixtures.withPage, "Legacy body needle", "Different page needle"],
+        [fixtures.withoutPage, "Only body needle", null],
+      ] as const) {
+        const result = await withTransaction(pool, (client) =>
+          client.query<{ body: string | null; page_text: string | null }>(
+            "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+            [item.id],
+          ),
+        );
+        expect(result.rows).toEqual([{ body, page_text: page }]);
+        expect(await has(item.id, body)).toBe(true);
+      }
+    });
   });
 
   it("enqueues once per maintained tenant on each deploy and preserves the missing-only contract", async () => {

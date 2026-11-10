@@ -3,7 +3,8 @@ import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import { enqueueLibraryMetadataProcessing, libraryMetadataJobConfigSchema } from "./libraryMetadataJob.js";
-import { listErroredItemAutomationForDatabases } from "./itemAutomationStore.js";
+import { assertSupportedLibraryMetadataSource } from "./libraryMetadataConfig.js";
+import { listRetryableLibraryAutomationForDatabases } from "./itemAutomationStore.js";
 
 export const LIBRARY_METADATA_TRIGGER_ACTION_ID = "core.libraryMetadataTrigger";
 export const LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID = "core.libraryMetadataRetrySweep";
@@ -34,6 +35,7 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return; // only meaningful for an onItemEvent fire
     const config = libraryMetadataActionConfigSchema.parse(actionConfig);
+    assertSupportedLibraryMetadataSource(config.source);
     await withTransaction(pool, (client) =>
       enqueueLibraryMetadataProcessing(client, {
         itemId: context.itemId as string,
@@ -46,7 +48,7 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
 
 /**
  * Registered as a `dailyTime` heartbeat action for the same project: walks every
- * `item_automation` row left in 'error' for this project's library database and
+ * `item_automation` row left in 'error' or 'notFound' for this library database and
  * re-enqueues a fresh 3-attempt batch for each — the daily catch-up the issue's retry
  * policy names ("once a day until it either succeeds or is manually locked"). `jobKey`
  * dedup (see `libraryMetadataJobKey`) means a row whose retry job is already in flight is
@@ -55,8 +57,9 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
 export function createLibraryMetadataRetrySweepAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>) => {
     const config = libraryMetadataActionConfigSchema.parse(actionConfig);
+    assertSupportedLibraryMetadataSource(config.source);
     await withTransaction(pool, async (client) => {
-      const errored = await listErroredItemAutomationForDatabases(client, [config.databaseId]);
+      const errored = await listRetryableLibraryAutomationForDatabases(client, [config.databaseId]);
       for (const row of errored) {
         await enqueueLibraryMetadataProcessing(client, { itemId: row.itemId, databaseId: config.databaseId, config });
       }

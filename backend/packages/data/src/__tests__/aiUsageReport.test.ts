@@ -20,6 +20,12 @@ import { getAiUsageReport } from "../aiGateway/aiUsageReport.js";
 
 let pool: Pool;
 
+/** The audio accounting writer leaves operation NULL; the report classifies by operation, as the gateway's reservations do. */
+async function recordAudio(input: Parameters<typeof recordAudioGatewayCall>[1]): Promise<void> {
+  const row = await recordAudioGatewayCall(pool, input);
+  await pool.query("UPDATE ai_gateway_calls SET operation = 'transcription_transcribe' WHERE id = $1", [row.id]);
+}
+
 async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
@@ -68,7 +74,7 @@ describe("getAiUsageReport", () => {
       costUsd: 0.5,
       agentRunId: sessionRun.id,
     });
-    await recordAudioGatewayCall(pool, {
+    await recordAudio({
       provider: "deepinfra",
       model: "whisper-large-v3",
       audioSeconds: 100,
@@ -117,7 +123,7 @@ describe("getAiUsageReport", () => {
   });
 
   it("does not treat a group's null tokens/audio as zero events", async () => {
-    await recordAudioGatewayCall(pool, { provider: "pyannote", model: "diarize", audioSeconds: 42, costUsd: 0.02 });
+    await recordAudio({ provider: "pyannote", model: "diarize", audioSeconds: 42, costUsd: 0.02 });
 
     const report = await getAiUsageReport(pool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" });
 
@@ -164,7 +170,7 @@ describe("getAiUsageReport", () => {
   });
 
   it("does not count an audio-only day's seconds as tokens in the daily token series", async () => {
-    await recordAudioGatewayCall(pool, {
+    await recordAudio({
       provider: "deepinfra",
       model: "whisper-large-v3",
       audioSeconds: 100,
@@ -302,8 +308,11 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
         "accountStartedAt",
         "timezone",
         "budgets",
+        "byModel",
+        "byOperation",
         "dailyCostUsd",
         "dailyTokenUsage",
+        "estimated",
         "from",
         "rows",
         "to",

@@ -1,0 +1,7 @@
+# Backend delivery batch 16 handover
+
+The approved union of gh-1395, gh-1362, gh-1557, gh-1354, gh-1512, gh-1373, gh-1393, gh-1382, gh-1416 and gh-1428 was accepted for local integration at candidate `ee37aac1813db1773b01b64fdf44999078116493` and merged at `e37f609348461b55406f5c013f5a09e2eeed0ee2`. All ten original member and six dependency handovers remain byte-identical and are provenance, not final acceptance evidence.
+
+The parent decision `parent-ee37-local-verification-decision.md` (SHA-256 `20239b1bd34afcf4e783fcdceb4316ccdd172cce31825cf195c3e5e0323fb831`) accepts exactly one inherited MCP environment-name assertion for this candidate's local integration. Full backend verify remains FAIL; its own E2E was not reached. A separately invoked complete E2E passed. Exact outcomes, source review, evidence hashes and the retained failure are recorded in `issues/batches/backend/acceptance/batch-16.md` and the batch evidence directory.
+
+The Events prior property shape is reconstructed, not a historical deployed binary. The occurrence and task use synthetic Graphile retry metadata; local sockets and fake providers do not establish a separately deployed service. Staged migration evidence uses an admin pool and separate runtime-role tests cover tenant boundaries. ADR-only members preserve accepted historical bytes. No live provider, client application, physical device, deployment or release was tested, and no universal concurrency or lifecycle guarantee is claimed.

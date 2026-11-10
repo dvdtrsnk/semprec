@@ -1,5 +1,7 @@
 import https from "node:https";
+import { createServer } from "node:http";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -7,6 +9,7 @@ import {
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -25,6 +28,12 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { connectMcpServer } from "../mcp/mcpConnectionFactory.js";
 import { McpConnectionError } from "../mcp/mcpConnectionError.js";
+import { executeMcpInvocation } from "../mcp/mcpToolExecution.js";
+import { getMcpConnectionStates } from "../mcp/mcpServerConnectionStateStore.js";
+import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
 let pool: Pool;
@@ -133,12 +142,10 @@ describe("MCP connection factory (issue #231)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
   });
 
-  // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
+  // A `stdio` spawn needs an admin of tenant zero (issue #1033). Each test that expects a
   // spawn creates that admin explicitly; the member test below leaves its user a member.
   async function makeSoleTenantAdmin(): Promise<void> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
@@ -148,6 +155,41 @@ describe("MCP connection factory (issue #231)", () => {
   }
 
   describe("stdio", () => {
+    it("records stdio invocation connection success and failed handshake in its tenant", async () => {
+      await makeSoleTenantAdmin();
+      const contract = startStdioContractServer();
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await runInTenant(getTenantZeroId(), async () => {
+          const result = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+          expect(result.error).toBe(false);
+          await contract.waitForChildExit();
+          const [connected] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(connected?.lastConnectedAt).not.toBeNull();
+          expect(connected?.lastErrorReason).toBeNull();
+          const unavailable = {
+            ...item,
+            properties: {
+              ...item.properties,
+              connectionConfig: { transport: "stdio", command: "missing-mcp-test-command" },
+            },
+          };
+          const failed = await executeMcpInvocation(runtimePool, { serverItem: unavailable, toolName: "search" }, {});
+          expect(failed.error).toBe(true);
+          const [offline] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(offline?.lastErrorReason).toBe("handshake_failed");
+          expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
+        });
+      } finally {
+        try {
+          await contract.stop();
+        } finally {
+          await runtimePool.end();
+        }
+      }
+    });
+
     it("connects, completes the handshake, and injects the credential into the child's env", async () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
@@ -326,6 +368,495 @@ describe("MCP connection factory (issue #231)", () => {
       expect(rows[0]?.count).toBe("0");
     });
 
+    it("raises connect_timeout when the handshake does not finish in time", async () => {
+      await makeSoleTenantAdmin();
+      // `sleep` never speaks MCP, so the handshake can only end by the connect timeout.
+      const item = await createMcpServerItem({ transport: "stdio", command: "sleep", args: ["30"] });
+
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item, { connectTimeoutMs: 200 });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("connect_timeout");
+    });
+
+    it("classifies the real invocation's handshake timeout with the effective timeout", async () => {
+      await makeSoleTenantAdmin();
+      const item = await createMcpServerItem({ transport: "stdio", command: "sleep", args: ["30"] });
+      const outcome = await executeMcpInvocation(pool, { serverItem: item, toolName: "search" }, {});
+      expect(outcome).toMatchObject({
+        error: true,
+        failure: { failureKind: "timeout", mcpServerItemId: item.id, timeoutMs: 15000 },
+      });
+    }, 25_000);
+
+    it("classifies an actual tools/call timeout without cancelling the run", async () => {
+      let releaseCall: (() => void) | undefined;
+      let markCalled: (() => void) | undefined;
+      const called = new Promise<void>((resolve) => {
+        markCalled = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        releaseCall = resolve;
+      });
+      let transport: SSEServerTransport | undefined;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "blocked-call", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => {
+              markCalled?.();
+              await blocked;
+              return { content: [] };
+            });
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) return transport.handlePostMessage(req, res);
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        const call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        await Promise.race([
+          called,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("tool call not received")), 5000)),
+        ]);
+        expect(await call).toMatchObject({
+          error: true,
+          failure: { failureKind: "timeout", mcpServerItemId: item.id, timeoutMs: 60000 },
+        });
+      } finally {
+        releaseCall?.();
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 75_000);
+
+    it.each([401, 403])("classifies an actual SSE initial GET HTTP %i as auth", async (status) => {
+      const server = createServer((_req, res) => {
+        res.writeHead(status).end("private-get-error-sentinel");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("private-get-error-sentinel");
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
+    it.each([
+      ["tools/call", 401, false],
+      ["tools/call", 403, false],
+      ["tools/call", 403, true],
+      ["initialize", 401, false],
+      ["initialize", 403, false],
+      ["notifications/initialized", 401, false],
+      ["notifications/initialized", 403, false],
+    ] as const)(
+      "classifies an actual SSE %s HTTP %i as auth (credential=%s)",
+      async (method, status, hasCredential) => {
+        let transport: SSEServerTransport | undefined;
+        const server = createServer((req, res) => {
+          void (async () => {
+            if (req.method === "GET" && req.url === "/sse") {
+              transport = new SSEServerTransport("/messages", res);
+              const mcp = new McpServer({ name: "auth-call", version: "1" }, { capabilities: { tools: {} } });
+              mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+              await mcp.connect(transport);
+              return;
+            }
+            if (req.method === "POST" && transport) {
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) {
+                if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+                chunks.push(chunk);
+              }
+              const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === method) {
+                res.writeHead(status).end("private-server-error-sentinel");
+                return;
+              }
+              await transport.handlePostMessage(req, res, parsed);
+              return;
+            }
+            res.writeHead(404).end();
+          })().catch(() => {
+            if (!res.headersSent) res.writeHead(500);
+            res.end();
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        try {
+          const address = server.address();
+          if (!address || typeof address === "string") throw new Error("expected a TCP address");
+          const item = await createMcpServerItem(
+            { transport: "sse", url: `http://127.0.0.1:${address.port}/sse` },
+            hasCredential ? "credential-sentinel" : undefined,
+          );
+          const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+          expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+          expect(JSON.stringify(result)).not.toContain("private-server-error-sentinel");
+          expect(JSON.stringify(result)).not.toContain("credential-sentinel");
+        } finally {
+          await transport?.close();
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+        }
+      },
+    );
+
+    it.each([
+      ["tools/call", 401],
+      ["tools/call", 403],
+      ["initialize", 401],
+      ["initialize", 403],
+      ["notifications/initialized", 401],
+      ["notifications/initialized", 403],
+    ] as const)("classifies actual streamable HTTP %s %i as auth", async (method, status) => {
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+      const mcp = new McpServer({ name: "http-auth-call", version: "1" }, { capabilities: { tools: {} } });
+      mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+      await mcp.connect(transport);
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "POST") {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === method) {
+              res.writeHead(status).end("private-http-error-sentinel");
+              return;
+            }
+            await transport.handleRequest(req, res, parsed);
+            return;
+          }
+          await transport.handleRequest(req, res);
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "http", url: `http://127.0.0.1:${address.port}/mcp` });
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("private-http-error-sentinel");
+      } finally {
+        await transport.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
+    it("keeps actual overlapping SSE connections' auth and non-auth failures separate", async () => {
+      let calls = 0;
+      let release: (() => void) | undefined;
+      let bothArrived: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const arrived = new Promise<void>((resolve) => {
+        bothArrived = resolve;
+      });
+      const transports = new Set<SSEServerTransport>();
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && (req.url === "/auth" || req.url === "/other")) {
+            const endpoint = req.url === "/auth" ? "/messages-auth" : "/messages-other";
+            const transport = new SSEServerTransport(endpoint, res);
+            transports.add(transport);
+            const mcp = new McpServer({ name: "concurrent", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && req.url) {
+            const url = new URL(req.url, "http://127.0.0.1");
+            const session = url.searchParams.get("sessionId");
+            const transport = [...transports].find((candidate) => candidate.sessionId === session);
+            if (!transport) {
+              res.writeHead(404).end();
+              return;
+            }
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              calls += 1;
+              if (calls === 2) bothArrived?.();
+              await gate;
+              res.writeHead(url.pathname === "/messages-auth" ? 403 : 500).end("private-concurrent-sentinel");
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      let results: Promise<PromiseSettledResult<Awaited<ReturnType<typeof executeMcpInvocation>>>[]> | undefined;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const first = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/auth` });
+        const second = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/other` });
+        results = Promise.allSettled([
+          executeMcpInvocation(pool, { serverItem: first, toolName: "blocked" }, {}),
+          executeMcpInvocation(pool, { serverItem: second, toolName: "blocked" }, {}),
+        ]);
+        await Promise.race([
+          arrived,
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(() => reject(new Error("calls did not overlap")), 5000);
+          }),
+        ]);
+        release?.();
+        const settled = await results;
+        expect(settled[0]).toMatchObject({
+          status: "fulfilled",
+          value: { error: true, failure: { failureKind: "auth", mcpServerItemId: first.id } },
+        });
+        expect(settled[1]).toMatchObject({
+          status: "fulfilled",
+          value: { error: true, failure: { failureKind: "toolError", mcpServerItemId: second.id } },
+        });
+      } finally {
+        if (deadline) clearTimeout(deadline);
+        release?.();
+        await results;
+        await Promise.all([...transports].map((transport) => transport.close()));
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
+    it("does not attach a late HTTP denial to an already cancelled SSE call", async () => {
+      let transport: SSEServerTransport | undefined;
+      let markArrived: (() => void) | undefined;
+      let markResponded: (() => void) | undefined;
+      let release: (() => void) | undefined;
+      const arrived = new Promise<void>((resolve) => {
+        markArrived = resolve;
+      });
+      const responded = new Promise<void>((resolve) => {
+        markResponded = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "late-auth", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              markArrived?.();
+              await gate;
+              try {
+                res.writeHead(403).end("private-late-sentinel");
+              } finally {
+                markResponded?.();
+              }
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let call: ReturnType<typeof executeMcpInvocation> | undefined;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {}, {}, controller.signal);
+        await Promise.race([
+          arrived,
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(() => reject(new Error("call did not arrive")), 5000);
+          }),
+        ]);
+        controller.abort();
+        expect(await call).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
+        release?.();
+        await responded;
+      } finally {
+        if (deadline) clearTimeout(deadline);
+        controller.abort();
+        release?.();
+        await call?.catch(() => undefined);
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
+    it("does not classify an SSE OAuth challenge followed by discovery failure as terminal auth", async () => {
+      let transport: SSEServerTransport | undefined;
+      let challenges = 0;
+      let discoveryRequests = 0;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "oauth-failure", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              challenges += 1;
+              const address = server.address();
+              if (!address || typeof address === "string") throw new Error("expected a TCP address");
+              res
+                .writeHead(401, {
+                  "www-authenticate": `Bearer resource_metadata="http://127.0.0.1:${address.port}/unreachable"`,
+                })
+                .end();
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          discoveryRequests += 1;
+          res.writeHead(500).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem(
+          { transport: "sse", url: `http://127.0.0.1:${address.port}/sse` },
+          "credential-sentinel",
+        );
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(challenges).toBe(1);
+        expect(discoveryRequests).toBeGreaterThan(0);
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "toolError", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("credential-sentinel");
+      } finally {
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
+    it("cancels a tools/call already blocked at the MCP server without classifying it as a failure", async () => {
+      let releaseCall: (() => void) | undefined;
+      let markCalled: (() => void) | undefined;
+      const called = new Promise<void>((resolve) => {
+        markCalled = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        releaseCall = resolve;
+      });
+      let transport: SSEServerTransport | undefined;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "blocked-call", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => {
+              markCalled?.();
+              await blocked;
+              return { content: [] };
+            });
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) return transport.handlePostMessage(req, res);
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let call: ReturnType<typeof executeMcpInvocation> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {}, {}, controller.signal);
+        await Promise.race([
+          called,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("tool call not received")), 5000)),
+        ]);
+        controller.abort();
+        expect(await call).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
+      } finally {
+        controller.abort();
+        releaseCall?.();
+        await call?.catch(() => undefined);
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
     it("leaves no child process running after a failed connect", async () => {
       await makeSoleTenantAdmin();
       const item = await createMcpServerItem({ transport: "stdio", command: "definitely-not-a-real-binary-xyz" });
@@ -340,6 +871,117 @@ describe("MCP connection factory (issue #231)", () => {
       expect((thrown as McpConnectionError).reason).toBe("handshake_failed");
       expect(safeStringify(thrown)).not.toMatch(/sk-/);
     });
+  });
+
+  it.each([
+    ["sse", startSseContractServer],
+    ["http", startHttpContractServer],
+  ])("classifies an actual refused %s connection through invocation", async (_transport, startServer) => {
+    const contract = await startServer();
+    const config = contract.connectionConfig;
+    await contract.stop();
+
+    const item = await createMcpServerItem(config);
+    const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "search" }, {});
+    expect(result.error).toBe(true);
+    expect(result.failure).toEqual({ failureKind: "connection", mcpServerItemId: item.id });
+    expect(result.result).not.toContain("ECONNREFUSED");
+  });
+
+  it.each([
+    ["sse", startSseContractServer],
+    ["http", startHttpContractServer],
+  ])("records actual %s invocation connection outcomes in the tenant", async (_transport, startServer) => {
+    const tenantId = getTenantZeroId();
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    let first: Awaited<ReturnType<typeof startServer>> | undefined;
+    let firstStopped = false;
+    try {
+      first = await startServer();
+      const activeFirst = first;
+      const item = await createMcpServerItem(activeFirst.connectionConfig, "mcp-secret-marker");
+      await runInTenant(tenantId, async () => {
+        const initial = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+        expect(initial.error).toBe(false);
+        const [connected] = await getMcpConnectionStates(runtimePool, [item.id]);
+        expect(connected?.lastConnectedAt).not.toBeNull();
+        expect(connected?.lastErrorReason).toBeNull();
+
+        await activeFirst.stop();
+        firstStopped = true;
+        const failed = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+        expect(failed.error).toBe(true);
+        const [offline] = await getMcpConnectionStates(runtimePool, [item.id]);
+        expect(offline?.lastErrorReason).toBe("handshake_failed");
+        expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
+        expect(JSON.stringify(offline)).not.toContain("127.0.0.1");
+        expect(JSON.stringify(offline)).not.toContain("mcp-secret-marker");
+
+        const second = await startServer();
+        try {
+          const newTarget = { ...item, properties: { ...item.properties, connectionConfig: second.connectionConfig } };
+          const before = (await runtimePool.query<{ at: Date }>("SELECT clock_timestamp() AS at")).rows[0]?.at;
+          if (!before) throw new Error("Missing start timestamp");
+          const toolFailure = await executeMcpInvocation(
+            runtimePool,
+            { serverItem: newTarget, toolName: "search" },
+            {
+              __forceError: true,
+            },
+          );
+          expect(toolFailure.error).toBe(true);
+          expect(second.getLastToolCall()?.arguments).toEqual({ __forceError: true });
+          const [reconnected] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(reconnected?.lastErrorReason).toBeNull();
+          expect(reconnected?.lastConnectedAt).not.toBeNull();
+          const { rows: freshness } = await runtimePool.query<{ current: boolean }>(
+            "SELECT last_connected_at >= $2 AND last_connected_at <= clock_timestamp() AS current FROM mcp_server_connection_state WHERE mcp_server_item_id = $1",
+            [item.id, before],
+          );
+          expect(freshness).toEqual([{ current: true }]);
+        } finally {
+          await second.stop();
+        }
+      });
+      const tenantB = await createTestTenant(pool);
+      expect(await runInTenant(tenantB, () => getMcpConnectionStates(runtimePool, [item.id]))).toEqual([]);
+    } finally {
+      try {
+        if (first && !firstStopped) await first.stop();
+      } finally {
+        await runtimePool.end();
+      }
+    }
+  });
+
+  it("keeps a real failed invocation's connection state after the caller rolls back", async () => {
+    const tenantId = getTenantZeroId();
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const contract = await startHttpContractServer();
+      const item = await (async () => {
+        try {
+          return await createMcpServerItem(contract.connectionConfig);
+        } finally {
+          await contract.stop();
+        }
+      })();
+      await expect(
+        runInTenant(tenantId, () =>
+          withTransaction(runtimePool, async () => {
+            const outcome = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+            expect(outcome.error).toBe(true);
+            throw new Error("intentional caller rollback");
+          }),
+        ),
+      ).rejects.toThrow("intentional caller rollback");
+      const states = await runInTenant(tenantId, () => getMcpConnectionStates(runtimePool, [item.id]));
+      expect(states).toMatchObject([
+        { mcpServerItemId: item.id, lastErrorReason: "handshake_failed", lastConnectedAt: null },
+      ]);
+    } finally {
+      await runtimePool.end();
+    }
   });
 
   describe("sse", () => {

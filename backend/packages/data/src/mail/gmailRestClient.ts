@@ -1,7 +1,20 @@
+import {
+  prepareGmailMove,
+  registerGmailMovePreparer,
+  gmailMoveRequest,
+  type GmailMoveResult,
+} from "./mailMoveProviderAdapters.js";
+import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
-import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import {
+  assertJsonObject,
+  MAX_ATTACHMENT_BYTES,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  type FetchedMessage,
+} from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
@@ -212,6 +225,8 @@ async function toFetchedMessage(
       .map((a) => ({ name: a.name || undefined, address: a.address }));
   };
 
+  const replyTo = toList(parsedHeaders.replyTo);
+
   return {
     // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
     // different messages both missing a Message-ID header must not collide and get merged
@@ -227,6 +242,7 @@ async function toFetchedMessage(
       to: toList(parsedHeaders.to),
       cc: toList(parsedHeaders.cc),
       bcc: toList(parsedHeaders.bcc),
+      ...(replyTo.length > 0 ? { replyTo } : {}),
     },
     bodyText,
     bodyHtml,
@@ -235,28 +251,120 @@ async function toFetchedMessage(
     deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
     xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
     envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
+    bulkHeaders: {
+      listUnsubscribe: partHeader(payload, "List-Unsubscribe") ?? null,
+      listId: partHeader(payload, "List-Id") ?? null,
+      precedence: partHeader(payload, "Precedence") ?? null,
+      autoSubmitted: partHeader(payload, "Auto-Submitted") ?? null,
+    },
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
   };
 }
 
+/** The most of a failed send's body that is read. It is only read to tell an invalid recipient apart from other refusals. */
+const SEND_ERROR_BODY_READ_LIMIT = 4_096;
+
 /**
- * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API — not exercised by this
- * issue's tests (no live Google account in CI); the reconcile logic itself is tested against
- * a fake client. `getAccessToken` is injected (see oauthTokenExchange.ts) rather than baked
- * in, so this class never itself holds a refresh token in memory beyond one call.
+ * Gmail error text that names a refused recipient. The wording is inferred from Gmail's error messages; no live
+ * Gmail refusal has been captured to confirm it, so a refusal worded differently is an ordinary failure.
+ */
+const RECIPIENT_REFUSAL = /invalid (to|cc|bcc) header|invalid recipient|recipient address rejected/i;
+
+/** The sent message's id and the thread Gmail filed it into (`users.messages.send`). */
+export interface GmailSentMessage {
+  id: string;
+  threadId: string;
+}
+
+/**
+ * Reads at most `SEND_ERROR_BODY_READ_LIMIT` bytes of a failed send's body and then releases the stream. A read
+ * failure propagates, so the send fails as an ordinary error rather than with a classification it did not earn.
+ */
+async function readSendErrorBodyStart(response: Response): Promise<string> {
+  return (await readSendBody(response, SEND_ERROR_BODY_READ_LIMIT)).text;
+}
+
+/**
+ * The error a refused `users.messages.send` becomes. A refusal that names an invalid recipient is
+ * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`,
+ * and any other status is an ordinary failure. The thrown messages name neither the body nor any token.
+ */
+async function sendFailure(response: Response): Promise<Error> {
+  const errorBodyStart = await readSendErrorBodyStart(response);
+  if (RECIPIENT_REFUSAL.test(errorBodyStart)) return new MailRecipientRejectedError();
+  if (response.status === 400 || response.status === 401) {
+    return new MailReauthorizationRequiredError(`Gmail rejected the send with status ${response.status}`);
+  }
+  return new Error(`Gmail send failed with status ${response.status}`);
+}
+
+/**
+ * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API. CI never reaches Google: the
+ * semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Gmail server through
+ * `fetchImpl`, and the reconcile logic itself is tested against a fake client. `getAccessToken` is
+ * injected (see oauthTokenExchange.ts) rather than baked in, so this class never itself holds a
+ * refresh token in memory beyond one call. `fetchImpl` defaults to the global `fetch`.
  */
 export class GmailRestClient implements GmailMailClient {
-  constructor(private readonly getAccessToken: () => Promise<string>) {}
+  constructor(
+    private readonly getAccessToken: () => Promise<string>,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {
+    registerGmailMovePreparer(this, (id, step) => this.prepareMoveStep(id, step));
+  }
+
+  async observeMoveMessage(messageId: string): Promise<GmailMoveResult> {
+    const token = await this.getAccessToken();
+    return gmailMoveRequest(this.fetchImpl, token, messageId);
+  }
+
+  async applyMoveStep(
+    messageId: string,
+    step: "trash" | "untrash" | "add_inbox" | "remove_inbox",
+  ): Promise<GmailMoveResult> {
+    return (await prepareGmailMove(this, messageId, step))();
+  }
+
+  private async prepareMoveStep(
+    messageId: string,
+    step: "trash" | "untrash" | "add_inbox" | "remove_inbox",
+  ): Promise<() => Promise<GmailMoveResult>> {
+    if (!messageId || messageId.length > 1024) throw new Error("Invalid Gmail message identity");
+    if (!["trash", "untrash", "add_inbox", "remove_inbox"].includes(step)) throw new Error("Invalid Gmail move step");
+    const token = await this.getAccessToken();
+    let used = false;
+    return () => {
+      if (used) throw new Error("Gmail move command already used");
+      used = true;
+      return gmailMoveRequest(this.fetchImpl, token, messageId, step);
+    };
+  }
 
   private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      // This boundary cannot expose a provider rejection that may contain bearer credentials.
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail sync provider request failed unexpectedly");
+    }
     if (response.status === 404) return { status: 404, json: null };
-    if (!response.ok) throw new Error(`Gmail API request to ${path} failed with status ${response.status}`);
-    const body = assertJsonObject(await response.json(), `Gmail API response from ${path}`);
+    if (!response.ok) throw new Error(`Gmail API request failed with status ${response.status}`);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail sync provider response could not be read");
+    }
+    const body = assertJsonObject(parsed, "Gmail API response");
     return { status: response.status, json: body as T };
   }
 
@@ -323,14 +431,12 @@ export class GmailRestClient implements GmailMailClient {
     const { json } = await this.request<{ size: number; data: string }>(
       `/messages/${gmailMessageId}/attachments/${attachmentId}`,
     );
-    if (!json) throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} not found`);
+    if (!json) throw new Error("Gmail attachment not found");
     // Checked against the API's own reported size *before* decoding — Gmail's real limit is
     // 25MB, well under this, so this only ever binds against a malformed/rogue response, and
     // catching it pre-decode avoids materializing the oversized buffer at all.
     if (json.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(
-        `Gmail attachment ${attachmentId} on message ${gmailMessageId} is ${json.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
-      );
+      throw new Error(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
     }
     return decodeBase64Url(json.data);
   }
@@ -364,13 +470,29 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async listLabels(): Promise<GmailLabelRef[]> {
-    const { json } = await this.request<{ labels?: { id: string; name: string; type: string }[] }>("/labels");
-    return (json?.labels ?? []).map((l) => ({ id: l.id, name: l.name, type: l.type === "system" ? "system" : "user" }));
+    const { json } = await this.request<unknown>("/labels");
+    const body = assertJsonObject(json, "Gmail labels response");
+    if (!Array.isArray(body.labels)) throw new Error("Gmail labels response has no label inventory");
+    const seen = new Set<string>();
+    return body.labels.map((value: unknown) => {
+      const label = assertJsonObject(value, "Gmail label");
+      if (
+        typeof label.id !== "string" ||
+        !label.id ||
+        typeof label.name !== "string" ||
+        (label.type !== "user" && label.type !== "system") ||
+        seen.has(label.id)
+      ) {
+        throw new Error("Gmail labels response contains an invalid or duplicate label");
+      }
+      seen.add(label.id);
+      return { id: label.id, name: label.name, type: label.type };
+    });
   }
 
   async modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}/modify`, {
+    const response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}/modify`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ addLabelIds, removeLabelIds }),
@@ -378,5 +500,36 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (!response.ok) throw new Error(`Gmail label modification failed with status ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /**
+   * Sends a complete RFC 5322 message through `users.messages.send`, base64url-encoded in the `raw` field.
+   * `threadId` names the conversation the sent message is filed into. The In-Reply-To header is not enough for
+   * that, so a reply that must join its thread passes the thread here. Refusals are classified by `sendFailure`.
+   */
+  async sendMessage(raw: Buffer, threadId?: string): Promise<GmailSentMessage> {
+    const token = await this.getAccessToken();
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(`${BASE_URL}/messages/send`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ raw: raw.toString("base64url"), ...(threadId ? { threadId } : {}) }),
+        signal: AbortSignal.timeout(30_000),
+      }),
+    );
+    if (!response.ok) throw await privateSendOperation(() => sendFailure(response));
+    const read = await privateSendOperation(() => readSendBody(response, 32 * 1024));
+    if (read.truncated) throw new Error("Gmail send response is too large");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(read.text);
+    } catch {
+      throw new Error("Gmail send response is not valid JSON");
+    }
+    const body = assertJsonObject(parsed, "Gmail send response");
+    if (typeof body.id !== "string" || typeof body.threadId !== "string") {
+      throw new Error("Gmail send response is missing the message id or the thread id");
+    }
+    return { id: body.id, threadId: body.threadId };
   }
 }

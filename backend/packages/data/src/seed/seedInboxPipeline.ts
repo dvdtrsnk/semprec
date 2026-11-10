@@ -106,12 +106,13 @@ export async function seedInboxPipelineInTransaction(
   // Both mandatory: the client always supplies date/time, and the server never derives
   // them as "today" — offline capture on a phone and delayed batch submission after a
   // connectivity outage both depend on the supplied values being preserved verbatim.
-  // Enforcement of "mandatory" lives in inbox/inboxStore.ts's `createInboxItemWithClient`
-  // (the schema engine has no generic required-field concept), not here.
+  // Enforcement of "mandatory" lives in the Inbox item-create hook (inbox/inboxCreateHook.ts),
+  // which every writer's create passes through (the schema engine has no generic required-field
+  // concept), not here.
   await createProps(client, inbox.id, [
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "time", name: "Time", type: "time", owner: "user" },
-    { key: "text", name: "Text", type: "text", owner: "user" },
+    { key: "text", name: "Text", type: "text", owner: "user", config: { format: "markdown" } },
   ]);
 
   await createProps(client, inboxItemTypes.id, [
@@ -122,7 +123,7 @@ export async function seedInboxPipelineInTransaction(
     { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["active", "archived"]) },
     // Replaces the mock's hardcoded label-text comparison (issue #100). Cross-field
     // validation ("database" requires targetDatabase, "pageContent" rejects it) is
-    // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxStore.ts enforces
+    // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxCreateHook.ts enforces
     // date/time itself: the schema engine has no generic cross-field validation concept.
     {
       key: "processingMethod",
@@ -160,11 +161,37 @@ export async function seedInboxPipelineInTransaction(
       name: "Status",
       type: "select",
       owner: "system",
-      config: selectConfig(["needsClarification", "proposed", "confirmed", "rejected", "invalid"]),
+      config: selectConfig([
+        "needsClarification",
+        "proposed",
+        "confirmed",
+        "rejected",
+        "invalid",
+        "computing",
+        "computeFailed",
+      ]),
     },
     // Filled in by confirm; not a relation, since the target can be any system database's item.
     { key: "resultItemId", name: "Result item ID", type: "text", owner: "system" },
     { key: "resultLabel", name: "Result label", type: "text", owner: "system" },
+    // Card state (issue #1451). Declared here for fresh installs and added to populated tenants by
+    // inbox/processingProposalsCardStateCutoverMigration.ts; keep the two lists identical.
+    // The last proposal written by an automated producer, the base for "return to the assistant's proposal".
+    { key: "aiProposal", name: "AI proposal", type: "json", owner: "system" },
+    { key: "userOverrides", name: "User overrides", type: "json", owner: "system" },
+    { key: "userEditedKeys", name: "User-edited keys", type: "json", owner: "system" },
+    { key: "aiVersion", name: "AI version", type: "number", owner: "system" },
+    // Localized explanation of a proposal; used only by cards of kind `inbox`.
+    { key: "reason", name: "Reason", type: "text", owner: "system" },
+    { key: "recognizedTypeId", name: "Recognized type ID", type: "text", owner: "system" },
+    { key: "typeCandidates", name: "Type candidates", type: "json", owner: "system" },
+    // Candidate events and speakers shown on transcript cards; transcript alternatives and reasons live in `context`.
+    { key: "candidates", name: "Candidates", type: "json", owner: "system" },
+    { key: "invalidReason", name: "Invalid reason", type: "json", owner: "system" },
+    { key: "referencedItemIds", name: "Referenced item IDs", type: "json", owner: "system" },
+    { key: "results", name: "Results", type: "json", owner: "system" },
+    // Producer-written data of a transcript card; declared as an opaque json property until its producer defines the shape.
+    { key: "context", name: "Context", type: "json", owner: "system" },
   ]);
 
   // Inbox -> Inbox item types: nullable (an item without a type is valid — it later enters
@@ -186,7 +213,7 @@ export async function seedInboxPipelineInTransaction(
 
   // Inbox -> Journal ("journalDay"): system-owned, resolved at write time through the
   // existing lazy Journal-day mechanism (journal/journalStore.ts's `getOrCreateJournalItem`,
-  // wired up in inbox/inboxStore.ts's `createInboxItemWithClient`) — no default database is
+  // wired up in inbox/inboxCreateHook.ts's item-create hook) — no default database is
   // added for this, it reuses the Journal relation directly. One-directional: Journal's
   // schema is already locked by `seedTenDatabasesInTransaction`, the same reason
   // Emails->Files/People (issue #26) carry no inverse either. `many_to_many`, not

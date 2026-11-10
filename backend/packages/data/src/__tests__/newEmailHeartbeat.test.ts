@@ -20,6 +20,14 @@ import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
+import {
+  createLinkEmailToPeopleAction,
+  createPersonEmailReindexAction,
+  MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
+  MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
+} from "../mail/personLinkingActions.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { hasWaitingHeartbeatFireJob } from "../scheduler/schedulerStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -65,6 +73,8 @@ function agentRunRegistry(runCalls: string[]) {
       return { result: "ok" };
     }),
   );
+  registry.set(MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, createPersonEmailReindexAction(pool));
+  registry.set(MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, createLinkEmailToPeopleAction(pool));
   return registry;
 }
 
@@ -79,13 +89,30 @@ describe("newEmail heartbeat (issue #99)", () => {
     await resetDatabase(pool);
     await seedSystem(pool);
     await createUser();
+    const peopleId = await databaseIdFor("people");
+    const person = await chokePoint.createItem({
+      databaseId: peopleId,
+      properties: { name: "Alice", emails: "alice@example.com\nbob@example.com" },
+    });
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const { rows } = await pool.query<{ project_item_id: string }>(
+      "SELECT project_item_id FROM project_heartbeats WHERE id = $1",
+      [heartbeatId],
+    );
+    if (!rows[0]) throw new Error("Missing heartbeat project");
+    await inTenantZero(() =>
+      createPersonEmailReindexAction(pool)(
+        { peopleDatabaseId: peopleId },
+        { heartbeatId, projectItemId: rows[0]!.project_item_id, itemId: person.id },
+      ),
+    );
   });
 
   afterAll(async () => {
     await pool?.end();
   });
 
-  async function ingestInto(specialPurposes: string[], messageId: string) {
+  async function ingestInto(specialPurposes: string[], messageId: string, sender = "alice@example.com", bulk = false) {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -117,7 +144,8 @@ describe("newEmail heartbeat (issue #99)", () => {
           mailboxItemId: randomUUID(),
           messageId,
           subject: "Hello",
-          envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
+          envelope: { from: { address: sender, name: "Alice" }, to: [{ address: "bob@example.com" }] },
+          ...(bulk ? { bulkHeaders: { precedence: "bulk" } } : {}),
           bodyText: "hi",
           attachments: [],
           storage: noopStorage,
@@ -143,12 +171,79 @@ describe("newEmail heartbeat (issue #99)", () => {
     const runCalls: string[] = [];
     const registry = agentRunRegistry(runCalls);
 
-    await ingestInto(["inbox"], "<inbox1@example.com>");
+    const message = await ingestInto(["inbox"], "<inbox1@example.com>");
     await drainQueue(registry);
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
     expect(runs).toHaveLength(1);
     expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]).toContain(`Triggering item id: ${message.itemId}`);
+    expect(runs[0]?.task).toContain(`Triggering item id: ${message.itemId}`);
+  });
+
+  it("does not start a run for bulk, unknown or own sender", async () => {
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const runCalls: string[] = [];
+    const registry = agentRunRegistry(runCalls);
+    const mailboxes = await databaseIdFor("mailboxes");
+    const mailbox = await chokePoint.createItem({
+      databaseId: mailboxes,
+      properties: { name: "Own", provider: "generic" },
+    });
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        writeMailboxAddresses(client, {
+          mailboxesDatabaseId: mailboxes,
+          mailboxItemId: mailbox.id,
+          address: "alice@example.com",
+        }),
+      ),
+    );
+    await ingestInto(["inbox"], "<bulk@example.com>", "bob@example.com", true);
+    await drainQueue(registry);
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
+    await ingestInto(["inbox"], "<unknown@example.com>", "unknown@example.com");
+    await drainQueue(registry);
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
+    await ingestInto(["inbox"], "<own@example.com>", "alice@example.com");
+    await drainQueue(registry);
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
+    expect(runCalls).toHaveLength(0);
+  });
+
+  it("does not start a queued run when an Inbox item has no mail metadata", async () => {
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const runCalls: string[] = [];
+    const registry = agentRunRegistry(runCalls);
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder");
+    if (!folderProperty) throw new Error("Missing email folder property");
+    const item = await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        const folder = await createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "Inbox", behavior: "folder", specialPurpose: "inbox" } },
+          { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+        );
+        const email = await createItemWithClient(client, { databaseId: emailsId, properties: {} });
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: folderProperty.id, callerItemId: email.id, targetItemId: folder.id },
+          EMAILS_RELATION_CONTEXT,
+        );
+        return email;
+      }),
+    );
+    const metadata = await inTenantZero(() =>
+      pool.query<{ item_id: string }>("SELECT item_id FROM mail_message_meta WHERE item_id = $1", [item.id]),
+    );
+    expect(metadata.rows).toEqual([]);
+    expect(await inTenantZero(() => hasWaitingHeartbeatFireJob(pool, heartbeatId))).toBe(true);
+    await drainQueue(registry);
+    expect(await inTenantZero(() => hasWaitingHeartbeatFireJob(pool, heartbeatId))).toBe(false);
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toEqual([]);
+    expect(runCalls).toEqual([]);
   });
 
   it("emits none for junk/trash-only mail", async () => {

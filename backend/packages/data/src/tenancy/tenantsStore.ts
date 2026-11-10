@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { UserRole, UserRow } from "../auth/types.js";
+import { requireSingleRow } from "../db/pool.js";
 import { ChokePointError, NotFoundError } from "../errors.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
@@ -16,6 +17,18 @@ function isUserRole(value: unknown): value is UserRole {
 }
 
 /**
+ * Inserts a tenant in `status` and returns its id, which the database generates. The row commits or
+ * rolls back with the caller's transaction. Invitation acceptance (issue #1087) creates a tenant in
+ * `provisioning`; `provisionTenant` moves it to `active`.
+ */
+export async function createTenant(client: PoolClient, status: TenantStatus): Promise<string> {
+  const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ($1) RETURNING id", [
+    status,
+  ]);
+  return requireSingleRow(rows, "tenants insert").id;
+}
+
+/**
  * The id of the only tenant, via `app_sole_tenant()`. While the single-tenant guard exists a
  * missing sole tenant is an invariant violation, so it surfaces as a plain `Error` (a 500), never a domain error.
  */
@@ -27,20 +40,17 @@ export async function getSoleTenantId(client: Pool | PoolClient): Promise<string
 }
 
 /**
- * The tenant a user belongs to, with that tenant's status and the user's role. A user with no
- * `tenant_id` resolves to the sole tenant while exactly one exists. Returns `null` when the user
- * is unbound and no sole tenant exists, or the user does not exist. An unknown `status` or `role`
- * is a data-integrity failure and throws a plain `Error` (a 500), never a 401.
- *
- * The `app_sole_tenant()` fallback is the transitional contract of the tenancy rollout: it is
- * required by the issue and ends when `users.tenant_id` becomes NOT NULL (#1067).
+ * The tenant a user belongs to, with that tenant's status and the user's role. The tenant is the
+ * user's `users.tenant_id`, which is NOT NULL (#1067). Returns `null` when the user does not exist.
+ * An unknown `status` or `role` is a data-integrity failure and throws a plain `Error` (a 500),
+ * never a 401.
  */
 export async function getUserTenantBinding(
   client: Pool | PoolClient,
   userId: string,
 ): Promise<{ tenantId: string; status: TenantStatus; role: UserRole } | null> {
   const { rows } = await client.query<{ id: string; status: unknown; role: unknown }>(
-    "SELECT t.id, t.status, u.role FROM users u JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant()) WHERE u.id = $1",
+    "SELECT t.id, t.status, u.role FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1",
     [userId],
   );
   const row = rows[0];
@@ -53,8 +63,8 @@ export async function getUserTenantBinding(
 /**
  * The user with `email` plus the status of the tenant they are bound to, read in one statement so
  * a login for an unknown email makes the same database round trips as one for a registered email.
- * The tenant resolves like `getUserTenantBinding` (`users.tenant_id`, else the sole tenant);
- * `tenantStatus` is `null` when no tenant resolves. An unknown status throws a plain `Error`.
+ * The tenant is the user's `users.tenant_id`, as in `getUserTenantBinding`; `tenantStatus` is `null`
+ * when that tenant row cannot be found. An unknown status throws a plain `Error`.
  */
 export async function getUserByEmailWithTenantStatus(
   client: Pool | PoolClient,
@@ -63,13 +73,14 @@ export async function getUserByEmailWithTenantStatus(
   const { rows } = await client.query<{
     id: string;
     email: string;
+    display_name: string | null;
     password_hash: string;
     locale: string;
     created_at: Date;
     tenant_status: unknown;
   }>(
-    `SELECT u.id, u.email, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
-       FROM users u LEFT JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+    `SELECT u.id, u.email, u.display_name, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
+       FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id
       WHERE u.email = $1`,
     [email],
   );
@@ -78,6 +89,7 @@ export async function getUserByEmailWithTenantStatus(
   const user: UserRow = {
     id: row.id,
     email: row.email,
+    displayName: row.display_name,
     passwordHash: row.password_hash,
     locale: row.locale,
     createdAt: row.created_at.toISOString(),
@@ -98,12 +110,12 @@ export async function lockUserTenantBinding(
   client: PoolClient,
   userId: string,
 ): Promise<{ tenantId: string; status: TenantStatus; role: UserRole } | null> {
-  const user = await client.query<{ tenant_id: string | null; role: unknown }>(
-    "SELECT COALESCE(tenant_id, app_sole_tenant()) AS tenant_id, role FROM users WHERE id = $1 FOR KEY SHARE",
+  const user = await client.query<{ tenant_id: string; role: unknown }>(
+    "SELECT tenant_id, role FROM users WHERE id = $1 FOR KEY SHARE",
     [userId],
   );
   const userRow = user.rows[0];
-  if (!userRow?.tenant_id) return null;
+  if (!userRow) return null;
   const tenant = await client.query<{ status: unknown }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
     userRow.tenant_id,
   ]);

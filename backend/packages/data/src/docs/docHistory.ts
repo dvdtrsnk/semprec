@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
@@ -201,66 +201,140 @@ export async function openDocVersionAt(
   at: Date,
   retentionDays = resolveDocHistoryRetentionDays(),
 ): Promise<Y.Doc> {
-  return withTransaction(pool, async (client) => {
-    const { rows: nowRows } = await client.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
-    const now = nowRows[0]!.now;
-    if (at.getTime() > now.getTime()) {
-      throw new ValidationError(`Cannot open doc ${docId} at a future timestamp ${at.toISOString()}`, {
-        docId,
-        at: at.toISOString(),
-      });
-    }
+  return withTransaction(pool, (client) => openDocVersionAtWithClient(client, docId, at, retentionDays));
+}
 
-    const { rows: docRows } = await client.query<{ history_available_from: Date | null }>(
-      `SELECT history_available_from FROM docs WHERE id = $1`,
-      [docId],
-    );
-    const docRow = docRows[0];
-    if (!docRow) {
-      throw new NotFoundError(`Doc ${docId} does not exist`, { docId });
-    }
+/**
+ * The read-side preconditions of `openDocVersionAtWithClient`, checked in its order: a future `at`
+ * (`ValidationError`), an unknown doc (`NotFoundError`), then an `at` outside the retained window
+ * (`HistoryNotRetainedError`). Exported so the page restore can refuse a request that could never
+ * be served without replaying the whole history first (issue #1617).
+ */
+export async function assertDocVersionReadable(
+  client: PoolClient,
+  docId: string,
+  at: Date,
+  retentionDays = resolveDocHistoryRetentionDays(),
+): Promise<void> {
+  const { rows: nowRows } = await client.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+  const now = nowRows[0]!.now;
+  if (at.getTime() > now.getTime()) {
+    throw new ValidationError(`Cannot open doc ${docId} at a future timestamp ${at.toISOString()}`, {
+      docId,
+      at: at.toISOString(),
+    });
+  }
 
-    const { rows: cutoffRows } = await client.query<{ cutoff: Date }>(
-      `SELECT transaction_timestamp() - make_interval(hours => $1::int) AS cutoff`,
-      [retentionHours(retentionDays)],
-    );
-    const cutoff = cutoffRows[0]!.cutoff;
+  const { rows: docRows } = await client.query<{ history_available_from: Date | null }>(
+    `SELECT history_available_from FROM docs WHERE id = $1`,
+    [docId],
+  );
+  const docRow = docRows[0];
+  if (!docRow) {
+    throw new NotFoundError(`Doc ${docId} does not exist`, { docId });
+  }
 
-    if (
-      docRow.history_available_from === null ||
-      at.getTime() < docRow.history_available_from.getTime() ||
-      at.getTime() < cutoff.getTime()
-    ) {
-      throw new HistoryNotRetainedError(docId, at);
-    }
+  const { rows: cutoffRows } = await client.query<{ cutoff: Date }>(
+    `SELECT transaction_timestamp() - make_interval(hours => $1::int) AS cutoff`,
+    [retentionHours(retentionDays)],
+  );
+  const cutoff = cutoffRows[0]!.cutoff;
 
-    const { rows: checkpointRows } = await client.query<{
-      through_update_id: string;
-      represented_at: Date;
-      state: Buffer;
-    }>(
-      `SELECT through_update_id, represented_at, state FROM doc_snapshot_history
+  if (
+    docRow.history_available_from === null ||
+    at.getTime() < docRow.history_available_from.getTime() ||
+    at.getTime() < cutoff.getTime()
+  ) {
+    throw new HistoryNotRetainedError(docId, at);
+  }
+}
+
+/**
+ * The latest checkpoint of `docId` represented at or before `at`: its state and the last history update it contains.
+ * `HistoryNotRetainedError` when there is none. Shared by the version read and the page change list (issue #1680),
+ * which both replay `doc_history_updates` forward from it.
+ */
+export async function readCheckpointAtOrBefore(
+  client: PoolClient,
+  docId: string,
+  at: Date,
+): Promise<{ throughUpdateId: string; state: Buffer }> {
+  const { rows: checkpointRows } = await client.query<{
+    through_update_id: string;
+    represented_at: Date;
+    state: Buffer;
+  }>(
+    `SELECT through_update_id, represented_at, state FROM doc_snapshot_history
        WHERE doc_id = $1 AND represented_at <= $2
        ORDER BY represented_at DESC, through_update_id DESC LIMIT 1`,
-      [docId, at],
-    );
-    const checkpoint = checkpointRows[0];
-    if (!checkpoint) {
-      throw new HistoryNotRetainedError(docId, at);
-    }
+    [docId, at],
+  );
+  const checkpoint = checkpointRows[0];
+  if (!checkpoint) {
+    throw new HistoryNotRetainedError(docId, at);
+  }
+  return { throughUpdateId: checkpoint.through_update_id, state: checkpoint.state };
+}
 
-    const doc = new Y.Doc();
-    doc.gc = false;
-    Y.applyUpdate(doc, checkpoint.state);
+/**
+ * The same checkpoint `readCheckpointAtOrBefore` picks, without its state: the row id, the last history update it
+ * contains and the size of the stored state in bytes, so a caller with a byte budget can refuse an oversized
+ * checkpoint before the state is materialized (`readCheckpointState`). Internal to the docs module; it is not exported
+ * from the package barrel, and `readCheckpointAtOrBefore` keeps its behavior for its other callers.
+ */
+export async function readCheckpointHeadAtOrBefore(
+  client: PoolClient,
+  docId: string,
+  at: Date,
+): Promise<{ id: string; throughUpdateId: string; stateBytes: number }> {
+  const { rows } = await client.query<{ id: string; through_update_id: string; state_bytes: number }>(
+    `SELECT id, through_update_id, octet_length(state)::int AS state_bytes FROM doc_snapshot_history
+       WHERE doc_id = $1 AND represented_at <= $2
+       ORDER BY represented_at DESC, through_update_id DESC LIMIT 1`,
+    [docId, at],
+  );
+  const head = rows[0];
+  if (!head) {
+    throw new HistoryNotRetainedError(docId, at);
+  }
+  return { id: head.id, throughUpdateId: head.through_update_id, stateBytes: head.state_bytes };
+}
 
-    const { rows: historyRows } = await client.query<{ update: Buffer }>(
-      `SELECT update FROM doc_history_updates
+/** The stored state of one checkpoint row named by `readCheckpointHeadAtOrBefore`; the row is read in the same snapshot. */
+export async function readCheckpointState(client: PoolClient, checkpointId: string): Promise<Buffer> {
+  const { rows } = await client.query<{ state: Buffer }>(`SELECT state FROM doc_snapshot_history WHERE id = $1`, [
+    checkpointId,
+  ]);
+  const row = rows[0];
+  if (!row) throw new Error("Checkpoint row disappeared inside its own snapshot");
+  return row.state;
+}
+
+/**
+ * The checkpoint-then-replay read behind `openDocVersionAt`, run on the caller's client so a
+ * caller that also writes (the page restore, issue #1617) reads the history in its own transaction.
+ */
+export async function openDocVersionAtWithClient(
+  client: PoolClient,
+  docId: string,
+  at: Date,
+  retentionDays = resolveDocHistoryRetentionDays(),
+): Promise<Y.Doc> {
+  await assertDocVersionReadable(client, docId, at, retentionDays);
+
+  const checkpoint = await readCheckpointAtOrBefore(client, docId, at);
+
+  const doc = new Y.Doc();
+  doc.gc = false;
+  Y.applyUpdate(doc, checkpoint.state);
+
+  const { rows: historyRows } = await client.query<{ update: Buffer }>(
+    `SELECT update FROM doc_history_updates
        WHERE doc_id = $1 AND update_id > $2 AND created_at <= $3
        ORDER BY update_id ASC`,
-      [docId, checkpoint.through_update_id, at],
-    );
-    for (const row of historyRows) Y.applyUpdate(doc, row.update);
+    [docId, checkpoint.throughUpdateId, at],
+  );
+  for (const row of historyRows) Y.applyUpdate(doc, row.update);
 
-    return doc;
-  });
+  return doc;
 }

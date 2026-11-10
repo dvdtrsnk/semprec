@@ -123,6 +123,7 @@ interface Fixture {
   referencedBlobB: string;
   orphanBlobB: string;
   blobZero: string;
+  blobEmpty: string;
 }
 
 async function seed(client: PoolClient): Promise<Fixture> {
@@ -152,6 +153,8 @@ async function seed(client: PoolClient): Promise<Fixture> {
     properties: { file: { blobId: referencedBlobB.id } },
   });
   const orphanBlobB = await createBlob(client, { mimeType: "text/plain", byteSize: 1, storageKey: "b/orphan" });
+  await scopeTo(client, tenantEmpty);
+  const blobEmpty = await createBlob(client, { mimeType: "text/plain", byteSize: 1, storageKey: "empty/orphan" });
 
   return {
     tenantB,
@@ -166,6 +169,7 @@ async function seed(client: PoolClient): Promise<Fixture> {
     referencedBlobB: referencedBlobB.id,
     orphanBlobB: orphanBlobB.id,
     blobZero: blobZero.id,
+    blobEmpty: blobEmpty.id,
   };
 }
 
@@ -234,11 +238,11 @@ async function seedPendingImapFlagWriteB(client: PoolClient, fx: Fixture): Promi
 }
 
 /** Every call that reads `items` by id, run through the same entry point its production caller uses. */
-function lookups(): Record<string, (client: PoolClient) => Promise<unknown>> {
+function lookups(blobId: string): Record<string, (client: PoolClient) => Promise<unknown>> {
   return {
     listLiveViewItemsAfter: (c) => listLiveViewItemsAfter(c, randomUUID(), { afterPosition: null, limit: 10 }),
     generatePermissionManifest: (c) => generatePermissionManifest(c, randomUUID()),
-    deleteBlobIfUnreferenced: (c) => deleteBlobIfUnreferenced(c, randomUUID()),
+    deleteBlobIfUnreferenced: (c) => deleteBlobIfUnreferenced(c, blobId),
     getActiveMailSyncProcessNames: (c) => getActiveMailSyncProcessNames(c),
     listPendingImapFlagWrites: (c) =>
       listPendingImapFlagWrites(c, {
@@ -266,7 +270,7 @@ describe("the remaining id-only item lookups are pruned to the tenant's partitio
       await scopeTo(client, fx.tenantB);
       await client.query("SET LOCAL ROLE semprec_data");
 
-      for (const [name, lookup] of Object.entries(lookups())) {
+      for (const [name, lookup] of Object.entries(lookups(fx.referencedBlobB))) {
         const summary = await scanPartitions(client, lookup);
         expect(summary.statements, name).toBeGreaterThan(0);
         expect(summary.relations, name).toEqual(new Set([partitionName(fx.dbB)]));
@@ -430,7 +434,7 @@ describe("the remaining id-only item lookups are pruned to the tenant's partitio
 
       expect(await getActiveMailSyncProcessNames(client)).toEqual([]);
 
-      for (const [name, lookup] of Object.entries(lookups())) {
+      for (const [name, lookup] of Object.entries(lookups(fx.blobEmpty))) {
         const summary = await scanPartitions(client, lookup);
         expect(summary.relations.size, name).toBe(0);
         expect(summary.falseFilter, name).toBe(true);

@@ -44,6 +44,17 @@ describe("createHttpAudioGatewayClient", () => {
     }
   });
 
+  it.each([{ exact: 2 }, { min: 3 }, undefined])("sends speaker choice %s to the gateway", async (numSpeakers) => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(JSON.stringify({ turns: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    await createHttpAudioGatewayClient({ port: 4100, token: "secret-token" }).diarize({ ...REQUEST, numSpeakers });
+    const body = fetchMock.mock.calls[0]?.[1].body;
+    if (typeof body !== "string") throw new Error("Missing request body");
+    const parsed: unknown = JSON.parse(body);
+    expect(parsed).toEqual(expect.objectContaining(numSpeakers ? { numSpeakers } : { audioSeconds: 1 }));
+    if (!numSpeakers) expect(parsed).not.toHaveProperty("numSpeakers");
+  });
+
   describe("x-semprec-tenant-id", () => {
     const TENANT_ID = "6f1c0a52-9d1e-4b7e-8c53-2f0e5c1a7b11";
 

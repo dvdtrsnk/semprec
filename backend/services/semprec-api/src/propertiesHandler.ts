@@ -62,7 +62,7 @@ export function createPropertyRoutes(
         // the patch has already committed — a database deleted between the two calls can no
         // longer surface as an independent not-found failure for an update that already
         // succeeded. `parseOperationInput` validates the same way `dispatchGenericOperation`
-        // would for `property.patch`; `patchPropertyWithDatabase` isn't one of the 29 catalog
+        // would for `property.patch`; `patchPropertyWithDatabase` isn't one of the 30 catalog
         // operations, so it's called directly on `service` instead.
         const input = parseOperationInput("property.patch", { propertyId, patch });
         const { property, database } = await service.patchPropertyWithDatabase(actor, input);

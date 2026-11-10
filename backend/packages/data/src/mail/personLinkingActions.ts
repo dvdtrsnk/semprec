@@ -1,13 +1,20 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { currentTenantScope } from "@semprec/shared";
 import { z } from "zod";
-import { withTransaction } from "../db/pool.js";
+import { requireManagedTransaction, withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
-import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
-import { lookupPersonIdByEmail, normalizeEmailAddress, reindexPersonEmails } from "./personEmailIndexStore.js";
+import { getMailMessageMetaByItemId, type MailEnvelope } from "./mailMessageMetaStore.js";
+import {
+  lookupPersonIdByEmail,
+  normalizeEmailAddress,
+  reindexPersonEmailsWithClaims,
+} from "./personEmailIndexStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 
 export const MAIL_REINDEX_PERSON_EMAILS_ACTION_ID = "mail.reindexPersonEmails";
@@ -37,7 +44,17 @@ export function createPersonEmailReindexAction(pool: Pool): ActionHandler {
       const person = await itemsStore.getItemById(client, config.peopleDatabaseId, context.itemId as string);
       if (!person || person.deletedAt) return;
       const addresses = parseAddressListProperty(person.properties.emails);
-      await reindexPersonEmails(client, person.id, addresses);
+      const { claimed } = await reindexPersonEmailsWithClaims(client, person.id, addresses);
+      if (claimed.length > 0) {
+        await enqueueJob(
+          client,
+          CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS,
+          { personId: person.id, addresses: claimed },
+          {
+            jobKey: `mail-link-person-emails:${person.id}`,
+          },
+        );
+      }
     });
   };
 }
@@ -49,6 +66,89 @@ const linkEmailToPeopleActionConfigSchema = z.object({
 });
 
 export type LinkEmailToPeopleActionConfig = z.infer<typeof linkEmailToPeopleActionConfigSchema>;
+
+export interface LinkEmailEnvelopeToPeopleInput {
+  /** The Emails item the envelope belongs to; the edges are created on it. */
+  itemId: string;
+  envelope: MailEnvelope;
+  emailsDatabaseId: string;
+  senderPeopleKey: string;
+  recipientsPeopleKey: string;
+}
+
+/** Locks a live message under the participating sender-writer transaction contract. */
+async function lockEmailForPeopleLink(client: PoolClient, databaseId: string, itemId: string): Promise<boolean> {
+  requireManagedTransaction(client);
+  const scope = currentTenantScope();
+  const { rows } = await client.query<{ isolation: string; tenant: string | null }>(
+    "SELECT current_setting('transaction_isolation') AS isolation, app_current_tenant()::text AS tenant",
+  );
+  if (scope?.kind !== "tenant" || rows[0]?.isolation !== "read committed" || rows[0]?.tenant !== scope.tenantId) {
+    throw new Error("Mail people linking requires a READ COMMITTED tenant transaction");
+  }
+  const item = await itemsStore.lockItemById(client, databaseId, itemId);
+  return item !== null && item.deletedAt === null;
+}
+
+/**
+ * Links one Emails item's `senderPeople` and `recipientsPeople` to the Persons that own the
+ * envelope's addresses, inside the caller's transaction. Shared by the `mail.linkPeopleByEmail`
+ * heartbeat action (for an arrived message) and `sendDraftEmail` (for a message Semprec sent, in
+ * the transaction that finalizes it), and the historical linking job. An address no Person owns
+ * leaves its relation unfilled. The locked message's existing edges are checked before writing;
+ * an existing sender is retained, and already-linked recipients are skipped.
+ */
+export async function linkEmailEnvelopeToPeople(
+  client: PoolClient,
+  input: LinkEmailEnvelopeToPeopleInput,
+): Promise<void> {
+  if (!(await lockEmailForPeopleLink(client, input.emailsDatabaseId, input.itemId))) return;
+  const senderProperty = await propertiesStore.getPropertyByKey(client, input.emailsDatabaseId, input.senderPeopleKey);
+  const recipientsProperty = await propertiesStore.getPropertyByKey(
+    client,
+    input.emailsDatabaseId,
+    input.recipientsPeopleKey,
+  );
+
+  if (senderProperty && input.envelope.from) {
+    const personId = await lookupPersonIdByEmail(client, input.envelope.from.address);
+    if (personId) {
+      const definition = await relationsStore.getRelationDefinitionByPropertyId(client, senderProperty.id);
+      if (!definition) throw new Error("Missing senderPeople relation definition");
+      const existing = await relationsStore.listRelationsForItem(client, definition.id, input.itemId);
+      if (existing.length === 0) {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: senderProperty.id, callerItemId: input.itemId, targetItemId: personId },
+          EMAILS_RELATION_CONTEXT,
+        );
+      }
+    }
+  }
+
+  if (recipientsProperty) {
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, recipientsProperty.id);
+    if (!definition) throw new Error("Missing recipientsPeople relation definition");
+    const existing = await relationsStore.listRelationsForItem(client, definition.id, input.itemId);
+    const linked = new Set(existing.map((edge) => relationsStore.otherSide(edge, input.itemId)));
+    const recipients = [...(input.envelope.to ?? []), ...(input.envelope.cc ?? []), ...(input.envelope.bcc ?? [])];
+    const seen = new Set<string>();
+    for (const recipient of recipients) {
+      const normalized = normalizeEmailAddress(recipient.address);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      const personId = await lookupPersonIdByEmail(client, normalized);
+      if (personId && !linked.has(personId)) {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: recipientsProperty.id, callerItemId: input.itemId, targetItemId: personId },
+          EMAILS_RELATION_CONTEXT,
+        );
+        linked.add(personId);
+      }
+    }
+  }
+}
 
 /**
  * Registered as an `onItemEvent` ('create') heartbeat action on the Emails database: reads
@@ -70,50 +170,13 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
     await withTransaction(pool, async (client) => {
       const meta = await getMailMessageMetaByItemId(client, context.itemId as string);
       if (!meta) return;
-
-      const senderProperty = await propertiesStore.getPropertyByKey(
-        client,
-        config.emailsDatabaseId,
-        config.senderPeopleKey,
-      );
-      const recipientsProperty = await propertiesStore.getPropertyByKey(
-        client,
-        config.emailsDatabaseId,
-        config.recipientsPeopleKey,
-      );
-
-      if (senderProperty && meta.envelope.from) {
-        const personId = await lookupPersonIdByEmail(client, meta.envelope.from.address);
-        if (personId) {
-          await createRelationWithClient(
-            client,
-            { relationPropertyId: senderProperty.id, callerItemId: context.itemId as string, targetItemId: personId },
-            EMAILS_RELATION_CONTEXT,
-          );
-        }
-      }
-
-      if (recipientsProperty) {
-        const recipients = [...(meta.envelope.to ?? []), ...(meta.envelope.cc ?? []), ...(meta.envelope.bcc ?? [])];
-        const seen = new Set<string>();
-        for (const recipient of recipients) {
-          const normalized = normalizeEmailAddress(recipient.address);
-          if (seen.has(normalized)) continue;
-          seen.add(normalized);
-          const personId = await lookupPersonIdByEmail(client, normalized);
-          if (personId) {
-            await createRelationWithClient(
-              client,
-              {
-                relationPropertyId: recipientsProperty.id,
-                callerItemId: context.itemId as string,
-                targetItemId: personId,
-              },
-              EMAILS_RELATION_CONTEXT,
-            );
-          }
-        }
-      }
+      await linkEmailEnvelopeToPeople(client, {
+        itemId: context.itemId as string,
+        envelope: meta.envelope,
+        emailsDatabaseId: config.emailsDatabaseId,
+        senderPeopleKey: config.senderPeopleKey,
+        recipientsPeopleKey: config.recipientsPeopleKey,
+      });
     });
   };
 }

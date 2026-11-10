@@ -33,7 +33,7 @@ async function addErroredMailbox(tenantId: string): Promise<string> {
   const itemId = randomUUID();
   await withTenantTransaction(pool, tenantId, async (client) => {
     await ensureMailAccountSyncState(client, { itemId, syncMode: "imap" });
-    await recordSyncError(client, itemId, "boom");
+    await recordSyncError(client, itemId, "boom", "other");
   });
   return itemId;
 }

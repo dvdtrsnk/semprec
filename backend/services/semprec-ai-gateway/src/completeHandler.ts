@@ -23,11 +23,13 @@ import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
  */
 const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["agent_guidance_drift", true],
+  ["agent_behavior_drift", true],
   ["inbox_proposal", true],
   ["inbox_attachment_extraction", true],
   ["transcript_event_pick", false],
   ["transcript_summary", false],
   ["transcript_speaker_suggestion", false],
+  ["semp_thread_title", false],
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -38,8 +40,24 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  */
 const RESERVED_OUTPUT_TOKENS = 4096;
 
-/** Overall request body cap: generously above the 64 KiB `responseSchema` bound alone allows for prompt/messages content. */
+/** Body cap for a request without an image: generously above the 64 KiB `responseSchema` bound alone allows for prompt/messages content. */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/** Body cap for a request that contains an image. The stream is read up to this; a body without an image is then held to `MAX_BODY_BYTES`. */
+const MAX_BODY_BYTES_WITH_IMAGES = 8 * 1024 * 1024;
+
+const MAX_IMAGES_PER_REQUEST = 4;
+const MAX_IMAGE_DECODED_BYTES = 1.5 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+
+/** The provider's ceiling for an image of about 1568 px; added to the input estimate per image. */
+const ESTIMATED_TOKENS_PER_IMAGE = 1600;
+
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 export interface CompleteHandlerOptions {
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
@@ -67,22 +85,85 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-class PayloadTooLargeError extends Error {}
+class PayloadTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly streaming = false,
+  ) {
+    super(message);
+  }
+}
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * Reads up to the larger image-request cap; the caller applies the text-only cap with `bytes`
+ * once it knows whether the body carries an image.
+ */
+async function readJsonBody(req: IncomingMessage): Promise<{ value: unknown; bytes: number }> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    const value: unknown = chunk;
+    if (!(value instanceof Uint8Array) && typeof value !== "string") {
+      throw new ValidationError("Request body contains invalid data");
+    }
+    const buf = Buffer.from(value);
     size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+    if (size > MAX_BODY_BYTES_WITH_IMAGES) {
+      throw new PayloadTooLargeError("Request body exceeds the maximum allowed size", true);
+    }
     chunks.push(buf);
   }
   try {
-    return JSON.parse(chunks.length === 0 ? "{}" : Buffer.concat(chunks).toString("utf8"));
+    return { value: JSON.parse(chunks.length === 0 ? "{}" : Buffer.concat(chunks).toString("utf8")), bytes: size };
   } catch {
     throw new ValidationError("Request body is not valid JSON");
   }
+}
+
+function decodedBase64Length(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
+}
+
+function isValidImageBlock(block: { mimeType?: unknown; data?: unknown }): boolean {
+  return (
+    typeof block.mimeType === "string" &&
+    ALLOWED_IMAGE_MIME_TYPES.has(block.mimeType) &&
+    typeof block.data === "string" &&
+    block.data.length > 0 &&
+    // The length bound comes first so an oversized string is never run through the pattern.
+    block.data.length <= Math.ceil((MAX_IMAGE_DECODED_BYTES * 4) / 3) + 4 &&
+    BASE64_PATTERN.test(block.data) &&
+    decodedBase64Length(block.data) <= MAX_IMAGE_DECODED_BYTES
+  );
+}
+
+function isContentBlock(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.type === "text") return typeof value.text === "string";
+  if (value.type === "image") return isValidImageBlock({ mimeType: value.mimeType, data: value.data });
+  return false;
+}
+
+/** Number of image blocks in an array-form message; 0 for the string form. */
+function countImages(content: StructuredCompletionMessage["content"]): number {
+  return typeof content === "string" ? 0 : content.filter((block) => block.type === "image").length;
+}
+
+function contentTextLength(content: StructuredCompletionMessage["content"]): number {
+  if (typeof content === "string") return content.length;
+  return content.reduce((sum, block) => sum + (block.type === "text" ? block.text.length : 0), 0);
+}
+
+/** Whether an unvalidated body holds an image block in `messages`, so the larger size cap can apply to it. */
+function rawBodyHasImage(raw: unknown): boolean {
+  if (!isObject(raw)) return false;
+  const messages = raw.messages;
+  if (!Array.isArray(messages)) return false;
+  return messages.some((message: unknown) => {
+    const content = isObject(message) ? message.content : null;
+    return Array.isArray(content) && content.some((block: unknown) => isObject(block) && block.type === "image");
+  });
 }
 
 /** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
@@ -110,19 +191,16 @@ function extractTraceId(req: IncomingMessage): string | undefined {
 }
 
 function isStructuredCompletionMessage(value: unknown): value is StructuredCompletionMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    ((value as { role?: unknown }).role === "user" || (value as { role?: unknown }).role === "assistant") &&
-    typeof (value as { content?: unknown }).content === "string"
-  );
+  if (!isObject(value) || (value.role !== "user" && value.role !== "assistant")) return false;
+  const content = value.content;
+  return typeof content === "string" || (Array.isArray(content) && content.length > 0 && content.every(isContentBlock));
 }
 
 function validateBody(raw: unknown): CompleteRequestBody {
-  if (typeof raw !== "object" || raw === null) {
+  if (!isObject(raw)) {
     throw new ValidationError("Request body must be a JSON object");
   }
-  const body = raw as Record<string, unknown>;
+  const body = raw;
 
   const requiresProjectItem =
     typeof body.operation === "string" ? OPERATION_REQUIRES_PROJECT_ITEM.get(body.operation) : undefined;
@@ -160,6 +238,9 @@ function validateBody(raw: unknown): CompleteRequestBody {
     !body.messages.every(isStructuredCompletionMessage)
   ) {
     throw new ValidationError("'messages' must be a non-empty array of { role, content }", { field: "messages" });
+  }
+  if (body.messages.reduce((sum, message) => sum + countImages(message.content), 0) > MAX_IMAGES_PER_REQUEST) {
+    throw new ValidationError(`A request may carry at most ${MAX_IMAGES_PER_REQUEST} images`, { field: "messages" });
   }
   if (typeof body.responseSchema !== "object" || body.responseSchema === null) {
     throw new ValidationError("'responseSchema' must be a JSON object", { field: "responseSchema" });
@@ -204,7 +285,10 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
 
       const tenantId = readCallerTenantId(req);
       await runForCallerTenant(tenantId, async () => {
-        const rawBody = await readJsonBody(req);
+        const { value: rawBody, bytes } = await readJsonBody(req);
+        if (bytes > MAX_BODY_BYTES && !rawBodyHasImage(rawBody)) {
+          throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+        }
         const body = validateBody(rawBody);
 
         let validateResponse;
@@ -219,12 +303,16 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
 
         // #620: a rough upper bound (about 4 characters per token for the input, the full output
         // cap) reserved against the budget before the call and replaced by the real cost on settle.
-        const estimatedInputTokens = Math.ceil(
-          (body.system.length +
-            body.messages.reduce((sum, message) => sum + message.content.length, 0) +
-            JSON.stringify(body.responseSchema).length) /
-            4,
-        );
+        // Each image adds the provider's fixed ceiling on top of the text estimate.
+        const imageCount = body.messages.reduce((sum, message) => sum + countImages(message.content), 0);
+        const estimatedInputTokens =
+          Math.ceil(
+            (body.system.length +
+              body.messages.reduce((sum, message) => sum + contentTextLength(message.content), 0) +
+              JSON.stringify(body.responseSchema).length) /
+              4,
+          ) +
+          imageCount * ESTIMATED_TOKENS_PER_IMAGE;
         const estimatedCostUsd =
           (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
           (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;
@@ -314,8 +402,47 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         });
       });
     } catch (err) {
+      if (res.destroyed || res.writableEnded || req.aborted) return;
       if (err instanceof PayloadTooLargeError) {
+        if (err.streaming && !req.complete && !req.destroyed) {
+          let discarded = 0;
+          let disposed = false;
+          const dispose = (): void => {
+            if (disposed) return;
+            disposed = true;
+            clearTimeout(timer);
+            req.off("data", onData);
+            req.off("end", dispose);
+            req.off("close", dispose);
+            req.off("aborted", dispose);
+            req.off("error", dispose);
+          };
+          const onData = (chunk: unknown): void => {
+            if (!(chunk instanceof Uint8Array) && typeof chunk !== "string") {
+              dispose();
+              req.destroy();
+              return;
+            }
+            discarded += Buffer.byteLength(chunk);
+            if (discarded >= 2 * 1024 * 1024) {
+              dispose();
+              req.destroy();
+            }
+          };
+          const timer = setTimeout(() => {
+            dispose();
+            req.destroy();
+          }, 2000);
+          timer.unref();
+          req.on("data", onData);
+          req.once("end", dispose);
+          req.once("close", dispose);
+          req.once("aborted", dispose);
+          req.once("error", dispose);
+        }
+        if (err.streaming) res.setHeader("Connection", "close");
         sendJson(res, 413, { error: err.message });
+        if (err.streaming && !req.complete && !req.destroyed) req.resume();
         return;
       }
       if (err instanceof ChokePointError) {

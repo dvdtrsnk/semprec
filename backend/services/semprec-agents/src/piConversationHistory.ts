@@ -9,6 +9,7 @@ import type {
   ThinkingContent,
   ToolCall,
   ToolResultMessage,
+  UserMessage,
 } from "@earendil-works/pi-ai";
 import type { AgentMessage, ConversationEntry } from "@semprec/agent-runtime";
 
@@ -131,9 +132,20 @@ function toToolResultMessage(entry: ConversationEntry, message: AgentMessage): T
   };
 }
 
+/** The durable user event retains refs; wake-time images exist only on this reconstructed entry. */
+function toUserMessage(entry: ConversationEntry, message: AgentMessage): UserMessage {
+  if (typeof message.text !== "string") throw invalidEntry(entry, "has a non-string user message text");
+  const images = entry.images ?? [];
+  return {
+    role: "user",
+    content: images.length ? [{ type: "text", text: message.text }, ...images] : message.text,
+    timestamp: entry.timestamp,
+  };
+}
+
 /**
  * Converts reconstructed history (this runtime's persisted `AgentMessage` vocabulary) into the pi
- * `Message`s a resumed `Agent` is seeded with. Only `message` and `tool_result` entries carry
+ * `Message`s a resumed `Agent` is seeded with. Only `user_message`, `message` and `tool_result` entries carry
  * conversation content: a `tool_use` repeats the `toolCall` block already in the preceding
  * assistant message's content, and turn markers, streaming deltas and run statuses are not part
  * of the model's context. The history is a boundary (stored JSONB, or a compaction adapter's
@@ -143,7 +155,8 @@ export function toPiMessages(entries: ConversationEntry[], model: Model<Api>): M
   const messages: Message[] = [];
   for (const entry of entries) {
     const message = entry.message;
-    if (message.kind === "message") messages.push(toAssistantMessage(entry, message, model));
+    if (message.kind === "user_message") messages.push(toUserMessage(entry, message));
+    else if (message.kind === "message") messages.push(toAssistantMessage(entry, message, model));
     else if (message.kind === "tool_result") messages.push(toToolResultMessage(entry, message));
   }
   return messages;

@@ -10,7 +10,10 @@ describe("buildSpeakerSuggestionRequest", () => {
   it("asks about the unmapped speakers with the participants and the transcript, unattributed to a project", () => {
     const request = buildSpeakerSuggestionRequest(segments, {
       unmappedSpeakers: ["SPEAKER_01"],
-      candidates: [{ id: "person-1", name: "Alice" }],
+      locale: "cs",
+      candidates: [{ id: "person-1", name: "Alice", title: null, invitationStatus: null }],
+      details: [],
+      source: { transcriptName: null, date: null },
     });
 
     expect(request).toMatchObject({
@@ -18,6 +21,7 @@ describe("buildSpeakerSuggestionRequest", () => {
       operation: "transcript_speaker_suggestion",
       temperature: 0,
     });
+    expect(request.system).toContain("cs");
     expect(request.messages).toEqual([
       {
         role: "user",
@@ -31,9 +35,17 @@ describe("buildSpeakerSuggestionRequest", () => {
 
 describe("parseSpeakerSuggestionContent", () => {
   it("returns the mappings of a well-formed response", () => {
-    expect(parseSpeakerSuggestionContent({ mappings: [{ speaker: "SPEAKER_01", personId: "person-1" }] })).toEqual([
-      { speaker: "SPEAKER_01", personId: "person-1" },
-    ]);
+    expect(
+      parseSpeakerSuggestionContent({
+        mappings: [{ speaker: "SPEAKER_01", personId: "person-1", reason: "Addressed by name." }],
+      }),
+    ).toEqual([{ speaker: "SPEAKER_01", personId: "person-1", reason: "Addressed by name." }]);
+  });
+
+  it("accepts an unsure response", () => {
+    expect(
+      parseSpeakerSuggestionContent({ mappings: [{ speaker: "SPEAKER_01", personId: null, reason: "Unclear." }] }),
+    ).toEqual([{ speaker: "SPEAKER_01", personId: null, reason: "Unclear." }]);
   });
 
   it("rejects a response without mappings", () => {

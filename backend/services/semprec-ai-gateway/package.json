@@ -15,10 +15,14 @@
     "@semprec/shared": "workspace:*",
     "ajv": "^8.20.0",
     "pg": "^8.23.0",
+    "ws": "^8.18.0",
     "zod": "^4.1.11"
   },
   "devDependencies": {
+    "@semprec/ai-gateway-client": "workspace:*",
+    "@semprec/queue": "workspace:*",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.5.13",
     "vitest": "^4.1.11"
   }
 }
