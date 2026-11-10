@@ -261,6 +261,70 @@ describe("notificationsStore (issue #152)", () => {
     ).toHaveLength(1);
   });
 
+  it("defaults an absent legacy kind but refuses a present null before any notification", async () => {
+    const user = await createTestUser("en");
+    const tenant = tenantOfUser.get(user);
+    if (!tenant) throw new Error("Missing tenant");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const database = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
+      );
+      if (!database) throw new Error("Missing Projects database");
+      const project = await runInTenant(tenant, () =>
+        createChokePoint(runtime).createItem({ databaseId: database.id, properties: { name: "Project" } }),
+      );
+      const common = {
+        userId: user,
+        kind: "agent_guidance_drift_resolved" as const,
+        linkHref: null,
+        sourceTable: "agent_guidance_drift_findings",
+        sourceId: "kind-test",
+        transitionInstance: "decision",
+      };
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (tx) =>
+            writeNotification(tx, {
+              ...common,
+              payload: { projectItemId: project.id, kind: null },
+            }),
+          ),
+        ),
+      ).rejects.toThrow("Invalid guidance drift kind");
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            runtime.query("SELECT id FROM notifications WHERE source_id = $1", [common.sourceId]),
+          )
+        ).rows,
+      ).toEqual([]);
+      const id = await runInTenant(tenant, () =>
+        withTransaction(runtime, (tx) =>
+          writeNotification(tx, {
+            ...common,
+            payload: { projectItemId: project.id },
+          }),
+        ),
+      );
+      const rows = await runInTenant(tenant, () =>
+        runtime.query<{ payload: unknown }>("SELECT payload FROM notifications WHERE id = $1", [id]),
+      );
+      expect(rows.rows).toEqual([
+        {
+          payload: {
+            projectItemId: project.id,
+            kind: "permission",
+            resolutionTitle: "Instructions of project Project match the permissions again",
+          },
+        },
+      ]);
+    } finally {
+      await runtime.end();
+    }
+  });
+
   it("does not commit a failed provisional resolved notification in a manual transaction", async () => {
     const user = await createTestUser();
     const tenant = tenantOfUser.get(user);
