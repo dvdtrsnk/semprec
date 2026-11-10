@@ -14,6 +14,9 @@ import { hashPassword } from "../auth/passwordHash.js";
 import { randomUUID } from "node:crypto";
 import { inTenantZero } from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
+import { seedSystem } from "../seed/seedSystem.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { decideAndEnqueueApprovalRequest } from "../mcp/approvalDecisionAction.js";
@@ -29,9 +32,32 @@ import {
 import { setNotificationReadStateHook, type NotificationReadStateEvent } from "../realtimeHook.js";
 
 let pool: Pool;
+const pendingNotificationActors = new Set<Promise<unknown>>();
+function observeNotificationActor<T>(actor: Promise<T>): Promise<T> {
+  pendingNotificationActors.add(actor);
+  void actor.then(
+    () => pendingNotificationActors.delete(actor),
+    () => pendingNotificationActors.delete(actor),
+  );
+  return actor;
+}
+async function boundNotificationActor<T>(actor: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      actor,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Notification actor did not settle")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 describe("notificationsStore (issue #152)", () => {
   beforeEach(async () => {
+    if (pendingNotificationActors.size) throw new Error("A notification actor remains unsettled");
     pool ??= getTestPool();
     await resetDatabase(pool);
     tenantOfUser.clear();
@@ -42,6 +68,7 @@ describe("notificationsStore (issue #152)", () => {
   });
 
   afterAll(async () => {
+    if (pendingNotificationActors.size) throw new Error("A notification actor remains unsettled; pool remains open");
     await pool?.end();
   });
 
@@ -72,6 +99,162 @@ describe("notificationsStore (issue #152)", () => {
       }),
     );
   }
+
+  it("lets a concurrent second writer validate and insert after the first rolls back", async () => {
+    const user = await createTestUser();
+    const tenant = tenantOfUser.get(user);
+    if (!tenant) throw new Error("Missing tenant");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstReady: (identity: { pid: number; started: string }) => void = () => {};
+    let secondReady: (identity: { pid: number; started: string }) => void = () => {};
+    const firstSignal = new Promise<{ pid: number; started: string }>((resolve) => {
+      firstReady = resolve;
+    });
+    const secondSignal = new Promise<{ pid: number; started: string }>((resolve) => {
+      secondReady = resolve;
+    });
+    const intentional = new Error("First notification transaction rolled back");
+    let primary: { error: unknown } | undefined;
+    let first: Promise<{ ok: true; value: string } | { ok: false; error: unknown }> | undefined;
+    let second: Promise<{ ok: true; value: string } | { ok: false; error: unknown }> | undefined;
+    try {
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const database = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects")),
+      );
+      if (!database) throw new Error("Missing Projects database");
+      const project = await runInTenant(tenant, () =>
+        createChokePoint(runtime).createItem({ databaseId: database.id, properties: { name: "Concurrent" } }),
+      );
+      const input = {
+        userId: user,
+        kind: "agent_guidance_drift_resolved" as const,
+        linkHref: null,
+        sourceTable: "agent_guidance_drift_findings",
+        sourceId: "concurrent",
+        transitionInstance: "decision",
+        payload: { projectItemId: project.id, kind: "behavior" },
+      };
+      const identity = async (client: import("pg").PoolClient) => {
+        const result = await client.query<{ pid: number; started: string }>(
+          "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+        );
+        if (!result.rows[0]) throw new Error("Missing backend identity");
+        return result.rows[0];
+      };
+      first = observeNotificationActor(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const own = await identity(client);
+            await writeNotification(client, input);
+            firstReady(own);
+            await gate;
+            throw intentional;
+          }),
+        ).then(
+          (value: string) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+      );
+      const firstIdentity = await boundNotificationActor(
+        Promise.race([
+          firstSignal,
+          first.then((result) => {
+            throw result.ok ? new Error("First actor ended before reservation") : result.error;
+          }),
+        ]),
+      );
+      second = observeNotificationActor(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            secondReady(await identity(client));
+            return writeNotification(client, input);
+          }),
+        ).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+      );
+      const secondIdentity = await boundNotificationActor(
+        Promise.race([
+          secondSignal,
+          second.then((result) => {
+            throw result.ok ? new Error("Second actor ended before observation") : result.error;
+          }),
+        ]),
+      );
+      await expect
+        .poll(
+          async () => {
+            const result = await pool.query<{ blockers: number[] }>(
+              "SELECT pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz",
+              [secondIdentity.pid, secondIdentity.started],
+            );
+            return result.rows[0]?.blockers ?? [];
+          },
+          { timeout: 5000 },
+        )
+        .toContain(firstIdentity.pid);
+      const owner = await pool.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+        [firstIdentity.pid, firstIdentity.started],
+      );
+      expect(owner.rows).toEqual([{ present: true }]);
+    } catch (error) {
+      primary = { error };
+    }
+    release();
+    const actors = [first, second].filter((actor): actor is NonNullable<typeof actor> => actor !== undefined);
+    const settled = await Promise.allSettled(actors.map(boundNotificationActor));
+    const errors: unknown[] = primary ? [primary.error] : [];
+    const outcomes = settled.flatMap((result) => {
+      if (result.status === "rejected") {
+        errors.push(result.reason);
+        return [];
+      }
+      return [result.value];
+    });
+    if (outcomes[0] && !outcomes[0].ok && outcomes[0].error !== intentional) errors.push(outcomes[0].error);
+    if (outcomes[1] && !outcomes[1].ok) errors.push(outcomes[1].error);
+    if (pendingNotificationActors.size === 0) {
+      try {
+        await runtime.end();
+      } catch (error) {
+        errors.push(error);
+      }
+    } else errors.push(new Error("Notification actor remains unsettled; pool remains open"));
+    if (errors.length)
+      throw new AggregateError(errors, "Concurrent notification test failed", { cause: primary?.error ?? errors[0] });
+    expect(outcomes[0]).toMatchObject({ ok: false, error: intentional });
+    expect(outcomes[1]).toMatchObject({ ok: true, value: expect.any(String) });
+    const rows = await runInTenant(tenant, () =>
+      pool.query<{ id: string; payload: unknown }>("SELECT id, payload FROM notifications WHERE source_id = $1", [
+        "concurrent",
+      ]),
+    );
+    if (!outcomes[1]?.ok) throw new Error("Missing second notification");
+    expect(rows.rows).toEqual([
+      {
+        id: outcomes[1].value,
+        payload: {
+          projectItemId: expect.any(String),
+          kind: "behavior",
+          resolutionTitle: "Instructions of project Concurrent match what Semp does again",
+        },
+      },
+    ]);
+    expect(
+      (
+        await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `notification-fanout:${outcomes[1].value}`,
+        ])
+      ).rows,
+    ).toHaveLength(1);
+  });
 
   it("does not commit a failed provisional resolved notification in a manual transaction", async () => {
     const user = await createTestUser();

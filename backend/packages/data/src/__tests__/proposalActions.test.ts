@@ -989,6 +989,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const jobsBefore = await pool.query<{ key: string | null }>(
       "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
     );
+    const docsBefore = await pool.query<{ id: string; item_id: string }>("SELECT id, item_id FROM docs ORDER BY id");
+    const snapshotsBefore = await pool.query<{ doc_id: string; state: Buffer; state_vector: Buffer }>(
+      "SELECT doc_id, state, state_vector FROM doc_snapshots ORDER BY doc_id",
+    );
+    const invalidations: InvalidationEvent[] = [];
+    setInvalidationHook((event) => invalidations.push(event));
     await pool.query(`CREATE FUNCTION reject_origin_note_test() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'injected origin note failure'; END $$`);
     let failure: { error: unknown } | undefined;
@@ -1017,9 +1023,21 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         proposal.id,
       ]);
       expect(origins.rows).toEqual([]);
+      expect(
+        (await pool.query<{ id: string; item_id: string }>("SELECT id, item_id FROM docs ORDER BY id")).rows,
+      ).toEqual(docsBefore.rows);
+      expect(
+        (
+          await pool.query<{ doc_id: string; state: Buffer; state_vector: Buffer }>(
+            "SELECT doc_id, state, state_vector FROM doc_snapshots ORDER BY doc_id",
+          )
+        ).rows,
+      ).toEqual(snapshotsBefore.rows);
+      expect(invalidations).toEqual([]);
     } catch (error) {
       failure = { error };
     }
+    setInvalidationHook(() => {});
     const cleanupErrors: unknown[] = [];
     for (const cleanup of [
       () => pool.query("DROP TRIGGER IF EXISTS reject_origin_note_test ON doc_updates"),
