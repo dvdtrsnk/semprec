@@ -634,6 +634,8 @@ describe("settled tick approval outcome continuation", () => {
       expect(records[1]?.status).toBe("fulfilled");
       expect(() => assertCleanupSafe()).toThrow(AggregateError);
     } finally {
+      if (rejectLate) rejectLate(lateError);
+      await Promise.all(records.map((record) => record.outcome));
       const index = retainedCleanupCases.indexOf(item);
       if (index >= 0) retainedCleanupCases.splice(index, 1);
       lifecycleUnsafe = false;
