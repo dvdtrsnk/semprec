@@ -339,7 +339,7 @@ describe("notificationsStore (issue #152)", () => {
     const events: NotificationCreatedEvent[] = [];
     let primary: { error: unknown } | undefined;
     try {
-      await runInTenant(tenant, () => seedSystem(runtime));
+      await runInTenant(tenant, () => seedSystem(pool));
       const projects = await runInTenant(tenant, () =>
         withTransaction(runtime, (tx) => getDatabaseByModuleId(tx, "projects")),
       );

@@ -609,8 +609,8 @@ describe("settled tick approval outcome continuation", () => {
       ]);
       const second = await runInTenant(tenant, () =>
         runtime.query<{ id: string }>(
-          "SELECT a.id FROM approval_requests a JOIN semp_messages m ON m.tenant_id = a.tenant_id AND m.agent_run_id = a.agent_run_id WHERE m.id = $1",
-          [rejectedSend.assistantMessageId],
+          "SELECT a.id FROM approval_requests a JOIN semp_messages m ON m.tenant_id = a.tenant_id AND m.agent_run_id = a.agent_run_id WHERE m.id = $1 AND a.id <> $2 AND a.status = 'pending'",
+          [rejectedSend.assistantMessageId, requestId],
         ),
       );
       expect(second.rows).toHaveLength(1);
