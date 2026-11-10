@@ -336,12 +336,27 @@ describe("settled tick approval outcome continuation", () => {
         url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\//),
       });
       restorePolicy = allowLoopbackOutboundForTests();
+      let executionFailure: { error: unknown } | undefined;
       try {
         await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
-      } finally {
+      } catch (error) {
+        executionFailure = { error };
+      }
+      try {
         restorePolicy();
         restorePolicy = undefined;
+      } catch (error) {
+        if (executionFailure)
+          throw new AggregateError(
+            [executionFailure.error, error],
+            "Approval execution and policy restoration failed",
+            {
+              cause: executionFailure.error,
+            },
+          );
+        throw error;
       }
+      if (executionFailure) throw executionFailure.error;
       expect(server.getLastToolCall()).toEqual({
         name: "search_web",
         arguments: { query: "closed fixture" },
@@ -383,10 +398,10 @@ describe("settled tick approval outcome continuation", () => {
     }
     const errors: unknown[] = [];
     for (const cleanup of [
+      () => restorePolicy?.(),
       () => runner?.stop(),
       () => closeIdleThreadSessions(runtime),
       () => server.stop(),
-      () => restorePolicy?.(),
     ]) {
       try {
         await cleanup();
