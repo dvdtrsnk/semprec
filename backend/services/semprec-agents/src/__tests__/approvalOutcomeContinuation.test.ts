@@ -836,38 +836,39 @@ describe("settled tick approval outcome continuation", () => {
       let server: Server | undefined;
       const gatewayRequests: Array<{ tenant: string | string[] | undefined }> = [];
       let gateway: GatewayModel;
-      if (budgetRefusal) {
-        server = createServer((req, res) => {
-          gatewayRequests.push({ tenant: req.headers["x-semprec-tenant-id"] });
-          req.resume();
-          req.on("end", () => {
-            res.writeHead(403, { "content-type": "application/json", "x-semprec-error-code": "budget_exceeded" });
-            res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
-          });
-        });
-        await new Promise<void>((resolve, reject) => {
-          server!.once("error", reject);
-          server!.listen(0, "127.0.0.1", resolve);
-        });
-        const port = (server.address() as AddressInfo).port;
-        gateway = createGatewayModel({
-          AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
-          AI_GATEWAY_INTERNAL_TOKEN: "test-internal-token",
-          AGENT_MODEL: "test-model",
-        });
-      } else {
-        gateway = {
-          model: faux.getModel(),
-          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
-          isBudgetRefusal: () => false,
-        };
-      }
-      const registry = await loadFullModuleRegistry();
-      const runner = await createAgentsQueueRuntime(runtime, registry, {
-        sempMessageTask: createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns()),
-      });
+      let runner: Awaited<ReturnType<typeof createAgentsQueueRuntime>> | undefined;
       let failure: { error: unknown } | undefined;
       try {
+        if (budgetRefusal) {
+          server = createServer((req, res) => {
+            gatewayRequests.push({ tenant: req.headers["x-semprec-tenant-id"] });
+            req.resume();
+            req.on("end", () => {
+              res.writeHead(403, { "content-type": "application/json", "x-semprec-error-code": "budget_exceeded" });
+              res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
+            });
+          });
+          await new Promise<void>((resolve, reject) => {
+            server!.once("error", reject);
+            server!.listen(0, "127.0.0.1", resolve);
+          });
+          const port = (server.address() as AddressInfo).port;
+          gateway = createGatewayModel({
+            AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
+            AI_GATEWAY_INTERNAL_TOKEN: "test-internal-token",
+            AGENT_MODEL: "test-model",
+          });
+        } else {
+          gateway = {
+            model: faux.getModel(),
+            streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+            isBudgetRefusal: () => false,
+          };
+        }
+        const registry = await loadFullModuleRegistry();
+        runner = await createAgentsQueueRuntime(runtime, registry, {
+          sempMessageTask: createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns()),
+        });
         const deadline = Date.now() + 15_000;
         let rows: Array<{ status: string; text: string | null }> = [];
         do {
@@ -924,24 +925,30 @@ describe("settled tick approval outcome continuation", () => {
         failure = { error };
       }
       const errors: unknown[] = [];
-      for (const cleanup of [
-        () => runner.stop(),
-        () => closeIdleThreadSessions(runtime),
+      const records: CleanupRecord[] = [];
+      await settleCleanup(records, errors, "queue runner", async () => {
+        await runner?.stop();
+      });
+      await settleCleanup(records, errors, "thread sessions", async () => {
+        await closeIdleThreadSessions(runtime);
+      });
+      await settleCleanup(
+        records,
+        errors,
+        "closed gateway",
         () =>
           new Promise<void>((resolve, reject) =>
             server ? server.close((error) => (error ? reject(error) : resolve())) : resolve(),
           ),
-      ]) {
-        try {
-          await cleanup();
-        } catch (error) {
-          errors.push(error);
+      );
+      for (const record of records) {
+        if (record.status === "rejected" && !record.reported) {
+          errors.push(record.error);
+          record.reported = true;
         }
       }
-      if (errors.length)
-        throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Outcome continuation cleanup failed", {
-          cause: failure?.error,
-        });
+      if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records });
+      if (errors.length) throw cleanupAggregate(failure, errors);
       if (failure) throw failure.error;
     },
   );
