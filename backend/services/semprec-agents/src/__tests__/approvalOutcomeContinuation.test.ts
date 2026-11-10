@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
@@ -25,8 +25,8 @@ import {
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { allowLoopbackOutboundForTests, startHttpContractServer } from "@semprec/data/testSupport/mcpContractServers";
+import { createRuntimeRolePool, createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { startStdioContractServer } from "@semprec/data/testSupport/mcpContractServers";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { mcpModelToolName } from "../agentSessionComposition.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
@@ -36,6 +36,7 @@ import type { GatewayModel } from "../modelComposition.js";
 
 let admin: Pool;
 let runtime: Pool;
+let lifecycleUnsafe = false;
 describe("settled tick approval outcome continuation", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -48,7 +49,11 @@ describe("settled tick approval outcome continuation", () => {
     );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
+  beforeEach(() => {
+    if (lifecycleUnsafe) throw new Error("A previous actor did not settle; refusing to reuse its pools");
+  });
   afterAll(async () => {
+    if (lifecycleUnsafe) throw new Error("An actor did not settle; refusing to end its pools");
     await runtime.end();
     await admin.end();
   });
@@ -290,14 +295,14 @@ describe("settled tick approval outcome continuation", () => {
   });
 
   it("executes a real session approval and delivers its outcome through the queue", async () => {
-    const tenant = await createTestTenant(admin);
+    const tenant = getTenantZeroId();
     const user = await createUser(admin, {
       tenantId: tenant,
       email: `${randomUUID()}@example.test`,
       passwordHash: "unused",
+      role: "admin",
     });
-    const server = await startHttpContractServer();
-    let restorePolicy: (() => void) | undefined;
+    const server = startStdioContractServer();
     let runner: Awaited<ReturnType<typeof createAgentsQueueRuntime>> | undefined;
     let failure: { error: unknown } | undefined;
     try {
@@ -307,13 +312,11 @@ describe("settled tick approval outcome continuation", () => {
           const inbox = await getDatabaseByModuleId(client, "inbox");
           const servers = await getDatabaseByModuleId(client, "mcpServers");
           if (!inbox?.ownerProjectItemId || !servers) throw new Error("Missing seeded databases");
-          // Synthetic local endpoint: production rejects loopback at the stored-URL boundary.
-          const id = randomUUID();
-          await client.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
-            id,
-            servers.id,
-            JSON.stringify({ name: "Closed contract server", active: true, connectionConfig: server.connectionConfig }),
-          ]);
+          const serverItem = await createItemWithClient(
+            client,
+            { databaseId: servers.id, properties: { name: "Closed contract server", active: true, connectionConfig: server.connectionConfig } },
+            { humanWriterUserId: user.id },
+          );
           const heartbeat = await createHeartbeat(client, {
             projectItemId: inbox.ownerProjectItemId,
             name: "Outcome",
@@ -328,7 +331,7 @@ describe("settled tick approval outcome continuation", () => {
           if (!thread.rows[0]) throw new Error("Missing thread");
           return {
             projectId: inbox.ownerProjectItemId,
-            serverId: id,
+            serverId: serverItem.id,
             threadId: thread.rows[0].id,
             heartbeatId: heartbeat.id,
           };
@@ -449,34 +452,7 @@ describe("settled tick approval outcome continuation", () => {
       );
       const handler = createCoreTaskList(runtime, createActionRegistry())[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
       if (!handler) throw new Error("Missing approval handler");
-      expect(server.connectionConfig).toMatchObject({
-        transport: "http",
-        url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\//),
-      });
-      restorePolicy = allowLoopbackOutboundForTests();
-      let executionFailure: { error: unknown } | undefined;
-      try {
-        await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
-      } catch (error) {
-        executionFailure = { error };
-      }
-      try {
-        restorePolicy();
-        restorePolicy = undefined;
-      } catch (error) {
-        if (executionFailure)
-          throw new AggregateError(
-            [executionFailure.error, error],
-            "Approval execution and policy restoration failed",
-            {
-              // The execution failure is primary; the caught restoration error is retained in the aggregate.
-              // eslint-disable-next-line preserve-caught-error
-              cause: executionFailure.error,
-            },
-          );
-        throw error;
-      }
-      if (executionFailure) throw executionFailure.error;
+      await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
       expect(server.getLastToolCall()).toEqual({
         name: "search_web",
         arguments: { query: "closed fixture" },
@@ -517,17 +493,29 @@ describe("settled tick approval outcome continuation", () => {
       failure = { error };
     }
     const errors: unknown[] = [];
-    for (const cleanup of [
-      () => restorePolicy?.(),
-      () => runner?.stop(),
-      () => closeIdleThreadSessions(runtime),
-      () => server.stop(),
-    ]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
+    const settle = async (label: string, cleanup: () => Promise<void>): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = cleanup().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const timeout = new Promise<{ ok: false; error: Error }>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, error: new Error(`${label} did not settle`) }), 10_000);
+      });
+      const result = await Promise.race([outcome, timeout]);
+      if (timer) clearTimeout(timer);
+      if (!result.ok) {
+        errors.push(result.error);
+        lifecycleUnsafe = true;
+        return false;
       }
+      return true;
+    };
+    const runnerSettled = await settle("queue runner", async () => { await runner?.stop(); });
+    const sessionsSettled = await settle("thread sessions", () => closeIdleThreadSessions(runtime));
+    const childSettled = await settle("stdio child", () => server.waitForChildExit());
+    if (runnerSettled && sessionsSettled && childSettled) {
+      await settle("stdio fixture", () => server.stop());
     }
     if (errors.length)
       throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Real outcome cleanup failed", {
