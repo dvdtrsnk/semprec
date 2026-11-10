@@ -3928,6 +3928,7 @@ describe("value link state on writes (issue #1516)", () => {
                 1,
               );
               const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
+              if (!edges) throw new Error("Missing Inbox type relation");
               expect(edges).toHaveLength(1);
               expect(edges[0]).toMatchObject({
                 itemA: fixture.item.id,
