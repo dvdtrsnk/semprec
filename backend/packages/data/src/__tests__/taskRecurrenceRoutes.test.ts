@@ -139,8 +139,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
       mode: "fixed",
       rule: { kind: "weekdays", days: ["thu"] },
     });
-    const jobsBefore = await admin.query<{ key: string | null }>(
-      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
     );
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
@@ -159,7 +159,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     }
     expect(same.updatedAt).toBe(first.updatedAt);
     expect(
-      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
     ).toEqual(jobsBefore.rows);
     expect(events).toEqual([]);
     expect(await seriesRows()).toHaveLength(1);
@@ -192,8 +193,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     const id = await task({ date: "2026-10-22" });
     await put(id, { preset: "weekly" });
     const initialSeries = await seriesRows();
-    const beforeJobs = await admin.query<{ key: string | null }>(
-      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    const beforeJobs = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
     );
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
@@ -282,7 +283,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     }
     expect(await seriesRows()).toEqual(initialSeries);
     expect(
-      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
     ).toEqual(beforeJobs.rows);
     expect(events).toEqual([]);
     await expect(
@@ -417,8 +419,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     ]);
     const before = await stored(id);
     const rows = await seriesRows();
-    const jobsBefore = await admin.query<{ key: string | null }>(
-      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
     );
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
@@ -435,7 +437,8 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
       setInvalidationHook(() => {});
     }
     expect(
-      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
     ).toEqual(jobsBefore.rows);
     expect(events).toEqual([]);
   });
