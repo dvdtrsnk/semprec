@@ -544,7 +544,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       await settle(failure, started, [observed.pool]);
     });
 
-    it("returns the series fields on read and refuses a client write of each of them with 403 owner_violation", async () => {
+    it("returns series fields and accepts recurrence while refusing seriesId and occurrenceDate", async () => {
       const tasks = await tasksDatabaseId(tenant);
       const cp = createChokePoint(pool);
       const task = await runInTenant(tenant, () =>

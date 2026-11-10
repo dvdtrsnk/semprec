@@ -1218,11 +1218,12 @@ describe("createGenericOperationGateway (issue #220)", () => {
         });
         expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
         expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-        const originalSeries = await runtime.query<{ active: boolean; mode: string; rule: unknown }>(
-          "SELECT active, mode, rule FROM task_recurrence WHERE series_id = $1",
+        const seriesSnapshot = () => runtime.query<{ item_id: string; series_id: string; active: boolean; mode: string; rule: unknown; anchor_date: Date | null; template: unknown }>(
+          "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
           [created.properties.seriesId],
         );
-        expect(originalSeries.rows).toEqual([
+        const originalSeries = await seriesSnapshot();
+        expect(originalSeries.rows).toMatchObject([
           { active: true, mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } },
         ]);
         const weekly = await cp.findItem(item.id);
@@ -1242,6 +1243,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           throw new Error("Approval was not requested");
         };
         const rejected = await requestFor(null, weekly.updatedAt);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
         await withTransaction(runtime, (client) =>
           decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: rejected,
@@ -1250,7 +1252,9 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }),
         );
         expect(await cp.findItem(item.id)).toEqual(weekly);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
         const seriesOnly = await requestFor({ preset: "monthly" }, weekly.updatedAt);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
         // Synthetic intervening state: normal recurrence owners update the item projection too.
         const seriesOnlyRule = { kind: "weekdays", days: ["mon"] };
         await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
@@ -1338,10 +1342,9 @@ describe("createGenericOperationGateway (issue #220)", () => {
           `notification-fanout:${notificationId}`,
         ]);
         expect(fanout.rows).toEqual([{ key: `notification-fanout:${notificationId}` }]);
-        const changed = await cp.updateItem({
-          databaseId: tasks.id,
+        const changed = await gateway.invoke("item.patch", { userId: actor.userId, restSession: true }, ALL_CAPABILITIES, {
           itemId: item.id,
-          propertiesPatch: { recurrence: { preset: "daily" } },
+          properties: { recurrence: { preset: "daily" } },
           ifVersion: weekly.updatedAt,
         });
         const changedProjection = await cp.findItem(item.id);
@@ -1390,6 +1393,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             ])
           ).rows,
         ).toEqual([{ rule: { kind: "monthDates", dates: [22] } }]);
+        const seriesAfterChange = await seriesSnapshot();
         const jobsAfterChange = await pool.query<{ id: string; key: string | null }>(
           "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
         );
@@ -1404,6 +1408,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           setInvalidationHook(() => {});
         }
         expect(await cp.findItem(item.id)).toEqual(changedTogether);
+        expect((await seriesSnapshot()).rows).toEqual(seriesAfterChange.rows);
         expect(
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
@@ -1561,7 +1566,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       throw new AggregateError(
         failure ? [failure.error, ...cleanup] : cleanup,
         "Recurrence notification cleanup failed",
-        { cause: failure?.error ?? cleanup[0] },
+        { cause: failure ? failure.error : cleanup[0] },
       );
     if (failure) throw failure.error;
   });
