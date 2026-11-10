@@ -112,7 +112,7 @@ describe("Markdown property writes", () => {
         // Synthetic pre-cutover configuration, before the production item is created.
         await runtime.query("UPDATE properties SET config = config - 'format' WHERE id = $1", [property.rows[0].id]);
         const cp = createChokePoint(runtime);
-        const legacy = "Legacy [page](semprec://page/p1) stays byte-for-byte";
+        const legacy = "[Legacy page](semprec://page/p1)";
         const item = await cp.createItem({
           databaseId: database.rows[0].id,
           properties: { text: legacy, date: "2026-10-22", time: "10:30" },
