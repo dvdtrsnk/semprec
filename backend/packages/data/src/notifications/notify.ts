@@ -97,10 +97,9 @@ export interface WriteNotificationInput {
  * nothing new: the row already has a notification, and that notification's fanout job (keyed by
  * its own id) either already ran or is already queued.
  *
- * Also fires issue #152's `notifyNotificationCreated` realtime hook, deferred via `runAfterCommit`
- * so a subscriber can never observe a row a later failure in this same transaction then rolls
- * back — the live in-app push and the push-notification fanout job above are independent
- * deliveries of the same commit, not a dependency of one on the other.
+ * Fires issue #152's `notifyNotificationCreated` realtime hook via `runAfterCommit`. Resolved
+ * guidance notifications register it only for a managed transaction; an unmanaged caller has
+ * no transaction-completion owner. SQL notification and fanout remain in the caller transaction.
  *
  * Returns the notification's id in both the fresh-insert and the replayed-duplicate case (issue
  * #85's `packages/notifications` adapter needs a stable id to hand back regardless of which
@@ -198,7 +197,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       await client.query("RELEASE SAVEPOINT guidance_notification_write");
       savepointOpen = false;
     }
-    if (row.inserted)
+    if (row.inserted && (!resolvedKind || managed))
       runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
     return row.id;
   } catch (error) {

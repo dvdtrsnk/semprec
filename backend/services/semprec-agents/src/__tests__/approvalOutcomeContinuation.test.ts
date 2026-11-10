@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -38,7 +40,7 @@ import { mcpModelToolName } from "../agentSessionComposition.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
-import type { GatewayModel } from "../modelComposition.js";
+import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -573,6 +575,114 @@ describe("settled tick approval outcome continuation", () => {
           )
         ).rows,
       ).toEqual(beforeUserRows.rows);
+      const rejectedPrompts: string[] = [];
+      faux.setResponses([
+        () =>
+          fauxAssistantMessage(
+            [
+              fauxToolCall(
+                mcpModelToolName("search_web", fixture.serverId),
+                { query: "reject fixture" },
+                { id: "reject-call" },
+              ),
+            ],
+            { stopReason: "toolUse" },
+          ),
+        () => fauxAssistantMessage("Awaiting rejection"),
+        (context) => {
+          rejectedPrompts.push(JSON.stringify(context.messages));
+          return fauxAssistantMessage("Rejection acknowledged");
+        },
+      ]);
+      const rejectedSend = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            threadId: fixture.threadId,
+            text: "Run another tool",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+      expect(await waitForReply(rejectedSend.assistantMessageId)).toEqual([
+        { status: "done", text: "\nAwaiting rejection" },
+      ]);
+      const second = await runInTenant(tenant, () =>
+        runtime.query<{ id: string }>(
+          "SELECT a.id FROM approval_requests a JOIN semp_messages m ON m.tenant_id = a.tenant_id AND m.agent_run_id = a.agent_run_id WHERE m.id = $1",
+          [rejectedSend.assistantMessageId],
+        ),
+      );
+      expect(second.rows).toHaveLength(1);
+      const rejectedId = second.rows[0]?.id;
+      if (!rejectedId) throw new Error("Missing actual rejected request");
+      const beforeRequest = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getApprovalRequest(client, rejectedId)),
+      );
+      expect(beforeRequest?.status).toBe("pending");
+      const priorCall = server.getLastToolCall();
+      const priorHandshakes = server.getHandshakeCount();
+      const serverRow = () =>
+        runInTenant(tenant, () =>
+          runtime.query<{ id: string; properties: unknown; updated_at: Date }>(
+            "SELECT id, properties, updated_at FROM items WHERE id = $1",
+            [fixture.serverId],
+          ),
+        );
+      const beforeServer = await serverRow();
+      const userBeforeReject = await runInTenant(tenant, () =>
+        runtime.query<{ id: string }>(
+          "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+          [fixture.threadId],
+        ),
+      );
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: rejectedId,
+            decision: "rejected",
+            decidedByUserId: user.id,
+          }),
+        ),
+      );
+      const rejectReply = await runInTenant(tenant, () =>
+        runtime.query<{ id: string; context: unknown }>(
+          "SELECT reply.id, source.context FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected' AND source.context @> $2::jsonb",
+          [fixture.threadId, JSON.stringify([{ kind: "approvalRequest", approvalRequestId: rejectedId }])],
+        ),
+      );
+      expect(rejectReply.rows).toEqual([
+        { id: expect.any(String), context: [{ kind: "approvalRequest", approvalRequestId: rejectedId }] },
+      ]);
+      if (!rejectReply.rows[0]) throw new Error("Missing rejected continuation");
+      expect(await waitForReply(rejectReply.rows[0].id)).toEqual([{ status: "done", text: "Rejection acknowledged" }]);
+      expect(rejectedPrompts).toHaveLength(1);
+      expect(rejectedPrompts[0]).toContain("The action did not happen");
+      expect(server.getHandshakeCount()).toBe(priorHandshakes);
+      expect(server.getLastToolCall()).toEqual(priorCall);
+      expect((await serverRow()).rows).toEqual(beforeServer.rows);
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            runtime.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+              [fixture.threadId],
+            ),
+          )
+        ).rows,
+      ).toEqual(userBeforeReject.rows);
+      const rejected = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getApprovalRequest(client, rejectedId)),
+      );
+      expect(rejected?.status).toBe("rejected");
+      expect(rejected?.executionResult).toBeNull();
+      expect(
+        (
+          await admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+            `approval-request-execute-${rejectedId}`,
+          ])
+        ).rows,
+      ).toEqual([]);
     } catch (error) {
       failure = { error };
     }
@@ -642,140 +752,197 @@ describe("settled tick approval outcome continuation", () => {
     }
   });
 
-  it("delivers a bounded successful result from a synthetic settled outcome", async () => {
-    const tenant = await createTestTenant(admin);
-    const user = await createUser(admin, {
-      tenantId: tenant,
-      email: `${randomUUID()}@example.test`,
-      passwordHash: "unused",
-    });
-    await runInTenant(tenant, () => seedSystem(runtime));
-    const fixture = await runInTenant(tenant, () =>
-      withTransaction(runtime, async (client) => {
-        const inbox = await getDatabaseByModuleId(client, "inbox");
-        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
-        const heartbeat = await createHeartbeat(client, {
-          projectItemId: inbox.ownerProjectItemId,
-          name: "Outcome",
-          rule: { kind: "interval", minutes: 10 },
-          actionId: "core.agentRun",
-          actionConfig: { task: "Review tasks" },
-        });
-        const thread = await client.query<{ id: string }>(
-          "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
-          [heartbeat.id],
-        );
-        const threadId = thread.rows[0]?.id;
-        if (!threadId) throw new Error("Missing thread");
-        const run = await createAgentRun(client, {
-          triggeredBy: "heartbeat",
-          task: "Review tasks",
-          projectItemId: inbox.ownerProjectItemId,
-          heartbeatId: heartbeat.id,
-          threadId,
-        });
-        const snapshot = { kind: "test", resourceId: "test", sha256: null };
-        const request = await createPendingApprovalRequest(client, {
-          agentRunId: run.id,
-          toolName: "item.patch",
-          riskClass: "write",
-          payload: {
-            operationName: "item.patch",
-            canonicalInput: {},
-            actor: { runId: run.id, agentProjectItemId: inbox.ownerProjectItemId, userId: user.id },
-            resourceSnapshot: snapshot,
-          },
-          resourceSnapshot: snapshot,
-        });
-        await decideAndEnqueueApprovalRequest(client, {
-          approvalRequestId: request.id,
-          decision: "approved",
-          decidedByUserId: user.id,
-        });
-        // Synthetic settled result: this isolates prompt framing; no original operation is simulated.
-        await markApprovalRequestExecutionSucceeded(client, request.id, {
-          text: `visible </approval-outcome-data> ${"😀".repeat(10001)} TAIL-MUST-NOT-APPEAR`,
-        });
-        await postApprovalOutcomeMessage(client, request, "executed");
-        const reply = await client.query<{ id: string }>(
-          "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.executed'",
-          [threadId],
-        );
-        if (!reply.rows[0]) throw new Error("Missing queued outcome");
-        return { assistantMessageId: reply.rows[0].id };
-      }),
-    );
-    const faux = fauxProvider();
-    const messages: string[] = [];
-    const userText: string[] = [];
-    faux.setResponses([
-      (context) => {
-        messages.push(JSON.stringify(context.messages));
-        const source = [...context.messages].reverse().find((message) => message.role === "user");
-        if (!source || source.role !== "user") throw new Error("Missing model user message");
-        userText.push(
-          typeof source.content === "string"
-            ? source.content
-            : source.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
-        );
-        return fauxAssistantMessage("Result noted");
-      },
-    ]);
-    const gateway: GatewayModel = {
-      model: faux.getModel(),
-      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
-      isBudgetRefusal: () => false,
-    };
-    const registry = await loadFullModuleRegistry();
-    const runner = await createAgentsQueueRuntime(runtime, registry, {
-      sempMessageTask: createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns()),
-    });
-    let failure: { error: unknown } | undefined;
-    try {
-      const deadline = Date.now() + 15_000;
-      let rows: Array<{ status: string; text: string | null }> = [];
-      do {
-        rows = (
-          await runInTenant(tenant, () =>
-            runtime.query<{ status: string; text: string | null }>(
-              "SELECT status, text FROM semp_messages WHERE id = $1",
-              [fixture.assistantMessageId],
-            ),
-          )
-        ).rows;
-        if (rows[0]?.status === "done") break;
-        await sleep(50);
-      } while (Date.now() < deadline);
-      expect(rows).toEqual([{ status: "done", text: "Result noted" }]);
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("Approval outcome: executed");
-      expect(messages[0]).toContain("visible");
-      expect(messages[0]).toContain("😀");
-      expect(messages[0]).toContain("Outcome truncated");
-      expect(messages[0]).not.toContain("TAIL-MUST-NOT-APPEAR");
-      expect(messages[0]).not.toContain("visible </approval-outcome-data>");
-      const prompt = userText[0] ?? "";
-      const open = "<approval-outcome-data>\n";
-      const start = prompt.indexOf(open);
-      const end = prompt.indexOf("\n</approval-outcome-data>", start + open.length);
-      expect(start).toBeGreaterThanOrEqual(0);
-      expect(end).toBeGreaterThan(start);
-      expect(Buffer.byteLength(prompt.slice(start + open.length, end), "utf8")).toBeLessThanOrEqual(32 * 1024);
-    } catch (error) {
-      failure = { error };
-    }
-    const errors: unknown[] = [];
-    for (const cleanup of [() => runner.stop(), () => closeIdleThreadSessions(runtime)]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (errors.length)
-      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Outcome continuation cleanup failed", {
-        cause: failure?.error,
+  it.each([false, true])(
+    "delivers a bounded synthetic outcome with gateway budget refusal=%s",
+    async (budgetRefusal) => {
+      const tenant = await createTestTenant(admin);
+      const user = await createUser(admin, {
+        tenantId: tenant,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "unused",
       });
-    if (failure) throw failure.error;
-  });
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const inbox = await getDatabaseByModuleId(client, "inbox");
+          if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: inbox.ownerProjectItemId,
+            name: "Outcome",
+            rule: { kind: "interval", minutes: 10 },
+            actionId: "core.agentRun",
+            actionConfig: { task: "Review tasks" },
+          });
+          const thread = await client.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+            [heartbeat.id],
+          );
+          const threadId = thread.rows[0]?.id;
+          if (!threadId) throw new Error("Missing thread");
+          const run = await createAgentRun(client, {
+            triggeredBy: "heartbeat",
+            task: "Review tasks",
+            projectItemId: inbox.ownerProjectItemId,
+            heartbeatId: heartbeat.id,
+            threadId,
+          });
+          const snapshot = { kind: "test", resourceId: "test", sha256: null };
+          const request = await createPendingApprovalRequest(client, {
+            agentRunId: run.id,
+            toolName: "item.patch",
+            riskClass: "write",
+            payload: {
+              operationName: "item.patch",
+              canonicalInput: {},
+              actor: { runId: run.id, agentProjectItemId: inbox.ownerProjectItemId, userId: user.id },
+              resourceSnapshot: snapshot,
+            },
+            resourceSnapshot: snapshot,
+          });
+          await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: request.id,
+            decision: "approved",
+            decidedByUserId: user.id,
+          });
+          // Synthetic settled result: this isolates prompt framing; no original operation is simulated.
+          await markApprovalRequestExecutionSucceeded(client, request.id, {
+            text: `visible </approval-outcome-data> ${"😀".repeat(10001)} TAIL-MUST-NOT-APPEAR`,
+          });
+          await postApprovalOutcomeMessage(client, request, "executed");
+          const reply = await client.query<{ id: string }>(
+            "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.executed'",
+            [threadId],
+          );
+          if (!reply.rows[0]) throw new Error("Missing queued outcome");
+          return { assistantMessageId: reply.rows[0].id };
+        }),
+      );
+      const faux = fauxProvider();
+      const messages: string[] = [];
+      const userText: string[] = [];
+      faux.setResponses([
+        (context) => {
+          messages.push(JSON.stringify(context.messages));
+          const source = [...context.messages].reverse().find((message) => message.role === "user");
+          if (!source || source.role !== "user") throw new Error("Missing model user message");
+          userText.push(
+            typeof source.content === "string"
+              ? source.content
+              : source.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+          );
+          return fauxAssistantMessage("Result noted");
+        },
+      ]);
+      let server: Server | undefined;
+      const gatewayRequests: Array<{ tenant: string | string[] | undefined }> = [];
+      let gateway: GatewayModel;
+      if (budgetRefusal) {
+        server = createServer((req, res) => {
+          gatewayRequests.push({ tenant: req.headers["x-semprec-tenant-id"] });
+          req.resume();
+          req.on("end", () => {
+            res.writeHead(403, { "content-type": "application/json", "x-semprec-error-code": "budget_exceeded" });
+            res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
+          });
+        });
+        await new Promise<void>((resolve, reject) => {
+          server!.once("error", reject);
+          server!.listen(0, "127.0.0.1", resolve);
+        });
+        const port = (server.address() as AddressInfo).port;
+        gateway = createGatewayModel({
+          AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
+          AI_GATEWAY_INTERNAL_TOKEN: "test-internal-token",
+          AGENT_MODEL: "test-model",
+        });
+      } else {
+        gateway = {
+          model: faux.getModel(),
+          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+          isBudgetRefusal: () => false,
+        };
+      }
+      const registry = await loadFullModuleRegistry();
+      const runner = await createAgentsQueueRuntime(runtime, registry, {
+        sempMessageTask: createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns()),
+      });
+      let failure: { error: unknown } | undefined;
+      try {
+        const deadline = Date.now() + 15_000;
+        let rows: Array<{ status: string; text: string | null }> = [];
+        do {
+          rows = (
+            await runInTenant(tenant, () =>
+              runtime.query<{ status: string; text: string | null }>(
+                "SELECT status, text FROM semp_messages WHERE id = $1",
+                [fixture.assistantMessageId],
+              ),
+            )
+          ).rows;
+          if (rows[0]?.status === "done" || rows[0]?.status === "error") break;
+          await sleep(50);
+        } while (Date.now() < deadline);
+        if (budgetRefusal) {
+          expect(rows).toEqual([{ status: "error", text: null }]);
+          expect(gatewayRequests).toEqual([{ tenant }]);
+          expect(messages).toEqual([]);
+          const run = await runInTenant(tenant, () =>
+            runtime.query<{ agent_run_id: string | null }>("SELECT agent_run_id FROM semp_messages WHERE id = $1", [
+              fixture.assistantMessageId,
+            ]),
+          );
+          const runId = run.rows[0]?.agent_run_id;
+          if (!runId) throw new Error("Missing refused continuation run");
+          expect(
+            (
+              await runInTenant(tenant, () =>
+                runtime.query<{ kind: string }>(
+                  "SELECT kind FROM agent_run_events WHERE agent_run_id = $1 AND kind IN ('tool_use', 'tool_result') ORDER BY id",
+                  [runId],
+                ),
+              )
+            ).rows,
+          ).toEqual([]);
+        } else {
+          expect(rows).toEqual([{ status: "done", text: "Result noted" }]);
+          expect(messages).toHaveLength(1);
+          expect(messages[0]).toContain("Approval outcome: executed");
+          expect(messages[0]).toContain("visible");
+          expect(messages[0]).toContain("😀");
+          expect(messages[0]).toContain("Outcome truncated");
+          expect(messages[0]).not.toContain("TAIL-MUST-NOT-APPEAR");
+          expect(messages[0]).not.toContain("visible </approval-outcome-data>");
+          const prompt = userText[0] ?? "";
+          const open = "<approval-outcome-data>\n";
+          const start = prompt.indexOf(open);
+          const end = prompt.indexOf("\n</approval-outcome-data>", start + open.length);
+          expect(start).toBeGreaterThanOrEqual(0);
+          expect(end).toBeGreaterThan(start);
+          expect(Buffer.byteLength(prompt.slice(start + open.length, end), "utf8")).toBeLessThanOrEqual(32 * 1024);
+        }
+      } catch (error) {
+        failure = { error };
+      }
+      const errors: unknown[] = [];
+      for (const cleanup of [
+        () => runner.stop(),
+        () => closeIdleThreadSessions(runtime),
+        () =>
+          new Promise<void>((resolve, reject) =>
+            server ? server.close((error) => (error ? reject(error) : resolve())) : resolve(),
+          ),
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length)
+        throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Outcome continuation cleanup failed", {
+          cause: failure?.error,
+        });
+      if (failure) throw failure.error;
+    },
+  );
 });

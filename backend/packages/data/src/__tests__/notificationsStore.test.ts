@@ -29,7 +29,12 @@ import {
   listResolvedNotificationIds,
   getNotificationById,
 } from "../notifications/notificationsStore.js";
-import { setNotificationReadStateHook, type NotificationReadStateEvent } from "../realtimeHook.js";
+import {
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  type NotificationCreatedEvent,
+  type NotificationReadStateEvent,
+} from "../realtimeHook.js";
 
 let pool: Pool;
 const pendingNotificationActors = new Set<Promise<unknown>>();
@@ -323,6 +328,120 @@ describe("notificationsStore (issue #152)", () => {
     } finally {
       await runtime.end();
     }
+  });
+
+  it("keeps resolved notification callbacks on the managed transaction owner", async () => {
+    const user = await createTestUser("en");
+    const tenant = tenantOfUser.get(user);
+    if (!tenant) throw new Error("Missing tenant");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    runtime.options.max = 1;
+    const events: NotificationCreatedEvent[] = [];
+    let primary: { error: unknown } | undefined;
+    try {
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const projects = await runInTenant(tenant, () =>
+        withTransaction(runtime, (tx) => getDatabaseByModuleId(tx, "projects")),
+      );
+      if (!projects) throw new Error("Missing Projects database");
+      const project = await runInTenant(tenant, () =>
+        createChokePoint(runtime).createItem({ databaseId: projects.id, properties: { name: "Project" } }),
+      );
+      const input = (sourceId: string) => ({
+        userId: user,
+        kind: "agent_guidance_drift_resolved" as const,
+        linkHref: null,
+        sourceTable: "agent_guidance_drift_findings",
+        sourceId,
+        transitionInstance: "decision",
+        payload: { projectItemId: project.id, kind: "behavior" },
+      });
+      const rows = (sourceId: string) =>
+        runInTenant(tenant, () =>
+          runtime.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [sourceId]),
+        );
+      const job = (id: string) =>
+        pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `notification-fanout:${id}`,
+        ]);
+      setNotificationCreatedHook((event) => events.push(event));
+      await runInTenant(tenant, async () => {
+        const manualWrite = async (source: string, commit: boolean) => {
+          const client = await runtime.connect();
+          let active = false;
+          let releaseError: Error | undefined;
+          try {
+            await client.query("BEGIN");
+            active = true;
+            await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
+            const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!identity.rows[0]) throw new Error("Missing connection identity");
+            const id = await writeNotification(client, input(source));
+            await client.query(commit ? "COMMIT" : "ROLLBACK");
+            active = false;
+            return { id, pid: identity.rows[0].pid };
+          } catch (error) {
+            if (active) {
+              try {
+                await client.query("ROLLBACK");
+              } catch (cleanupError) {
+                releaseError = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
+                throw new AggregateError([error, cleanupError], "Manual transaction and rollback failed", {
+                  cause: error,
+                });
+              }
+            }
+            throw error;
+          } finally {
+            client.release(releaseError);
+          }
+        };
+        const rolledBack = await manualWrite("manual-rollback", false);
+        const later = await withTransaction(runtime, async (tx) => {
+          const identity = await tx.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          await tx.query("SELECT 1");
+          return identity.rows[0]?.pid;
+        });
+        expect(later).toBe(rolledBack.pid);
+        expect((await rows("manual-rollback")).rows).toEqual([]);
+        expect((await job(rolledBack.id)).rows).toEqual([]);
+        expect(events).toEqual([]);
+        const manual = await manualWrite("manual-commit", true);
+        await withTransaction(runtime, async (tx) => {
+          await tx.query("SELECT 1");
+        });
+        expect((await rows("manual-commit")).rows).toEqual([{ id: manual.id }]);
+        expect((await job(manual.id)).rows).toEqual([{ key: `notification-fanout:${manual.id}` }]);
+        expect(events).toEqual([]);
+        const managedId = await withTransaction(runtime, (tx) => writeNotification(tx, input("managed-commit")));
+        expect(events).toEqual([{ userId: user, notificationId: managedId }]);
+        expect(await withTransaction(runtime, (tx) => writeNotification(tx, input("managed-commit")))).toBe(managedId);
+        expect(events).toEqual([{ userId: user, notificationId: managedId }]);
+        let rollbackId = "";
+        await expect(
+          withTransaction(runtime, async (tx) => {
+            rollbackId = await writeNotification(tx, input("managed-rollback"));
+            throw new Error("intentional rollback");
+          }),
+        ).rejects.toThrow("intentional rollback");
+        expect((await rows("managed-rollback")).rows).toEqual([]);
+        expect((await job(rollbackId)).rows).toEqual([]);
+        expect(events).toEqual([{ userId: user, notificationId: managedId }]);
+      });
+    } catch (error) {
+      primary = { error };
+    }
+    setNotificationCreatedHook(() => {});
+    try {
+      await runtime.end();
+    } catch (error) {
+      if (primary)
+        throw new AggregateError([primary.error, error], "Notification test and cleanup failed", {
+          cause: primary.error,
+        });
+      throw error;
+    }
+    if (primary) throw primary.error;
   });
 
   it("does not commit a failed provisional resolved notification in a manual transaction", async () => {
