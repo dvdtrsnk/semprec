@@ -17,7 +17,6 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import { createTaskRecurrenceSetRouteHandler } from "../tasks/taskRecurrenceRoutes.js";
-import { closeMissedOccurrence } from "../tasks/closeMissedOccurrences.js";
 import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
