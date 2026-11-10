@@ -544,8 +544,11 @@ export class SempConversation {
         try {
           await this.closeDropped(state, entry);
         } catch (cleanupError) {
-          if (strict)
+          if (strict) {
+            // The pause error is primary; preserve the later cleanup error in the aggregate.
+            // eslint-disable-next-line preserve-caught-error
             throw new AggregateError([err, cleanupError], "Semp pause and drop cleanup failed", { cause: err });
+          }
           throw cleanupError;
         }
         if (strict) throw err;

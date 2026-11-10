@@ -173,6 +173,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
     const row = rows[0];
     if (!row) throw new Error("writeNotification: upsert returned no row");
     if (row.inserted && resolvedKind) {
+      if (driftKind !== "permission" && driftKind !== "behavior") throw new Error("Invalid guidance drift kind");
       const projectId = payload.projectItemId;
       if (typeof projectId !== "string") throw new Error("Missing guidance drift project");
       const [project] = await getItemsByIds(client, [projectId]);

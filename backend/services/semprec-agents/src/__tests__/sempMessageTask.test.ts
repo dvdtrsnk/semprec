@@ -2394,10 +2394,13 @@ describe("queued Semp messages", () => {
     try {
       await closeIdleThreadSessions(pool);
     } catch (cleanupError) {
-      if (failure)
+      if (failure) {
+        // The test failure is primary; preserve the later cleanup error in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure.error, cleanupError], "Rejection test cleanup failed", {
           cause: failure.error,
         });
+      }
       throw cleanupError;
     }
     if (failure) throw failure.error;
