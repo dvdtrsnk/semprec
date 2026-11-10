@@ -78,12 +78,19 @@ let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 let imageLifecycleUnsafe = false;
 let rejectedCleanupRecord:
-  | { status: "pending" | "fulfilled" | "rejected"; error?: unknown; primary?: { error: unknown }; unsafe: boolean }
+  | {
+      status: "pending" | "fulfilled" | "rejected";
+      error?: unknown;
+      primary?: { error: unknown };
+      diagnostics?: unknown[];
+      unsafe: boolean;
+    }
   | undefined;
 function assertRejectedCleanupSafe(): void {
   const record = rejectedCleanupRecord;
   if (!record?.unsafe) return;
   const errors: unknown[] = record.primary ? [record.primary.error] : [];
+  errors.push(...(record.diagnostics ?? []));
   if (record.status === "pending") errors.push(new Error("Rejected session cleanup remains pending"));
   if (record.status === "rejected") errors.push(record.error);
   throw new AggregateError(errors, "Rejected session cleanup is unsafe");
@@ -2635,6 +2642,7 @@ describe("queued Semp messages", () => {
         }
       }
       const record: NonNullable<typeof rejectedCleanupRecord> = { status: "pending", unsafe: false };
+      if (cleanupErrors.length) record.diagnostics = [...cleanupErrors];
       rejectedCleanupRecord = record;
       const cleanup = Promise.resolve()
         .then(() => closeIdleThreadSessions(pool))
