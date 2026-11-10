@@ -139,15 +139,29 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
       mode: "fixed",
       rule: { kind: "weekdays", days: ["thu"] },
     });
-    const same = await runInTenant(tenant, () =>
-      cp.updateItem({
-        databaseId: tasksId,
-        itemId: id,
-        ifVersion: first.updatedAt,
-        propertiesPatch: { recurrence: { preset: "weekly" } },
-      }),
+    const jobsBefore = await admin.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
     );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    let same: typeof first;
+    try {
+      same = await runInTenant(tenant, () =>
+        cp.updateItem({
+          databaseId: tasksId,
+          itemId: id,
+          ifVersion: first.updatedAt,
+          propertiesPatch: { recurrence: { preset: "weekly" } },
+        }),
+      );
+    } finally {
+      setInvalidationHook(() => {});
+    }
     expect(same.updatedAt).toBe(first.updatedAt);
+    expect(
+      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+    ).toEqual(jobsBefore.rows);
+    expect(events).toEqual([]);
     expect(await seriesRows()).toHaveLength(1);
     const ended = await runInTenant(tenant, () =>
       cp.updateItem({
@@ -398,16 +412,32 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
       mode: "fixed",
       rule: { kind: "yearDates", month: 12, day: 24 },
     });
+    expect(await seriesRows()).toEqual([
+      expect.objectContaining({ anchor_date: "2026-12-24", rule: { kind: "yearDates", month: 12, day: 24 } }),
+    ]);
     const before = await stored(id);
     const rows = await seriesRows();
-    for (const rule of [
-      { kind: "yearDates", month: 4, day: 31 },
-      { kind: "yearDates", month: 13, day: 1 },
-    ]) {
-      await expect(put(id, { mode: "fixed", rule })).rejects.toMatchObject({ status: 400 });
-      expect(await stored(id)).toEqual(before);
-      expect(await seriesRows()).toEqual(rows);
+    const jobsBefore = await admin.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      for (const rule of [
+        { kind: "yearDates", month: 4, day: 31 },
+        { kind: "yearDates", month: 13, day: 1 },
+      ]) {
+        await expect(put(id, { mode: "fixed", rule })).rejects.toMatchObject({ status: 400 });
+        expect(await stored(id)).toEqual(before);
+        expect(await seriesRows()).toEqual(rows);
+      }
+    } finally {
+      setInvalidationHook(() => {});
     }
+    expect(
+      (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")).rows,
+    ).toEqual(jobsBefore.rows);
+    expect(events).toEqual([]);
   });
 
   it("sets date, anchor and occurrence date to 5 November and the rule to day 5 for monthly with a date", async () => {
