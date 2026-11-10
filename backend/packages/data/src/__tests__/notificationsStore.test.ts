@@ -374,12 +374,14 @@ describe("notificationsStore (issue #152)", () => {
             await client.query("BEGIN");
             active = true;
             await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
-            const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            const identity = await client.query<{ pid: number; started: string }>(
+              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+            );
             if (!identity.rows[0]) throw new Error("Missing connection identity");
             const id = await writeNotification(client, input(source));
             await client.query(commit ? "COMMIT" : "ROLLBACK");
             active = false;
-            return { id, pid: identity.rows[0].pid };
+            return { id, identity: identity.rows[0] };
           } catch (error) {
             if (active) {
               try {
@@ -400,11 +402,13 @@ describe("notificationsStore (issue #152)", () => {
         };
         const rolledBack = await manualWrite("manual-rollback", false);
         const later = await withTransaction(runtime, async (tx) => {
-          const identity = await tx.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const identity = await tx.query<{ pid: number; started: string }>(
+            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+          );
           await tx.query("SELECT 1");
-          return identity.rows[0]?.pid;
+          return identity.rows[0];
         });
-        expect(later).toBe(rolledBack.pid);
+        expect(later).toEqual(rolledBack.identity);
         expect((await rows("manual-rollback")).rows).toEqual([]);
         expect((await job(rolledBack.id)).rows).toEqual([]);
         expect(events).toEqual([]);
