@@ -276,6 +276,44 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     expect(again.rows).toEqual(state.rows);
   });
 
+  it("rolls over only the active tenant while another tenant has a due series", async () => {
+    const foreign = await createTestTenant(admin);
+    const foreignItem = await runInTenant(foreign, async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const database = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "tasks");
+      if (!database) throw new Error("Missing foreign Tasks database");
+      const item = await cp.createItem({ databaseId: database.id, properties: { name: "Foreign", date: day(-8) } });
+      await createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: item.id },
+        body: { preset: "weekly" },
+        identity: { user: { id: randomUUID() } },
+      });
+      return item.id;
+    });
+    const localItem = await task({ date: day(-8) });
+    await inTenant(() =>
+      createTaskRecurrenceSetRouteHandler(pool)({
+        params: { id: localItem },
+        body: { preset: "weekly" },
+        identity: { user: { id: randomUUID() } },
+      }),
+    );
+    const foreignState = () =>
+      runInTenant(foreign, async () => ({
+        items: (
+          await pool.query<Record<string, unknown>>(
+            "SELECT id, properties, updated_at::text, deleted_at::text FROM items ORDER BY id",
+          )
+        ).rows,
+        series: (await pool.query<Record<string, unknown>>("SELECT * FROM task_recurrence ORDER BY series_id")).rows,
+      }));
+    const before = await foreignState();
+    const invalidations = await invalidationsDuring(run);
+    expect((await row(localItem)).properties.status).toBe("missed");
+    expect(await foreignState()).toEqual(before);
+    expect(invalidations.has(foreignItem)).toBe(false);
+  });
+
   it("leaves a weekly occurrence open before its next day and catches up only to the latest weekly day", async () => {
     const notDue = await task({ date: day(-6) });
     await inTenant(() =>
