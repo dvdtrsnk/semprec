@@ -1307,7 +1307,55 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
-        const ending = await requestFor(null, changed.updatedAt);
+        const changeRequest = await requestFor({ preset: "monthly" }, changed.updatedAt, {
+          name: "Approved together",
+        });
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: changeRequest,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const approvedChange = await withTransaction(runtime, (client) => getApprovalRequest(client, changeRequest));
+        if (!approvedChange || !isGenericOperationApprovalRequestPayload(approvedChange.payload))
+          throw new Error("Missing change request");
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload })).error,
+        ).toBe(false);
+        const changedTogether = await cp.findItem(item.id);
+        expect(changedTogether?.properties).toMatchObject({
+          name: "Approved together",
+          recurrence: { preset: "monthly", mode: "fixed", rule: { kind: "monthDates", dates: [22] } },
+        });
+        expect(
+          (
+            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
+              created.properties.seriesId,
+            ])
+          ).rows,
+        ).toEqual([{ rule: { kind: "monthDates", dates: [22] } }]);
+        const jobsAfterChange = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const replayInvalidations: unknown[] = [];
+        setInvalidationHook((event) => replayInvalidations.push(event));
+        try {
+          expect(
+            (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload }))
+              .error,
+          ).toBe(false);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect(await cp.findItem(item.id)).toEqual(changedTogether);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsAfterChange.rows);
+        expect(replayInvalidations).toEqual([]);
+        if (!changedTogether) throw new Error("Missing changed task");
+        const ending = await requestFor(null, changedTogether.updatedAt);
         await withTransaction(runtime, (client) =>
           decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: ending,
