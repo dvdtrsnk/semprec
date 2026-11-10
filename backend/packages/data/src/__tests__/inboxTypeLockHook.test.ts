@@ -408,8 +408,8 @@ describe("Inbox type lock", () => {
       runInTenant(tenant, async () => {
         const { cp, edge, targets, cardId, proposals, inbox, types } = await fixture(status, trashed);
         if (!cardId) throw new Error("Missing proposal card");
-        const jobsBefore = await admin.query<{ key: string | null }>(
-          "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+        const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
         );
         const invalidations: InvalidationEvent[] = [];
         setInvalidationHook((event) => invalidations.push(event));
@@ -489,8 +489,11 @@ describe("Inbox type lock", () => {
             ).rows,
           ).toEqual([{ deleted: false }]);
           expect(
-            (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
-              .rows,
+            (
+              await admin.query<{ id: string; key: string | null }>(
+                "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+              )
+            ).rows,
           ).toEqual(jobsBefore.rows);
           expect(await targets()).toEqual([edge.targetItemId]);
           expect(invalidations).toEqual([]);
