@@ -287,7 +287,7 @@ describe("settled tick approval outcome continuation", () => {
         } while (Date.now() < deadline);
         return rows;
       };
-      expect(await waitForReply(sent.assistantMessageId)).toEqual([{ status: "done", text: "Awaiting approval" }]);
+      expect(await waitForReply(sent.assistantMessageId)).toEqual([{ status: "done", text: "\nAwaiting approval" }]);
       const requests = await runInTenant(tenant, () =>
         runtime.query<{
           id: string;
