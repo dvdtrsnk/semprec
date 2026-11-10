@@ -1450,6 +1450,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           [created.properties.seriesId],
         );
         expect(rowsAfterEnd.rows).toEqual([{ active: false }]);
+        const seriesAfterEnd = await seriesSnapshot();
         const jobsAfterEnd = await pool.query<{ id: string; key: string | null }>(
           "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
         );
@@ -1457,6 +1458,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
         ).toBe(false);
         expect(await cp.findItem(item.id)).toEqual(ended);
+        expect((await seriesSnapshot()).rows).toEqual(seriesAfterEnd.rows);
         expect(
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,

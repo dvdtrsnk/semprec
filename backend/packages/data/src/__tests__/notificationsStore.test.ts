@@ -449,6 +449,8 @@ describe("notificationsStore (issue #152)", () => {
     } catch (cleanupError) {
       if (failure)
         throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", {
+          // The original test failure is primary; cleanupError is retained in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
           cause: failure.error,
         });
       throw cleanupError;
@@ -618,6 +620,8 @@ describe("notificationsStore (issue #152)", () => {
     } catch (cleanupError) {
       if (failure)
         throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", {
+          // The original test failure is primary; cleanupError is retained in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
           cause: failure.error,
         });
       throw cleanupError;

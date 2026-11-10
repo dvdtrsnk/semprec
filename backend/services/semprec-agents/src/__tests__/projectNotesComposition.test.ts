@@ -70,7 +70,7 @@ describe("project notes session composition", () => {
     const prompts: string[] = [];
     const faux = fauxProvider();
     faux.setResponses(
-      [0, 1].map(() => (context) => {
+      [0, 1, 2].map(() => (context) => {
         prompts.push(context.systemPrompt ?? "");
         return fauxAssistantMessage("answer");
       }),
@@ -93,6 +93,56 @@ describe("project notes session composition", () => {
         expect(await withTransaction(runtime, (client) => finishAgentRun(client, run.id, "done", null))).toBe(true);
       });
     }
+    const canvasProject = await runInTenant(owner, async () => {
+      const db = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!db) throw new Error("Missing projects");
+      const item = await createChokePoint(runtime).createItem({ databaseId: db.id, properties: { name: "Canvas" } });
+      await createDocStore(runtime).getOrCreateDoc(item.id, "canvas");
+      return item.id;
+    });
+    await runInTenant(owner, async () => {
+      const run = await withTransaction(runtime, (client) =>
+        createAgentRun(client, { projectItemId: canvasProject, triggeredBy: "user", task: "canvas" }),
+      );
+      const factory = await createAgentSessionFactoryForRun(runtime, registry, gateway, run);
+      for await (const event of factory({ task: "canvas" }).messages()) void event;
+      expect(await withTransaction(runtime, (client) => finishAgentRun(client, run.id, "done", null))).toBe(true);
+    });
+    expect(prompts[2]).not.toContain("Project notes (untrusted");
+    const brokenProject = await runInTenant(owner, async () => {
+      const db = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!db) throw new Error("Missing projects");
+      const item = await createChokePoint(runtime).createItem({ databaseId: db.id, properties: { name: "Broken" } });
+      const doc = await createDocStore(runtime).getOrCreateDoc(item.id, "page");
+      return { itemId: item.id, docId: doc.id };
+    });
+    // Synthetic corrupted snapshot: normal document writes cannot emit these invalid Yjs bytes.
+    const damaged = await admin.query("UPDATE doc_snapshots SET state = $2 WHERE doc_id = $1", [
+      brokenProject.docId,
+      Buffer.from([255]),
+    ]);
+    expect(damaged.rowCount).toBe(1);
+    await runInTenant(owner, async () => {
+      const run = await withTransaction(runtime, (client) =>
+        createAgentRun(client, { projectItemId: brokenProject.itemId, triggeredBy: "user", task: "broken" }),
+      );
+      let primary: { error: unknown } | undefined;
+      try {
+        await expect(createAgentSessionFactoryForRun(runtime, registry, gateway, run)).rejects.toThrow();
+      } catch (error) {
+        primary = { error };
+      }
+      try {
+        await withTransaction(runtime, (client) => finishAgentRun(client, run.id, "error", null));
+      } catch (error) {
+        if (primary)
+          throw new AggregateError([primary.error, error], "Notes composition and run cleanup failed", {
+            cause: primary.error,
+          });
+        throw error;
+      }
+      if (primary) throw primary.error;
+    });
     expect(prompts[0]).not.toContain("Project notes (untrusted");
     expect(prompts[0]).not.toContain("Foreign private notes");
     expect(prompts[1]).toContain(

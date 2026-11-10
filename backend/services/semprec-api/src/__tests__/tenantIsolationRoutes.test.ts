@@ -64,6 +64,8 @@ import {
   settleAudioGatewayCall,
   storeMessageSpeech,
   setSempThreadInvalidationHook,
+  setInvalidationHook,
+  type InvalidationEvent,
   revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
@@ -1033,12 +1035,58 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         }),
       ),
     );
-    const result = await expectForeignLikeRandom(b.member, [finding.finding.id], ([id]) => ({
-      method: "POST",
-      path: `/api/agent-guidance-drift/${id}/resolve`,
-      body: { choice: "dismiss", expectedGuidanceUpdatedAt: null },
-    }));
-    expect(result.status).toBe(404);
+    const state = () =>
+      runInTenant(a.tenantId, async () => ({
+        finding: (
+          await pool.query<{
+            id: string;
+            status: string;
+            resolved_by: string | null;
+            resolution_choice: string | null;
+            resolved_at: Date | null;
+          }>(
+            "SELECT id, status, resolved_by, resolution_choice, resolved_at FROM agent_guidance_drift_findings WHERE id = $1",
+            [finding.finding.id],
+          )
+        ).rows,
+        guidance: (
+          await pool.query<{ project_item_id: string; markdown: string; updated_at: Date }>(
+            "SELECT project_item_id, markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+            [a.projectItemId],
+          )
+        ).rows,
+        notifications: (
+          await pool.query<{ id: string; payload: unknown }>(
+            "SELECT id, payload FROM notifications WHERE source_id = $1 ORDER BY id",
+            [finding.finding.id],
+          )
+        ).rows,
+      }));
+    const before = await state();
+    const jobs = await adminPool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const result = await expectForeignLikeRandom(b.member, [finding.finding.id], ([id]) => ({
+        method: "POST",
+        path: `/api/agent-guidance-drift/${id}/resolve`,
+        body: { choice: "dismiss", expectedGuidanceUpdatedAt: null },
+      }));
+      expect(result.status).toBe(404);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(await state()).toEqual(before);
+    expect(
+      (
+        await adminPool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        )
+      ).rows,
+    ).toEqual(jobs.rows);
+    expect(events).toEqual([]);
   },
   "server identity": async () => {
     const answer = await send(null, { method: "GET", path: "/api/server-info" });

@@ -993,7 +993,11 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       await runtime.end();
     } catch (cleanupError) {
       if (failure)
-        throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", { cause: failure.error });
+        throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", {
+          // The original test failure is primary; cleanupError is retained in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
+        });
       throw cleanupError;
     }
     if (failure) throw failure.error;

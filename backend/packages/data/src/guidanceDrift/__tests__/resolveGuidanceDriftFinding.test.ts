@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -8,7 +8,7 @@ import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { saveGuidanceSections } from "../../projectAgentGuidance/projectAgentGuidanceSections.js";
+import { loadGuidanceSections, saveGuidanceSections } from "../../projectAgentGuidance/projectAgentGuidanceSections.js";
 import { agentGuidanceDriftFindingsStore } from "../agentGuidanceDriftFindingsStore.js";
 import { createResolveGuidanceDriftFindingRouteHandler } from "../guidanceDriftFindingsRouteHandlers.js";
 
@@ -632,7 +632,24 @@ describe("guidance drift decisions", () => {
             | { ok: false; error: unknown }
           >
         | undefined;
+      const sqlstateFailures: unknown[] = [];
+      let restoreQuery: (() => void) | undefined;
       const onAcquire = (client: PoolClient) => {
+        const query = client.query.bind(client);
+        const spy = vi.spyOn(client, "query");
+        const forward = async (sql: string, values?: unknown[]) => {
+          try {
+            return await query(sql, values);
+          } catch (error) {
+            if (typeof error === "object" && error !== null && "code" in error && error.code === "40001")
+              sqlstateFailures.push(error);
+            throw error;
+          }
+        };
+        // The exercised calls use pg's promise overload.
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
+        spy.mockImplementation(forward as typeof client.query);
+        restoreQuery = () => spy.mockRestore();
         if (!("processID" in client) || typeof client.processID !== "number")
           throw new Error("Missing acquired backend PID");
         waiterReady(client.processID);
@@ -730,12 +747,18 @@ describe("guidance drift decisions", () => {
         !guidanceActorRecords.get(contender)?.consumed
       )
         actorErrors.push(contenderSettled.value.error);
+      if (!pendingGuidanceActors.size) restoreQuery?.();
       if (failure && actorErrors.length)
         throw new AggregateError([failure.error, ...actorErrors], "Guidance overlap failed", { cause: failure.error });
       if (failure) throw failure.error;
       if (actorErrors.length) throw new AggregateError(actorErrors, "Guidance overlap actors failed");
       if (!ownerResult?.ok || !contenderResult?.ok) throw new Error("Missing overlap outcomes");
-      expect(contenderResult.value).toMatchObject({ status: 409, body: { error: { code: "version_conflict" } } });
+      expect(sqlstateFailures).toHaveLength(1);
+      const currentDetails = await withTransaction(pool, (client) => loadGuidanceSections(client, project));
+      expect(contenderResult.value).toEqual({
+        status: 409,
+        body: { error: { code: "version_conflict", details: { current: currentDetails } } },
+      });
       const current = await pool.query<{ markdown: string }>(
         "SELECT markdown FROM project_agent_guidance WHERE project_item_id = $1",
         [project],
