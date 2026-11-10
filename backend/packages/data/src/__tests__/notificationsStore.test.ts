@@ -76,10 +76,15 @@ describe("notificationsStore (issue #152)", () => {
   const tenantOfUser = new Map<string, string>();
 
   /** The first user is tenant zero's; each later one gets a tenant of its own, as a tenant has one user. */
-  async function createTestUser(): Promise<string> {
+  async function createTestUser(locale?: "en" | "cs"): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
     const tenantId = tenantOfUser.size === 0 ? getTenantZeroId() : await createTestTenant(pool);
-    const user = await createUser(pool, { email: `${Math.random()}@example.test`, passwordHash, tenantId });
+    const user = await createUser(pool, {
+      email: `${Math.random()}@example.test`,
+      passwordHash,
+      tenantId,
+      ...(locale ? { locale } : {}),
+    });
     tenantOfUser.set(user.id, tenantId);
     return user.id;
   }
@@ -101,7 +106,7 @@ describe("notificationsStore (issue #152)", () => {
   }
 
   it("lets a concurrent second writer validate and insert after the first rolls back", async () => {
-    const user = await createTestUser();
+    const user = await createTestUser("en");
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
