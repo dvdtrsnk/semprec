@@ -197,21 +197,34 @@ describe("Semp thread message ordering", () => {
     if (failure) throw failure.error;
     if (!first) throw new Error("Missing first turn");
     const rows = await runInTenant(tenant, () =>
-      pool.query<{ id: string; role: string; system_key: string | null; text: string | null; stamp: string }>(
-        `SELECT id, role, system_key, text, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS stamp FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id`,
+      pool.query<{
+        id: string;
+        role: string;
+        system_key: string | null;
+        text: string | null;
+        reply_to_message_id: string | null;
+        status: string | null;
+        stamp: string;
+      }>(
+        `SELECT id, role, system_key, text, reply_to_message_id, status, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS stamp FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id`,
         [fixture.thread.id],
       ),
     );
-    expect(rows.rows).toHaveLength(5);
-    expect(rows.rows[0]?.id).toBe(fixture.futureId);
-    expect(rows.rows.slice(1, 3).map((row) => row.id)).toEqual([first.messageId, first.assistantMessageId]);
-    expect(
-      rows.rows
-        .slice(3)
-        .map((row) => (row.system_key ? "approval" : "tick"))
-        .sort(),
-    ).toEqual(["approval", "tick"]);
-    expect(new Set(rows.rows.map((row) => row.stamp)).size).toBe(5);
+    expect(rows.rows).toHaveLength(6);
+    expect(rows.rows[0]).toMatchObject({ id: fixture.futureId, role: "assistant" });
+    expect(rows.rows.slice(1, 3).map((row) => ({ id: row.id, role: row.role }))).toEqual([
+      { id: first.messageId, role: "user" },
+      { id: first.assistantMessageId, role: "assistant" },
+    ]);
+    const tail = rows.rows.slice(3);
+    const outcome = tail.find((row) => row.system_key === "approval.outcome.rejected");
+    const reply = tail.find((row) => row.reply_to_message_id === outcome?.id);
+    const tickRow = tail.find((row) => row.id !== outcome?.id && row.id !== reply?.id);
+    expect(outcome).toMatchObject({ role: "system", system_key: "approval.outcome.rejected" });
+    expect(reply).toMatchObject({ role: "assistant", status: "queued", reply_to_message_id: outcome?.id });
+    expect(tickRow).toMatchObject({ role: "assistant", text: "tick result", status: "done" });
+    expect(new Set([outcome?.id, reply?.id, tickRow?.id]).size).toBe(3);
+    expect(new Set(rows.rows.map((row) => row.stamp)).size).toBe(6);
     for (let i = 1; i < rows.rows.length; i++) expect(rows.rows[i]!.stamp > rows.rows[i - 1]!.stamp).toBe(true);
     const latestId = rows.rows.at(-1)?.id;
     if (!latestId) throw new Error("Missing last row");
@@ -267,7 +280,7 @@ describe("Semp thread message ordering", () => {
         ).rowCount,
       })),
     );
-    expect(after).toEqual({ messages: 7, job: 0 });
+    expect(after).toEqual({ messages: 8, job: 0 });
   }, 60_000);
 
   it("refuses stronger transaction isolation before writing a message or job", async () => {

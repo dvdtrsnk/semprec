@@ -374,6 +374,20 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       await inZero((client) => patchNotificationPreferences(client, userId, { problemsLevel: "all" }));
       let sourceId: string = randomUUID();
       let mailboxItemId: string | undefined;
+      let projectItemId: string | undefined;
+      if (kind === "agent_guidance_drift_resolved") {
+        await runInTenant(tenantZero, () => seedSystem(pool));
+        const { rows } = await inZero((client) =>
+          client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", ["projects"]),
+        );
+        const databaseId = rows[0]?.id;
+        if (!databaseId) throw new Error("Missing seeded Projects database");
+        projectItemId = (
+          await inZero((client) =>
+            createItemWithClient(client, { databaseId, properties: { name: "Guidance project" } }),
+          )
+        ).id;
+      }
       if (kind === "mail_sync_stalled") {
         await runInTenant(tenantZero, () => seedSystem(pool));
         const { rows } = await inZero((client) =>
@@ -399,6 +413,7 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
           sourceId,
           transitionInstance: "job-1",
           ...(mailboxItemId ? { payload: { mailboxItemId, reason: "other" } } : {}),
+          ...(projectItemId ? { payload: { projectItemId } } : {}),
         }),
       );
 

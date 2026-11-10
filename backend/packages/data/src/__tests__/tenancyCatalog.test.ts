@@ -689,7 +689,12 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(37);
+    expect(twins).toHaveLength(38);
+    expect(twins).toContainEqual({
+      table_name: "agent_guidance_drift_findings",
+      constraint_name: "agent_guidance_drift_findings_resolved_by_tenant_fkey",
+      column_name: "resolved_by",
+    });
     expect(twins).toContainEqual({
       table_name: "ai_gateway_calls",
       constraint_name: "ai_gateway_calls_semp_message_id_tenant_fkey",
