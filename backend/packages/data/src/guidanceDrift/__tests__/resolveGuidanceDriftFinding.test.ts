@@ -229,6 +229,64 @@ describe("guidance drift decisions", () => {
       ).toEqual([]);
     });
   });
+  it("rolls back a guidance decision that would exceed the UTF-8 size cap", async () => {
+    await runInTenant(tenant, async () => {
+      const saved = await withTransaction(pool, (tx) =>
+        saveGuidanceSections(tx, {
+          actorUserId: user,
+          projectItemId: project,
+          sections,
+          expectedUpdatedAt: null,
+        }),
+      );
+      const finding = await withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "8".repeat(64),
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+          payload: { ...payload, suggestedAllowedLine: "ž".repeat(16384) },
+        }),
+      );
+      const before = await pool.query<{ markdown: string; updated_at: Date }>(
+        "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
+      await expect(
+        createResolveGuidanceDriftFindingRouteHandler(pool)({
+          params: { id: finding.finding.id },
+          identity: { user: { id: user } },
+          body: { choice: "allow", expectedGuidanceUpdatedAt: saved.updatedAt },
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(
+        (
+          await pool.query<{ markdown: string; updated_at: Date }>(
+            "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+            [project],
+          )
+        ).rows,
+      ).toEqual(before.rows);
+      expect(
+        (
+          await pool.query<{ status: string; resolution_choice: string | null }>(
+            "SELECT status, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
+            [finding.finding.id],
+          )
+        ).rows,
+      ).toEqual([{ status: "active", resolution_choice: null }]);
+      expect(
+        (await pool.query("SELECT id FROM notifications WHERE source_id = $1", [finding.finding.id])).rows,
+      ).toEqual([]);
+      expect(
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobs.rows);
+    });
+  });
+
   it.each(["allow", "forbid", "dismiss"] as const)("decides %s once and never reopens it", async (choice) =>
     runInTenant(tenant, async () => {
       const saved = await withTransaction(pool, (tx) =>
@@ -260,12 +318,22 @@ describe("guidance drift decisions", () => {
           },
         },
       });
-      const row = await pool.query<{ status: string; resolved_by: string; resolution_choice: string }>(
-        "SELECT status, resolved_by, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
+      const row = await pool.query<{
+        status: string;
+        resolved_by: string;
+        resolution_choice: string;
+        resolved_at: Date;
+      }>(
+        "SELECT status, resolved_by, resolution_choice, resolved_at FROM agent_guidance_drift_findings WHERE id = $1",
         [first.finding.id],
       );
       expect(row.rows).toEqual([
-        { status: choice === "dismiss" ? "dismissed" : "resolved", resolved_by: user, resolution_choice: choice },
+        {
+          status: choice === "dismiss" ? "dismissed" : "resolved",
+          resolved_by: user,
+          resolution_choice: choice,
+          resolved_at: expect.any(Date),
+        },
       ]);
       const later = await withTransaction(pool, (tx) =>
         agentGuidanceDriftFindingsStore.upsertActive(tx, {
@@ -298,6 +366,10 @@ describe("guidance drift decisions", () => {
       const saved = await withTransaction(pool, (tx) =>
         saveGuidanceSections(tx, { actorUserId: user, projectItemId: project, sections, expectedUpdatedAt: null }),
       );
+      const beforeGuidance = await pool.query<{ markdown: string; updated_at: Date }>(
+        "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
       const permission = {
         kind: "permission" as const,
         subject: { operation: "item.create", databaseId: null },
@@ -315,7 +387,7 @@ describe("guidance drift decisions", () => {
         }),
       );
       const route = createResolveGuidanceDriftFindingRouteHandler(pool);
-      const context = (actor: string, choice: "allow" | "dismiss", version: string | null) => ({
+      const context = (actor: string, choice: "allow" | "forbid" | "dismiss", version: string | null) => ({
         params: { id: first.finding.id },
         identity: { user: { id: actor } },
         body: { choice, expectedGuidanceUpdatedAt: version },
@@ -332,6 +404,16 @@ describe("guidance drift decisions", () => {
         code: "validation_failed",
         details: { field: "choice", reason: "not_applicable" },
       });
+      await expect(route(context(user, "forbid", saved.updatedAt))).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "choice", reason: "not_applicable" },
+      });
+      const unchanged = await pool.query<{ markdown: string; updated_at: Date }>(
+        "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
+        [project],
+      );
+      expect(unchanged.rows).toEqual(beforeGuidance.rows);
       const rows = await pool.query<{ status: string; resolution_choice: string | null }>(
         "SELECT status, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1",
         [first.finding.id],
@@ -340,6 +422,14 @@ describe("guidance drift decisions", () => {
       const notifications = await pool.query("SELECT id FROM notifications WHERE source_id = $1", [first.finding.id]);
       expect(notifications.rows).toEqual([]);
       expect((await route(context(user, "dismiss", saved.updatedAt))).status).toBe(200);
+      await expect(route(context(user, "dismiss", saved.updatedAt))).rejects.toMatchObject({ status: 404 });
+      await expect(
+        route({
+          params: { id: "00000000-0000-4000-8000-000000000000" },
+          identity: { user: { id: user } },
+          body: { choice: "dismiss", expectedGuidanceUpdatedAt: saved.updatedAt },
+        }),
+      ).rejects.toMatchObject({ status: 404 });
       const resolved = await pool.query<{ payload: unknown }>(
         "SELECT payload FROM notifications WHERE source_id = $1",
         [first.finding.id],
