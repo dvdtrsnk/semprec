@@ -1266,6 +1266,23 @@ describe("createGenericOperationGateway (issue #220)", () => {
             },
           },
         });
+        const notifications = await runtime.query<{ id: string; kind: string; body: string | null }>(
+          "SELECT id, kind, body FROM notifications WHERE source_table = $1 AND source_id = $2",
+          ["approval_requests", stale],
+        );
+        expect(notifications.rows).toEqual([
+          {
+            id: expect.any(String),
+            kind: "approval_pending",
+            body: `Změnit opakování úkolu „Task“ z ${JSON.stringify({ kind: "weekdays", days: ["thu"] })} na ${JSON.stringify({ kind: "monthDates", dates: [22] })}. Lze ji později vzít zpět.`,
+          },
+        ]);
+        const notificationId = notifications.rows[0]?.id;
+        if (!notificationId) throw new Error("Missing approval notification");
+        const fanout = await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `notification-fanout:${notificationId}`,
+        ]);
+        expect(fanout.rows).toEqual([{ key: `notification-fanout:${notificationId}` }]);
         const changed = await cp.updateItem({
           databaseId: tasks.id,
           itemId: item.id,
