@@ -51,13 +51,29 @@ export async function closeMissedOccurrence(
   ) {
     throw new Error("Latest task occurrence changed during reservation");
   }
-  const future = await client.query<{ id: string }>(
-    `SELECT id FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
-       AND properties->>'seriesId' = $3 AND properties->>'occurrenceDate' > $4`,
-    [databaseId, series.itemId, properties.seriesId, today],
-  );
+  let preserveFuture = false;
+  if (!existing) {
+    const future = await client.query<{ id: string }>(
+      `SELECT id FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
+         AND properties->>'seriesId' = $3 AND properties->>'occurrenceDate' > $4`,
+      [databaseId, series.itemId, properties.seriesId, today],
+    );
+    const futureId = future.rows[0]?.id;
+    if (futureId) {
+      const reserved = await lockItemByIdNowait(client, databaseId, futureId);
+      if (
+        !reserved ||
+        reserved.deletedAt ||
+        reserved.properties.seriesId !== properties.seriesId ||
+        typeof reserved.properties.occurrenceDate !== "string" ||
+        reserved.properties.occurrenceDate <= today
+      )
+        throw new Error("Future task occurrence changed during reservation");
+      preserveFuture = true;
+    }
+  }
   await rolloverTaskWithClient(client, { databaseId, itemId, status: "missed" });
-  if (existing || future.rows.length > 0) return;
+  if (existing) return;
   const template = series.template;
   const previous: unknown = properties.recurrence;
   const preset =
@@ -96,5 +112,5 @@ export async function closeMissedOccurrence(
     },
     { allowedSystemKeys: ["seriesId", "occurrenceDate", "recurrence"], systemOwnerProcess: TASKS_MODULE_ID },
   );
-  await moveTaskRecurrenceToItem(client, properties.seriesId, created.id);
+  if (!preserveFuture) await moveTaskRecurrenceToItem(client, properties.seriesId, created.id);
 }

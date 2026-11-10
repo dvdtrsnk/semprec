@@ -413,6 +413,144 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     }
   });
 
+  it("reserves a future current occurrence without waiting and retains its pointer", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let release = () => {};
+    let holder: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
+      const old = await task({ date: "2026-10-12" });
+      const started = await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: old },
+          body: { preset: "weekly" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      const seriesId = started.item.properties.seriesId;
+      if (typeof seriesId !== "string") throw new Error("Missing series");
+      vi.setSystemTime(new Date("2026-10-13T10:00:00Z"));
+      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } }));
+      const pointer = await inTenant(() =>
+        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
+      );
+      const future = pointer.rows[0]?.item_id;
+      if (!future || future === old) throw new Error("Missing future occurrence");
+      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "notDone" } }));
+      await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: future },
+          body: { preset: "daily" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      vi.setSystemTime(new Date("2026-10-16T10:00:00Z"));
+      const beforeOld = await row(old);
+      const beforeFuture = await row(future);
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
+      let signal: (value: { pid: number; started: string }) => void = () => {};
+      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
+        signal = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      holder = trackRolloverActor(
+        inTenant(() =>
+          withTransaction(pool, async (client) => {
+            const own = await client.query<{ pid: number; started: string }>(
+              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+            );
+            if (!own.rows[0]) throw new Error("Missing holder identity");
+            await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, future]);
+            signal(own.rows[0]);
+            await gate;
+          }),
+        ).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+      );
+      const identity = await settleRolloverActor(
+        Promise.race([
+          ready,
+          holder.then((result) => {
+            throw result.ok ? new Error("Holder ended before reservation") : result.error;
+          }),
+        ]),
+      );
+      expect(
+        (
+          await admin.query<{ present: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+            [identity.pid, identity.started],
+          )
+        ).rows,
+      ).toEqual([{ present: true }]);
+      await expect(
+        inTenant(() =>
+          createTasksDayRolloverAction(pool)(heartbeat.config, {
+            heartbeatId: heartbeat.id,
+            projectItemId: heartbeat.projectItemId,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "55P03" });
+      expect(await row(old)).toEqual(beforeOld);
+      expect(await row(future)).toEqual(beforeFuture);
+      expect(
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobs.rows);
+      release();
+      const outcome = await settleRolloverActor(holder);
+      if (!outcome.ok) throw outcome.error;
+      holder = undefined;
+      await inTenant(() =>
+        createTasksDayRolloverAction(pool)(heartbeat.config, {
+          heartbeatId: heartbeat.id,
+          projectItemId: heartbeat.projectItemId,
+        }),
+      );
+      expect((await row(old)).properties.status).toBe("missed");
+      expect(await row(future)).toEqual(beforeFuture);
+      expect(
+        (
+          await inTenant(() =>
+            pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
+          )
+        ).rows,
+      ).toEqual([{ item_id: future }]);
+      const ensured = await inTenant(() =>
+        pool.query<{ properties: Record<string, unknown> }>(
+          "SELECT properties FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'seriesId' = $2 AND properties->>'occurrenceDate' = $3",
+          [tasksId, seriesId, "2026-10-16"],
+        ),
+      );
+      expect(ensured.rows).toEqual([
+        { properties: expect.objectContaining({ status: "notDone", occurrenceDate: "2026-10-16" }) },
+      ]);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    if (holder) {
+      try {
+        const outcome = await settleRolloverActor(holder);
+        if (!outcome.ok) throw outcome.error;
+      } catch (error) {
+        vi.useRealTimers();
+        if (failure)
+          throw new AggregateError([failure.error, error], "Future occurrence actor failed", { cause: failure.error });
+        throw error;
+      }
+    }
+    vi.useRealTimers();
+    if (failure) throw failure.error;
+  });
+
   it("rolls back the current recurring batch when the existing latest occurrence is reserved", async () => {
     const old = await task({ date: day(-1) });
     const series = await inTenant(() =>

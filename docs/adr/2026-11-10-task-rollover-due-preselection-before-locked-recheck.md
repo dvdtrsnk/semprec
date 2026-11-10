@@ -14,7 +14,7 @@ An open recurring occurrence may be old while its next calendar date is still in
 
 ## Decision
 
-The Tasks rollover uses a pure, invoker-scoped SQL predicate to select due candidates. It performs bounded calendar computations and rejects malformed rules. Selection does not reserve the series: the existing item-then-series transaction reads the current rule and recalculates the due date through the TypeScript recurrence owner before writing. An existing latest occurrence is reserved with the existing NOWAIT protocol in [[2026-11-09-nightly-recurring-occurrences-use-the-missed-status-handover]].
+The Tasks rollover uses a pure, invoker-scoped SQL predicate to select due candidates. It performs bounded calendar computations and rejects malformed rules. Selection does not reserve the series: the existing item-then-series transaction reads the current rule and recalculates the due date through the TypeScript recurrence owner before writing. An existing latest occurrence, including a current future pointer when the computed occurrence is absent, is reserved and rechecked with the existing NOWAIT protocol in [[2026-11-09-nightly-recurring-occurrences-use-the-missed-status-handover]].
 
 ## Consequences
 
