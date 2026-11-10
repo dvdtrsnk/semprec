@@ -1250,6 +1250,61 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }),
         );
         expect(await cp.findItem(item.id)).toEqual(weekly);
+        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.updatedAt);
+        // Synthetic intervening state: normal recurrence owners update the item projection too.
+        const seriesOnlyRule = { kind: "weekdays", days: ["mon"] };
+        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
+          created.properties.seriesId,
+          JSON.stringify(seriesOnlyRule),
+        ]);
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: seriesOnly,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const seriesOnlyRequest = await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly));
+        if (!seriesOnlyRequest || !isGenericOperationApprovalRequestPayload(seriesOnlyRequest.payload))
+          throw new Error("Missing series-only request");
+        const jobsBeforeConflict = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const conflictInvalidations: unknown[] = [];
+        setInvalidationHook((event) => conflictInvalidations.push(event));
+        try {
+          expect(
+            (
+              await replayApprovedGenericOperation(runtime, {
+                ...seriesOnlyRequest,
+                payload: seriesOnlyRequest.payload,
+              })
+            ).error,
+          ).toBe(true);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        expect(
+          (
+            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
+              created.properties.seriesId,
+            ])
+          ).rows,
+        ).toEqual([{ rule: seriesOnlyRule }]);
+        expect(
+          (await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly)))?.executionStatus,
+        ).toBe("conflict");
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsBeforeConflict.rows);
+        expect(conflictInvalidations).toEqual([]);
+        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
+          created.properties.seriesId,
+          JSON.stringify({ kind: "weekdays", days: ["thu"] }),
+        ]);
         const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt, {
           name: "Changed only after approval",
         });
