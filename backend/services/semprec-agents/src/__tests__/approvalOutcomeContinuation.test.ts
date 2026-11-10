@@ -171,6 +171,119 @@ describe("settled tick approval outcome continuation", () => {
     if (failure) throw failure.error;
   });
 
+  it("keeps rollback, disabled tick, and item outcomes from adding continuation jobs", async () => {
+    const tenant = await createTestTenant(admin);
+    const user = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+    });
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const fixture = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+        const makeRequest = async (kind: "tick" | "item", enabled: boolean) => {
+          let threadId: string;
+          let heartbeatId: string | undefined;
+          if (kind === "tick") {
+            const heartbeat = await createHeartbeat(client, {
+              projectItemId: inbox.ownerProjectItemId!,
+              name: randomUUID(),
+              rule: { kind: "interval", minutes: 10 },
+              actionId: "core.agentRun",
+              actionConfig: { task: "Boundary" },
+            });
+            heartbeatId = heartbeat.id;
+            if (!enabled)
+              await client.query("UPDATE project_heartbeats SET enabled = false WHERE id = $1", [heartbeatId]);
+            const rows = await client.query<{ id: string }>(
+              "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+              [heartbeatId],
+            );
+            if (!rows.rows[0]) throw new Error("Missing tick thread");
+            threadId = rows.rows[0].id;
+          } else {
+            // Synthetic item thread: there is no production thread creator at this layer.
+            const rows = await client.query<{ id: string }>(
+              "INSERT INTO semp_threads (kind, subject_inbox_item_id) VALUES ('item', $1) RETURNING id",
+              [randomUUID()],
+            );
+            if (!rows.rows[0]) throw new Error("Missing item thread");
+            threadId = rows.rows[0].id;
+          }
+          const run = await createAgentRun(client, {
+            triggeredBy: "user",
+            task: "Boundary",
+            projectItemId: inbox.ownerProjectItemId,
+            threadId,
+            ...(heartbeatId ? { heartbeatId } : {}),
+          });
+          const request = await createPendingApprovalRequest(client, {
+            agentRunId: run.id,
+            toolName: "test",
+            riskClass: "write",
+            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+            resourceSnapshot: { kind: "test", resourceId: randomUUID(), sha256: null },
+          });
+          return { threadId, requestId: request.id };
+        };
+        return {
+          rolledBack: await makeRequest("tick", true),
+          disabled: await makeRequest("tick", false),
+          item: await makeRequest("item", true),
+        };
+      }),
+    );
+    const jobs = () =>
+      admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+    const threadRows = (threadId: string) =>
+      runInTenant(tenant, () =>
+        runtime.query<{ role: string; system_key: string | null }>(
+          "SELECT role, system_key FROM semp_messages WHERE thread_id = $1 ORDER BY id",
+          [threadId],
+        ),
+      );
+    const before = await jobs();
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: fixture.rolledBack.requestId,
+            decision: "rejected",
+            decidedByUserId: user.id,
+          });
+          throw new Error("rollback outcome");
+        }),
+      ),
+    ).rejects.toThrow("rollback outcome");
+    expect((await jobs()).rows).toEqual(before.rows);
+    expect((await threadRows(fixture.rolledBack.threadId)).rows).toEqual([]);
+    expect(
+      (
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => getApprovalRequest(client, fixture.rolledBack.requestId)),
+        )
+      )?.status,
+    ).toBe("pending");
+    for (const target of [fixture.disabled, fixture.item]) {
+      const prior = await jobs();
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: target.requestId,
+            decision: "rejected",
+            decidedByUserId: user.id,
+          }),
+        ),
+      );
+      expect((await jobs()).rows).toEqual(prior.rows);
+      expect((await threadRows(target.threadId)).rows).toEqual([
+        { role: "system", system_key: "approval.outcome.rejected" },
+      ]);
+    }
+  });
+
   it("executes a real session approval and delivers its outcome through the queue", async () => {
     const tenant = await createTestTenant(admin);
     const user = await createUser(admin, {
@@ -352,8 +465,8 @@ describe("settled tick approval outcome continuation", () => {
             "Approval execution and policy restoration failed",
             {
               // The execution failure is primary; the caught restoration error is retained in the aggregate.
-            // eslint-disable-next-line preserve-caught-error
-            cause: executionFailure.error,
+              // eslint-disable-next-line preserve-caught-error
+              cause: executionFailure.error,
             },
           );
         throw error;
