@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -10,6 +10,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { reserveInboxTypeCards } from "../inbox/inboxTypeCardReservation.js";
 import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
@@ -144,6 +145,56 @@ describe("Inbox type lock", () => {
       });
     return { cp, edge, second: second.id, targets, cardId, proposals, inbox, types };
   }
+
+  it("reserves every associated card in sorted order before filtering trashed cards", async () =>
+    runInTenant(tenant, async () => {
+      const { cp, edge, cardId, proposals } = await fixture("proposed");
+      if (!cardId) throw new Error("Missing first card");
+      const source = (await cp.listProperties(proposals)).find((property) => property.key === "sourceInbox");
+      if (!source) throw new Error("Missing sourceInbox property");
+      const ids = [cardId];
+      for (const status of ["proposed", "confirmed"]) {
+        // Synthetic card state: public APIs do not insert decided cards directly.
+        const card = await withTransaction(pool, (client) =>
+          insertItem(client, {
+            databaseId: proposals,
+            properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status },
+          }),
+        );
+        ids.push(card.id);
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(
+            client,
+            {
+              relationPropertyId: source.id,
+              callerItemId: card.id,
+              targetItemId: edge.callerItemId,
+            },
+            { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+          ),
+        );
+        if (status === "confirmed") await withTransaction(pool, (client) => softDeleteItem(client, proposals, card.id));
+      }
+      await withTransaction(pool, async (client) => {
+        const spy = vi.spyOn(client, "query");
+        try {
+          const cards = await reserveInboxTypeCards(client, edge.callerItemId);
+          const calls: unknown[][] = spy.mock.calls;
+          const observed: string[] = [];
+          for (const [statement, parameters] of calls) {
+            if (typeof statement === "string" && statement.includes("FOR UPDATE NOWAIT")) {
+              if (!Array.isArray(parameters) || typeof parameters[1] !== "string")
+                throw new Error("Invalid lock arguments");
+              observed.push(parameters[1]);
+            }
+          }
+          expect(observed).toEqual([...ids].sort());
+          expect(cards.map((card) => card.id)).toEqual(ids.slice(0, 2).sort());
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    }));
 
   it("refuses a second type without changing the first edge", async () =>
     runInTenant(tenant, async () => {
