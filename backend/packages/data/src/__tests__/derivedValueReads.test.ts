@@ -3,6 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
@@ -210,15 +212,34 @@ describe("derived values through project relations", () => {
       const files = await database("files");
       const projects = await database("projects");
       const areas = await database("areas");
-      const area = await cp.createItem({ databaseId: areas, properties: { name: "Shared" } });
-      const file = await cp.createItem({ databaseId: files, properties: { name: "File" } });
-      const ids: string[] = [];
-      for (let i = 0; i < 51; i++) {
-        const project = await cp.createItem({ databaseId: projects, properties: { name: `Project ${i}` } });
-        ids.push(project.id);
-        await link(projects, "area", project.id, area.id);
-        await link(files, "projects", file.id, project.id);
-      }
+      const projectArea = (await cp.listProperties(projects)).find((property) => property.key === "area");
+      const fileProjects = (await cp.listProperties(files)).find((property) => property.key === "projects");
+      if (!projectArea || !fileProjects) throw new Error("Missing contributor fixture relations");
+      // Build the complete fixture through the same write owners in one transaction, avoiding
+      // 155 separate commits and read projections while preserving every write hook and edge.
+      const { area, file, ids } = await withTransaction(data, async (client) => {
+        const area = await createItemWithClient(client, { databaseId: areas, properties: { name: "Shared" } });
+        const file = await createItemWithClient(client, { databaseId: files, properties: { name: "File" } });
+        const ids: string[] = [];
+        for (let i = 0; i < 51; i++) {
+          const project = await createItemWithClient(client, {
+            databaseId: projects,
+            properties: { name: `Project ${i}` },
+          });
+          ids.push(project.id);
+          await createRelationWithClient(client, {
+            relationPropertyId: projectArea.id,
+            callerItemId: project.id,
+            targetItemId: area.id,
+          });
+          await createRelationWithClient(client, {
+            relationPropertyId: fileProjects.id,
+            callerItemId: file.id,
+            targetItemId: project.id,
+          });
+        }
+        return { area, file, ids };
+      });
       const derived = (await cp.getDerivedValuesForItems([file.id])).get(file.id);
       expect(derived?.area?.values).toEqual([{ id: area.id, title: "Shared", color: null, icon: null }]);
       expect(derived?.area?.projectIds).toEqual(ids.sort());
