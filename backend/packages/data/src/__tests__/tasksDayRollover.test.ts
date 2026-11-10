@@ -418,9 +418,100 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         }),
       );
       vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
-      await inTenant(() =>
-        withTransaction(pool, (client) => closeMissedOccurrence(client, tasksId, old, "2026-11-20")),
+      // Hold the current occurrence so the full action's SKIP LOCKED pass must process the older one first.
+      let release = () => {};
+      let signalReady: (value: { pid: number; started: string }) => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
+        signalReady = resolve;
+      });
+      const holder = trackRolloverActor(
+        inTenant(() =>
+          withTransaction(pool, async (client) => {
+            const identity = await client.query<{ pid: number; started: string }>(
+              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+            );
+            if (!identity.rows[0]) throw new Error("Missing current occurrence holder");
+            await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+              tasksId,
+              current,
+            ]);
+            signalReady(identity.rows[0]);
+            await gate;
+          }),
+        ).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
       );
+      let action: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+      let primary: { error: unknown } | undefined;
+      try {
+        const held = await settleRolloverActor(
+          Promise.race([
+            ready,
+            holder.then((result) => {
+              throw result.ok ? new Error("Holder ended early") : result.error;
+            }),
+          ]),
+        );
+        expect(
+          (
+            await admin.query<{ present: boolean }>(
+              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+              [held.pid, held.started],
+            )
+          ).rows,
+        ).toEqual([{ present: true }]);
+        action = trackRolloverActor(
+          inTenant(() =>
+            createTasksDayRolloverAction(pool)(heartbeat.config, {
+              heartbeatId: heartbeat.id,
+              projectItemId: heartbeat.projectItemId,
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          ),
+        );
+        await expect.poll(async () => (await row(old)).properties.status, { timeout: WAIT_MS }).toBe("missed");
+        let blocked: Array<{ pid: number; started: string; blockers: number[] }> = [];
+        await expect
+          .poll(
+            async () => {
+              blocked = (
+                await admin.query<{ pid: number; started: string; blockers: number[] }>(
+                  "SELECT pid, backend_start::text AS started, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT i.id FROM items i%'",
+                  [held.pid],
+                )
+              ).rows;
+              return blocked.map((entry) => entry.blockers);
+            },
+            { timeout: WAIT_MS },
+          )
+          .toEqual([[held.pid]]);
+        expect(blocked).toEqual([{ pid: expect.any(Number), started: expect.any(String), blockers: [held.pid] }]);
+        expect(blocked[0]?.pid).not.toBe(held.pid);
+      } catch (error) {
+        primary = { error };
+      }
+      release();
+      const settled = await Promise.allSettled([
+        settleRolloverActor(holder),
+        ...(action ? [settleRolloverActor(action)] : []),
+      ]);
+      const errors: unknown[] = primary ? [primary.error] : [];
+      for (const result of settled) {
+        if (result.status === "rejected") errors.push(result.reason);
+        else if (!result.value.ok) errors.push(result.value.error);
+      }
+      if (errors.length)
+        throw new AggregateError(errors, "Older occurrence action failed", {
+          cause: primary ? primary.error : errors[0],
+        });
+      if (!action) throw new Error("Rollover action did not start");
       const moved = await inTenant(() =>
         pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
       );
