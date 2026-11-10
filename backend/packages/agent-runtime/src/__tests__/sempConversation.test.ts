@@ -36,8 +36,8 @@ let tenantZero: string;
 
 let chatThread: SempThread;
 
-async function insertThread(tenantId: string): Promise<SempThread> {
-  const { rows } = await getTestPool().query<{ id: string }>(
+async function insertThread(adminPool: Pool, tenantId: string): Promise<SempThread> {
+  const { rows } = await adminPool.query<{ id: string }>(
     "INSERT INTO semp_threads (tenant_id, kind) VALUES ($1, 'chat') RETURNING id",
     [tenantId],
   );
@@ -112,7 +112,7 @@ describe("SempConversation", () => {
     tenantZero = getTenantZeroId();
     const passwordHash = await hashPassword("s3cret-password");
     await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
-    chatThread = await insertThread(tenantZero);
+    chatThread = await insertThread(pool, tenantZero);
   });
 
   afterAll(async () => {
@@ -1095,7 +1095,7 @@ describe("SempConversation across tenants", () => {
   }
 
   beforeEach(async () => {
-    adminPool = getTestPool();
+    adminPool ??= getTestPool();
     await resetDatabase(adminPool);
     runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
     tenantA = getTenantZeroId();
@@ -1107,12 +1107,16 @@ describe("SempConversation across tenants", () => {
     ] as const) {
       await createUser(adminPool, { email, passwordHash, locale: "en", tenantId });
       projectByTenant.set(tenantId, project);
-      threadByTenant.set(tenantId, await insertThread(tenantId));
+      threadByTenant.set(tenantId, await insertThread(adminPool, tenantId));
     }
   });
 
   afterEach(async () => {
     await runtimePool?.end();
+  });
+
+  afterAll(async () => {
+    await adminPool?.end();
   });
 
   it("rejects send() with no scope or in a system scope, creating no run and not calling the resolver", async () => {
@@ -1214,7 +1218,7 @@ describe("SempConversation across tenants", () => {
 
     it("runs two threads of one tenant in parallel, each with its own run, thread id and reconstruction", async () => {
       const threadOne = threadByTenant.get(tenantA)!;
-      const threadTwo = await insertThread(tenantA);
+      const threadTwo = await insertThread(adminPool, tenantA);
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
@@ -1303,7 +1307,7 @@ describe("SempConversation across tenants", () => {
 
     it("pauses only the thread whose TTL expired, leaving the other thread's session live", async () => {
       const threadOne = threadByTenant.get(tenantA)!;
-      const threadTwo = await insertThread(tenantA);
+      const threadTwo = await insertThread(adminPool, tenantA);
       const { createAgentSession, sessions } = recordingSessions();
       const conversation = conversationFor(createAgentSession, {}, TTL_MS);
       await sendThread(tenantA, conversation, "one", threadOne);
@@ -1341,7 +1345,7 @@ describe("SempConversation across tenants", () => {
 
     it("drops every thread conversation of the tenant, clears their timers and leaves other tenants intact", async () => {
       const aOne = threadByTenant.get(tenantA)!;
-      const aTwo = await insertThread(tenantA);
+      const aTwo = await insertThread(adminPool, tenantA);
       const bOne = threadByTenant.get(tenantB)!;
       const { createAgentSession } = recordingSessions();
       const conversation = conversationFor(createAgentSession, {}, TTL_MS);
@@ -1375,7 +1379,7 @@ describe("SempConversation across tenants", () => {
 
     it("lets an in-flight turn in one thread finish when the tenant is dropped, closing every thread's run", async () => {
       const aOne = threadByTenant.get(tenantA)!;
-      const aTwo = await insertThread(tenantA);
+      const aTwo = await insertThread(adminPool, tenantA);
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;

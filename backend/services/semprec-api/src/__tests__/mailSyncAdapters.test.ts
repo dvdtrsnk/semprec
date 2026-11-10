@@ -724,7 +724,20 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         liveRoot = undefined;
         await rooted?.stop();
       },
-      async () => runtime?.stop(),
+      async () => {
+        await runtime?.stop();
+        // Graphile 0.17.3 starts unbatched complete/fail queries without awaiting them.
+        // Keep their pool open until the stopped workers have released every claimed job.
+        await vi.waitFor(
+          async () => {
+            const { rows } = await pool.query<{ locked: number }>(
+              "SELECT count(*)::int AS locked FROM graphile_worker.jobs WHERE locked_by IS NOT NULL",
+            );
+            expect(rows).toEqual([{ locked: 0 }]);
+          },
+          { timeout: 5000 },
+        );
+      },
       // Ended only after the root and the runtime above were stopped, whatever either did.
       async () => {
         const owned = runtimePool;

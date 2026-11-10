@@ -2496,7 +2496,13 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             if (notification.channel !== "semprec_events" || !notification.payload) return;
             try {
               const envelope: unknown = JSON.parse(notification.payload);
-              if (isRecord(envelope) && isRecord(envelope.message) && envelope.message.itemId === background.id)
+              if (
+                isRecord(envelope) &&
+                isRecord(envelope.message) &&
+                envelope.message.scope === "item" &&
+                envelope.message.itemId === background.id &&
+                envelope.message.op === "update"
+              )
                 resolve(envelope);
             } catch (error) {
               reject(error instanceof Error ? error : new Error("Invalid background envelope"));

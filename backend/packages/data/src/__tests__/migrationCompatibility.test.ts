@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -31,6 +31,22 @@ import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+/** pg-pool.end() may resolve before its sockets finish closing. Never FORCE those sockets away. */
+async function dropClosedDatabase(admin: Pool, name: string): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(name)) throw new Error("Invalid fixture database name");
+  await vi.waitFor(
+    async () => {
+      const { rows } = await admin.query<{ remaining: number }>(
+        "SELECT count(*)::int AS remaining FROM pg_stat_activity WHERE datname = $1",
+        [name],
+      );
+      expect(rows).toEqual([{ remaining: 0 }]);
+    },
+    { timeout: 5000, interval: 10 },
+  );
+  await admin.query(`DROP DATABASE "${name}"`);
+}
 
 it("adds unverified classification without changing populated historical blobs", async () => {
   const url = process.env.TEST_DATABASE_URL;
@@ -81,7 +97,7 @@ it("adds unverified classification without changing populated historical blobs",
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -179,7 +195,7 @@ it("preserves populated users when the display name migration runs", async () =>
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -310,7 +326,7 @@ it("adds the move state table over populated mail without changing existing meta
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -436,7 +452,7 @@ it("preserves a historical problem and lazily records its last known occurrence 
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -540,7 +556,7 @@ it("upgrades a populated search index through the page text migration", async ()
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -674,7 +690,7 @@ it("upgrades populated heartbeats and sessions through tick and device migration
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -861,7 +877,7 @@ it("upgrades populated approvals and notifications through the batch 15 additive
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -946,7 +962,7 @@ it("upgrades populated item automation through migration 0092 and retains legacy
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -1114,7 +1130,7 @@ it("upgrades populated properties through the real runner and retains previous-r
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -1313,7 +1329,7 @@ it("upgrades populated MCP and notification rows through the batch 08 migrations
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -1447,7 +1463,7 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      if (created) await dropClosedDatabase(admin, name);
     },
     async () => admin.end(),
     async () => rm(dir, { recursive: true, force: true }),
@@ -1571,7 +1587,7 @@ it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
     for (const cleanup of [
       async () => scratch?.end(),
       async () => {
-        if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+        if (created) await dropClosedDatabase(admin, name);
       },
       async () => admin.end(),
       async () => rm(dir, { recursive: true, force: true }),
@@ -1683,7 +1699,7 @@ it("adds Semp error and accounting columns over populated synthetic legacy rows 
     async () => scratch?.end(),
     async () => {
       if (!created) return;
-      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      await dropClosedDatabase(admin, name);
       const exists = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
       if (exists.rowCount !== 0) throw new Error("Scratch database still exists after DROP");
     },

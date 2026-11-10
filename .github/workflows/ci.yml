@@ -426,7 +426,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -441,6 +441,33 @@ jobs:
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
+
+      # E2E invokes the real ffmpeg binary as well as the compiled fixture.
+      - name: Backend — ffmpeg package cache key
+        id: ffmpeg-cache-key
+        run: echo "key=ffmpeg-debs-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Backend — restore ffmpeg packages
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
+      - name: Backend — install ffmpeg
+        timeout-minutes: 13
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" ffmpeg
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+      - name: Backend — save ffmpeg packages
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
 
       # The transcription scenario launches the compiled gateway fixture.
       - name: Backend — build test fixtures

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { z } from "zod";
 
-const IMAGE = "sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36";
+const IMAGE = "postgres@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36";
 
 async function command(args: readonly string[], input: Buffer = Buffer.alloc(0)): Promise<Buffer> {
   return new Promise((resolve, reject) => {
