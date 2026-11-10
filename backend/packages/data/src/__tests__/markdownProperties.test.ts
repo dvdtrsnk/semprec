@@ -121,19 +121,30 @@ describe("Markdown property writes", () => {
         await runInboxMarkdownFormatCutoverMigration(runtime);
         expect(await cp.getItem(database.rows[0].id, item.id)).toEqual(before);
         expect((await cp.getItem(database.rows[0].id, item.id))?.properties.text).toBe(legacy);
-        const config = await runtime.query<{ config: unknown }>("SELECT config FROM properties WHERE id = $1", [
-          property.rows[0].id,
+        const config = await runtime.query<{ config: unknown; revision: string }>(
+          "SELECT config, xmin::text AS revision FROM properties WHERE id = $1",
+          [property.rows[0].id],
+        );
+        expect(config.rows).toEqual([
+          { config: expect.objectContaining({ format: "markdown" }), revision: expect.any(String) },
         ]);
-        expect(config.rows).toEqual([{ config: expect.objectContaining({ format: "markdown" }) }]);
         await runInboxMarkdownFormatCutoverMigration(runtime);
         expect(await cp.getItem(database.rows[0].id, item.id)).toEqual(before);
         expect(
           (
-            await runtime.query<{ config: unknown }>("SELECT config FROM properties WHERE id = $1", [
-              property.rows[0].id,
-            ])
+            await runtime.query<{ config: unknown; revision: string }>(
+              "SELECT config, xmin::text AS revision FROM properties WHERE id = $1",
+              [property.rows[0].id],
+            )
           ).rows,
         ).toEqual(config.rows);
+        const patched = await cp.updateItem({
+          databaseId: database.rows[0].id,
+          itemId: item.id,
+          propertiesPatch: { time: "11:30" },
+        });
+        expect(patched.properties.text).toBe(legacy);
+        expect(patched.properties.time).toBe("11:30");
         await expect(
           cp.createItem({
             databaseId: database.rows[0].id,
