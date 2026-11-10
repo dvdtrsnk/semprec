@@ -42,7 +42,7 @@ function raceDiagnostic(): AggregateError | undefined {
     if (item.primary) errors.push(item.primary.error);
     for (const record of item.records) {
       if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
-      else if (record.status === "rejected") errors.push(record.error);
+      else if (record.status === "rejected" && !record.consumed) errors.push(record.error);
       else if (
         record.outcome &&
         !record.outcome.ok &&
@@ -80,10 +80,13 @@ async function finishRaceActors(records: RaceActor[], primary?: { error: unknown
   for (const record of records) {
     try {
       const outcome = await boundRace(record.actor);
-      if (!outcome.ok && !record.consumed && (!record.ignored || outcome.error !== record.ignored.value))
+      if (!outcome.ok && !record.consumed && (!record.ignored || outcome.error !== record.ignored.value)) {
         errors.push(outcome.error);
+        record.consumed = true;
+      }
     } catch (error) {
       if (record.status === "pending") timedOut = true;
+      else record.consumed = true;
       errors.push(error);
     }
   }
