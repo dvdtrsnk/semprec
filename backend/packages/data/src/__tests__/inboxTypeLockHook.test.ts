@@ -167,6 +167,50 @@ describe("Inbox type lock", () => {
     }),
   );
 
+  it.each(["proposed", "confirmed", "rejected"] as const)(
+    "replaces the existing type edge metadata only while the card is %s",
+    async (status) =>
+      runInTenant(tenant, async () => {
+        const { cp, edge } = await fixture(status);
+        const read = () =>
+          withTransaction(pool, async (client) => {
+            const definition = await getRelationDefinitionByPropertyId(client, edge.relationPropertyId);
+            if (!definition) throw new Error("Missing type definition");
+            return listRelationsForItem(client, definition.id, edge.callerItemId);
+          });
+        const before = await read();
+        expect(before).toHaveLength(1);
+        const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const invalidations: InvalidationEvent[] = [];
+        setInvalidationHook((event) => invalidations.push(event));
+        try {
+          if (status === "proposed") {
+            const updated = await cp.createRelation({ ...edge, metadata: { source: "replacement" } });
+            expect(updated.metadata).toEqual({ source: "replacement" });
+            expect((await read()).map((relation) => relation.metadata)).toEqual([{ source: "replacement" }]);
+          } else {
+            await expect(cp.createRelation({ ...edge, metadata: { source: "replacement" } })).rejects.toMatchObject({
+              status: 409,
+              code: "proposal_locked",
+            });
+            expect(await read()).toEqual(before);
+            expect(
+              (
+                await admin.query<{ id: string; key: string | null }>(
+                  "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+                )
+              ).rows,
+            ).toEqual(jobsBefore.rows);
+            expect(invalidations).toEqual([]);
+          }
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      }),
+  );
+
   it.each([
     [undefined, false],
     ["proposed", false],
@@ -239,6 +283,7 @@ describe("Inbox type lock", () => {
           await expect(cp.deleteRelation(edge)).rejects.toMatchObject({
             status: 409,
             code: "version_conflict",
+            message: "Inbox proposal is busy",
             details: { field: "type" },
           });
           expect(await targets()).toEqual([edge.targetItemId]);
