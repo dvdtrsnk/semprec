@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createActionRegistry,
+  sendSempMessage,
+  setProjectMcpGrantForAgentPage,
+  upsertMcpToolRegistration,
   createAgentRun,
   createCoreTaskList,
   createHeartbeat,
@@ -22,7 +25,9 @@ import {
   withTransaction,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { allowLoopbackOutboundForTests, startHttpContractServer } from "@semprec/data/testSupport/mcpContractServers";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { mcpModelToolName } from "../agentSessionComposition.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
@@ -161,6 +166,236 @@ describe("settled tick approval outcome continuation", () => {
     }
     if (errors.length)
       throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Outcome continuation cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+  });
+
+  it("executes a real session approval and delivers its outcome through the queue", async () => {
+    const tenant = await createTestTenant(admin);
+    const user = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+    });
+    const server = await startHttpContractServer();
+    let restorePolicy: (() => void) | undefined;
+    let runner: Awaited<ReturnType<typeof createAgentsQueueRuntime>> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await runInTenant(tenant, () => seedSystem(runtime));
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const inbox = await getDatabaseByModuleId(client, "inbox");
+          const servers = await getDatabaseByModuleId(client, "mcpServers");
+          if (!inbox?.ownerProjectItemId || !servers) throw new Error("Missing seeded databases");
+          // Synthetic local endpoint: production rejects loopback at the stored-URL boundary.
+          const id = randomUUID();
+          await client.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
+            id,
+            servers.id,
+            JSON.stringify({ name: "Closed contract server", active: true, connectionConfig: server.connectionConfig }),
+          ]);
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: inbox.ownerProjectItemId,
+            name: "Outcome",
+            rule: { kind: "interval", minutes: 10 },
+            actionId: "core.agentRun",
+            actionConfig: { task: "Review tasks" },
+          });
+          const thread = await client.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+            [heartbeat.id],
+          );
+          if (!thread.rows[0]) throw new Error("Missing thread");
+          return {
+            projectId: inbox.ownerProjectItemId,
+            serverId: id,
+            threadId: thread.rows[0].id,
+            heartbeatId: heartbeat.id,
+          };
+        }),
+      );
+      const registration = await runInTenant(tenant, () =>
+        upsertMcpToolRegistration(runtime, {
+          mcpServerItemId: fixture.serverId,
+          toolName: "search_web",
+          toolSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+        }),
+      );
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          setProjectMcpGrantForAgentPage(client, {
+            projectItemId: fixture.projectId,
+            mcpToolRegistrationId: registration.id,
+            granted: true,
+          }),
+        ),
+      );
+      const faux = fauxProvider();
+      const prompts: string[] = [];
+      faux.setResponses([
+        () =>
+          fauxAssistantMessage(
+            [
+              fauxToolCall(
+                mcpModelToolName("search_web", fixture.serverId),
+                { query: "closed fixture" },
+                { id: "approval-call" },
+              ),
+            ],
+            { stopReason: "toolUse" },
+          ),
+        () => fauxAssistantMessage("Awaiting approval"),
+        (context) => {
+          prompts.push(JSON.stringify(context.messages));
+          return fauxAssistantMessage("Approved result noted");
+        },
+      ]);
+      const gateway: GatewayModel = {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      };
+      const registry = await loadFullModuleRegistry();
+      const task = createSempMessageTask(runtime, registry, gateway, createInFlightAgentRuns());
+      runner = await createAgentsQueueRuntime(runtime, registry, { sempMessageTask: task });
+      const sent = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            threadId: fixture.threadId,
+            text: "Run the tool",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+      const waitForReply = async (id: string) => {
+        const deadline = Date.now() + 15_000;
+        let rows: Array<{ status: string; text: string | null }> = [];
+        do {
+          rows = (
+            await runInTenant(tenant, () =>
+              runtime.query<{ status: string; text: string | null }>(
+                "SELECT status, text FROM semp_messages WHERE id = $1",
+                [id],
+              ),
+            )
+          ).rows;
+          if (rows[0]?.status === "done") break;
+          await sleep(50);
+        } while (Date.now() < deadline);
+        return rows;
+      };
+      expect(await waitForReply(sent.assistantMessageId)).toEqual([{ status: "done", text: "Awaiting approval" }]);
+      const requests = await runInTenant(tenant, () =>
+        runtime.query<{
+          id: string;
+          agent_run_id: string;
+          unit: string;
+          triggered_by: string;
+          heartbeat_id: string | null;
+          thread_id: string;
+        }>(
+          "SELECT a.id, a.agent_run_id, r.unit, r.triggered_by, r.heartbeat_id, r.thread_id FROM approval_requests a JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id JOIN semp_messages m ON m.tenant_id = r.tenant_id AND m.agent_run_id = r.id WHERE m.id = $1",
+          [sent.assistantMessageId],
+        ),
+      );
+      expect(requests.rows).toEqual([
+        {
+          id: expect.any(String),
+          agent_run_id: expect.any(String),
+          unit: "session",
+          triggered_by: "user",
+          heartbeat_id: null,
+          thread_id: fixture.threadId,
+        },
+      ]);
+      const requestId = requests.rows[0]?.id;
+      if (!requestId) throw new Error("Missing approval request");
+      expect(server.getHandshakeCount()).toBe(0);
+      const beforeUserRows = await runInTenant(tenant, () =>
+        runtime.query<{ id: string }>(
+          "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+          [fixture.threadId],
+        ),
+      );
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: requestId,
+            decision: "approved",
+            decidedByUserId: user.id,
+          }),
+        ),
+      );
+      const handler = createCoreTaskList(runtime, createActionRegistry())[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
+      if (!handler) throw new Error("Missing approval handler");
+      expect(server.connectionConfig).toMatchObject({
+        transport: "http",
+        url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\//),
+      });
+      restorePolicy = allowLoopbackOutboundForTests();
+      try {
+        await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
+      } finally {
+        restorePolicy();
+        restorePolicy = undefined;
+      }
+      expect(server.getLastToolCall()).toEqual({
+        name: "search_web",
+        arguments: { query: "closed fixture" },
+        meta: { idempotencyKey: requestId },
+      });
+      const settled = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) => getApprovalRequest(client, requestId)),
+      );
+      expect(settled?.executionStatus).toBe("succeeded");
+      expect(settled?.executionResult).toBe(
+        JSON.stringify({ name: "search_web", arguments: { query: "closed fixture" } }),
+      );
+      const reply = await runInTenant(tenant, () =>
+        runtime.query<{ id: string; context: unknown }>(
+          "SELECT reply.id, source.context FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.executed'",
+          [fixture.threadId],
+        ),
+      );
+      expect(reply.rows).toEqual([
+        { id: expect.any(String), context: [{ kind: "approvalRequest", approvalRequestId: requestId }] },
+      ]);
+      if (!reply.rows[0]) throw new Error("Missing queued result");
+      expect(await waitForReply(reply.rows[0].id)).toEqual([{ status: "done", text: "Approved result noted" }]);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("Approval outcome: executed");
+      expect(prompts[0]).toContain("closed fixture");
+      expect(
+        (
+          await runInTenant(tenant, () =>
+            runtime.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+              [fixture.threadId],
+            ),
+          )
+        ).rows,
+      ).toEqual(beforeUserRows.rows);
+    } catch (error) {
+      failure = { error };
+    }
+    const errors: unknown[] = [];
+    for (const cleanup of [
+      () => runner?.stop(),
+      () => closeIdleThreadSessions(runtime),
+      () => server.stop(),
+      () => restorePolicy?.(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Real outcome cleanup failed", {
         cause: failure?.error,
       });
     if (failure) throw failure.error;
