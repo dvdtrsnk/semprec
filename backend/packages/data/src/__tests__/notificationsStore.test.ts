@@ -387,6 +387,8 @@ describe("notificationsStore (issue #152)", () => {
               } catch (cleanupError) {
                 releaseError = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
                 throw new AggregateError([error, cleanupError], "Manual transaction and rollback failed", {
+                  // The operation error remains primary; the rollback error is retained above.
+                  // eslint-disable-next-line preserve-caught-error
                   cause: error,
                 });
               }
@@ -437,6 +439,8 @@ describe("notificationsStore (issue #152)", () => {
     } catch (error) {
       if (primary)
         throw new AggregateError([primary.error, error], "Notification test and cleanup failed", {
+          // The test error remains primary; the pool cleanup error is retained above.
+          // eslint-disable-next-line preserve-caught-error
           cause: primary.error,
         });
       throw error;
