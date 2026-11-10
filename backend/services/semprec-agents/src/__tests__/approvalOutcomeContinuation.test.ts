@@ -512,7 +512,9 @@ describe("settled tick approval outcome continuation", () => {
       return true;
     };
     const runnerSettled = await settle("queue runner", async () => { await runner?.stop(); });
-    const sessionsSettled = await settle("thread sessions", () => closeIdleThreadSessions(runtime));
+    const sessionsSettled = await settle("thread sessions", async () => {
+      await closeIdleThreadSessions(runtime);
+    });
     const childSettled = await settle("stdio child", () => server.waitForChildExit());
     if (runnerSettled && sessionsSettled && childSettled) {
       await settle("stdio fixture", () => server.stop());
