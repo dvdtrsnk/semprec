@@ -411,26 +411,26 @@ function observeImageConversations(tenantId: string, threadId: string) {
 
 type ImageConversationObserver = ReturnType<typeof observeImageConversations>;
 
-// Graphile Worker 0.17.3's public jobs view omits the queue lock owner. Read it only for failure diagnostics.
-async function observeSempQueue(jobKey: string) {
-  const { rows } = await admin.query<{
-    queue_name: string;
-    queue_owner: string | null;
-    job_id: string;
-    key: string | null;
-    job_owner: string | null;
-    attempts: number;
-    run_at: Date;
-  }>(
-    `SELECT q.queue_name, q.locked_by AS queue_owner, j.id::text AS job_id, j.key,
-            j.locked_by AS job_owner, j.attempts, j.run_at
-       FROM graphile_worker._private_job_queues q
-       JOIN graphile_worker._private_jobs j ON j.job_queue_id = q.id
-      WHERE q.queue_name = (SELECT queue_name FROM graphile_worker.jobs WHERE key = $1)
-      ORDER BY j.id LIMIT 32`,
-    [jobKey],
+async function createIsolatedQueueTenant(): Promise<{ tenant: string; userId: string }> {
+  const tenant = await createTestTenant(admin);
+  const user = await createUser(admin, {
+    tenantId: tenant,
+    email: `${randomUUID()}@example.test`,
+    passwordHash: "unused",
+  });
+  await runInTenant(tenant, () => seedSystem(pool));
+  return { tenant, userId: user.id };
+}
+
+async function expectIsolatedQueueJobs(messageIds: [string, ...string[]]): Promise<void> {
+  const first = messageIds[0];
+  const { rows } = await admin.query<{ key: string | null }>(
+    `SELECT key FROM graphile_worker.jobs
+      WHERE queue_name = (SELECT queue_name FROM graphile_worker.jobs WHERE key = $1)
+      ORDER BY id`,
+    [`sempMessage:${first}`],
   );
-  return rows;
+  expect(rows).toEqual(messageIds.map((id) => ({ key: `sempMessage:${id}` })));
 }
 
 describe("queued Semp messages", () => {
@@ -2706,6 +2706,8 @@ describe("queued Semp messages", () => {
   it("executes an earlier queued user turn before the tick outcome through the real queue", async () => {
     await runtime?.stop();
     runtime = undefined;
+    // Direct-handler tests leave their jobs queued; this scenario owns a separate tenant FIFO lane.
+    const { tenant, userId } = await createIsolatedQueueTenant();
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage("earlier answer"), fauxAssistantMessage("acknowledged")]);
     const headers: (string | undefined)[] = [];
@@ -2762,6 +2764,7 @@ describe("queued Semp messages", () => {
         return { threadId, first: first.assistantMessageId, later: later.rows[0].id };
       }),
     );
+    await expectIsolatedQueueJobs([fixture.first, fixture.later]);
     runtime = await createAgentsQueueRuntime(pool, registry, {
       sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
     });
@@ -2781,10 +2784,6 @@ describe("queued Semp messages", () => {
         if (rows.length === 2 && rows.every((row) => row.status === "done")) break;
         await sleep(50);
       } while (Date.now() < deadline);
-      if (rows.some((row) => row.status !== "done"))
-        process.stdout.write(
-          `${JSON.stringify({ fixture: "semp-fifo-queue", queue: await observeSempQueue(`sempMessage:${fixture.first}`) })}\n`,
-        );
       expect(rows).toEqual([
         { id: fixture.first, status: "done", text: "earlier answer" },
         { id: fixture.later, status: "done", text: "acknowledged" },
@@ -3159,10 +3158,12 @@ describe("queued Semp messages", () => {
   it("publishes the committed turn invalidation for the owning tenant", async () => {
     await runtime?.stop();
     runtime = undefined;
+    const { tenant } = await createIsolatedQueueTenant();
     const other = await createTestTenant(admin);
     const turn = await runInTenant(tenant, () =>
       withTransaction(pool, (client) => sendSempMessage(client, { text: "notify", context: [], hasContext: false })),
     );
+    await expectIsolatedQueueJobs([turn.assistantMessageId]);
     const listener = await admin.connect();
     const sentinelId = randomUUID();
     const raw: string[] = [];
@@ -3349,9 +3350,6 @@ describe("queued Semp messages", () => {
         readMessage(other, turn.assistantMessageId),
         readMessage(tenant, randomUUID()),
       ]);
-      process.stdout.write(
-        `${JSON.stringify({ fixture: "semp-invalidation-queue", queue: await observeSempQueue(jobKey) })}\n`,
-      );
       const diagnostic = snapshot.map((result) =>
         result.status === "fulfilled"
           ? { status: "fulfilled", value: Array.isArray(result.value) ? result.value : result.value.rows }
