@@ -52,7 +52,12 @@ type CleanupRecord = {
   reported: boolean;
   outcome: Promise<void>;
 };
-const retainedCleanupCases: Array<{ primary?: { error: unknown }; records: CleanupRecord[] }> = [];
+type ObservedError = { error: unknown; reported: boolean };
+const retainedCleanupCases: Array<{
+  primary?: { error: unknown };
+  records: CleanupRecord[];
+  externalErrors?: ObservedError[];
+}> = [];
 function cleanupDiagnostic(): AggregateError {
   const errors: unknown[] = [];
   for (const item of retainedCleanupCases) {
@@ -60,6 +65,9 @@ function cleanupDiagnostic(): AggregateError {
     for (const record of item.records) {
       if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
       if (record.status === "rejected" && !record.reported) errors.push(record.error);
+    }
+    for (const observed of item.externalErrors ?? []) {
+      if (!observed.reported) errors.push(observed.error);
     }
   }
   return new AggregateError(errors, "Prior cleanup remains unsafe; resources cannot be reused or closed");
@@ -858,6 +866,7 @@ describe("settled tick approval outcome continuation", () => {
       ]);
       let server: Server | undefined;
       const gatewayRequests: Array<{ tenant: string | string[] | undefined }> = [];
+      const serverErrors: ObservedError[] = [];
       let gateway: GatewayModel;
       let runner: Awaited<ReturnType<typeof createAgentsQueueRuntime>> | undefined;
       let failure: { error: unknown } | undefined;
@@ -871,9 +880,14 @@ describe("settled tick approval outcome continuation", () => {
               res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
             });
           });
+          server.on("error", (error) => serverErrors.push({ error, reported: false }));
           await new Promise<void>((resolve, reject) => {
-            server!.once("error", reject);
-            server!.listen(0, "127.0.0.1", resolve);
+            const onListenError = (error: Error) => reject(error);
+            server!.once("error", onListenError);
+            server!.listen(0, "127.0.0.1", () => {
+              server!.off("error", onListenError);
+              resolve();
+            });
           });
           const port = (server.address() as AddressInfo).port;
           gateway = createGatewayModel({
@@ -979,7 +993,11 @@ describe("settled tick approval outcome continuation", () => {
           record.reported = true;
         }
       }
-      if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records });
+      for (const observed of serverErrors) {
+        if (!failure || observed.error !== failure.error) errors.push(observed.error);
+        observed.reported = true;
+      }
+      if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records, externalErrors: serverErrors });
       if (errors.length) throw cleanupAggregate(failure, errors);
       if (failure) throw failure.error;
     },
