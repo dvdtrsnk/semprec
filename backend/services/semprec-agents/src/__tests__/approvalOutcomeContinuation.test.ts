@@ -207,7 +207,7 @@ describe("settled tick approval outcome continuation", () => {
           } else {
             const subject = await createItemWithClient(client, {
               databaseId: inbox.id,
-              properties: { text: "Item thread subject" },
+              properties: { text: "Item thread subject", date: "2026-10-22", time: "10:30" },
             });
             // No production item-thread creator exists at this layer.
             const rows = await client.query<{ id: string }>(
