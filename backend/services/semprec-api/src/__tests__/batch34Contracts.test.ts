@@ -165,7 +165,7 @@ describe("batch 34 entry-point contracts", () => {
     if (failures.length > 0) throw new AggregateError(failures, "Batch 34 contract fixture cleanup failed");
   });
 
-  it("gh-1605: GET returns the series fields and a client PATCH of each is refused with 403 owner_violation", async () => {
+  it("gh-1605: GET returns series fields and PATCH accepts recurrence while refusing system identifiers", async () => {
     const own = await tenantWithUser();
     const foreign = await tenantWithUser();
     const seriesProperty = await property(own, "tasks", "seriesId");
@@ -176,8 +176,7 @@ describe("batch 34 entry-point contracts", () => {
         databaseId: databaseOf(own, "tasks"),
         properties: { name: "Weekly review", date: "2026-10-12" },
       });
-      // The recurrence route (#1665) is not built yet, so the series is created through the Tasks store's public
-      // `createTaskRecurrence` and the Tasks owner's system choke-point write of the three series properties.
+      // Create a legacy series through the Tasks store and its system choke-point projection.
       await withTransaction(runtime, async (client) => {
         const series = await createTaskRecurrence(client, {
           itemId: created.id,
@@ -247,11 +246,7 @@ describe("batch 34 entry-point contracts", () => {
       },
     ]);
     invalidations = [];
-    for (const patch of [
-      { seriesId: randomUUID() },
-      { occurrenceDate: "2026-10-19" },
-      { recurrence: { preset: null, mode: "fixed", rule } },
-    ]) {
+    for (const patch of [{ seriesId: randomUUID() }, { occurrenceDate: "2026-10-19" }]) {
       const refused = await call("PATCH", `/api/items/${task.id}`, own.headers, {
         properties: patch,
         ifVersion: before.updatedAt,
@@ -262,10 +257,20 @@ describe("batch 34 entry-point contracts", () => {
         details: { field: Object.keys(patch)[0] },
       });
     }
+    const malformed = await call("PATCH", `/api/items/${task.id}`, own.headers, {
+      properties: { recurrence: { preset: null, mode: "fixed", rule } },
+      ifVersion: before.updatedAt,
+    });
+    expect(malformed.status).toBe(400);
     const after = await call("GET", `/api/items/${task.id}`, own.headers);
     expect(itemEnvelope.parse(after.json)).toEqual(before);
     expect(await recurrenceRows()).toEqual(rowsBefore);
     expect(invalidations).toEqual([]);
+    const permitted = await call("PATCH", `/api/items/${task.id}`, own.headers, {
+      properties: { recurrence: { mode: "fixed", rule } },
+      ifVersion: before.updatedAt,
+    });
+    expect(permitted.status).toBe(200);
 
     const foreignRead = await call("GET", `/api/items/${task.id}`, foreign.headers);
     const randomRead = await call("GET", `/api/items/${randomUUID()}`, foreign.headers);

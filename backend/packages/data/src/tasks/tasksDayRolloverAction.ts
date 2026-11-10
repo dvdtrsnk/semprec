@@ -1,3 +1,4 @@
+import { closeMissedOccurrence } from "./closeMissedOccurrences.js";
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -106,7 +107,7 @@ async function completedInEventEdge(
  * several days writes each task once. See docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md and
  * docs/adr/2026-11-09-task-rollover-excludes-its-current-result-state.md.
  */
-export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
+export function createTasksDayRolloverAction(pool: Pool, options: { recurringLimit?: number } = {}): ActionHandler {
   return async (actionConfig) => {
     const { tasksDatabaseId } = configSchema.parse(actionConfig);
     const context = await withTransaction(pool, async (client) => {
@@ -122,6 +123,42 @@ export function createTasksDayRolloverAction(pool: Pool): ActionHandler {
         await rolloverTaskWithClient(client, { databaseId: tasksDatabaseId, itemId, date: context.today });
       }
     };
+
+    for (const skipLocked of [true, false]) {
+      let afterRecurringId: string | null = null;
+      for (let count = 0; count < (options.recurringLimit ?? MAX_SWEEP_CHUNKS_PER_TENANT * CHUNK_SIZE); count++) {
+        const id: string | null = await withTransaction(pool, async (client) => {
+          const result = await client.query<{ id: string }>(
+            `SELECT i.id FROM items i
+             JOIN task_recurrence s ON s.tenant_id = i.tenant_id AND s.series_id =
+               (CASE WHEN i.deleted_at IS NULL AND i.properties->>'status' = 'notDone'
+                 AND jsonb_typeof(i.properties->'seriesId') = 'string'
+                 AND COALESCE(i.properties->>'seriesId', '') <> ''
+                 AND jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+                 AND i.properties->>'occurrenceDate' < $2
+                 THEN (i.properties->>'seriesId')::uuid END)
+             WHERE i.tenant_id = app_tenant_default() AND i.database_id = $1 AND i.deleted_at IS NULL
+               AND i.properties->>'status' = 'notDone'
+               AND jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+               AND i.properties->>'occurrenceDate' < $2 AND s.active
+               AND s.anchor_date IS NOT NULL AND s.template IS NOT NULL
+               AND task_recurrence_due_for_rollover(s.mode, s.rule,
+                 (CASE WHEN jsonb_typeof(i.properties->'occurrenceDate') = 'string'
+                   AND i.properties->>'occurrenceDate' < $2 THEN (i.properties->>'occurrenceDate')::date END),
+                 s.anchor_date, $2::date)
+               AND ($3::uuid IS NULL OR i.id > $3::uuid)
+             ORDER BY i.id LIMIT 1 FOR UPDATE OF i${skipLocked ? " SKIP LOCKED" : ""}`,
+            [tasksDatabaseId, context.today, afterRecurringId],
+          );
+          const id = result.rows[0]?.id;
+          if (!id) return null;
+          await closeMissedOccurrence(client, tasksDatabaseId, id, context.today);
+          return id;
+        });
+        if (!id) break;
+        afterRecurringId = id;
+      }
+    }
 
     let afterId: string | null = null;
     for (let chunk = 0; chunk < MAX_SWEEP_CHUNKS_PER_TENANT; chunk++) {

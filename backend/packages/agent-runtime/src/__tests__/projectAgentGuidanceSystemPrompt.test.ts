@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { writeBlock } from "@semprec/block-model";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -6,10 +8,19 @@ import {
   createProjectAgentGuidanceSaveRouteHandler,
   createUser,
   projectAgentGuidanceStore,
+  readProjectNotes,
+  readPageMarkdown,
+  mutateYDoc,
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  writePageTextBlocks,
+} from "@semprec/data/testSupport";
 import { createProjectAgentGuidanceSystemPromptOverride } from "../projectAgentGuidanceSystemPrompt.js";
 
 let admin: Pool;
@@ -30,6 +41,48 @@ describe("saved guidance reaches the next agent prompt", () => {
     await pool.end();
     await admin.end();
   });
+  it("uses real page captions on both sides of the notes cap", async () => {
+    const tenant = await createTestTenant(admin);
+    await createUser(admin, { email: "notes@example.test", passwordHash: "hash", tenantId: tenant });
+    await runInTenant(tenant, () => seedSystem(pool));
+    await runInTenant(tenant, async () => {
+      const db = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+      if (!db.rows[0]) throw new Error("Missing Projects database");
+      const project = await createChokePoint(pool).createItem({
+        databaseId: db.rows[0].id,
+        properties: { name: "Project" },
+      });
+      await writePageTextBlocks(pool, project.id, []);
+      const empty = await withTransaction(pool, (tx) => readPageMarkdown(tx, project.id));
+      if (!empty.docId) throw new Error("Missing page document");
+      const first = (
+        await createChokePoint(pool).createItem({ databaseId: db.rows[0].id, properties: { name: "First child" } })
+      ).id;
+      const second = (
+        await createChokePoint(pool).createItem({ databaseId: db.rows[0].id, properties: { name: "Second child" } })
+      ).id;
+      await mutateYDoc(pool, empty.docId, "user", (doc) => {
+        writeBlock(doc, { id: randomUUID(), type: "page", pageId: first, text: "First title" });
+        writeBlock(doc, { id: randomUUID(), type: "text", text: "x".repeat(33000) });
+        writeBlock(doc, { id: randomUUID(), type: "page", pageId: second, text: "Second title" });
+      });
+      const override = await createProjectAgentGuidanceSystemPromptOverride(
+        () => Promise.resolve(null),
+        project.id,
+        (id) => withTransaction(pool, (tx) => readProjectNotes(tx, id)),
+      );
+      const prompt = override("Base");
+      expect(prompt).toContain(`[First title](semprec://page/${first})`);
+      expect(prompt).toContain(
+        JSON.stringify([
+          { id: first, title: "First title" },
+          { id: second, title: "Second title" },
+        ]),
+      );
+      expect(prompt).not.toContain(`[Second title](semprec://page/${second})`);
+    });
+  });
+
   it("uses the actual saved sections and creates its heartbeat", async () => {
     const tenant = await createTestTenant(admin);
     const user = await createUser(admin, { email: "prompt@example.test", passwordHash: "hash", tenantId: tenant });

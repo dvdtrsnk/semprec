@@ -61,7 +61,7 @@ export interface ProjectToolCallUsageStore<Tx> {
   listProjectToolCallGroups(tx: Tx, projectItemId: string, since: Date): Promise<ProjectToolCallGroup[]>;
 }
 
-export type GuidanceDriftFindingStatus = "active" | "resolved";
+export type GuidanceDriftFindingStatus = "active" | "resolved" | "dismissed";
 
 export interface GuidanceDriftFinding {
   id: string;
@@ -99,6 +99,11 @@ export interface GuidanceDriftFindingStore<Tx> {
     findingId: string,
     resolvedAt: Date,
   ): Promise<{ finding: GuidanceDriftFinding; transitionedToResolved: boolean }>;
+  decide(
+    tx: Tx,
+    findingId: string,
+    decision: { status: "resolved" | "dismissed"; choice: "allow" | "forbid" | "dismiss"; userId: string; at: Date },
+  ): Promise<GuidanceDriftFinding>;
 }
 
 /**

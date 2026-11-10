@@ -1,5 +1,7 @@
+import { reserveInboxTypeCards, resolveInboxTypeCardConfiguration } from "./inboxTypeCardReservation.js";
+import { lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 import type { PoolClient } from "pg";
-import type { Queryable } from "../db/pool.js";
+import { markManagedTransactionRollbackOnly, type Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -184,59 +186,29 @@ export async function deleteInboxTypeWithClient(
   const typeRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id);
   if (!typeRelationDefinition) throw new NotFoundError(`Property '${typeProperty.id}' has no relation definition`);
 
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
-    client,
-    input.processingProposalsDatabaseId,
-    "sourceInbox",
-  );
-  if (!sourceInboxProperty)
-    throw new NotFoundError(
-      `Processing proposals database ${input.processingProposalsDatabaseId} has no 'sourceInbox' relation property`,
-    );
-  const sourceInboxRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-    client,
-    sourceInboxProperty.id,
-  );
-  if (!sourceInboxRelationDefinition)
-    throw new NotFoundError(`Property '${sourceInboxProperty.id}' has no relation definition`);
+  let configuration: Awaited<ReturnType<typeof resolveInboxTypeCardConfiguration>>;
+  try {
+    configuration = await resolveInboxTypeCardConfiguration(client, input.processingProposalsDatabaseId);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
 
   const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
   const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId)).sort();
 
-  // One query for every referencing Inbox item's proposal edges, instead of one query per
-  // Inbox item — the same N+1 `proposalIdsByInboxItem` below then avoids.
-  const proposalEdges = await relationsStore.listRelationsForItems(
-    client,
-    sourceInboxRelationDefinition.id,
-    inboxItemIds,
-  );
-  const inboxItemIdSet = new Set(inboxItemIds);
-  const proposalIdsByInboxItem = new Map<string, string[]>(inboxItemIds.map((inboxItemId) => [inboxItemId, []]));
-  const allProposalIds: string[] = [];
-  for (const edge of proposalEdges) {
-    const inboxItemId = inboxItemIdSet.has(edge.itemA) ? edge.itemA : edge.itemB;
-    const proposalItemId = relationsStore.otherSide(edge, inboxItemId);
-    proposalIdsByInboxItem.get(inboxItemId)?.push(proposalItemId);
-    allProposalIds.push(proposalItemId);
-  }
-
-  // One query for every referenced proposal, instead of one `getItemById` per proposal edge.
-  const proposals = await itemsStore.getItemsByIdsInDatabaseIncludingDeleted(
-    client,
-    input.processingProposalsDatabaseId,
-    allProposalIds,
-  );
-  const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
-
   for (const inboxItemId of inboxItemIds) {
-    const locked = (proposalIdsByInboxItem.get(inboxItemId) ?? []).some((proposalItemId) => {
-      const proposal = proposalById.get(proposalItemId);
-      return (
-        proposal !== undefined &&
-        typeof proposal.properties.status === "string" &&
-        LOCKED_PROPOSAL_STATUSES.has(proposal.properties.status)
-      );
-    });
+    if (!(await lockInboxSourceIfPresent(client, inboxItemId, true))) continue;
+    let cards: ItemRow[];
+    try {
+      cards = await reserveInboxTypeCards(client, inboxItemId, configuration);
+    } catch (error) {
+      markManagedTransactionRollbackOnly(client, error);
+      throw error;
+    }
+    const locked = cards.some(
+      (card) => typeof card.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(card.properties.status),
+    );
     if (locked) continue;
 
     await deleteRelationWithClient(client, {

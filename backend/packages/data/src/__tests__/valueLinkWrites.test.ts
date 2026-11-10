@@ -3766,6 +3766,13 @@ describe("value link state on writes (issue #1516)", () => {
               await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
               return { item, type, other };
             });
+            const jobKeys = [fixture.item.id, fixture.type.id, fixture.other.id].map(
+              (id) => `item-search-reindex:item:${id}`,
+            );
+            const priorJobs = await pool.query<{ key: string }>(
+              "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+              [jobKeys],
+            );
             const sourceHeld = barrier();
             const userStarted = barrier();
             const linkHeld = barrier();
@@ -3902,19 +3909,51 @@ describe("value link state on writes (issue #1516)", () => {
               }
               const outcomes = await bounded(Promise.all([user, system]));
               console.info("Inbox relation admission", { order, userPid, systemPid });
-              expect(outcomes[0]).toEqual({ ok: true });
-              if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
-              else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
-              if (outcomes[1]) consumed.add(outcomes[1]);
+              if (order === "system-first") {
+                expect(outcomes[0]).toMatchObject({ ok: false, error: { code: "cardinality_violation", status: 409 } });
+                expect(outcomes[1]).toEqual({ ok: true });
+              } else {
+                expect(outcomes[0]).toEqual({ ok: true });
+                expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy", status: 409 } });
+              }
+              for (const outcome of outcomes) if (outcome) consumed.add(outcome);
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fixture.item.id]),
               );
-              expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
-              expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.item.id)).toHaveLength(
-                1,
+              expect(links).toHaveLength(1);
+              expect(links[0]).toMatchObject(
+                order === "system-first" ? { state: "on" } : { state: "broken", brokenBy: "user" },
               );
+              const targetId = order === "system-first" ? fixture.other.id : fixture.type.id;
+              expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.item.id)).toHaveLength(
+                order === "system-first" ? 0 : 1,
+              );
+              expect(events.filter((event) => event.scope === "relation")).toEqual([
+                expect.objectContaining({ scope: "relation", itemId: fixture.item.id, propertyKey: "type", op: "put" }),
+                expect.objectContaining({ scope: "relation", itemId: targetId, propertyKey: null, op: "put" }),
+              ]);
               const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
-              expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
+              if (!edges) throw new Error("Missing Inbox type relation");
+              expect(edges).toEqual([
+                expect.objectContaining({
+                  relationPropertyId: property.id,
+                  propertyKey: "type",
+                  targetItemId: targetId,
+                }),
+              ]);
+              const jobs = await pool.query<{ key: string }>(
+                "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+                [jobKeys],
+              );
+              expect(jobs.rows.map((row) => row.key)).toEqual(
+                [
+                  ...new Set([
+                    ...priorJobs.rows.map((row) => row.key),
+                    jobKeys[0],
+                    jobKeys[order === "system-first" ? 2 : 1],
+                  ]),
+                ].sort(),
+              );
             } catch (error) {
               failure = { error };
             } finally {

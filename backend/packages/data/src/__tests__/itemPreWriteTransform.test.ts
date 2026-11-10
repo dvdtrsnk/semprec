@@ -7,6 +7,7 @@ import {
   clearHooksForTests,
   registerItemCreateHook,
   registerItemPreWriteTransform,
+  registerItemUpdateCommand,
   registerItemUpdateHook,
 } from "../chokePoint/hooks.js";
 import { ForbiddenError, ValidationError } from "../errors.js";
@@ -92,6 +93,62 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("refuses a declared command without its own registered transform and preparation", async () => {
+    const databaseId = await makeProbeDatabase();
+    const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
+    const database = await chokePoint.getDatabase(databaseId);
+    if (!database) throw new Error("Missing probe database");
+    const properties = await chokePoint.listProperties(databaseId);
+    const before = await chokePoint.getItem(databaseId, item.id);
+    expect(before).not.toBeNull();
+    const paired = async ({ patch }: { patch: Record<string, unknown> }) => patch;
+    registerItemPreWriteTransform(
+      PROBE_MODULE,
+      async ({ patch }) => patch,
+      async ({ patch }) => ({ patch, deferredKeys: [] }),
+    );
+    registerItemUpdateCommand(PROBE_MODULE, {
+      key: "stamp",
+      transform: paired,
+      validate: () => {},
+      prepare: (value) => ({ intent: value, preconditions: {} }),
+      consume: async () => ({}),
+    });
+    await expect(
+      prepareUserItemPatch(properties, { stamp: "raw" }, database, item, "Europe/Prague"),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    await expect(
+      chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
+  });
+
+  it("refuses a matching command transform without preparation", async () => {
+    const databaseId = await makeProbeDatabase();
+    const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
+    const database = await chokePoint.getDatabase(databaseId);
+    if (!database) throw new Error("Missing probe database");
+    const properties = await chokePoint.listProperties(databaseId);
+    const before = await chokePoint.getItem(databaseId, item.id);
+    expect(before).not.toBeNull();
+    const paired = async ({ patch }: { patch: Record<string, unknown> }) => patch;
+    registerItemPreWriteTransform(PROBE_MODULE, paired);
+    registerItemUpdateCommand(PROBE_MODULE, {
+      key: "stamp",
+      transform: paired,
+      validate: () => {},
+      prepare: (value) => ({ intent: value, preconditions: {} }),
+      consume: async () => ({}),
+    });
+    await expect(
+      prepareUserItemPatch(properties, { stamp: "raw" }, database, item, "Europe/Prague"),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    await expect(
+      chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
   });
 
   describe("effective patch validation", () => {

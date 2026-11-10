@@ -21,6 +21,7 @@ import {
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
+  readProjectNotes,
   withClient,
   resolveModuleAgentToolsForRun,
   resolveModuleRuleKinds,
@@ -322,11 +323,13 @@ export async function createAgentSessionFactoryForRun(
           kind: thread.kind,
           databases: schema.databases,
           missingHeartbeat: thread.kind === "tick" && !!currentSempMessage?.current && !turn?.projectItemId,
+          rejectedOutcome: turn?.outcome?.kind === "rejected",
         };
       })
     : null;
-  const tools =
-    threadContext?.kind === "item"
+  const tools = threadContext?.rejectedOutcome
+    ? []
+    : threadContext?.kind === "item"
       ? allGenericTools.filter((tool) => ITEM_THREAD_OPERATIONS.some((name) => name === tool.label))
       : allGenericTools;
   let moduleTools: typeof tools = [];
@@ -344,7 +347,7 @@ export async function createAgentSessionFactoryForRun(
   let systemPrompt = instruction ? `${basePrompt}\n${instruction}` : basePrompt;
 
   if (run.projectItemId) {
-    if (threadContext?.kind !== "item") {
+    if (threadContext?.kind !== "item" && !threadContext?.rejectedOutcome) {
       tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
       moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
       if (threadContext?.missingHeartbeat)
@@ -358,6 +361,8 @@ export async function createAgentSessionFactoryForRun(
           projectAgentGuidanceStore.load(tx, projectItemId),
         ),
       run.projectItemId,
+      (projectItemId) =>
+        transactions.withTransaction({ isolation: "repeatable_read" }, (tx) => readProjectNotes(tx, projectItemId)),
     );
     systemPrompt = override(systemPrompt);
   }

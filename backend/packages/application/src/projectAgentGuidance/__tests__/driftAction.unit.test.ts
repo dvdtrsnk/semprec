@@ -131,6 +131,19 @@ function fakeFindings(): GuidanceDriftFindingStore<FakeTx> & { rows: Map<string,
       rows.set(key, updated);
       return { finding: updated, transitionedToResolved: wasActive };
     },
+    async decide(_tx, findingId, decision) {
+      const entry = [...rows.entries()].find(([, row]) => row.id === findingId && row.status === "active");
+      if (!entry) throw new Error(`finding ${findingId} not found`);
+      const [key, existing] = entry;
+      const updated = {
+        ...existing,
+        status: decision.status,
+        lastSeenAt: decision.at.toISOString(),
+        resolvedAt: decision.at.toISOString(),
+      };
+      rows.set(key, updated);
+      return updated;
+    },
   };
 }
 

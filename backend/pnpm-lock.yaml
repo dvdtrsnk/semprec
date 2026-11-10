@@ -69,6 +69,9 @@ importers:
       '@semprec/application':
         specifier: workspace:*
         version: link:../application
+      '@semprec/block-model':
+        specifier: workspace:*
+        version: link:../../../shared/block-model
       '@semprec/data':
         specifier: workspace:*
         version: link:../data
@@ -423,6 +426,9 @@ importers:
       '@semprec/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@semprec/block-model':
+        specifier: workspace:*
+        version: link:../../../shared/block-model
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data

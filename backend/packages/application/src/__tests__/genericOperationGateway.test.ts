@@ -1136,6 +1136,527 @@ describe("createGenericOperationGateway (issue #220)", () => {
       }),
   );
 
+  it("approves a recurrence change exactly once", async () =>
+    inTenantZero(async () => {
+      const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+      if (!tasks) throw new Error("Tasks missing");
+      const item = await chokePoint.createItem({
+        databaseId: tasks.id,
+        properties: { name: "Task", date: "2026-10-22" },
+      });
+      const weekly = await chokePoint.updateItem({
+        databaseId: tasks.id,
+        itemId: item.id,
+        propertiesPatch: { recurrence: { preset: "weekly" } },
+      });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "change recurrence" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      let requestId = "";
+      try {
+        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+          properties: { recurrence: { preset: "monthly" } },
+          ifVersion: weekly.updatedAt,
+        });
+        expect.unreachable("Expected approval");
+      } catch (error) {
+        if (!(error instanceof ApprovalRequiredError)) throw error;
+        requestId = error.details.approvalRequestId;
+      }
+      expect((await chokePoint.findItem(item.id))?.properties.recurrence).toEqual(weekly.properties.recurrence);
+      const pending = await getApprovalRequest(pool, requestId);
+      expect(pending?.description?.key).toBe("approval.changesSeries");
+      await withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: requestId,
+          decision: "approved",
+          decidedByUserId: run.actorUserId,
+        }),
+      );
+      const request = await getApprovalRequest(pool, requestId);
+      if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
+      expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
+      const after = await chokePoint.findItem(item.id);
+      expect(after?.properties.recurrence).toMatchObject({
+        preset: "monthly",
+        rule: { kind: "monthDates", dates: [22] },
+      });
+      expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
+      expect(await chokePoint.findItem(item.id)).toEqual(after);
+    }));
+
+  it("executes a new series immediately, leaves a rejected ending unchanged, and conflicts on a stale series", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
+        if (!tasks) throw new Error("Tasks missing");
+        const cp = createChokePoint(runtime);
+        const item = await cp.createItem({ databaseId: tasks.id, properties: { name: "Task", date: "2026-10-22" } });
+        const projectItemId = randomUUID();
+        const run = await withTransaction(runtime, (client) =>
+          createAgentRun(client, { projectItemId, triggeredBy: "user", task: "recurrence" }),
+        );
+        const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        const initial = await cp.findItem(item.id);
+        await expect(
+          gateway.invoke("item.patch", actor, NO_CAPABILITIES, {
+            itemId: item.id,
+            properties: { recurrence: { preset: "weekly" } },
+            ifVersion: item.updatedAt,
+          }),
+        ).rejects.toMatchObject({ status: 404, code: "not_found" });
+        expect(await cp.findItem(item.id)).toEqual(initial);
+        const created = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+          properties: { recurrence: { preset: "weekly" } },
+          ifVersion: item.updatedAt,
+        });
+        expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
+        expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+        const seriesSnapshot = () =>
+          runtime.query<{
+            item_id: string;
+            series_id: string;
+            active: boolean;
+            mode: string;
+            rule: unknown;
+            anchor_date: Date | null;
+            template: unknown;
+          }>(
+            "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
+            [created.properties.seriesId],
+          );
+        const originalSeries = await seriesSnapshot();
+        expect(originalSeries.rows).toMatchObject([
+          { active: true, mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } },
+        ]);
+        const weekly = await cp.findItem(item.id);
+        if (!weekly) throw new Error("Task missing");
+        expect(weekly.properties.recurrence).toMatchObject({ preset: "weekly" });
+        const requestFor = async (value: unknown, version: string, ordinary: Record<string, unknown> = {}) => {
+          try {
+            await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+              itemId: item.id,
+              properties: { ...ordinary, recurrence: value },
+              ifVersion: version,
+            });
+          } catch (error) {
+            if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
+            throw error;
+          }
+          throw new Error("Approval was not requested");
+        };
+        const rejected = await requestFor(null, weekly.updatedAt);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: rejected,
+            decision: "rejected",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
+        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.updatedAt);
+        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
+        // Synthetic intervening state: normal recurrence owners update the item projection too.
+        const seriesOnlyRule = { kind: "weekdays", days: ["mon"] };
+        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
+          created.properties.seriesId,
+          JSON.stringify(seriesOnlyRule),
+        ]);
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: seriesOnly,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const seriesOnlyRequest = await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly));
+        if (!seriesOnlyRequest || !isGenericOperationApprovalRequestPayload(seriesOnlyRequest.payload))
+          throw new Error("Missing series-only request");
+        const jobsBeforeConflict = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const conflictInvalidations: unknown[] = [];
+        setInvalidationHook((event) => conflictInvalidations.push(event));
+        try {
+          expect(
+            (
+              await replayApprovedGenericOperation(runtime, {
+                ...seriesOnlyRequest,
+                payload: seriesOnlyRequest.payload,
+              })
+            ).error,
+          ).toBe(true);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        expect(
+          (
+            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
+              created.properties.seriesId,
+            ])
+          ).rows,
+        ).toEqual([{ rule: seriesOnlyRule }]);
+        expect(
+          (await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly)))?.executionStatus,
+        ).toBe("conflict");
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsBeforeConflict.rows);
+        expect(conflictInvalidations).toEqual([]);
+        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
+          created.properties.seriesId,
+          JSON.stringify({ kind: "weekdays", days: ["thu"] }),
+        ]);
+        const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt, {
+          name: "Changed only after approval",
+        });
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        const pending = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
+        expect(pending).toMatchObject({
+          riskClass: "write",
+          description: {
+            key: "approval.changesSeries",
+            params: {
+              taskName: "Task",
+              fromRule: JSON.stringify({ kind: "weekdays", days: ["thu"] }),
+              toRule: JSON.stringify({ kind: "monthDates", dates: [22] }),
+            },
+          },
+        });
+        const notifications = await runtime.query<{ id: string; kind: string; body: string | null }>(
+          "SELECT id, kind, body FROM notifications WHERE source_table = $1 AND source_id = $2",
+          ["approval_requests", stale],
+        );
+        expect(notifications.rows).toEqual([
+          {
+            id: expect.any(String),
+            kind: "approval_pending",
+            body: `Změnit opakování úkolu „Task“ z ${JSON.stringify({ kind: "weekdays", days: ["thu"] })} na ${JSON.stringify({ kind: "monthDates", dates: [22] })}. Lze ji později vzít zpět.`,
+          },
+        ]);
+        const notificationId = notifications.rows[0]?.id;
+        if (!notificationId) throw new Error("Missing approval notification");
+        const fanout = await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          `notification-fanout:${notificationId}`,
+        ]);
+        expect(fanout.rows).toEqual([{ key: `notification-fanout:${notificationId}` }]);
+        const changed = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: { preset: "daily" } },
+            ifVersion: weekly.updatedAt,
+          },
+        );
+        const changedProjection = await cp.findItem(item.id);
+        expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
+        expect(changedProjection?.properties.recurrence).toMatchObject({
+          preset: "daily",
+          mode: "fixed",
+          rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+        });
+        expect((await seriesSnapshot()).rows).toMatchObject([
+          {
+            active: true,
+            mode: "fixed",
+            rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+          },
+        ]);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: stale,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
+        if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
+        const seriesBeforeConflict = await seriesSnapshot();
+        const jobsBeforeUserConflict = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const userConflictInvalidations: unknown[] = [];
+        setInvalidationHook((event) => userConflictInvalidations.push(event));
+        try {
+          expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
+            true,
+          );
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect(await cp.findItem(item.id)).toEqual(changedProjection);
+        expect((await seriesSnapshot()).rows).toEqual(seriesBeforeConflict.rows);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsBeforeUserConflict.rows);
+        expect(userConflictInvalidations).toEqual([]);
+        expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
+          "conflict",
+        );
+        const changeRequest = await requestFor({ preset: "monthly" }, changed.updatedAt, {
+          name: "Approved together",
+        });
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: changeRequest,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const approvedChange = await withTransaction(runtime, (client) => getApprovalRequest(client, changeRequest));
+        if (!approvedChange || !isGenericOperationApprovalRequestPayload(approvedChange.payload))
+          throw new Error("Missing change request");
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload })).error,
+        ).toBe(false);
+        const changedTogether = await cp.findItem(item.id);
+        expect(changedTogether?.properties).toMatchObject({
+          name: "Approved together",
+          recurrence: { preset: "monthly", mode: "fixed", rule: { kind: "monthDates", dates: [22] } },
+        });
+        expect(
+          (
+            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
+              created.properties.seriesId,
+            ])
+          ).rows,
+        ).toEqual([{ rule: { kind: "monthDates", dates: [22] } }]);
+        const seriesAfterChange = await seriesSnapshot();
+        const jobsAfterChange = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        const replayInvalidations: unknown[] = [];
+        setInvalidationHook((event) => replayInvalidations.push(event));
+        try {
+          expect(
+            (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload }))
+              .error,
+          ).toBe(false);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect(await cp.findItem(item.id)).toEqual(changedTogether);
+        expect((await seriesSnapshot()).rows).toEqual(seriesAfterChange.rows);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsAfterChange.rows);
+        expect(replayInvalidations).toEqual([]);
+        if (!changedTogether) throw new Error("Missing changed task");
+        const ending = await requestFor(null, changedTogether.updatedAt);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: ending,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const approvedEnd = await withTransaction(runtime, (client) => getApprovalRequest(client, ending));
+        if (!approvedEnd || !isGenericOperationApprovalRequestPayload(approvedEnd.payload))
+          throw new Error("Missing ending request");
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
+        ).toBe(false);
+        const ended = await cp.findItem(item.id);
+        expect(ended?.properties).toMatchObject({ recurrence: null, seriesId: null, occurrenceDate: null });
+        const rowsAfterEnd = await runtime.query<{ active: boolean }>(
+          "SELECT active FROM task_recurrence WHERE series_id = $1",
+          [created.properties.seriesId],
+        );
+        expect(rowsAfterEnd.rows).toEqual([{ active: false }]);
+        const seriesAfterEnd = await seriesSnapshot();
+        const jobsAfterEnd = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
+        ).toBe(false);
+        expect(await cp.findItem(item.id)).toEqual(ended);
+        expect((await seriesSnapshot()).rows).toEqual(seriesAfterEnd.rows);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsAfterEnd.rows);
+        if (!ended) throw new Error("Missing ended task");
+        const requestsBeforeUser = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
+        const userStart = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: { preset: "daily" } },
+            ifVersion: ended.updatedAt,
+          },
+        );
+        const userStarted = await cp.findItem(item.id);
+        expect(userStarted?.updatedAt).toBe(userStart.updatedAt);
+        const userSeriesId = userStarted?.properties.seriesId;
+        expect(userSeriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+        const userEnd = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: null },
+            ifVersion: userStart.updatedAt,
+          },
+        );
+        expect((await cp.findItem(item.id))?.properties).toMatchObject({
+          recurrence: null,
+          seriesId: null,
+          occurrenceDate: null,
+        });
+        expect((await cp.findItem(item.id))?.updatedAt).toBe(userEnd.updatedAt);
+        expect(
+          (
+            await runtime.query<{ active: boolean }>("SELECT active FROM task_recurrence WHERE series_id = $1", [
+              userSeriesId,
+            ])
+          ).rows,
+        ).toEqual([{ active: false }]);
+        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
+          requestsBeforeUser.rows,
+        );
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Recurrence test and cleanup failed", {
+          // The test failure is primary; the cleanup error remains in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
+        });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
+  });
+
+  it("rolls back a recurrence approval request if its notification insert fails", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let triggerCreated = false;
+    const invalidations: unknown[] = [];
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
+        if (!tasks) throw new Error("Tasks missing");
+        const cp = createChokePoint(runtime);
+        const item = await cp.createItem({
+          databaseId: tasks.id,
+          properties: { name: "Atomic task", date: "2026-10-22" },
+        });
+        const weekly = await cp.updateItem({
+          databaseId: tasks.id,
+          itemId: item.id,
+          propertiesPatch: { recurrence: { preset: "weekly" } },
+        });
+        const projectItemId = randomUUID();
+        const run = await createAgentRun(runtime, {
+          projectItemId,
+          triggeredBy: "user",
+          task: "change recurrence",
+        });
+        const actor: AuthenticatedActor = {
+          userId: run.actorUserId,
+          runId: run.id,
+          agentProjectItemId: projectItemId,
+        };
+        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        const beforeItem = await cp.findItem(item.id);
+        const beforeSeries = await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
+          "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
+          [item.id],
+        );
+        const beforeRequests = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
+        const beforeNotifications = await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id");
+        const beforeJobs = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        await pool.query(`CREATE FUNCTION reject_recurrence_notification_test() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'injected recurrence notification failure'; END $$`);
+        await pool.query(`CREATE TRIGGER reject_recurrence_notification_test BEFORE INSERT ON notifications
+          FOR EACH ROW WHEN (NEW.kind = 'approval_pending') EXECUTE FUNCTION reject_recurrence_notification_test()`);
+        triggerCreated = true;
+        setInvalidationHook((event) => invalidations.push(event));
+        await expect(
+          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+            itemId: item.id,
+            properties: { recurrence: { preset: "monthly" }, name: "Not committed" },
+            ifVersion: weekly.updatedAt,
+          }),
+        ).rejects.toThrow("injected recurrence notification failure");
+        expect(await cp.findItem(item.id)).toEqual(beforeItem);
+        expect(
+          (
+            await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
+              "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
+              [item.id],
+            )
+          ).rows,
+        ).toEqual(beforeSeries.rows);
+        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
+          beforeRequests.rows,
+        );
+        expect((await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id")).rows).toEqual(
+          beforeNotifications.rows,
+        );
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(beforeJobs.rows);
+        expect(invalidations).toEqual([]);
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    setInvalidationHook(() => {});
+    const cleanup: unknown[] = [];
+    for (const step of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER reject_recurrence_notification_test ON notifications");
+      },
+      async () => {
+        await pool.query("DROP FUNCTION IF EXISTS reject_recurrence_notification_test()");
+      },
+      async () => {
+        await runtime.end();
+      },
+    ]) {
+      try {
+        await step();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanup] : cleanup,
+        "Recurrence notification cleanup failed",
+        { cause: failure ? failure.error : cleanup[0] },
+      );
+    if (failure) throw failure.error;
+  });
+
   it("snapshots and replays a flagged item patch without the original version guard", async () =>
     inTenantZero(async () => {
       const database = await chokePoint.createDatabase({ name: "Flag patch" });

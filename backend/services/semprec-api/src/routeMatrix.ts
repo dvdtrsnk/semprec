@@ -104,6 +104,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "project guidance drift read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance/drift`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
+  { name: "guidance drift resolve", method: "POST", path: `/api/agent-guidance-drift/${EXAMPLE_ID}/resolve`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
   { name: "semp thread create message", method: "POST", path: "/api/semp/threads", surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "semp thread send message", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages`, surface: "api", public: false, tenancy: "tenant" },

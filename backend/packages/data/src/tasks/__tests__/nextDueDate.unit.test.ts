@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { firstOccurrenceAfter, latestOccurrenceOnOrBefore, occurrenceDatesInRange } from "../nextDueDate.js";
-import type { TaskRecurrenceRule } from "../taskRecurrenceRule.js";
+import { fixedRecurrenceRuleSchema, type TaskRecurrenceRule } from "../taskRecurrenceRule.js";
 
 const weeklyMonday: TaskRecurrenceRule = { kind: "weekdays", days: ["mon"] };
 const daily: TaskRecurrenceRule = { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] };
@@ -114,5 +114,36 @@ describe("occurrenceDatesInRange (issue #1672)", () => {
 
   it("is empty when the range ends before the anchor", () => {
     expect(occurrenceDatesInRange(daily, "2026-10-20", "2026-10-12", "2026-10-18")).toEqual([]);
+  });
+});
+
+describe("yearly recurrence", () => {
+  it("validates real month/day combinations including leap day", () => {
+    for (const rule of [
+      { kind: "yearDates", month: 3, day: 15 },
+      { kind: "yearDates", month: 2, day: 29 },
+    ])
+      expect(fixedRecurrenceRuleSchema.safeParse(rule).success).toBe(true);
+    for (const rule of [
+      { kind: "yearDates", month: 13, day: 1 },
+      { kind: "yearDates", month: 1, day: 0 },
+      { kind: "yearDates", month: 4, day: 31 },
+      { kind: "yearDates", month: 2, day: 30 },
+    ])
+      expect(fixedRecurrenceRuleSchema.safeParse(rule).success).toBe(false);
+  });
+
+  it("finds the next and latest dates, including a non-leap century", () => {
+    const march = { kind: "yearDates", month: 3, day: 15 } as const;
+    const leap = { kind: "yearDates", month: 2, day: 29 } as const;
+    expect(firstOccurrenceAfter(march, "2026-03-15", "2026-03-15")).toBe("2027-03-15");
+    expect(firstOccurrenceAfter(leap, "2028-02-29", "2028-02-29")).toBe("2032-02-29");
+    expect(firstOccurrenceAfter(leap, "2096-02-29", "2096-02-29")).toBe("2104-02-29");
+    expect(latestOccurrenceOnOrBefore(leap, "2096-02-29", "2103-12-31")).toBe("2096-02-29");
+    expect(latestOccurrenceOnOrBefore(march, "2025-03-15", "2026-10-16")).toBe("2026-03-15");
+    expect(occurrenceDatesInRange(leap, "2028-02-29", "2028-01-01", "2032-12-31")).toEqual([
+      "2028-02-29",
+      "2032-02-29",
+    ]);
   });
 });

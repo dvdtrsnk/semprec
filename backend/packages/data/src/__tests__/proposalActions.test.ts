@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { createUser } from "../auth/usersStore.js";
+import { readPageMarkdown } from "../docs/pageMarkdown.js";
 import { z } from "zod";
 import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
 import "../domainWriteHooks.js";
@@ -44,7 +46,7 @@ import { insertValueLink, listValueLinksByItemIds } from "../chokePoint/valueLin
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
-import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
+import { loadDoc, loadDocWithClient, mutateDoc } from "../docs/docPersistence.js";
 import { createSubpageWithClient } from "../docs/pageOperations.js";
 import { proposalBlockId } from "../inbox/proposalPageContent.js";
 import { listPageChanges } from "../docs/pageChanges.js";
@@ -837,14 +839,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     );
   }
 
-  async function createDatabaseProposal(text = "Buy milk") {
+  async function createDatabaseProposal(text = "Buy milk", targetDatabase: "tasks" | "files" = "tasks") {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
         inboxItemTypesDatabaseId: typesId,
         name: "Task",
         emoji: "☑️",
         processingMethod: "database",
-        targetDatabase: "tasks",
+        targetDatabase,
       }),
     );
     const item = await withTransaction(pool, (client) =>
@@ -905,6 +907,181 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     );
     expect(createdTask).toBeTruthy();
     expect(createdTask!.properties.name).toBe("Buy milk");
+  });
+
+  it("writes one editable Inbox origin paragraph on a created item", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    const confirmed = await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    const itemId = z.string().parse(confirmed.properties.resultItemId);
+    const first = await docStore.readPageMarkdown(itemId);
+    expect(first.markdown).toBe("Vytvořeno ze schránky: Buy milk");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe(first.markdown);
+    const blocks = await docStore.listBlocks(itemId);
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0];
+    if (!block) throw new Error("Missing origin block");
+    const blockId = z.string().parse(block["sys:id"]);
+    if (!first.docId) throw new Error("Missing origin document");
+    await mutateDoc(pool, first.docId, "user", (doc) =>
+      writeBlock(doc, { id: blockId, type: "text", text: "Edited by user" }),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("Edited by user");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("Edited by user");
+    await docStore.deleteBlock(itemId, blockId, "user");
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
+    expect((await docStore.readPageMarkdown(itemId)).markdown).toBe("");
+  });
+
+  it("uses the confirming user's English locale and user author for the created page", async () => {
+    const actor = await createUser(pool, {
+      email: "english-origin@example.test",
+      passwordHash: "hash",
+      tenantId: getTenantZeroId(),
+      locale: "en",
+    });
+    const proposal = await createDatabaseProposal("English capture\nSecond line", "files");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const confirmed = await withTransaction(runtime, (client) =>
+          confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            proposal.id,
+            undefined,
+            actor.id,
+          ),
+        );
+        const itemId = z.string().parse(confirmed.properties.resultItemId);
+        const page = await withTransaction(runtime, (client) => readPageMarkdown(client, itemId));
+        expect(page.markdown).toBe("Created from Inbox: English capture<br>Second line");
+        const docId = page.docId;
+        if (!docId) throw new Error("Missing origin page");
+        const blocks = await withTransaction(runtime, async (client) => {
+          const doc = await loadDocWithClient(client, docId);
+          try {
+            return readPageBlocks(doc);
+          } finally {
+            doc.destroy();
+          }
+        });
+        expect(blocks.map((block) => block.text.map((run) => run.insert).join(""))).toEqual([
+          "Created from Inbox: English capture\nSecond line",
+        ]);
+        const updates = await runtime.query<{ created_by: string }>(
+          "SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id",
+          [page.docId],
+        );
+        expect(updates.rows).toEqual([{ created_by: "user" }]);
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", {
+          // The original test failure is primary; cleanupError is retained in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
+          cause: failure.error,
+        });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
+  });
+
+  it("rolls back confirmation when the origin page write fails", async () => {
+    const proposal = await createDatabaseProposal("Rollback origin");
+    const tenant = getTenantZeroId();
+    const before = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+    const tasksBefore = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
+      tasksId,
+    ]);
+    const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const docsBefore = await pool.query<{ id: string; item_id: string }>("SELECT id, item_id FROM docs ORDER BY id");
+    const snapshotsBefore = await pool.query<{ doc_id: string; state: Buffer; state_vector: Buffer }>(
+      "SELECT doc_id, state, state_vector FROM doc_snapshots ORDER BY doc_id",
+    );
+    const invalidations: InvalidationEvent[] = [];
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    try {
+      setInvalidationHook((event) => invalidations.push(event));
+      await pool.query(`CREATE FUNCTION reject_origin_note_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected origin note failure'; END $$`);
+      await pool.query(
+        "CREATE TRIGGER reject_origin_note_test BEFORE INSERT ON doc_updates FOR EACH ROW EXECUTE FUNCTION reject_origin_note_test()",
+      );
+      await expect(
+        runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+          ),
+        ),
+      ).rejects.toThrow("injected origin note failure");
+      expect(await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id))).toEqual(
+        before,
+      );
+      expect(
+        (await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [tasksId])).rows,
+      ).toEqual(tasksBefore.rows);
+      expect(
+        (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobsBefore.rows);
+      const origins = await pool.query<{ item_id: string }>("SELECT item_id FROM item_origins WHERE proposal_id = $1", [
+        proposal.id,
+      ]);
+      expect(origins.rows).toEqual([]);
+      expect(
+        (await pool.query<{ id: string; item_id: string }>("SELECT id, item_id FROM docs ORDER BY id")).rows,
+      ).toEqual(docsBefore.rows);
+      expect(
+        (
+          await pool.query<{ doc_id: string; state: Buffer; state_vector: Buffer }>(
+            "SELECT doc_id, state, state_vector FROM doc_snapshots ORDER BY doc_id",
+          )
+        ).rows,
+      ).toEqual(snapshotsBefore.rows);
+      expect(invalidations).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    setInvalidationHook(() => {});
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      () => pool.query("DROP TRIGGER IF EXISTS reject_origin_note_test ON doc_updates"),
+      () => pool.query("DROP FUNCTION IF EXISTS reject_origin_note_test()"),
+      () => runtime.end(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Origin test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
   });
 
   it("confirm is idempotent under retry: a second confirm does not create a second target item", async () => {
@@ -2141,6 +2318,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("links an existing person to a created company once and rolls back a later failure", async () => {
       const person = await createIn("people", { name: "Jane" });
+      const personPageBefore = await docStore.readPageMarkdown(person);
       const steps: Step[] = [
         { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
         {
@@ -2164,6 +2342,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const company = first.properties.resultItemId;
       if (typeof company !== "string") throw new Error("Expected created company");
       expect(await edgeExists(person, company)).toBe(true);
+      expect(await docStore.readPageMarkdown(person)).toEqual(personPageBefore);
       const repeated = await confirm(card);
       expect(repeated.id).toBe(first.id);
       expect(repeated.properties).toEqual(first.properties);
@@ -3464,6 +3643,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "From Inbox" } },
       ]);
       const confirmed = await confirm(card);
+      const createdId = z.string().parse(confirmed.properties.resultItemId);
+      expect((await docStore.readPageMarkdown(createdId)).markdown).toBe("Vytvořeno ze schránky: seed");
       const manual = await createIn("files", { name: "Manual" });
       const page = await createChokePoint(pool).queryDatabaseItems(await databaseIdFor("files"), {});
       expect(page.items.find((item) => item.id === confirmed.properties.resultItemId)?.fromInbox).toBe(true);
@@ -3520,6 +3701,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect(rows).toHaveLength(2);
         expect(rows.map((row) => row.item_id).sort()).toEqual((await createdIds()).sort());
         for (const row of rows) {
+          expect((await docStore.readPageMarkdown(row.item_id)).markdown).toBe("Vytvořeno ze schránky: seed");
           expect(row.proposal_id).toBe(card);
           expect(row.inbox_item_id).toBe(inboxItemId);
           expect(row.source_transcript_id).toBeNull();
@@ -3748,6 +3930,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const rows = await originRows();
         expect(rows).toHaveLength(1);
         expect(rows[0]!.item_id).not.toBe(existing);
+        expect((await docStore.readPageMarkdown(existing)).docId).toBeNull();
       });
 
       it("writes no row when the confirm fails and rolls back", async () => {

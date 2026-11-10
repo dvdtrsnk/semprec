@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { runInTenant } from "@semprec/shared";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
@@ -18,6 +20,9 @@ import {
 } from "../notifications/notificationPreferencesStore.js";
 import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import type { PushSenders } from "../push/pushSenders.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 
 let pool: Pool;
 
@@ -89,6 +94,71 @@ describe("notificationFanout job (issue #151)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("keeps the existing resolved notification on replay after its project is trashed", async () => {
+    const userId = await createTestUser();
+    await runInTenant(getTenantZeroId(), () => seedSystem(pool));
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects")),
+    );
+    if (!database) throw new Error("Missing Projects database");
+    const project = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } }),
+      ),
+    );
+    const input = {
+      userId,
+      kind: "agent_guidance_drift_resolved" as const,
+      linkHref: null,
+      sourceTable: "agent_guidance_drift_findings",
+      sourceId: "finding",
+      transitionInstance: "decision",
+      payload: { projectItemId: project.id, kind: "behavior" },
+    };
+    const write = () =>
+      runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => writeNotification(client, input)));
+    const first = await write();
+    const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+      [notificationFanoutJobKey(first)],
+    );
+    await runInTenant(getTenantZeroId(), () => createChokePoint(pool).softDeleteItem(database.id, project.id));
+    const second = await write();
+    expect(second).toBe(first);
+    expect(
+      (await pool.query<{ id: string }>("SELECT id FROM notifications WHERE source_id = $1", [input.sourceId])).rows,
+    ).toEqual([{ id: first }]);
+    expect(
+      (
+        await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs WHERE key = $1",
+          [notificationFanoutJobKey(first)],
+        )
+      ).rows,
+    ).toEqual(jobsBefore.rows);
+  });
+
+  it("rolls back a failed first enrichment even when a caller catches it", async () => {
+    const userId = await createTestUser();
+    const sourceId = "missing-project";
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        await expect(
+          writeNotification(client, {
+            userId,
+            kind: "agent_guidance_drift_resolved",
+            linkHref: null,
+            sourceTable: "agent_guidance_drift_findings",
+            sourceId,
+            transitionInstance: "decision",
+            payload: { projectItemId: "00000000-0000-4000-8000-000000000000", kind: "behavior" },
+          }),
+        ).rejects.toThrow("Guidance drift project not found");
+      }),
+    );
+    expect((await pool.query("SELECT id FROM notifications WHERE source_id = $1", [sourceId])).rows).toEqual([]);
   });
 
   it("enqueues one notification-level fanout job when writeNotification actually inserts a row", async () => {
@@ -519,12 +589,18 @@ describe("notificationFanout job (issue #151)", () => {
       const userId = await createTestUser();
       await addWebPushRegistration(userId, "info-kind");
       await setPreferences(userId, { problemsLevel: "all" });
+      await seedSystem(pool);
+      const projectItemId = await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "projects");
+        if (!database) throw new Error("Missing projects database");
+        return (await createItemWithClient(client, { databaseId: database.id, properties: { name: "Project" } })).id;
+      });
       const notificationId = await writeTestNotification(
         userId,
         "info-resolved",
         "agent_guidance_drift_resolved",
         "agent_guidance_drift_findings",
-        {},
+        { projectItemId },
       );
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });

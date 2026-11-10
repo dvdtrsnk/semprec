@@ -544,7 +544,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       await settle(failure, started, [observed.pool]);
     });
 
-    it("returns the series fields on read and refuses a client write of each of them with 403 owner_violation", async () => {
+    it("returns series fields and accepts recurrence while refusing seriesId and occurrenceDate", async () => {
       const tasks = await tasksDatabaseId(tenant);
       const cp = createChokePoint(pool);
       const task = await runInTenant(tenant, () =>
@@ -558,16 +558,29 @@ describe("recurring task series (issues #1605, #1670)", () => {
         occurrenceDate: "2026-10-12",
         recurrence: { preset: "weekly", mode: "fixed", rule: weeklyMonday },
       });
-      for (const patch of [
-        { seriesId: "00000000-0000-4000-8000-000000000000" },
-        { occurrenceDate: "2026-10-13" },
-        { recurrence: { preset: null, mode: "fixed", rule: daily } },
-      ]) {
+      for (const patch of [{ seriesId: "00000000-0000-4000-8000-000000000000" }, { occurrenceDate: "2026-10-13" }]) {
         await expect(
           runInTenant(tenant, () => cp.updateItem({ databaseId: tasks, itemId: task.id, propertiesPatch: patch })),
         ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
       }
+      await expect(
+        runInTenant(tenant, () =>
+          cp.updateItem({
+            databaseId: tasks,
+            itemId: task.id,
+            propertiesPatch: { recurrence: { preset: null, mode: "fixed", rule: daily } },
+          }),
+        ),
+      ).rejects.toMatchObject({ status: 400 });
       expect(await runInTenant(tenant, () => cp.getItem(tasks, task.id))).toEqual(read);
+      const changed = await runInTenant(tenant, () =>
+        cp.updateItem({
+          databaseId: tasks,
+          itemId: task.id,
+          propertiesPatch: { recurrence: { mode: "fixed", rule: daily } },
+        }),
+      );
+      expect(changed.properties.recurrence).toMatchObject({ mode: "fixed", rule: daily });
     });
   });
 

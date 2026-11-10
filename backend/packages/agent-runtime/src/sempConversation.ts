@@ -226,7 +226,7 @@ export class SempConversation {
     if (!state?.entry) return;
     if (state.entry.busy || state.waking || state.dropped) throw new Error("Semp conversation is not idle");
     if (state.entry.lastCompletedToken !== undefined && state.entry.lastCompletedToken === frontier) return;
-    await this.pause(state);
+    await this.pause(state, true);
     if (state.entry) throw new Error("Could not pause stale Semp conversation");
   }
 
@@ -519,7 +519,7 @@ export class SempConversation {
    * session whose run this is in the middle of finishing as `done`; it observes `busy` and is
    * rejected instead, same as if a turn were in flight.
    */
-  private async pause(state: ThreadConversation): Promise<void> {
+  private async pause(state: ThreadConversation, strict = false): Promise<void> {
     const entry = state.entry;
     if (!entry || entry.busy) return;
     entry.busy = true;
@@ -541,10 +541,21 @@ export class SempConversation {
       entry.busy = false;
       // A tenant dropped while this pause held the entry closes its run as `error` instead.
       if (state.dropped) {
-        await this.closeDropped(state, entry);
+        try {
+          await this.closeDropped(state, entry);
+        } catch (cleanupError) {
+          if (strict) {
+            // The pause error is primary; preserve the later cleanup error in the aggregate.
+            // eslint-disable-next-line preserve-caught-error
+            throw new AggregateError([err, cleanupError], "Semp pause and drop cleanup failed", { cause: err });
+          }
+          throw cleanupError;
+        }
+        if (strict) throw err;
         return;
       }
       entry.ttlTimer = this.scheduleTtl(state);
+      if (strict) throw err;
     }
   }
 }

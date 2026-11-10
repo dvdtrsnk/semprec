@@ -1,3 +1,4 @@
+import { runInboxMarkdownFormatCutoverMigration } from "../inbox/inboxMarkdownFormatCutoverMigration.js";
 import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
@@ -79,6 +80,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPeopleEventsInverseCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);
     await runProcessingProposalsCardStateCutoverMigration(pool);
+    await runInboxMarkdownFormatCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);
     await runEmailsSenderPeopleCardinalityCutoverMigration(pool);
     await runMailDraftsAndSentReadBackfill(pool);

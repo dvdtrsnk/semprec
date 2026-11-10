@@ -1,11 +1,16 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
+import { Settings } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { getDatabase } from "../chokePoint/databasesStore.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
+import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
@@ -124,6 +129,226 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     await admin?.end();
   });
 
+  it("accepts a generic recurrence command and keeps identical commands as no-ops", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const first = await runInTenant(tenant, () =>
+      cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
+    );
+    expect(first.properties.recurrence).toEqual({
+      preset: "weekly",
+      mode: "fixed",
+      rule: { kind: "weekdays", days: ["thu"] },
+    });
+    const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    let same: typeof first;
+    try {
+      same = await runInTenant(tenant, () =>
+        cp.updateItem({
+          databaseId: tasksId,
+          itemId: id,
+          ifVersion: first.updatedAt,
+          propertiesPatch: { recurrence: { preset: "weekly" } },
+        }),
+      );
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(same.updatedAt).toBe(first.updatedAt);
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(jobsBefore.rows);
+    expect(events).toEqual([]);
+    expect(await seriesRows()).toHaveLength(1);
+    const ended = await runInTenant(tenant, () =>
+      cp.updateItem({
+        databaseId: tasksId,
+        itemId: id,
+        ifVersion: same.updatedAt,
+        propertiesPatch: { recurrence: null },
+      }),
+    );
+    expect(ended.properties.recurrence).toBeNull();
+    expect((await seriesRows())[0]?.active).toBe(false);
+  });
+
+  it("refuses a generic recurrence command without a task date without changing the item or series", async () => {
+    const id = await task({});
+    const before = await runInTenant(tenant, () => cp.getItem(tasksId, id));
+    const seriesBefore = await seriesRows();
+    const jobs = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await expect(
+        runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
+        ),
+      ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(jobs.rows);
+    expect(events).toEqual([]);
+    expect(await runInTenant(tenant, () => cp.getItem(tasksId, id))).toEqual(before);
+    expect(await seriesRows()).toEqual(seriesBefore);
+  });
+
+  it("prepares typed recurrence intent with copied item preconditions and no effects", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const initialSeries = await seriesRows();
+    const beforeJobs = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabase(client, tasksId);
+          const item = await getItemById(client, tasksId, id);
+          const properties = await listPropertiesByDatabase(client, tasksId);
+          if (!database || !item) throw new Error("Missing task fixture");
+          const before = structuredClone(item);
+          const input = { recurrence: { mode: "fixed", rule: { kind: "monthDates", dates: [5] } } };
+          const inputBefore = structuredClone(input);
+          const explicit = await prepareUserItemPatch(properties, input, database, item, "Europe/Prague");
+          expect(explicit).toMatchObject({
+            patch: {},
+            command: {
+              key: "recurrence",
+              intent: input.recurrence,
+              preconditions: { date: "2026-10-22", recurrence: item.properties.recurrence },
+            },
+          });
+          expect(explicit.command?.preconditions.recurrence).not.toBe(item.properties.recurrence);
+          expect(input).toEqual(inputBefore);
+          expect(item).toEqual(before);
+          expect(
+            (
+              await prepareUserItemPatch(
+                properties,
+                { recurrence: { preset: "daily" } },
+                database,
+                item,
+                "Europe/Prague",
+              )
+            ).command?.intent,
+          ).toEqual({ preset: "daily" });
+          expect(
+            (await prepareUserItemPatch(properties, { recurrence: null }, database, item, "Europe/Prague")).command
+              ?.intent,
+          ).toBeNull();
+          await expect(
+            prepareUserItemPatch(properties, { recurrence: { preset: "unknown" } }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 400 });
+          for (const rule of [null, "bad", 7]) {
+            await expect(
+              prepareUserItemPatch(
+                properties,
+                { recurrence: { mode: "fixed", rule } },
+                database,
+                item,
+                "Europe/Prague",
+              ),
+            ).rejects.toMatchObject({ status: 400, details: { field: "rule" } });
+          }
+          await expect(
+            prepareUserItemPatch(
+              properties,
+              { recurrence: { preset: "daily" }, date: null },
+              database,
+              item,
+              "Europe/Prague",
+            ),
+          ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
+          await expect(
+            prepareUserItemPatch(properties, { seriesId: "foreign" }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 403 });
+          const mismatched = properties.map((property) =>
+            property.key === "recurrence" ? { ...property, ownerProcess: "other" } : property,
+          );
+          await expect(
+            prepareUserItemPatch(mismatched, { recurrence: null }, database, item, "Europe/Prague"),
+          ).rejects.toMatchObject({ status: 403 });
+          await expect(
+            prepareUserItemPatch(
+              properties,
+              { recurrence: null },
+              { ...database, ownerModuleId: null },
+              item,
+              "Europe/Prague",
+            ),
+          ).rejects.toMatchObject({ status: 403 });
+        }),
+      );
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(await seriesRows()).toEqual(initialSeries);
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(beforeJobs.rows);
+    expect(events).toEqual([]);
+    await expect(
+      runInTenant(tenant, () =>
+        cp.createItem({ databaseId: tasksId, properties: { name: "Forbidden", recurrence: { preset: "daily" } } }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("defers an agent's change of an active series without modifying it", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const before = await seriesRows();
+    const beforeItem = await stored(id);
+    await expect(inTenantWrite()).rejects.toMatchObject({
+      name: "ApprovalRequiredForWrite",
+      reasons: [expect.objectContaining({ kind: "changesSeries", to: { kind: "monthDates", dates: [22] } })],
+    });
+    expect(await seriesRows()).toEqual(before);
+    expect(await stored(id)).toEqual(beforeItem);
+    function inTenantWrite() {
+      return runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "monthly" } } },
+            { writer: { writerKind: "agent", agentRunId: randomUUID() } },
+          ),
+        ),
+      );
+    }
+  });
+
+  it("rejects stale generic recurrence changes before touching the series", async () => {
+    const id = await task({ date: "2026-10-22" });
+    await put(id, { preset: "weekly" });
+    const before = await seriesRows();
+    await expect(
+      runInTenant(tenant, () =>
+        cp.updateItem({
+          databaseId: tasksId,
+          itemId: id,
+          ifVersion: "stale",
+          propertiesPatch: { recurrence: { preset: "monthly" } },
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "version_conflict" });
+    expect(await seriesRows()).toEqual(before);
+  });
+
   it("stores weekdays [thu] for preset weekly on a task dated Thursday 22 October and returns recurrence and seriesId", async () => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset: "weekly" });
@@ -148,6 +373,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     ["daily", { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }],
     ["weekdays", { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] }],
     ["monthly", { kind: "monthDates", dates: [22] }],
+    ["yearly", { kind: "yearDates", month: 10, day: 22 }],
   ])("maps preset %s on 22 October to a fixed rule", async (preset, rule) => {
     const id = await task({ date: "2026-10-22" });
     const response = await put(id, { preset });
@@ -170,6 +396,65 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     expect(error.details).toEqual({ field: "date" });
     expect(await seriesRows()).toEqual([]);
     expect(await stored(id)).toEqual(before);
+  });
+
+  it("advances a completed yearly occurrence to the next year", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const first = await put(id, { preset: "yearly" });
+    const previousNow = Settings.now;
+    Settings.now = () => Date.parse("2026-10-22T12:00:00Z");
+    try {
+      await runInTenant(tenant, () =>
+        cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status: "done" } }),
+      );
+    } finally {
+      Settings.now = previousNow;
+    }
+    const [series] = await seriesRows();
+    if (!series) throw new Error("Missing series");
+    expect(series.item_id).not.toBe(id);
+    expect(await stored(series.item_id)).toMatchObject({
+      date: "2027-10-22",
+      occurrenceDate: "2027-10-22",
+      seriesId: first.item.properties.seriesId,
+    });
+  });
+
+  it("uses the supplied date for the yearly preset and refuses impossible dates without writes", async () => {
+    const id = await task({ date: "2026-10-22" });
+    const response = await put(id, { preset: "yearly", date: "2026-12-24" });
+    expect(response.item.properties.recurrence).toEqual({
+      preset: "yearly",
+      mode: "fixed",
+      rule: { kind: "yearDates", month: 12, day: 24 },
+    });
+    expect(await seriesRows()).toEqual([
+      expect.objectContaining({ anchor_date: "2026-12-24", rule: { kind: "yearDates", month: 12, day: 24 } }),
+    ]);
+    const before = await stored(id);
+    const rows = await seriesRows();
+    const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      for (const rule of [
+        { kind: "yearDates", month: 4, day: 31 },
+        { kind: "yearDates", month: 13, day: 1 },
+      ]) {
+        await expect(put(id, { mode: "fixed", rule })).rejects.toMatchObject({ status: 400 });
+        expect(await stored(id)).toEqual(before);
+        expect(await seriesRows()).toEqual(rows);
+      }
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(jobsBefore.rows);
+    expect(events).toEqual([]);
   });
 
   it("sets date, anchor and occurrence date to 5 November and the rule to day 5 for monthly with a date", async () => {
@@ -273,7 +558,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
   it.each([
     ["a body that is no object", null, "body"],
     ["an unknown field", { preset: "weekly", every: 2 }, "every"],
-    ["an unknown preset", { preset: "yearly" }, "preset"],
+    ["an unknown preset", { preset: "biennial" }, "preset"],
     ["a preset with a mode", { preset: "weekly", mode: "fixed", rule: { kind: "weekdays", days: ["mon"] } }, "preset"],
     ["an unknown mode", { mode: "sometimes", rule: {} }, "mode"],
     ["a mode without a rule", { mode: "fixed" }, "rule"],

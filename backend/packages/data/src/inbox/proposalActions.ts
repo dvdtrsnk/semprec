@@ -1,3 +1,4 @@
+import { insertInboxOriginNotes } from "./originNote.js";
 import { DateTime } from "luxon";
 import { z } from "zod";
 import type { PoolClient } from "pg";
@@ -507,6 +508,7 @@ export async function confirmProposalWithClient(
       createdItemIds = [created.id];
     }
     await insertItemOrigins(client, createdItemIds, origin);
+    await insertInboxOriginNotes(client, createdItemIds, origin.inboxItemId, actingUserId);
     resultItemId = created.id;
     if (!envelope.operations) stepResults = [{ ref: "primary", itemId: created.id, databaseId: created.databaseId }];
     resultLabel = await resolveResultLabel(client, resultDatabaseId, created);

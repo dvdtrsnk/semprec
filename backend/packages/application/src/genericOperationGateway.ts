@@ -105,7 +105,7 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
     case "item.delete":
       return { operation, input: input as { itemId: string } };
     case "item.patch":
-      return { operation, input: input as { itemId: string } };
+      return { operation, input: input as InputByOperation["item.patch"] };
     case "relation.put":
       return { operation, input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string } };
     case "relation.set":
@@ -135,9 +135,16 @@ async function executeDestructiveWithClient(
     case "item.patch": {
       const { item } = currentResource as { item: { databaseId: string } };
       const patch = input as InputByOperation["item.patch"];
+      const commandSnapshot =
+        typeof currentResource === "object" && currentResource !== null && "command" in currentResource;
       return updateItemWithClient(
         client,
-        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties },
+        {
+          databaseId: item.databaseId,
+          itemId: patch.itemId,
+          propertiesPatch: patch.properties,
+          ...(commandSnapshot ? { ifVersion: patch.ifVersion } : {}),
+        },
         { writer, queueAffinity: createActionQueueAffinity() },
       );
     }
@@ -288,7 +295,7 @@ async function preflightDestructiveApproval(
     }
 
     const check = buildDestructiveCheck(operation, input, toActor(actor));
-    const { snapshot } = await projectCheck(client, check);
+    const { snapshot, currentResource } = await projectCheck(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
@@ -296,7 +303,7 @@ async function preflightDestructiveApproval(
       actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
       resourceSnapshot: snapshot,
     };
-    const description = await buildDestructiveApprovalDescription(client, check);
+    const description = await buildDestructiveApprovalDescription(client, check, currentResource);
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
       toolName: operation,

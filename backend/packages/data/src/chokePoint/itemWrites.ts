@@ -1,3 +1,4 @@
+import { BlockInputError, parseMarkdown } from "@semprec/block-model";
 import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";
@@ -42,6 +43,8 @@ import { assertValidTimezone } from "../timezone.js";
 import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
 import {
   hasItemPreWriteTransform,
+  getItemUpdateCommand,
+  isItemUpdateCommandPaired,
   prepareItemPreWriteTransforms,
   runItemCreateHooks,
   runItemPreWriteTransforms,
@@ -81,6 +84,25 @@ function assertColorValues(properties: PropertyRow[], values: Record<string, unk
     if (byKey.get(key)?.type !== "color" || value === null) continue;
     if (typeof value !== "string" || !HEX_COLOR.test(value)) {
       throw new ValidationError(`Property '${key}' must be a color in #RRGGBB format or null`, { field: key });
+    }
+  }
+}
+
+function assertMarkdownValues(properties: PropertyRow[], values: Record<string, unknown>): void {
+  const byKey = new Map(properties.map((property) => [property.key, property]));
+  for (const [key, value] of Object.entries(values)) {
+    const property = byKey.get(key);
+    if (!property) continue;
+    const config: unknown = property.config;
+    if (typeof config !== "object" || config === null || Array.isArray(config))
+      throw new Error("Malformed property config");
+    if (!("format" in config) || config.format !== "markdown" || value === null) continue;
+    if (typeof value !== "string") throw new ValidationError("Markdown value must be a string", { field: key });
+    try {
+      parseMarkdown(value, { allowPage: false });
+    } catch (error) {
+      if (error instanceof BlockInputError) throw new ValidationError("Invalid Markdown value", { field: key });
+      throw error;
     }
   }
 }
@@ -167,6 +189,7 @@ export function assertUserItemPatchValid(
 ): void {
   assertWritableProperties(properties, Object.keys(values));
   assertColorValues(properties, values);
+  assertMarkdownValues(properties, values);
   assertTitlePresent(properties, values, ownerModuleId, { writerKind: "user" }, "patch");
 }
 
@@ -181,19 +204,39 @@ export async function prepareUserItemPatch(
   database: DatabaseRow,
   stored: ItemRow,
   timezone: string,
-): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
+): Promise<{
+  patch: Record<string, unknown>;
+  deferredKeys: string[];
+  command?: { key: string; intent: unknown; preconditions: Record<string, unknown> };
+}> {
   const callerKeys = Object.keys(values);
-  assertUserItemPatchValid(properties, values, database.ownerModuleId);
+  const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
+  const hasCommand = command !== undefined && Object.hasOwn(values, command.key);
+  const ordinary = { ...values };
+  let preparedCommand: { key: string; intent: unknown; preconditions: Record<string, unknown> } | undefined;
+  if (hasCommand && command) {
+    const property = properties.find((candidate) => candidate.key === command.key);
+    if (!database.ownerModuleId || !isItemUpdateCommandPaired(database.ownerModuleId, command))
+      throw new ValidationError("The item command has no owning transform", { field: command.key });
+    if (!property || property.owner !== "system" || property.ownerProcess !== database.ownerModuleId)
+      throw new ForbiddenError("Item command owner does not match", { field: command.key }, "owner_violation");
+    assertWritableProperties(properties, [command.key], { allowedSystemKeys: [command.key] });
+    delete ordinary[command.key];
+    const prepared = command.prepare(values[command.key], stored, ordinary);
+    preparedCommand = { key: command.key, ...prepared };
+  }
+  assertUserItemPatchValid(properties, ordinary, database.ownerModuleId);
   if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
   const result = await prepareItemPreWriteTransforms(database.ownerModuleId, {
     stored,
-    patch: { ...values },
+    patch: ordinary,
     timezone,
   });
   if (!result)
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
   assertTransformAddedKeysWritable(properties, callerKeys, result.patch, database.ownerModuleId);
   assertColorValues(properties, result.patch);
+  assertMarkdownValues(properties, result.patch);
   assertTitlePresent(properties, result.patch, database.ownerModuleId, { writerKind: "user" }, "patch");
   for (const key of result.deferredKeys) {
     const property = properties.find((candidate) => candidate.key === key);
@@ -201,7 +244,7 @@ export async function prepareUserItemPatch(
       throw new ValidationError("The item's write transform declared an invalid deferred key", { field: key });
     }
   }
-  return result;
+  return preparedCommand ? { ...result, command: preparedCommand } : result;
 }
 
 /**
@@ -340,6 +383,7 @@ export async function createItemReportingReplay(
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
   assertColorValues(properties, input.properties ?? {});
+  assertMarkdownValues(properties, input.properties ?? {});
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
@@ -382,6 +426,7 @@ export async function createItemReportingReplay(
         }
       }
       assertColorValues(properties, itemProperties);
+      assertMarkdownValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
@@ -473,10 +518,27 @@ export async function updateItemWithClient(
   await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
-  assertWritableProperties(properties, patchKeys, options);
-  assertColorValues(properties, input.propertiesPatch);
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
+  const commandProperty = command && properties.find((property) => property.key === command.key);
+  const hasCommand =
+    !!command && Object.hasOwn(input.propertiesPatch, command.key) && !options.allowedSystemKeys?.includes(command.key);
+  if (
+    hasCommand &&
+    (!commandProperty || commandProperty.owner !== "system" || commandProperty.ownerProcess !== database.ownerModuleId)
+  ) {
+    throw new ForbiddenError("Item command owner does not match", { field: command?.key }, "owner_violation");
+  }
+  assertWritableProperties(
+    properties,
+    patchKeys,
+    hasCommand && command
+      ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] }
+      : options,
+  );
+  assertColorValues(properties, input.propertiesPatch);
+  assertMarkdownValues(properties, input.propertiesPatch);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
@@ -484,19 +546,41 @@ export async function updateItemWithClient(
   const valueLinksHandoff = options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS;
   const needsTransform = moduleId !== null && hasItemPreWriteTransform(moduleId);
   let stored: Awaited<ReturnType<typeof itemsStore.lockItemById>> = null;
-  if (valueLinksHandoff || needsTransform) {
+  if (valueLinksHandoff || needsTransform || hasCommand) {
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
+  }
+  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.updatedAt) {
+    throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
+  }
+  const ordinaryPatch = { ...input.propertiesPatch };
+  if (hasCommand && command) {
+    delete ordinaryPatch[command.key];
+    if (!moduleId || !isItemUpdateCommandPaired(moduleId, command))
+      throw new ValidationError("The item command has no owning transform", { field: command.key });
+    propertiesPatch = ordinaryPatch;
   }
   if (moduleId !== null && needsTransform && stored) {
     // The transform reads the locked row that this update will replace.
     propertiesPatch = await applyItemPreWriteTransforms(
       moduleId,
-      { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
+      { client, database, stored, patch: ordinaryPatch, humanWriterUserId: options.humanWriterUserId, writer },
       properties,
     );
     assertColorValues(properties, propertiesPatch);
+    assertMarkdownValues(properties, propertiesPatch);
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
+  }
+  if (hasCommand && command && moduleId && stored) {
+    command.validate(input.propertiesPatch[command.key]);
+    const generated = await command.consume(
+      { client, database, stored, patch: propertiesPatch, writer, humanWriterUserId: options.humanWriterUserId },
+      input.propertiesPatch[command.key],
+    );
+    assertTransformAddedKeysWritable(properties, Object.keys(ordinaryPatch), generated, moduleId);
+    propertiesPatch = { ...propertiesPatch, ...generated };
+    if (Object.keys(propertiesPatch).length === 0)
+      return { ...stored, previous: { [command.key]: stored.properties[command.key] ?? null } };
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
@@ -615,28 +699,15 @@ export async function convergeObservedEmailFlagsWithClient(
   );
 }
 
-export interface RolloverTaskInput {
-  databaseId: string;
-  itemId: string;
-  /** The day the task moves to, `YYYY-MM-DD` in the system time zone. */
-  date: string;
-}
+export type RolloverTaskInput =
+  | { databaseId: string; itemId: string; date: string; status?: never }
+  | { databaseId: string; itemId: string; status: "missed"; date?: never };
 
-/**
- * The explicit ownership handover of docs/adr/2026-09-10-single-writer-ownership-model.md for the nightly Tasks day
- * rollover (issue #1674, docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md): the one system
- * write of Tasks' owner:'user' `date`, `timeFrom` and `timeTo`, which moves an unfinished one-off task to `input.date`
- * as an all-day task. It goes through `updateItemWithClient`, so the Tasks transform sets `since`/`sinceTime` by the
- * shared first-planned-day rule and derives `time`. It passes no acting user, so every moved task announces an
- * invalidation to every socket of the tenant, and it writes no `status`, so it starts no series advance. Never call
- * `updateItemWithClient` with these keys from another system process, and never use this function for any other key.
- */
+/** Nightly Tasks ownership handover; see the rollover and missed-occurrence ADRs. */
 export async function rolloverTaskWithClient(client: PoolClient, input: RolloverTaskInput): Promise<ItemRow> {
-  return updateItemWithClient(client, {
-    databaseId: input.databaseId,
-    itemId: input.itemId,
-    propertiesPatch: { date: input.date, timeFrom: null, timeTo: null },
-  });
+  const propertiesPatch =
+    input.status === "missed" ? { status: "missed" } : { date: input.date, timeFrom: null, timeTo: null };
+  return updateItemWithClient(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch });
 }
 
 /**
