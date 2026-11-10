@@ -13,6 +13,7 @@ import {
   createAgentRun,
   createCoreTaskList,
   createHeartbeat,
+  createItemWithClient,
   createPendingApprovalRequest,
   createUser,
   decideAndEnqueueApprovalRequest,
@@ -204,10 +205,14 @@ describe("settled tick approval outcome continuation", () => {
             if (!rows.rows[0]) throw new Error("Missing tick thread");
             threadId = rows.rows[0].id;
           } else {
-            // Synthetic item thread: there is no production thread creator at this layer.
+            const subject = await createItemWithClient(client, {
+              databaseId: inbox.id,
+              properties: { text: "Item thread subject" },
+            });
+            // No production item-thread creator exists at this layer.
             const rows = await client.query<{ id: string }>(
               "INSERT INTO semp_threads (kind, subject_inbox_item_id) VALUES ('item', $1) RETURNING id",
-              [randomUUID()],
+              [subject.id],
             );
             if (!rows.rows[0]) throw new Error("Missing item thread");
             threadId = rows.rows[0].id;
