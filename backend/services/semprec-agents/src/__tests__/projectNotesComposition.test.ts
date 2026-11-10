@@ -137,6 +137,8 @@ describe("project notes session composition", () => {
       } catch (error) {
         if (primary)
           throw new AggregateError([primary.error, error], "Notes composition and run cleanup failed", {
+            // Preserve the earlier test failure as the primary cause.
+            // eslint-disable-next-line preserve-caught-error
             cause: primary.error,
           });
         throw error;
