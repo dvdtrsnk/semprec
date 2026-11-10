@@ -3924,16 +3924,23 @@ describe("value link state on writes (issue #1516)", () => {
               expect(links[0]).toMatchObject(
                 order === "system-first" ? { state: "on" } : { state: "broken", brokenBy: "user" },
               );
+              const targetId = order === "system-first" ? fixture.other.id : fixture.type.id;
               expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.item.id)).toHaveLength(
-                1,
+                order === "system-first" ? 0 : 1,
               );
+              expect(events.filter((event) => event.scope === "relation")).toEqual([
+                expect.objectContaining({ scope: "relation", itemId: fixture.item.id, propertyKey: "type", op: "put" }),
+                expect.objectContaining({ scope: "relation", itemId: targetId, propertyKey: null, op: "put" }),
+              ]);
               const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
               if (!edges) throw new Error("Missing Inbox type relation");
-              expect(edges).toHaveLength(1);
-              expect(edges[0]).toMatchObject({
-                itemA: fixture.item.id,
-                itemB: order === "system-first" ? fixture.other.id : fixture.type.id,
-              });
+              expect(edges).toEqual([
+                expect.objectContaining({
+                  relationPropertyId: property.id,
+                  propertyKey: "type",
+                  targetItemId: targetId,
+                }),
+              ]);
               const jobs = await pool.query<{ key: string }>(
                 "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
                 [jobKeys],
