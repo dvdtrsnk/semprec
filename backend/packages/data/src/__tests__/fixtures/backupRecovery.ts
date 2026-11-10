@@ -250,7 +250,8 @@ export async function createStartResponseInterruptionProxy(
   releaseDaemon(): void;
   close(): Promise<void>;
 }> {
-  const directory = await mkdtemp("/private/tmp/b19-proxy-");
+  // Keep the Unix socket path short on both macOS and Linux, including under a long runner TMPDIR.
+  const directory = await mkdtemp("/tmp/b19-proxy-");
   const endpoint = join(directory, "engine.sock");
   const host = (await command(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]))
     .toString("utf8")

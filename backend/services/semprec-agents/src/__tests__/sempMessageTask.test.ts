@@ -411,6 +411,28 @@ function observeImageConversations(tenantId: string, threadId: string) {
 
 type ImageConversationObserver = ReturnType<typeof observeImageConversations>;
 
+// Graphile Worker 0.17.3's public jobs view omits the queue lock owner. Read it only for failure diagnostics.
+async function observeSempQueue(jobKey: string) {
+  const { rows } = await admin.query<{
+    queue_name: string;
+    queue_owner: string | null;
+    job_id: string;
+    key: string | null;
+    job_owner: string | null;
+    attempts: number;
+    run_at: Date;
+  }>(
+    `SELECT q.queue_name, q.locked_by AS queue_owner, j.id::text AS job_id, j.key,
+            j.locked_by AS job_owner, j.attempts, j.run_at
+       FROM graphile_worker._private_job_queues q
+       JOIN graphile_worker._private_jobs j ON j.job_queue_id = q.id
+      WHERE q.queue_name = (SELECT queue_name FROM graphile_worker.jobs WHERE key = $1)
+      ORDER BY j.id LIMIT 32`,
+    [jobKey],
+  );
+  return rows;
+}
+
 describe("queued Semp messages", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -2759,6 +2781,10 @@ describe("queued Semp messages", () => {
         if (rows.length === 2 && rows.every((row) => row.status === "done")) break;
         await sleep(50);
       } while (Date.now() < deadline);
+      if (rows.some((row) => row.status !== "done"))
+        process.stdout.write(
+          `${JSON.stringify({ fixture: "semp-fifo-queue", queue: await observeSempQueue(`sempMessage:${fixture.first}`) })}\n`,
+        );
       expect(rows).toEqual([
         { id: fixture.first, status: "done", text: "earlier answer" },
         { id: fixture.later, status: "done", text: "acknowledged" },
@@ -3323,6 +3349,9 @@ describe("queued Semp messages", () => {
         readMessage(other, turn.assistantMessageId),
         readMessage(tenant, randomUUID()),
       ]);
+      process.stdout.write(
+        `${JSON.stringify({ fixture: "semp-invalidation-queue", queue: await observeSempQueue(jobKey) })}\n`,
+      );
       const diagnostic = snapshot.map((result) =>
         result.status === "fulfilled"
           ? { status: "fulfilled", value: Array.isArray(result.value) ? result.value : result.value.rows }
