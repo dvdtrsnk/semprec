@@ -542,8 +542,11 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         if (!outcome.ok) throw outcome.error;
       } catch (error) {
         vi.useRealTimers();
-        if (failure)
+        if (failure) {
+          // The earlier test failure is primary; the caught actor failure remains in the aggregate.
+          // eslint-disable-next-line preserve-caught-error
           throw new AggregateError([failure.error, error], "Future occurrence actor failed", { cause: failure.error });
+        }
         throw error;
       }
     }
@@ -653,8 +656,11 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       outcome = await settleRolloverActor(holder);
     } catch (error) {
       setInvalidationHook(() => {});
-      if (failure)
+      if (failure) {
+        // The earlier test failure is primary; the caught actor failure remains in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
         throw new AggregateError([failure.error, error], "Rollover actor did not settle", { cause: failure.error });
+      }
       throw error;
     }
     setInvalidationHook(() => {});
