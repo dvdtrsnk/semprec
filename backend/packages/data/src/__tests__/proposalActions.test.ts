@@ -952,6 +952,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
     const proposal = await createDatabaseProposal("English capture\nSecond line", "files");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
     try {
       await runInTenant(getTenantZeroId(), async () => {
         const confirmed = await withTransaction(runtime, (client) =>
@@ -985,32 +986,39 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         );
         expect(updates.rows).toEqual([{ created_by: "user" }]);
       });
-    } finally {
-      await runtime.end();
+    } catch (error) {
+      failure = { error };
     }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", { cause: failure.error });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
   });
 
   it("rolls back confirmation when the origin page write fails", async () => {
     const proposal = await createDatabaseProposal("Rollback origin");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const tenant = getTenantZeroId();
     const before = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
     const tasksBefore = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
       tasksId,
     ]);
-    const jobsBefore = await pool.query<{ key: string | null }>(
-      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
     );
     const docsBefore = await pool.query<{ id: string; item_id: string }>("SELECT id, item_id FROM docs ORDER BY id");
     const snapshotsBefore = await pool.query<{ doc_id: string; state: Buffer; state_vector: Buffer }>(
       "SELECT doc_id, state, state_vector FROM doc_snapshots ORDER BY doc_id",
     );
     const invalidations: InvalidationEvent[] = [];
-    setInvalidationHook((event) => invalidations.push(event));
-    await pool.query(`CREATE FUNCTION reject_origin_note_test() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN RAISE EXCEPTION 'injected origin note failure'; END $$`);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
     try {
+      setInvalidationHook((event) => invalidations.push(event));
+      await pool.query(`CREATE FUNCTION reject_origin_note_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected origin note failure'; END $$`);
       await pool.query(
         "CREATE TRIGGER reject_origin_note_test BEFORE INSERT ON doc_updates FOR EACH ROW EXECUTE FUNCTION reject_origin_note_test()",
       );
@@ -1028,7 +1036,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         (await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [tasksId])).rows,
       ).toEqual(tasksBefore.rows);
       expect(
-        (await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+        (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
           .rows,
       ).toEqual(jobsBefore.rows);
       const origins = await pool.query<{ item_id: string }>("SELECT item_id FROM item_origins WHERE proposal_id = $1", [
@@ -1053,7 +1061,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const cleanupErrors: unknown[] = [];
     for (const cleanup of [
       () => pool.query("DROP TRIGGER IF EXISTS reject_origin_note_test ON doc_updates"),
-      () => pool.query("DROP FUNCTION reject_origin_note_test()"),
+      () => pool.query("DROP FUNCTION IF EXISTS reject_origin_note_test()"),
       () => runtime.end(),
     ]) {
       try {

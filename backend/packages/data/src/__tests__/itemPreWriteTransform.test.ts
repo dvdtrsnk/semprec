@@ -125,6 +125,27 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
   });
 
+  it("refuses a matching command transform without preparation", async () => {
+    const databaseId = await makeProbeDatabase();
+    const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
+    const database = await chokePoint.getDatabase(databaseId);
+    if (!database) throw new Error("Missing probe database");
+    const properties = await chokePoint.listProperties(databaseId);
+    const before = await chokePoint.getItem(databaseId, item.id);
+    expect(before).not.toBeNull();
+    const paired = async ({ patch }: { patch: Record<string, unknown> }) => patch;
+    registerItemPreWriteTransform(PROBE_MODULE, paired);
+    registerItemUpdateCommand(PROBE_MODULE, {
+      key: "stamp", transform: paired, validate: () => {},
+      prepare: (value) => ({ intent: value, preconditions: {} }), consume: async () => ({}),
+    });
+    await expect(prepareUserItemPatch(properties, { stamp: "raw" }, database, item, "Europe/Prague"))
+      .rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    await expect(chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }))
+      .rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
+  });
+
   describe("effective patch validation", () => {
     async function fixture() {
       const database = await chokePoint.createDatabase({ name: "Validation probe", ownerModuleId: PROBE_MODULE });

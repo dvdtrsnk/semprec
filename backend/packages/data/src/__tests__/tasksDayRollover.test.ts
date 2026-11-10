@@ -27,6 +27,7 @@ type RolloverActorRecord = {
   value?: unknown;
   error?: unknown;
   timedOut: boolean;
+  consumed: boolean;
   primary?: { error: unknown };
 };
 const pendingRolloverActors = new Set<Promise<unknown>>();
@@ -36,6 +37,7 @@ function trackRolloverActor<T>(actor: Promise<T>): Promise<T> {
     label: `rollover actor ${rolloverActorRecords.size + 1}`,
     status: "pending",
     timedOut: false,
+    consumed: false,
   };
   rolloverActorRecords.set(actor, record);
   pendingRolloverActors.add(actor);
@@ -66,12 +68,13 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
       details.push(record.primary.error);
     }
     if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
-    else if (record.status === "rejected") details.push(record.error);
+    else if (record.status === "rejected" && !record.consumed) details.push(record.error);
     else if (
       typeof record.value === "object" &&
       record.value !== null &&
       "ok" in record.value &&
       record.value.ok === false &&
+      !record.consumed &&
       "error" in record.value
     )
       details.push(record.value.error);
@@ -394,8 +397,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     expect(await row(notDue)).toEqual(before);
     expect((await row(overdue)).properties).toMatchObject({ status: "missed", date: day(-8) });
     const occurrences = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown> }>(
-        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+      pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
+        "SELECT id, properties, updated_at FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
         [tasksId, series.item.properties.seriesId],
       ),
     );
@@ -405,12 +408,27 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       date: day(-1),
       occurrenceDate: day(-1),
     });
-    await run();
+    const seriesBeforeRepeat = await inTenant(() => pool.query<{ item_id: string; rule: unknown; active: boolean }>(
+      "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1", [series.item.properties.seriesId],
+    ));
+    const jobsBeforeRepeat = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+    const repeatEvents: InvalidationEvent[] = [];
+    setInvalidationHook((event) => repeatEvents.push(event));
+    try {
+      await run();
+    } finally {
+      setInvalidationHook(() => {});
+    }
+    expect((await inTenant(() => pool.query<{ item_id: string; rule: unknown; active: boolean }>(
+      "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1", [series.item.properties.seriesId],
+    ))).rows).toEqual(seriesBeforeRepeat.rows);
+    expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBeforeRepeat.rows);
+    expect(repeatEvents).toEqual([]);
     expect(
       (
         await inTenant(() =>
-          pool.query<{ id: string; properties: Record<string, unknown> }>(
-            "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+          pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
+            "SELECT id, properties, updated_at FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
             [tasksId, series.item.properties.seriesId],
           ),
         )
@@ -506,15 +524,21 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       );
       let action: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
       let primary: { error: unknown } | undefined;
+      let readyReceived = false;
       try {
         const held = await settleRolloverActor(
           Promise.race([
             ready,
             holder.then((result) => {
+              if (!result.ok && !readyReceived) {
+                const record = rolloverActorRecords.get(holder);
+                if (record) record.consumed = true;
+              }
               throw result.ok ? new Error("Holder ended early") : result.error;
             }),
           ]),
         );
+        readyReceived = true;
         expect(
           (
             await admin.query<{ present: boolean }>(
@@ -561,9 +585,9 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         ...(action ? [settleRolloverActor(action, primary)] : []),
       ]);
       const errors: unknown[] = primary ? [primary.error] : [];
-      for (const result of settled) {
+      for (const [index, result] of settled.entries()) {
         if (result.status === "rejected") errors.push(result.reason);
-        else if (!result.value.ok) errors.push(result.value.error);
+        else if (!result.value.ok && !(index === 0 && rolloverActorRecords.get(holder)?.consumed)) errors.push(result.value.error);
       }
       if (errors.length)
         throw new AggregateError(errors, "Older occurrence action failed", {
@@ -607,6 +631,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     let release = () => {};
     let holder: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
+    let readyReceived = false;
     try {
       vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
       const old = await task({ date: "2026-10-12" });
@@ -667,10 +692,15 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         Promise.race([
           ready,
           holder.then((result) => {
+            if (!result.ok && !readyReceived && holder) {
+              const record = rolloverActorRecords.get(holder);
+              if (record) record.consumed = true;
+            }
             throw result.ok ? new Error("Holder ended before reservation") : result.error;
           }),
         ]),
       );
+      readyReceived = true;
       expect(
         (
           await admin.query<{ present: boolean }>(
@@ -728,7 +758,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     if (holder) {
       try {
         const outcome = await settleRolloverActor(holder, failure);
-        if (!outcome.ok) throw outcome.error;
+        if (!outcome.ok && !rolloverActorRecords.get(holder)?.consumed) throw outcome.error;
       } catch (error) {
         vi.useRealTimers();
         if (failure) {
@@ -766,8 +796,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         [seriesId],
       ),
     );
-    const beforeJobs = await admin.query<{ key: string | null }>(
-      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+    const beforeJobs = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
     );
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
@@ -800,11 +830,16 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       ),
     );
     let failure: { error: unknown } | undefined;
+    let readyReceived = false;
     try {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const identity = await Promise.race([
         ready,
         holder.then((outcome) => {
+          if (!outcome.ok && !readyReceived) {
+            const record = rolloverActorRecords.get(holder);
+            if (record) record.consumed = true;
+          }
           throw outcome.ok ? new Error("Holder ended early") : outcome.error;
         }),
         new Promise<never>((_, reject) => {
@@ -813,6 +848,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       ]).finally(() => {
         if (timer) clearTimeout(timer);
       });
+      readyReceived = true;
       expect(
         (
           await admin.query<{ present: boolean }>(
@@ -835,7 +871,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         ).rows,
       ).toEqual(beforeSeries.rows);
       expect(
-        (await admin.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
           .rows,
       ).toEqual(beforeJobs.rows);
       expect(events).toEqual([]);
@@ -856,11 +892,11 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       throw error;
     }
     setInvalidationHook(() => {});
-    if (!outcome.ok && failure)
+    if (!outcome.ok && failure && !rolloverActorRecords.get(holder)?.consumed)
       throw new AggregateError([failure.error, outcome.error], "Rollover test and holder failed", {
         cause: failure.error,
       });
-    if (!outcome.ok) throw outcome.error;
+    if (!outcome.ok && !rolloverActorRecords.get(holder)?.consumed) throw outcome.error;
     if (failure) throw failure.error;
     const trashed = await inTenant(() =>
       pool.query<{ deleted: boolean }>(
@@ -994,11 +1030,16 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         actors: Array<Promise<{ ok: true } | { ok: false; error: unknown }>>,
       ) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let waiting = true;
         try {
           return await Promise.race([
             value,
             ...actors.map((actor) =>
               actor.then((result) => {
+                if (!result.ok && waiting) {
+                  const record = rolloverActorRecords.get(actor);
+                  if (record) record.consumed = true;
+                }
                 throw result.ok ? new Error("Actor ended early") : result.error;
               }),
             ),
@@ -1007,6 +1048,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
             }),
           ]);
         } finally {
+          waiting = false;
           if (timer) clearTimeout(timer);
         }
       };
@@ -1070,8 +1112,9 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       settleRolloverActor(holder, failure),
       ...(contender ? [settleRolloverActor(contender, failure)] : []),
     ]);
-    const failures = settled.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : result.value.ok ? [] : [result.value.error],
+    const actors = [holder, ...(contender ? [contender] : [])];
+    const failures = settled.flatMap((result, index) =>
+      result.status === "rejected" ? [result.reason] : result.value.ok || rolloverActorRecords.get(actors[index]!)?.consumed ? [] : [result.value.error],
     );
     if (pendingRolloverActors.size)
       failures.push(new Error("Completion actor remains unsettled; action pool remains open"));

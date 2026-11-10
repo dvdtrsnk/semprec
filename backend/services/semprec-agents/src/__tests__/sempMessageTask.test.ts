@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import sharp from "sharp";
 import {
@@ -77,6 +77,15 @@ let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 let imageLifecycleUnsafe = false;
+let rejectedCleanupRecord: { status: "pending" | "fulfilled" | "rejected"; error?: unknown; primary?: { error: unknown }; unsafe: boolean } | undefined;
+function assertRejectedCleanupSafe(): void {
+  const record = rejectedCleanupRecord;
+  if (!record?.unsafe) return;
+  const errors: unknown[] = record.primary ? [record.primary.error] : [];
+  if (record.status === "pending") errors.push(new Error("Rejected session cleanup remains pending"));
+  if (record.status === "rejected") errors.push(record.error);
+  throw new AggregateError(errors, "Rejected session cleanup is unsafe");
+}
 
 type QuerySchemaObservation = {
   count: number;
@@ -412,21 +421,26 @@ describe("queued Semp messages", () => {
     registry = await loadFullModuleRegistry();
   });
 
+  beforeEach(() => assertRejectedCleanupSafe());
+
   afterAll(async () => {
     const errors: unknown[] = [];
     try {
+      assertRejectedCleanupSafe();
       if (imageLifecycleUnsafe) throw new Error("Image runtime settlement not established");
       await runtime?.stop();
     } catch (error) {
       errors.push(error);
     }
     try {
+      assertRejectedCleanupSafe();
       if (imageLifecycleUnsafe) throw new Error("Image conversation cleanup not established");
       await pool?.end();
     } catch (error) {
       errors.push(error);
     }
     try {
+      assertRejectedCleanupSafe();
       if (imageLifecycleUnsafe) throw new Error("Image resources require settlement");
       await admin?.end();
     } catch (error) {
@@ -2391,18 +2405,27 @@ describe("queued Semp messages", () => {
     } catch (error) {
       failure = { error };
     }
-    try {
-      await closeIdleThreadSessions(pool);
-    } catch (cleanupError) {
-      if (failure) {
-        // The test failure is primary; preserve the later cleanup error in the aggregate.
-        throw new AggregateError([failure.error, cleanupError], "Rejection test cleanup failed", {
-          // eslint-disable-next-line preserve-caught-error
-          cause: failure.error,
-        });
-      }
-      throw cleanupError;
+    const record: NonNullable<typeof rejectedCleanupRecord> = { status: "pending", unsafe: false };
+    rejectedCleanupRecord = record;
+    const cleanup = Promise.resolve().then(() => closeIdleThreadSessions(pool)).then(
+      () => { record.status = "fulfilled"; },
+      (error: unknown) => { record.status = "rejected"; record.error = error; },
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      cleanup.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 10_000); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled || record.status === "rejected") {
+      record.unsafe = true;
+      if (failure) record.primary = failure;
+      const cleanupError = settled ? record.error : new Error("Rejected session cleanup timed out");
+      throw new AggregateError(failure ? [failure.error, cleanupError] : [cleanupError], "Rejection test cleanup failed", {
+        cause: failure ? failure.error : cleanupError,
+      });
     }
+    rejectedCleanupRecord = undefined;
     if (failure) throw failure.error;
   });
 

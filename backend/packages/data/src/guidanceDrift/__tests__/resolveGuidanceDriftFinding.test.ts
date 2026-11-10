@@ -6,6 +6,7 @@ import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { saveGuidanceSections } from "../../projectAgentGuidance/projectAgentGuidanceSections.js";
 import { agentGuidanceDriftFindingsStore } from "../agentGuidanceDriftFindingsStore.js";
@@ -17,6 +18,7 @@ type GuidanceActorRecord = {
   value?: unknown;
   error?: unknown;
   timedOut: boolean;
+  consumed: boolean;
   primary?: { error: unknown };
 };
 const pendingGuidanceActors = new Set<Promise<unknown>>();
@@ -26,6 +28,7 @@ function trackGuidanceActor<T>(actor: Promise<T>): Promise<T> {
     label: `guidance actor ${guidanceActorRecords.size + 1}`,
     status: "pending",
     timedOut: false,
+    consumed: false,
   };
   guidanceActorRecords.set(actor, record);
   pendingGuidanceActors.add(actor);
@@ -56,12 +59,13 @@ function guidanceActorDiagnostic(): AggregateError | undefined {
       details.push(record.primary.error);
     }
     if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
-    else if (record.status === "rejected") details.push(record.error);
+    else if (record.status === "rejected" && !record.consumed) details.push(record.error);
     else if (
       typeof record.value === "object" &&
       record.value !== null &&
       "ok" in record.value &&
       record.value.ok === false &&
+      !record.consumed &&
       "error" in record.value
     )
       details.push(record.value.error);
@@ -142,7 +146,7 @@ describe("guidance drift decisions", () => {
   });
   it("adds decision columns to populated historical rows in two tenants", async () => {
     const other = await createTestTenant(admin);
-    await createUser(admin, { email: "other@example.test", passwordHash: "hash", tenantId: other });
+    const otherUser = await createUser(admin, { email: "other@example.test", passwordHash: "hash", tenantId: other });
     await runInTenant(other, () => seedSystem(pool));
     const otherProject = await runInTenant(other, async () => {
       const db = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
@@ -166,6 +170,11 @@ describe("guidance drift decisions", () => {
       );
       ids.push(finding.finding.id);
     }
+    const nullFinding = await runInTenant(tenant, () =>
+      withTransaction(pool, (tx) => agentGuidanceDriftFindingsStore.upsertActive(tx, {
+        projectItemId: project, fingerprint: "d".repeat(64), payload, seenAt: new Date("2026-01-01T00:00:00Z"),
+      })),
+    );
     const sql = await readFile(
       new URL("../../db/migrations/0145_guidance_drift_finding_decisions.sql", import.meta.url),
       "utf8",
@@ -187,12 +196,16 @@ describe("guidance drift decisions", () => {
           "ALTER TABLE agent_guidance_drift_findings ADD CONSTRAINT agent_guidance_drift_findings_status_check CHECK (status IN ('active', 'resolved'))",
         );
         await client.query(sql);
+        // Synthetic pre-0146 references use each tenant's existing owner.
+        await client.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [ids[0], user]);
+        await client.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [ids[1], otherUser.id]);
         await client.query(tenantFk);
       }),
     );
-    for (const [scope, id] of [
-      [tenant, ids[0]],
-      [other, ids[1]],
+    for (const [scope, id, resolvedBy] of [
+      [tenant, ids[0], user],
+      [other, ids[1], otherUser.id],
+      [tenant, nullFinding.finding.id, null],
     ] as const) {
       const result = await runInTenant(scope, () =>
         pool.query<{ id: string; status: string; resolved_by: string | null; resolution_choice: string | null }>(
@@ -200,7 +213,7 @@ describe("guidance drift decisions", () => {
           [id],
         ),
       );
-      expect(result.rows).toEqual([{ id, status: "active", resolved_by: null, resolution_choice: null }]);
+      expect(result.rows).toEqual([{ id, status: "active", resolved_by: resolvedBy, resolution_choice: null }]);
     }
   });
   it("refuses a foreign resolved_by through the runtime role", async () => {
@@ -451,6 +464,10 @@ describe("guidance drift decisions", () => {
         identity: { user: { id: actor } },
         body: { choice, expectedGuidanceUpdatedAt: version },
       });
+      const jobsBefore = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
       expect(await route(context(user, "dismiss", null))).toMatchObject({
         status: 409,
         body: { error: { code: "version_conflict" } },
@@ -468,6 +485,11 @@ describe("guidance drift decisions", () => {
         code: "validation_failed",
         details: { field: "choice", reason: "not_applicable" },
       });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBefore.rows);
+      expect(events).toEqual([]);
       const unchanged = await pool.query<{ markdown: string; updated_at: Date }>(
         "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
         [project],
@@ -603,11 +625,17 @@ describe("guidance drift decisions", () => {
         waiterReady(client.processID);
       };
       let failure: { error: unknown } | undefined;
+      let ownerReady = false;
+      let contenderReady = false;
       try {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const owner = await Promise.race([
           held,
           holder.then((result) => {
+            if (!result.ok && !ownerReady) {
+              const record = guidanceActorRecords.get(holder);
+              if (record) record.consumed = true;
+            }
             throw result.ok ? new Error("Holder ended early") : result.error;
           }),
           new Promise<never>((_, reject) => {
@@ -616,6 +644,7 @@ describe("guidance drift decisions", () => {
         ]).finally(() => {
           if (timer) clearTimeout(timer);
         });
+        ownerReady = true;
         pool.on("acquire", onAcquire);
         const route = createResolveGuidanceDriftFindingRouteHandler(pool);
         contender = trackGuidanceActor(
@@ -632,6 +661,10 @@ describe("guidance drift decisions", () => {
         const waiterPid = await Promise.race([
           acquired,
           contender.then((result) => {
+            if (!result.ok && !contenderReady && contender) {
+              const record = guidanceActorRecords.get(contender);
+              if (record) record.consumed = true;
+            }
             throw result.ok ? new Error("Contender ended early") : result.error;
           }),
           new Promise<never>((_, reject) => {
@@ -641,6 +674,7 @@ describe("guidance drift decisions", () => {
           if (waitTimer) clearTimeout(waitTimer);
           pool.off("acquire", onAcquire);
         });
+        contenderReady = true;
         const found = await admin.query<{ started: string }>(
           "SELECT backend_start::text AS started FROM pg_stat_activity WHERE pid = $1",
           [waiterPid],
@@ -673,9 +707,9 @@ describe("guidance drift decisions", () => {
       const ownerResult = ownerSettled.status === "fulfilled" ? ownerSettled.value : undefined;
       const contenderResult = contenderSettled.status === "fulfilled" ? contenderSettled.value : undefined;
       if (ownerSettled.status === "rejected") actorErrors.push(ownerSettled.reason);
-      else if (!ownerSettled.value.ok) actorErrors.push(ownerSettled.value.error);
+      else if (!ownerSettled.value.ok && !guidanceActorRecords.get(holder)?.consumed) actorErrors.push(ownerSettled.value.error);
       if (contenderSettled.status === "rejected") actorErrors.push(contenderSettled.reason);
-      else if (contenderSettled.value && !contenderSettled.value.ok) actorErrors.push(contenderSettled.value.error);
+      else if (contenderSettled.value && !contenderSettled.value.ok && contender && !guidanceActorRecords.get(contender)?.consumed) actorErrors.push(contenderSettled.value.error);
       if (failure && actorErrors.length)
         throw new AggregateError([failure.error, ...actorErrors], "Guidance overlap failed", { cause: failure.error });
       if (failure) throw failure.error;

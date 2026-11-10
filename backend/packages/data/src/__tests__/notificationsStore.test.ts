@@ -37,22 +37,56 @@ import {
 } from "../realtimeHook.js";
 
 let pool: Pool;
+type NotificationActorRecord = {
+  label: string;
+  status: "pending" | "fulfilled" | "rejected";
+  value?: unknown;
+  error?: unknown;
+  timedOut: boolean;
+  consumed: boolean;
+  primary?: { error: unknown };
+};
 const pendingNotificationActors = new Set<Promise<unknown>>();
+const notificationActorRecords = new Map<Promise<unknown>, NotificationActorRecord>();
+function notificationActorDiagnostic(): AggregateError | undefined {
+  const records = [...notificationActorRecords.values()].filter((record) => record.timedOut || record.status === "pending");
+  if (records.length === 0) return undefined;
+  const errors: unknown[] = [];
+  const primaries = new Set<{ error: unknown }>();
+  for (const record of records) {
+    if (record.primary && !primaries.has(record.primary)) {
+      primaries.add(record.primary);
+      errors.push(record.primary.error);
+    }
+    if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
+    else if (record.status === "rejected" && !record.consumed) errors.push(record.error);
+    else if (!record.consumed && typeof record.value === "object" && record.value !== null &&
+      "ok" in record.value && record.value.ok === false && "error" in record.value) errors.push(record.value.error);
+    else errors.push(new Error(`${record.label} crossed its deadline`));
+  }
+  return new AggregateError(errors, "Notification actors remain unsafe");
+}
 function observeNotificationActor<T>(actor: Promise<T>): Promise<T> {
+  const record: NotificationActorRecord = { label: `notification actor ${notificationActorRecords.size + 1}`, status: "pending", timedOut: false, consumed: false };
+  notificationActorRecords.set(actor, record);
   pendingNotificationActors.add(actor);
   void actor.then(
-    () => pendingNotificationActors.delete(actor),
-    () => pendingNotificationActors.delete(actor),
+    (value) => { record.status = "fulfilled"; record.value = value; pendingNotificationActors.delete(actor); },
+    (error: unknown) => { record.status = "rejected"; record.error = error; pendingNotificationActors.delete(actor); },
   );
   return actor;
 }
-async function boundNotificationActor<T>(actor: Promise<T>): Promise<T> {
+async function boundNotificationActor<T>(actor: Promise<T>, deadlineMs = 5000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       actor,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Notification actor did not settle")), 5000);
+        timer = setTimeout(() => {
+          const record = notificationActorRecords.get(actor);
+          if (record) record.timedOut = true;
+          reject(new Error("Notification actor did not settle"));
+        }, deadlineMs);
       }),
     ]);
   } finally {
@@ -62,7 +96,8 @@ async function boundNotificationActor<T>(actor: Promise<T>): Promise<T> {
 
 describe("notificationsStore (issue #152)", () => {
   beforeEach(async () => {
-    if (pendingNotificationActors.size) throw new Error("A notification actor remains unsettled");
+    const unsafe = notificationActorDiagnostic();
+    if (unsafe) throw unsafe;
     pool ??= getTestPool();
     await resetDatabase(pool);
     tenantOfUser.clear();
@@ -73,7 +108,8 @@ describe("notificationsStore (issue #152)", () => {
   });
 
   afterAll(async () => {
-    if (pendingNotificationActors.size) throw new Error("A notification actor remains unsettled; pool remains open");
+    const unsafe = notificationActorDiagnostic();
+    if (unsafe) throw unsafe;
     await pool?.end();
   });
 
@@ -109,6 +145,29 @@ describe("notificationsStore (issue #152)", () => {
       }),
     );
   }
+
+  it("retains a late notification actor failure after a bounded deadline", async () => {
+    let resolveLate!: (value: { ok: false; error: unknown }) => void;
+    const error = new Error("late notification actor failure");
+    const actor = observeNotificationActor(new Promise<{ ok: false; error: unknown }>((resolve) => { resolveLate = resolve; }));
+    try {
+      await expect(boundNotificationActor(actor, 1)).rejects.toThrow("Notification actor did not settle");
+      const record = notificationActorRecords.get(actor);
+      if (!record) throw new Error("Missing actor record");
+      record.primary = { error: 0 };
+      expect(notificationActorDiagnostic()?.errors[0]).toBe(0);
+      expect(await boundNotificationActor(Promise.resolve("independent"))).toBe("independent");
+      resolveLate({ ok: false, error });
+      await actor;
+      const diagnostic = notificationActorDiagnostic();
+      expect(diagnostic?.errors).toEqual([0, error]);
+      expect(notificationActorRecords.get(actor)?.value).toEqual({ ok: false, error });
+    } finally {
+      resolveLate({ ok: false, error });
+      await actor;
+      notificationActorRecords.delete(actor);
+    }
+  });
 
   it("lets a concurrent second writer validate and insert after the first rolls back", async () => {
     const user = await createTestUser("en");
@@ -170,14 +229,20 @@ describe("notificationsStore (issue #152)", () => {
           (error: unknown) => ({ ok: false as const, error }),
         ),
       );
+      let firstReadyReceived = false;
       const firstIdentity = await boundNotificationActor(
         Promise.race([
           firstSignal,
           first.then((result) => {
+            if (!result.ok && !firstReadyReceived) {
+              const record = first && notificationActorRecords.get(first);
+              if (record) record.consumed = true;
+            }
             throw result.ok ? new Error("First actor ended before reservation") : result.error;
           }),
         ]),
       );
+      firstReadyReceived = true;
       second = observeNotificationActor(
         runInTenant(tenant, () =>
           withTransaction(runtime, async (client) => {
@@ -189,14 +254,20 @@ describe("notificationsStore (issue #152)", () => {
           (error: unknown) => ({ ok: false as const, error }),
         ),
       );
+      let secondReadyReceived = false;
       const secondIdentity = await boundNotificationActor(
         Promise.race([
           secondSignal,
           second.then((result) => {
+            if (!result.ok && !secondReadyReceived) {
+              const record = second && notificationActorRecords.get(second);
+              if (record) record.consumed = true;
+            }
             throw result.ok ? new Error("Second actor ended before observation") : result.error;
           }),
         ]),
       );
+      secondReadyReceived = true;
       await expect
         .poll(
           async () => {
@@ -219,17 +290,22 @@ describe("notificationsStore (issue #152)", () => {
     }
     release();
     const actors = [first, second].filter((actor): actor is NonNullable<typeof actor> => actor !== undefined);
-    const settled = await Promise.allSettled(actors.map(boundNotificationActor));
+    const settled = await Promise.allSettled(actors.map((actor) => boundNotificationActor(actor)));
+    for (const actor of actors) {
+      const record = notificationActorRecords.get(actor);
+      if (record?.timedOut && primary) record.primary = primary;
+    }
     const errors: unknown[] = primary ? [primary.error] : [];
-    const outcomes = settled.flatMap((result) => {
+    const outcomes = settled.map((result) => {
       if (result.status === "rejected") {
         errors.push(result.reason);
-        return [];
+        return undefined;
       }
-      return [result.value];
+      return result.value;
     });
-    if (outcomes[0] && !outcomes[0].ok && outcomes[0].error !== intentional) errors.push(outcomes[0].error);
-    if (outcomes[1] && !outcomes[1].ok) errors.push(outcomes[1].error);
+    if (outcomes[0] && !outcomes[0].ok && outcomes[0].error !== intentional && !notificationActorRecords.get(first!)?.consumed)
+      errors.push(outcomes[0].error);
+    if (outcomes[1] && !outcomes[1].ok && !notificationActorRecords.get(second!)?.consumed) errors.push(outcomes[1].error);
     if (pendingNotificationActors.size === 0) {
       try {
         await runtime.end();
@@ -271,6 +347,7 @@ describe("notificationsStore (issue #152)", () => {
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
     try {
       await runInTenant(tenant, () => seedSystem(runtime));
       const database = await runInTenant(tenant, () =>
@@ -288,6 +365,9 @@ describe("notificationsStore (issue #152)", () => {
         sourceId: "kind-test",
         transitionInstance: "decision",
       };
+      const jobsBefore = await pool.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
       await expect(
         runInTenant(tenant, () =>
           withTransaction(runtime, (tx) =>
@@ -305,6 +385,9 @@ describe("notificationsStore (issue #152)", () => {
           )
         ).rows,
       ).toEqual([]);
+      expect(
+        (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows,
+      ).toEqual(jobsBefore.rows);
       const id = await runInTenant(tenant, () =>
         withTransaction(runtime, (tx) =>
           writeNotification(tx, {
@@ -325,9 +408,16 @@ describe("notificationsStore (issue #152)", () => {
           },
         },
       ]);
-    } finally {
-      await runtime.end();
+    } catch (error) {
+      failure = { error };
     }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", { cause: failure.error });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
   });
 
   it("keeps resolved notification callbacks on the managed transaction owner", async () => {
@@ -457,6 +547,7 @@ describe("notificationsStore (issue #152)", () => {
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
     try {
       await runInTenant(tenant, async () => {
         const client = await runtime.connect();
@@ -483,9 +574,16 @@ describe("notificationsStore (issue #152)", () => {
         ]);
         expect(rows.rows).toEqual([]);
       });
-    } finally {
-      await runtime.end();
+    } catch (error) {
+      failure = { error };
     }
+    try {
+      await runtime.end();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", { cause: failure.error });
+      throw cleanupError;
+    }
+    if (failure) throw failure.error;
   });
 
   it("drains tied resolved rows with full microsecond boundaries under the runtime tenant role", async () => {

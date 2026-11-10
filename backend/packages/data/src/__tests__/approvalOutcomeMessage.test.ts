@@ -216,13 +216,13 @@ describe("approval outcome messages", () => {
         });
       }),
     );
-    const attempt = async (requestId: string) =>
+    const attempt = async (requestId: string, key = "approval.outcome.executed") =>
       runInTenant(tenant(), () =>
         withTransaction(runtime, async (client) => {
           // Synthetic historical source: normal outcome writers never point across threads or tenants.
           const source = await client.query<{ id: string }>(
-            "INSERT INTO semp_messages (thread_id, role, system_key, system_params, context) VALUES ($1, 'system', 'approval.outcome.executed', '{}'::jsonb, $2::jsonb) RETURNING id",
-            [own.threadId, JSON.stringify([{ kind: "approvalRequest", approvalRequestId: requestId }])],
+            "INSERT INTO semp_messages (thread_id, role, system_key, system_params, context) VALUES ($1, 'system', $3, '{}'::jsonb, $2::jsonb) RETURNING id",
+            [own.threadId, JSON.stringify([{ kind: "approvalRequest", approvalRequestId: requestId }]), key],
           );
           if (!source.rows[0]) throw new Error("Missing source");
           const reply = await client.query<{ id: string }>(
@@ -241,6 +241,23 @@ describe("approval outcome messages", () => {
     expect(await capture(foreign.id)).toBe("Approval outcome provenance mismatch");
     expect(await capture(randomUUID())).toBe("Approval outcome provenance mismatch");
     expect(await capture(otherThread.request.id)).toBe("Approval outcome provenance mismatch");
+    for (const [unit, triggeredBy] of [["invocation", "user"], ["session", "heartbeat"]] as const) {
+      const invalid = await runInTenant(tenant(), () => withTransaction(runtime, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+        // Synthetic historical origin: the regular session producer does not emit these combinations.
+        const run = await createAgentRun(client, { projectItemId: inbox.ownerProjectItemId, threadId: own.threadId, unit, triggeredBy, task: "Invalid origin" });
+        const request = await createPendingApprovalRequest(client, {
+          agentRunId: run.id, toolName: "test", riskClass: "write",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        const decision = await decideAndEnqueueApprovalRequest(client, { approvalRequestId: request.id, decision: "rejected", decidedByUserId: userId });
+        expect(decision?.outcome).toBe("decided");
+        return request.id;
+      }));
+      await expect(attempt(invalid, "approval.outcome.rejected")).rejects.toThrow("Approval outcome provenance mismatch");
+    }
   });
   it("posts one canonical rejection on the decision transaction and ignores redelivery", async () => {
     const { threadId, request } = await fixture(true);
