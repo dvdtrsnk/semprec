@@ -89,6 +89,35 @@ async function awaitCleanup(record: CleanupRecord, deadlineMs = 10_000): Promise
   if (timer) clearTimeout(timer);
   return completed;
 }
+function assertCleanupSafe(): void {
+  if (lifecycleUnsafe) throw cleanupDiagnostic();
+}
+async function settleCleanup(
+  records: CleanupRecord[],
+  errors: unknown[],
+  label: string,
+  cleanup: () => Promise<void>,
+  deadlineMs = 10_000,
+): Promise<boolean> {
+  const record = observeCleanup(label, cleanup, records);
+  if (!(await awaitCleanup(record, deadlineMs))) {
+    errors.push(new Error(`${label} did not settle`));
+    lifecycleUnsafe = true;
+    return false;
+  }
+  if (record.status === "rejected") {
+    errors.push(record.error);
+    record.reported = true;
+    lifecycleUnsafe = true;
+    return false;
+  }
+  return true;
+}
+function cleanupAggregate(primary: { error: unknown } | undefined, errors: unknown[]): AggregateError {
+  return new AggregateError(primary ? [primary.error, ...errors] : errors, "Real outcome cleanup failed", {
+    cause: primary?.error,
+  });
+}
 describe("settled tick approval outcome continuation", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -102,10 +131,10 @@ describe("settled tick approval outcome continuation", () => {
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(() => {
-    if (lifecycleUnsafe) throw cleanupDiagnostic();
+    assertCleanupSafe();
   });
   afterAll(async () => {
-    if (lifecycleUnsafe) throw cleanupDiagnostic();
+    assertCleanupSafe();
     await runtime.end();
     await admin.end();
   });
@@ -549,21 +578,7 @@ describe("settled tick approval outcome continuation", () => {
     }
     const errors: unknown[] = [];
     const records: CleanupRecord[] = [];
-    const settle = async (label: string, cleanup: () => Promise<void>): Promise<boolean> => {
-      const record = observeCleanup(label, cleanup, records);
-      if (!(await awaitCleanup(record))) {
-        errors.push(new Error(`${label} did not settle`));
-        lifecycleUnsafe = true;
-        return false;
-      }
-      if (record.status === "rejected") {
-        errors.push(record.error);
-        record.reported = true;
-        lifecycleUnsafe = true;
-        return false;
-      }
-      return true;
-    };
+    const settle = (label: string, cleanup: () => Promise<void>) => settleCleanup(records, errors, label, cleanup);
     const runnerSettled = await settle("queue runner", async () => {
       await runner?.stop();
     });
@@ -581,10 +596,7 @@ describe("settled tick approval outcome continuation", () => {
       }
     }
     if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records });
-    if (errors.length)
-      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Real outcome cleanup failed", {
-        cause: failure?.error,
-      });
+    if (errors.length) throw cleanupAggregate(failure, errors);
     if (failure) throw failure.error;
   });
 
@@ -592,31 +604,39 @@ describe("settled tick approval outcome continuation", () => {
     const records: CleanupRecord[] = [];
     let rejectLate!: (error: unknown) => void;
     const lateError = new Error("late actor failure");
-    const record = observeCleanup(
-      "late actor",
-      () =>
-        new Promise<void>((_, reject) => {
-          rejectLate = reject;
-        }),
-      records,
-    );
-    expect(await awaitCleanup(record, 1)).toBe(false);
-    const later = observeCleanup("independent actor", async () => {}, records);
-    expect(await awaitCleanup(later, 1000)).toBe(true);
-    const finite = new AggregateError([0, new Error("late actor did not settle")], "finite snapshot", { cause: 0 });
-    expect(finite.cause).toBe(0);
-    expect(finite.errors).toHaveLength(2);
+    const errors: unknown[] = [];
     const item = { primary: { error: 0 }, records };
-    retainedCleanupCases.push(item);
     try {
-      expect(cleanupDiagnostic().errors[0]).toBe(0);
+      expect(
+        await settleCleanup(
+          records,
+          errors,
+          "late actor",
+          () =>
+            new Promise<void>((_, reject) => {
+              rejectLate = reject;
+            }),
+          1,
+        ),
+      ).toBe(false);
+      expect(await settleCleanup(records, errors, "independent actor", async () => {}, 1000)).toBe(true);
+      const record = records[0];
+      if (!record) throw new Error("Missing actor record");
+      const finite = cleanupAggregate(item.primary, errors);
+      expect(finite.cause).toBe(0);
+      expect(finite.errors).toEqual([0, expect.objectContaining({ message: "late actor did not settle" })]);
+      retainedCleanupCases.push(item);
+      expect(() => assertCleanupSafe()).toThrow(AggregateError);
       rejectLate(lateError);
       await record.outcome;
       expect(record.status).toBe("rejected");
       expect(cleanupDiagnostic().errors).toEqual([0, lateError]);
-      expect(later.status).toBe("fulfilled");
+      expect(records[1]?.status).toBe("fulfilled");
+      expect(() => assertCleanupSafe()).toThrow(AggregateError);
     } finally {
-      retainedCleanupCases.splice(retainedCleanupCases.indexOf(item), 1);
+      const index = retainedCleanupCases.indexOf(item);
+      if (index >= 0) retainedCleanupCases.splice(index, 1);
+      lifecycleUnsafe = false;
     }
   });
 

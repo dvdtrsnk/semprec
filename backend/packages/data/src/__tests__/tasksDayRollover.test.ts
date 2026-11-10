@@ -27,6 +27,7 @@ type RolloverActorRecord = {
   value?: unknown;
   error?: unknown;
   timedOut: boolean;
+  primary?: { error: unknown };
 };
 const pendingRolloverActors = new Set<Promise<unknown>>();
 const rolloverActorRecords = new Map<Promise<unknown>, RolloverActorRecord>();
@@ -58,7 +59,12 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
   );
   if (!retained.length) return undefined;
   const details: unknown[] = [];
+  const primaries = new Set<{ error: unknown }>();
   for (const record of retained) {
+    if (record.primary && !primaries.has(record.primary)) {
+      primaries.add(record.primary);
+      details.push(record.primary.error);
+    }
     if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
     else if (record.status === "rejected") details.push(record.error);
     else if (
@@ -73,7 +79,7 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
   }
   return new AggregateError(details, "Prior rollover actor crossed its deadline; resources remain reserved");
 }
-async function settleRolloverActor<T>(actor: Promise<T>): Promise<T> {
+async function settleRolloverActor<T>(actor: Promise<T>, primary?: { error: unknown }): Promise<T> {
   if (!rolloverActorRecords.has(actor)) void trackRolloverActor(actor);
   const record = rolloverActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,7 +88,10 @@ async function settleRolloverActor<T>(actor: Promise<T>): Promise<T> {
       actor,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          if (record) record.timedOut = true;
+          if (record) {
+            record.timedOut = true;
+            record.primary = primary;
+          }
           reject(new Error("Rollover actor did not settle"));
         }, WAIT_MS);
       }),
@@ -548,8 +557,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       }
       release();
       const settled = await Promise.allSettled([
-        settleRolloverActor(holder),
-        ...(action ? [settleRolloverActor(action)] : []),
+        settleRolloverActor(holder, primary),
+        ...(action ? [settleRolloverActor(action, primary)] : []),
       ]);
       const errors: unknown[] = primary ? [primary.error] : [];
       for (const result of settled) {
@@ -685,7 +694,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
           .rows,
       ).toEqual(jobs.rows);
       release();
-      const outcome = await settleRolloverActor(holder);
+      const outcome = await settleRolloverActor(holder, failure);
       if (!outcome.ok) throw outcome.error;
       holder = undefined;
       await inTenant(() =>
@@ -718,7 +727,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     release();
     if (holder) {
       try {
-        const outcome = await settleRolloverActor(holder);
+        const outcome = await settleRolloverActor(holder, failure);
         if (!outcome.ok) throw outcome.error;
       } catch (error) {
         vi.useRealTimers();
@@ -836,9 +845,9 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     release();
     let outcome: Awaited<typeof holder> | undefined;
     try {
-      outcome = await settleRolloverActor(holder);
+      outcome = await settleRolloverActor(holder, failure);
     } catch (error) {
-      setInvalidationHook(() => {});
+      if (!pendingRolloverActors.size) setInvalidationHook(() => {});
       if (failure) {
         // The earlier test failure is primary; the caught actor failure remains in the aggregate.
         // eslint-disable-next-line preserve-caught-error
@@ -1058,8 +1067,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     }
     release();
     const settled = await Promise.allSettled([
-      settleRolloverActor(holder),
-      ...(contender ? [settleRolloverActor(contender)] : []),
+      settleRolloverActor(holder, failure),
+      ...(contender ? [settleRolloverActor(contender, failure)] : []),
     ]);
     const failures = settled.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : result.value.ok ? [] : [result.value.error],

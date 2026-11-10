@@ -17,6 +17,7 @@ type GuidanceActorRecord = {
   value?: unknown;
   error?: unknown;
   timedOut: boolean;
+  primary?: { error: unknown };
 };
 const pendingGuidanceActors = new Set<Promise<unknown>>();
 const guidanceActorRecords = new Map<Promise<unknown>, GuidanceActorRecord>();
@@ -48,7 +49,12 @@ function guidanceActorDiagnostic(): AggregateError | undefined {
   );
   if (!retained.length) return undefined;
   const details: unknown[] = [];
+  const primaries = new Set<{ error: unknown }>();
   for (const record of retained) {
+    if (record.primary && !primaries.has(record.primary)) {
+      primaries.add(record.primary);
+      details.push(record.primary.error);
+    }
     if (record.status === "pending") details.push(new Error(`${record.label} remains pending`));
     else if (record.status === "rejected") details.push(record.error);
     else if (
@@ -63,7 +69,7 @@ function guidanceActorDiagnostic(): AggregateError | undefined {
   }
   return new AggregateError(details, "Prior guidance actor crossed its deadline; resources remain reserved");
 }
-async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
+async function settleGuidanceActor<T>(actor: Promise<T>, primary?: { error: unknown }): Promise<T> {
   if (!guidanceActorRecords.has(actor)) void trackGuidanceActor(actor);
   const record = guidanceActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +78,10 @@ async function settleGuidanceActor<T>(actor: Promise<T>): Promise<T> {
       actor,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          if (record) record.timedOut = true;
+          if (record) {
+            record.timedOut = true;
+            record.primary = primary;
+          }
           reject(new Error("Guidance actor did not settle"));
         }, 5000);
       }),
@@ -657,8 +666,8 @@ describe("guidance drift decisions", () => {
       pool.off("acquire", onAcquire);
       release();
       const [ownerSettled, contenderSettled] = await Promise.allSettled([
-        settleGuidanceActor(holder),
-        contender ? settleGuidanceActor(contender) : Promise.resolve(undefined),
+        settleGuidanceActor(holder, failure),
+        contender ? settleGuidanceActor(contender, failure) : Promise.resolve(undefined),
       ]);
       const actorErrors: unknown[] = [];
       const ownerResult = ownerSettled.status === "fulfilled" ? ownerSettled.value : undefined;
