@@ -493,11 +493,16 @@ describe("settled tick approval outcome continuation", () => {
       failure = { error };
     }
     const errors: unknown[] = [];
+    const lateFailures: Array<{ error: unknown; reported: boolean }> = [];
     const settle = async (label: string, cleanup: () => Promise<void>): Promise<boolean> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const outcome = cleanup().then(
         () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
+        (error: unknown) => {
+          const failure = { error, reported: false };
+          lateFailures.push(failure);
+          return { ok: false as const, error, failure };
+        },
       );
       const timeout = new Promise<{ ok: false; error: Error }>((resolve) => {
         timer = setTimeout(() => resolve({ ok: false, error: new Error(`${label} did not settle`) }), 10_000);
@@ -506,6 +511,7 @@ describe("settled tick approval outcome continuation", () => {
       if (timer) clearTimeout(timer);
       if (!result.ok) {
         errors.push(result.error);
+        if ("failure" in result) result.failure.reported = true;
         lifecycleUnsafe = true;
         return false;
       }
@@ -518,6 +524,9 @@ describe("settled tick approval outcome continuation", () => {
     const childSettled = await settle("stdio child", () => server.waitForChildExit());
     if (runnerSettled && sessionsSettled && childSettled) {
       await settle("stdio fixture", () => server.stop());
+    }
+    for (const late of lateFailures) {
+      if (!late.reported) errors.push(late.error);
     }
     if (errors.length)
       throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Real outcome cleanup failed", {
