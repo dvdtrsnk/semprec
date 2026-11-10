@@ -917,6 +917,15 @@ describe("settled tick approval outcome continuation", () => {
           );
           const runId = run.rows[0]?.agent_run_id;
           if (!runId) throw new Error("Missing refused continuation run");
+          const refusedRun = await runInTenant(tenant, () =>
+            runtime.query<{ status: string; error_code: string | null; result: string | null }>(
+              "SELECT status, error_code, result FROM agent_runs WHERE id = $1",
+              [runId],
+            ),
+          );
+          expect(refusedRun.rows).toEqual([
+            { status: "error", error_code: "budgetExceeded", result: "AI budget exceeded" },
+          ]);
           expect(
             (
               await runInTenant(tenant, () =>
