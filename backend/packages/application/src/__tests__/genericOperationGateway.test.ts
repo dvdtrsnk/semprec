@@ -1218,14 +1218,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
         });
         expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
         expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+        const originalSeries = await runtime.query<{ active: boolean; mode: string; rule: unknown }>(
+          "SELECT active, mode, rule FROM task_recurrence WHERE series_id = $1",
+          [created.properties.seriesId],
+        );
+        expect(originalSeries.rows).toEqual([
+          { active: true, mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } },
+        ]);
         const weekly = await cp.findItem(item.id);
         if (!weekly) throw new Error("Task missing");
         expect(weekly.properties.recurrence).toMatchObject({ preset: "weekly" });
-        const requestFor = async (value: unknown, version: string) => {
+        const requestFor = async (value: unknown, version: string, ordinary: Record<string, unknown> = {}) => {
           try {
             await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
               itemId: item.id,
-              properties: { recurrence: value },
+              properties: { ...ordinary, recurrence: value },
               ifVersion: version,
             });
           } catch (error) {
@@ -1243,14 +1250,22 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }),
         );
         expect(await cp.findItem(item.id)).toEqual(weekly);
-        const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt);
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: stale,
-            decision: "approved",
-            decidedByUserId: actor.userId,
-          }),
-        );
+        const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt, {
+          name: "Changed only after approval",
+        });
+        expect(await cp.findItem(item.id)).toEqual(weekly);
+        const pending = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
+        expect(pending).toMatchObject({
+          riskClass: "write",
+          description: {
+            key: "approval.changesSeries",
+            params: {
+              taskName: "Task",
+              fromRule: JSON.stringify({ kind: "weekdays", days: ["thu"] }),
+              toRule: JSON.stringify({ kind: "monthDates", dates: [22] }),
+            },
+          },
+        });
         const changed = await cp.updateItem({
           databaseId: tasks.id,
           itemId: item.id,
@@ -1259,6 +1274,13 @@ describe("createGenericOperationGateway (issue #220)", () => {
         });
         const changedProjection = await cp.findItem(item.id);
         expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: stale,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
         const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
         if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
         expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
@@ -1268,6 +1290,38 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
+        const ending = await requestFor(null, changed.updatedAt);
+        await withTransaction(runtime, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: ending,
+            decision: "approved",
+            decidedByUserId: actor.userId,
+          }),
+        );
+        const approvedEnd = await withTransaction(runtime, (client) => getApprovalRequest(client, ending));
+        if (!approvedEnd || !isGenericOperationApprovalRequestPayload(approvedEnd.payload))
+          throw new Error("Missing ending request");
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
+        ).toBe(false);
+        const ended = await cp.findItem(item.id);
+        expect(ended?.properties).toMatchObject({ recurrence: null, seriesId: null, occurrenceDate: null });
+        const rowsAfterEnd = await runtime.query<{ active: boolean }>(
+          "SELECT active FROM task_recurrence WHERE series_id = $1",
+          [created.properties.seriesId],
+        );
+        expect(rowsAfterEnd.rows).toEqual([{ active: false }]);
+        const jobsAfterEnd = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        expect(
+          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
+        ).toBe(false);
+        expect(await cp.findItem(item.id)).toEqual(ended);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsAfterEnd.rows);
       });
     } catch (error) {
       failure = { error };
