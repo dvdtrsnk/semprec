@@ -1363,6 +1363,18 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
         const changedProjection = await cp.findItem(item.id);
         expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
+        expect(changedProjection?.properties.recurrence).toMatchObject({
+          preset: "daily",
+          mode: "fixed",
+          rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+        });
+        expect((await seriesSnapshot()).rows).toMatchObject([
+          {
+            active: true,
+            mode: "fixed",
+            rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+          },
+        ]);
         await withTransaction(runtime, (client) =>
           decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: stale,
