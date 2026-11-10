@@ -2444,6 +2444,232 @@ describe("queued Semp messages", () => {
     if (failure) throw failure.error;
   });
 
+  it.each(["pre", "post", "turn-and-cleanup"] as const)(
+    "preserves real strict freshness failures at %s and recovers",
+    async (mode) => {
+      const faux = fauxProvider();
+      faux.setResponses([fauxAssistantMessage("warm"), fauxAssistantMessage("ack"), fauxAssistantMessage("recovered")]);
+      const task = createSempMessageTask(
+        pool,
+        registry,
+        {
+          model: faux.getModel(),
+          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+          isBudgetRefusal: () => false,
+        },
+        createInFlightAgentRuns(),
+      );
+      const fixture = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const inbox = await getDatabaseByModuleId(client, "inbox");
+          if (!inbox?.ownerProjectItemId) throw new Error("Missing project");
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: inbox.ownerProjectItemId,
+            name: "Freshness failure",
+            rule: { kind: "interval", minutes: 10 },
+            actionId: "core.agentRun",
+            actionConfig: { task: "Review" },
+          });
+          const thread = await client.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
+            [heartbeat.id],
+          );
+          const threadId = thread.rows[0]?.id;
+          if (!threadId) throw new Error("Missing thread");
+          const run = await createAgentRun(client, {
+            projectItemId: inbox.ownerProjectItemId,
+            heartbeatId: heartbeat.id,
+            threadId,
+            triggeredBy: "heartbeat",
+            task: "Review",
+          });
+          const request = await createPendingApprovalRequest(client, {
+            agentRunId: run.id,
+            toolName: "test",
+            riskClass: "unclassified",
+            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+            resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+          });
+          const warm = await sendSempMessage(client, { threadId, text: "warm", context: [], hasContext: false });
+          await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: request.id,
+            decision: "rejected",
+            decidedByUserId: userId,
+          });
+          const queued = await client.query<{ id: string }>(
+            "SELECT reply.id FROM semp_messages reply JOIN semp_messages source ON source.tenant_id = reply.tenant_id AND source.id = reply.reply_to_message_id WHERE source.thread_id = $1 AND source.system_key = 'approval.outcome.rejected'",
+            [threadId],
+          );
+          if (!queued.rows[0]) throw new Error("Missing continuation");
+          return { threadId, warm: warm.assistantMessageId, acknowledgment: queued.rows[0].id };
+        }),
+      );
+      await runInTenant(tenant, () =>
+        task({ threadId: fixture.threadId, assistantMessageId: fixture.warm }, { job: { id: "warm" } }),
+      );
+      const closeErrors: unknown[] = [];
+      const originalFresh = SempConversation.prototype.ensureFresh;
+      const originalSend = SempConversation.prototype.send;
+      const primary = new Error("injected turn failure after actual send");
+      let calls = 0;
+      let triggerInstalled = false;
+      let functionCreated = false;
+      const freshSpy = vi.spyOn(SempConversation.prototype, "ensureFresh").mockImplementation(async function (
+        this: SempConversation,
+        threadId,
+        frontier,
+      ) {
+        calls += 1;
+        if (calls === (mode === "pre" ? 1 : 2)) {
+          const { rows } = await admin.query<{ ddl: string }>(
+            `SELECT format($fmt$
+            CREATE OR REPLACE FUNCTION test_followup_fail_run_close() RETURNS trigger AS $body$
+            BEGIN IF NEW.tenant_id = %L::uuid AND NEW.status::text = 'done' THEN
+              RAISE EXCEPTION 'injected strict close failure'; END IF; RETURN NEW; END
+            $body$ LANGUAGE plpgsql$fmt$, $1::uuid) AS ddl`,
+            [tenant],
+          );
+          if (!rows[0]) throw new Error("Missing trigger DDL");
+          await admin.query(rows[0].ddl);
+          functionCreated = true;
+          await admin.query(
+            "CREATE TRIGGER test_followup_fail_run_close BEFORE UPDATE ON agent_runs FOR EACH ROW EXECUTE FUNCTION test_followup_fail_run_close()",
+          );
+          triggerInstalled = true;
+        }
+        try {
+          return await originalFresh.call(this, threadId, frontier);
+        } catch (error) {
+          closeErrors.push(error);
+          throw error;
+        }
+      });
+      const sendSpy = vi.spyOn(SempConversation.prototype, "send").mockImplementation(async function (
+        this: SempConversation,
+        text,
+        thread,
+        options,
+      ) {
+        const result = await originalSend.call(this, text, thread, options);
+        if (mode === "turn-and-cleanup") throw primary;
+        return result;
+      });
+      let failure: { error: unknown } | undefined;
+      try {
+        let observed: unknown;
+        try {
+          await runInTenant(tenant, () =>
+            task(
+              { threadId: fixture.threadId, assistantMessageId: fixture.acknowledgment },
+              { job: { id: "failure" } },
+            ),
+          );
+        } catch (error) {
+          observed = error;
+        }
+        expect(closeErrors).toHaveLength(1);
+        expect(closeErrors[0]).toBeInstanceOf(Error);
+        expect(String(closeErrors[0])).toContain("injected strict close failure");
+        if (mode === "turn-and-cleanup") {
+          expect(observed).toBeInstanceOf(AggregateError);
+          if (!(observed instanceof AggregateError)) throw new Error("Missing aggregate");
+          expect(observed.cause).toBe(primary);
+          expect(observed.errors).toEqual([primary, closeErrors[0]]);
+        } else expect(observed).toBe(closeErrors[0]);
+        expect(
+          (
+            await runInTenant(tenant, () =>
+              pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+                fixture.acknowledgment,
+              ]),
+            )
+          ).rows,
+        ).toEqual([{ status: "error" }]);
+        if (triggerInstalled) {
+          await admin.query("DROP TRIGGER test_followup_fail_run_close ON agent_runs");
+          triggerInstalled = false;
+        }
+        freshSpy.mockRestore();
+        sendSpy.mockRestore();
+        const later = await runInTenant(tenant, () =>
+          withTransaction(pool, (client) =>
+            sendSempMessage(client, { threadId: fixture.threadId, text: "recovery", context: [], hasContext: false }),
+          ),
+        );
+        await runInTenant(tenant, () =>
+          task(
+            { threadId: fixture.threadId, assistantMessageId: later.assistantMessageId },
+            { job: { id: "recovery" } },
+          ),
+        );
+        expect(
+          (
+            await runInTenant(tenant, () =>
+              pool.query<{ status: string }>("SELECT status FROM semp_messages WHERE id = $1", [
+                later.assistantMessageId,
+              ]),
+            )
+          ).rows,
+        ).toEqual([{ status: "done" }]);
+      } catch (error) {
+        failure = { error };
+      }
+      freshSpy.mockRestore();
+      sendSpy.mockRestore();
+      const cleanupErrors: unknown[] = [];
+      if (triggerInstalled) {
+        try {
+          await admin.query("DROP TRIGGER test_followup_fail_run_close ON agent_runs");
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (functionCreated) {
+        try {
+          await admin.query("DROP FUNCTION test_followup_fail_run_close()");
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      const record: NonNullable<typeof rejectedCleanupRecord> = { status: "pending", unsafe: false };
+      rejectedCleanupRecord = record;
+      const cleanup = Promise.resolve()
+        .then(() => closeIdleThreadSessions(pool))
+        .then(
+          () => {
+            record.status = "fulfilled";
+          },
+          (error: unknown) => {
+            record.status = "rejected";
+            record.error = error;
+          },
+        );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        cleanup.then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), 10_000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!settled || record.status === "rejected") {
+        record.unsafe = true;
+        if (failure) record.primary = failure;
+        cleanupErrors.push(settled ? record.error : new Error("Freshness cleanup timed out"));
+      } else if (cleanupErrors.length) {
+        record.unsafe = true;
+        if (failure) record.primary = failure;
+      } else rejectedCleanupRecord = undefined;
+      if (cleanupErrors.length)
+        throw new AggregateError(
+          failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+          "Freshness test cleanup failed",
+          { cause: failure ? failure.error : cleanupErrors[0] },
+        );
+      if (failure) throw failure.error;
+    },
+  );
+
   it("executes an earlier queued user turn before the tick outcome through the real queue", async () => {
     await runtime?.stop();
     runtime = undefined;
