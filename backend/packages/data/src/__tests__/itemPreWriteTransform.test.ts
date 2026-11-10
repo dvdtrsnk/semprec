@@ -136,13 +136,18 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     const paired = async ({ patch }: { patch: Record<string, unknown> }) => patch;
     registerItemPreWriteTransform(PROBE_MODULE, paired);
     registerItemUpdateCommand(PROBE_MODULE, {
-      key: "stamp", transform: paired, validate: () => {},
-      prepare: (value) => ({ intent: value, preconditions: {} }), consume: async () => ({}),
+      key: "stamp",
+      transform: paired,
+      validate: () => {},
+      prepare: (value) => ({ intent: value, preconditions: {} }),
+      consume: async () => ({}),
     });
-    await expect(prepareUserItemPatch(properties, { stamp: "raw" }, database, item, "Europe/Prague"))
-      .rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
-    await expect(chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }))
-      .rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    await expect(
+      prepareUserItemPatch(properties, { stamp: "raw" }, database, item, "Europe/Prague"),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
+    await expect(
+      chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { stamp: "raw" } }),
+    ).rejects.toMatchObject({ status: 400, details: { field: "stamp" } });
     expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
   });
 

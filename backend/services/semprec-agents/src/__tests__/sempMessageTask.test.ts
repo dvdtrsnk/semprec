@@ -77,7 +77,9 @@ let userId: string;
 let registry: ModuleRegistry;
 let runtime: AgentsQueueRuntime | undefined;
 let imageLifecycleUnsafe = false;
-let rejectedCleanupRecord: { status: "pending" | "fulfilled" | "rejected"; error?: unknown; primary?: { error: unknown }; unsafe: boolean } | undefined;
+let rejectedCleanupRecord:
+  | { status: "pending" | "fulfilled" | "rejected"; error?: unknown; primary?: { error: unknown }; unsafe: boolean }
+  | undefined;
 function assertRejectedCleanupSafe(): void {
   const record = rejectedCleanupRecord;
   if (!record?.unsafe) return;
@@ -2407,23 +2409,36 @@ describe("queued Semp messages", () => {
     }
     const record: NonNullable<typeof rejectedCleanupRecord> = { status: "pending", unsafe: false };
     rejectedCleanupRecord = record;
-    const cleanup = Promise.resolve().then(() => closeIdleThreadSessions(pool)).then(
-      () => { record.status = "fulfilled"; },
-      (error: unknown) => { record.status = "rejected"; record.error = error; },
-    );
+    const cleanup = Promise.resolve()
+      .then(() => closeIdleThreadSessions(pool))
+      .then(
+        () => {
+          record.status = "fulfilled";
+        },
+        (error: unknown) => {
+          record.status = "rejected";
+          record.error = error;
+        },
+      );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
       cleanup.then(() => true),
-      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 10_000); }),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), 10_000);
+      }),
     ]);
     if (timer) clearTimeout(timer);
     if (!settled || record.status === "rejected") {
       record.unsafe = true;
       if (failure) record.primary = failure;
       const cleanupError = settled ? record.error : new Error("Rejected session cleanup timed out");
-      throw new AggregateError(failure ? [failure.error, cleanupError] : [cleanupError], "Rejection test cleanup failed", {
-        cause: failure ? failure.error : cleanupError,
-      });
+      throw new AggregateError(
+        failure ? [failure.error, cleanupError] : [cleanupError],
+        "Rejection test cleanup failed",
+        {
+          cause: failure ? failure.error : cleanupError,
+        },
+      );
     }
     rejectedCleanupRecord = undefined;
     if (failure) throw failure.error;

@@ -180,19 +180,24 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
     const id = await task({});
     const before = await runInTenant(tenant, () => cp.getItem(tasksId, id));
     const seriesBefore = await seriesRows();
-    const jobs = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+    const jobs = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
     try {
       await expect(
-      runInTenant(tenant, () =>
-        cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
-      ),
-    ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
+        runInTenant(tenant, () =>
+          cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { recurrence: { preset: "weekly" } } }),
+        ),
+      ).rejects.toMatchObject({ status: 400, details: { field: "date" } });
     } finally {
       setInvalidationHook(() => {});
     }
-    expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobs.rows);
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(jobs.rows);
     expect(events).toEqual([]);
     expect(await runInTenant(tenant, () => cp.getItem(tasksId, id))).toEqual(before);
     expect(await seriesRows()).toEqual(seriesBefore);

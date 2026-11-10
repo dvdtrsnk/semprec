@@ -171,9 +171,14 @@ describe("guidance drift decisions", () => {
       ids.push(finding.finding.id);
     }
     const nullFinding = await runInTenant(tenant, () =>
-      withTransaction(pool, (tx) => agentGuidanceDriftFindingsStore.upsertActive(tx, {
-        projectItemId: project, fingerprint: "d".repeat(64), payload, seenAt: new Date("2026-01-01T00:00:00Z"),
-      })),
+      withTransaction(pool, (tx) =>
+        agentGuidanceDriftFindingsStore.upsertActive(tx, {
+          projectItemId: project,
+          fingerprint: "d".repeat(64),
+          payload,
+          seenAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      ),
     );
     const sql = await readFile(
       new URL("../../db/migrations/0145_guidance_drift_finding_decisions.sql", import.meta.url),
@@ -198,7 +203,10 @@ describe("guidance drift decisions", () => {
         await client.query(sql);
         // Synthetic pre-0146 references use each tenant's existing owner.
         await client.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [ids[0], user]);
-        await client.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [ids[1], otherUser.id]);
+        await client.query("UPDATE agent_guidance_drift_findings SET resolved_by = $2 WHERE id = $1", [
+          ids[1],
+          otherUser.id,
+        ]);
         await client.query(tenantFk);
       }),
     );
@@ -464,31 +472,36 @@ describe("guidance drift decisions", () => {
         identity: { user: { id: actor } },
         body: { choice, expectedGuidanceUpdatedAt: version },
       });
-      const jobsBefore = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+      const jobsBefore = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-      expect(await route(context(user, "dismiss", null))).toMatchObject({
-        status: 409,
-        body: { error: { code: "version_conflict" } },
-      });
-      await expect(
-        route(context("00000000-0000-4000-8000-000000000000", "dismiss", saved.updatedAt)),
-      ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-      await expect(route(context(user, "allow", saved.updatedAt))).rejects.toMatchObject({
-        status: 400,
-        code: "validation_failed",
-        details: { field: "choice", reason: "not_applicable" },
-      });
-      await expect(route(context(user, "forbid", saved.updatedAt))).rejects.toMatchObject({
-        status: 400,
-        code: "validation_failed",
-        details: { field: "choice", reason: "not_applicable" },
-      });
+        expect(await route(context(user, "dismiss", null))).toMatchObject({
+          status: 409,
+          body: { error: { code: "version_conflict" } },
+        });
+        await expect(
+          route(context("00000000-0000-4000-8000-000000000000", "dismiss", saved.updatedAt)),
+        ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        await expect(route(context(user, "allow", saved.updatedAt))).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "choice", reason: "not_applicable" },
+        });
+        await expect(route(context(user, "forbid", saved.updatedAt))).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "choice", reason: "not_applicable" },
+        });
       } finally {
         setInvalidationHook(() => {});
       }
-      expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBefore.rows);
+      expect(
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobsBefore.rows);
       expect(events).toEqual([]);
       const unchanged = await pool.query<{ markdown: string; updated_at: Date }>(
         "SELECT markdown, updated_at FROM project_agent_guidance WHERE project_item_id = $1",
@@ -707,9 +720,16 @@ describe("guidance drift decisions", () => {
       const ownerResult = ownerSettled.status === "fulfilled" ? ownerSettled.value : undefined;
       const contenderResult = contenderSettled.status === "fulfilled" ? contenderSettled.value : undefined;
       if (ownerSettled.status === "rejected") actorErrors.push(ownerSettled.reason);
-      else if (!ownerSettled.value.ok && !guidanceActorRecords.get(holder)?.consumed) actorErrors.push(ownerSettled.value.error);
+      else if (!ownerSettled.value.ok && !guidanceActorRecords.get(holder)?.consumed)
+        actorErrors.push(ownerSettled.value.error);
       if (contenderSettled.status === "rejected") actorErrors.push(contenderSettled.reason);
-      else if (contenderSettled.value && !contenderSettled.value.ok && contender && !guidanceActorRecords.get(contender)?.consumed) actorErrors.push(contenderSettled.value.error);
+      else if (
+        contenderSettled.value &&
+        !contenderSettled.value.ok &&
+        contender &&
+        !guidanceActorRecords.get(contender)?.consumed
+      )
+        actorErrors.push(contenderSettled.value.error);
       if (failure && actorErrors.length)
         throw new AggregateError([failure.error, ...actorErrors], "Guidance overlap failed", { cause: failure.error });
       if (failure) throw failure.error;

@@ -1218,10 +1218,19 @@ describe("createGenericOperationGateway (issue #220)", () => {
         });
         expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
         expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-        const seriesSnapshot = () => runtime.query<{ item_id: string; series_id: string; active: boolean; mode: string; rule: unknown; anchor_date: Date | null; template: unknown }>(
-          "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
-          [created.properties.seriesId],
-        );
+        const seriesSnapshot = () =>
+          runtime.query<{
+            item_id: string;
+            series_id: string;
+            active: boolean;
+            mode: string;
+            rule: unknown;
+            anchor_date: Date | null;
+            template: unknown;
+          }>(
+            "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
+            [created.properties.seriesId],
+          );
         const originalSeries = await seriesSnapshot();
         expect(originalSeries.rows).toMatchObject([
           { active: true, mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } },
@@ -1342,11 +1351,16 @@ describe("createGenericOperationGateway (issue #220)", () => {
           `notification-fanout:${notificationId}`,
         ]);
         expect(fanout.rows).toEqual([{ key: `notification-fanout:${notificationId}` }]);
-        const changed = await gateway.invoke("item.patch", { userId: actor.userId, restSession: true }, ALL_CAPABILITIES, {
-          itemId: item.id,
-          properties: { recurrence: { preset: "daily" } },
-          ifVersion: weekly.updatedAt,
-        });
+        const changed = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: { preset: "daily" } },
+            ifVersion: weekly.updatedAt,
+          },
+        );
         const changedProjection = await cp.findItem(item.id);
         expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
         await withTransaction(runtime, (client) =>

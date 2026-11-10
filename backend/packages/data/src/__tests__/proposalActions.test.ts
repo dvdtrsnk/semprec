@@ -992,7 +992,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     try {
       await runtime.end();
     } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Origin test cleanup failed", { cause: failure.error });
       throw cleanupError;
     }
     if (failure) throw failure.error;

@@ -49,7 +49,9 @@ type NotificationActorRecord = {
 const pendingNotificationActors = new Set<Promise<unknown>>();
 const notificationActorRecords = new Map<Promise<unknown>, NotificationActorRecord>();
 function notificationActorDiagnostic(): AggregateError | undefined {
-  const records = [...notificationActorRecords.values()].filter((record) => record.timedOut || record.status === "pending");
+  const records = [...notificationActorRecords.values()].filter(
+    (record) => record.timedOut || record.status === "pending",
+  );
   if (records.length === 0) return undefined;
   const errors: unknown[] = [];
   const primaries = new Set<{ error: unknown }>();
@@ -60,19 +62,39 @@ function notificationActorDiagnostic(): AggregateError | undefined {
     }
     if (record.status === "pending") errors.push(new Error(`${record.label} remains pending`));
     else if (record.status === "rejected" && !record.consumed) errors.push(record.error);
-    else if (!record.consumed && typeof record.value === "object" && record.value !== null &&
-      "ok" in record.value && record.value.ok === false && "error" in record.value) errors.push(record.value.error);
+    else if (
+      !record.consumed &&
+      typeof record.value === "object" &&
+      record.value !== null &&
+      "ok" in record.value &&
+      record.value.ok === false &&
+      "error" in record.value
+    )
+      errors.push(record.value.error);
     else errors.push(new Error(`${record.label} crossed its deadline`));
   }
   return new AggregateError(errors, "Notification actors remain unsafe");
 }
 function observeNotificationActor<T>(actor: Promise<T>): Promise<T> {
-  const record: NotificationActorRecord = { label: `notification actor ${notificationActorRecords.size + 1}`, status: "pending", timedOut: false, consumed: false };
+  const record: NotificationActorRecord = {
+    label: `notification actor ${notificationActorRecords.size + 1}`,
+    status: "pending",
+    timedOut: false,
+    consumed: false,
+  };
   notificationActorRecords.set(actor, record);
   pendingNotificationActors.add(actor);
   void actor.then(
-    (value) => { record.status = "fulfilled"; record.value = value; pendingNotificationActors.delete(actor); },
-    (error: unknown) => { record.status = "rejected"; record.error = error; pendingNotificationActors.delete(actor); },
+    (value) => {
+      record.status = "fulfilled";
+      record.value = value;
+      pendingNotificationActors.delete(actor);
+    },
+    (error: unknown) => {
+      record.status = "rejected";
+      record.error = error;
+      pendingNotificationActors.delete(actor);
+    },
   );
   return actor;
 }
@@ -149,7 +171,11 @@ describe("notificationsStore (issue #152)", () => {
   it("retains a late notification actor failure after a bounded deadline", async () => {
     let resolveLate!: (value: { ok: false; error: unknown }) => void;
     const error = new Error("late notification actor failure");
-    const actor = observeNotificationActor(new Promise<{ ok: false; error: unknown }>((resolve) => { resolveLate = resolve; }));
+    const actor = observeNotificationActor(
+      new Promise<{ ok: false; error: unknown }>((resolve) => {
+        resolveLate = resolve;
+      }),
+    );
     try {
       await expect(boundNotificationActor(actor, 1)).rejects.toThrow("Notification actor did not settle");
       const record = notificationActorRecords.get(actor);
@@ -303,9 +329,15 @@ describe("notificationsStore (issue #152)", () => {
       }
       return result.value;
     });
-    if (outcomes[0] && !outcomes[0].ok && outcomes[0].error !== intentional && !notificationActorRecords.get(first!)?.consumed)
+    if (
+      outcomes[0] &&
+      !outcomes[0].ok &&
+      outcomes[0].error !== intentional &&
+      !notificationActorRecords.get(first!)?.consumed
+    )
       errors.push(outcomes[0].error);
-    if (outcomes[1] && !outcomes[1].ok && !notificationActorRecords.get(second!)?.consumed) errors.push(outcomes[1].error);
+    if (outcomes[1] && !outcomes[1].ok && !notificationActorRecords.get(second!)?.consumed)
+      errors.push(outcomes[1].error);
     if (pendingNotificationActors.size === 0) {
       try {
         await runtime.end();
@@ -386,7 +418,8 @@ describe("notificationsStore (issue #152)", () => {
         ).rows,
       ).toEqual([]);
       expect(
-        (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows,
+        (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
       ).toEqual(jobsBefore.rows);
       const id = await runInTenant(tenant, () =>
         withTransaction(runtime, (tx) =>
@@ -414,7 +447,10 @@ describe("notificationsStore (issue #152)", () => {
     try {
       await runtime.end();
     } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", {
+          cause: failure.error,
+        });
       throw cleanupError;
     }
     if (failure) throw failure.error;
@@ -580,7 +616,10 @@ describe("notificationsStore (issue #152)", () => {
     try {
       await runtime.end();
     } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", { cause: failure.error });
+      if (failure)
+        throw new AggregateError([failure.error, cleanupError], "Notification test cleanup failed", {
+          cause: failure.error,
+        });
       throw cleanupError;
     }
     if (failure) throw failure.error;

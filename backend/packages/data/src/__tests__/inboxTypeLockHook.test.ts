@@ -266,7 +266,9 @@ describe("Inbox type lock", () => {
     runInTenant(tenant, async () => {
       const { edge, targets, proposals } = await fixture("proposed");
       const before = await targets();
-      const jobs = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
       const events: InvalidationEvent[] = [];
       const primary = new Error("injected reservation failure");
       const cleanup = new Error("injected savepoint cleanup failure");
@@ -288,7 +290,10 @@ describe("Inbox type lock", () => {
           } finally {
             spy.mockRestore();
           }
-        }).then(() => null, (error: unknown) => error);
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
         if (cleanupFails) {
           expect(caught).toBeInstanceOf(AggregateError);
           if (!(caught instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
@@ -299,30 +304,41 @@ describe("Inbox type lock", () => {
         setInvalidationHook(() => {});
       }
       expect(await targets()).toEqual(before);
-      expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobs.rows);
+      expect(
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobs.rows);
       expect(events).toEqual([]);
-    }));
+    }),
+  );
 
   it("cannot commit a caught post-change refusal for a decided card", async () =>
     runInTenant(tenant, async () => {
       const { edge, targets } = await fixture("confirmed");
       const before = await targets();
-      const jobs = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await expect(withTransaction(pool, async (client) => {
-          try {
-            await deleteRelationWithClient(client, edge);
-          } catch (error) {
-            expect(error).toMatchObject({ status: 409, code: "proposal_locked" });
-          }
-        })).rejects.toMatchObject({ status: 409, code: "proposal_locked" });
+        await expect(
+          withTransaction(pool, async (client) => {
+            try {
+              await deleteRelationWithClient(client, edge);
+            } catch (error) {
+              expect(error).toMatchObject({ status: 409, code: "proposal_locked" });
+            }
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "proposal_locked" });
       } finally {
         setInvalidationHook(() => {});
       }
       expect(await targets()).toEqual(before);
-      expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobs.rows);
+      expect(
+        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+          .rows,
+      ).toEqual(jobs.rows);
       expect(events).toEqual([]);
     }));
 
@@ -458,7 +474,12 @@ describe("Inbox type lock", () => {
                 typeItemId: edge.targetItemId,
               }),
             ),
-          ).rejects.toMatchObject({ status: 409, code: "version_conflict", message: "Inbox proposal is busy", details: { field: "type" } });
+          ).rejects.toMatchObject({
+            status: 409,
+            code: "version_conflict",
+            message: "Inbox proposal is busy",
+            details: { field: "type" },
+          });
           expect(
             (
               await pool.query<{ deleted: boolean }>(
@@ -487,84 +508,144 @@ describe("Inbox type lock", () => {
     runInTenant(tenant, async () => {
       const { cp, edge, cardId, proposals, inbox, types } = await fixture("proposed");
       if (!cardId) throw new Error("Missing first card");
-      const second = await withTransaction(pool, (client) => createInboxItemWithClient(client, {
-        inboxDatabaseId: inbox, date: "2026-10-02", time: "10:30", type: edge.targetItemId,
-      }));
+      const second = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inbox,
+          date: "2026-10-02",
+          time: "10:30",
+          type: edge.targetItemId,
+        }),
+      );
       const sourceProperty = (await cp.listProperties(proposals)).find((property) => property.key === "sourceInbox");
       if (!sourceProperty) throw new Error("Missing sourceInbox property");
-      const card = await withTransaction(pool, (client) => insertItem(client, {
-        databaseId: proposals, properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "proposed" },
-      }));
-      await withTransaction(pool, (client) => createRelationWithClient(client, {
-        relationPropertyId: sourceProperty.id, callerItemId: card.id, targetItemId: second.id,
-      }, { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID }));
+      const card = await withTransaction(pool, (client) =>
+        insertItem(client, {
+          databaseId: proposals,
+          properties: { kind: "inbox", fingerprint: randomUUID(), proposal: {}, history: [], status: "proposed" },
+        }),
+      );
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(
+          client,
+          {
+            relationPropertyId: sourceProperty.id,
+            callerItemId: card.id,
+            targetItemId: second.id,
+          },
+          { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+        ),
+      );
       const sources = [edge.callerItemId, second.id].sort();
       const laterCard = sources[1] === second.id ? card.id : cardId;
-      const state = () => pool.query<{ id: string; database_id: string; properties: unknown; deleted_at: Date | null }>(
-        "SELECT id, database_id, properties, deleted_at FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
-        [[...sources, cardId, card.id, edge.targetItemId]],
-      );
-      const relations = () => pool.query<{ id: string; item_a: string; item_b: string; metadata: unknown }>(
-        "SELECT id, item_a, item_b, metadata FROM item_relations WHERE item_a = ANY($1::uuid[]) OR item_b = ANY($1::uuid[]) ORDER BY id",
-        [sources],
-      );
+      const state = () =>
+        pool.query<{ id: string; database_id: string; properties: unknown; deleted_at: Date | null }>(
+          "SELECT id, database_id, properties, deleted_at FROM items WHERE id = ANY($1::uuid[]) ORDER BY id",
+          [[...sources, cardId, card.id, edge.targetItemId]],
+        );
+      const relations = () =>
+        pool.query<{ id: string; item_a: string; item_b: string; metadata: unknown }>(
+          "SELECT id, item_a, item_b, metadata FROM item_relations WHERE item_a = ANY($1::uuid[]) OR item_b = ANY($1::uuid[]) ORDER BY id",
+          [sources],
+        );
       const before = await state();
       const edgesBefore = await relations();
-      const jobs = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+      const jobs = await admin.query<{ id: string; key: string | null }>(
+        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+      );
       let release = () => {};
       let signalReady: (identity: { pid: number; started: string }) => void = () => {};
-      const gate = new Promise<void>((resolve) => { release = resolve; });
-      const ready = new Promise<{ pid: number; started: string }>((resolve) => { signalReady = resolve; });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
+        signalReady = resolve;
+      });
       const actors: RaceActor[] = [];
       const holder = withTransaction(pool, async (client) => {
         const identity = await client.query<{ pid: number; started: string }>(
           "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
         );
         if (!identity.rows[0]) throw new Error("Missing holder identity");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [proposals, laterCard]);
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+          proposals,
+          laterCard,
+        ]);
         signalReady(identity.rows[0]);
         await gate;
-      }).then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
+      }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
       const holderRecord = trackRaceActor(actors, holder);
       let readyReceived = false;
       let primary: { error: unknown } | undefined;
       const deletedSources: string[] = [];
       const events: InvalidationEvent[] = [];
       try {
-        const identity = await boundRace(Promise.race([ready, holder.then((outcome) => {
-          if (!outcome.ok && !readyReceived) holderRecord.consumed = true;
-          throw outcome.ok ? new Error("Holder ended early") : outcome.error;
-        })]));
+        const identity = await boundRace(
+          Promise.race([
+            ready,
+            holder.then((outcome) => {
+              if (!outcome.ok && !readyReceived) holderRecord.consumed = true;
+              throw outcome.ok ? new Error("Holder ended early") : outcome.error;
+            }),
+          ]),
+        );
         readyReceived = true;
-        expect((await admin.query<{ present: boolean }>(
-          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
-          [identity.pid, identity.started],
-        )).rows).toEqual([{ present: true }]);
+        expect(
+          (
+            await admin.query<{ present: boolean }>(
+              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+              [identity.pid, identity.started],
+            )
+          ).rows,
+        ).toEqual([{ present: true }]);
         setInvalidationHook((event) => events.push(event));
-        await expect(withTransaction(pool, async (client) => {
-          const query = client.query.bind(client);
-          const spy = vi.spyOn(client, "query");
-          const forward = async (sql: string, values?: unknown[]) => {
-            const result = await query(sql, values);
-            if (sql.startsWith("DELETE FROM item_relations") && result.rowCount && typeof values?.[1] === "string") deletedSources.push(values[1]);
-            return result;
-          };
-          // The exercised calls use pg's promise overload.
-          // eslint-disable-next-line @typescript-eslint/no-misused-promises
-          spy.mockImplementation(forward as typeof client.query);
-          try {
-            await deleteInboxTypeWithClient(client, { inboxDatabaseId: inbox, inboxItemTypesDatabaseId: types, processingProposalsDatabaseId: proposals, typeItemId: edge.targetItemId });
-          } finally { spy.mockRestore(); }
-        })).rejects.toMatchObject({ status: 409, code: "version_conflict", message: "Inbox proposal is busy" });
+        await expect(
+          withTransaction(pool, async (client) => {
+            const query = client.query.bind(client);
+            const spy = vi.spyOn(client, "query");
+            const forward = async (sql: string, values?: unknown[]) => {
+              const result = await query(sql, values);
+              if (sql.startsWith("DELETE FROM item_relations") && result.rowCount && typeof values?.[1] === "string")
+                deletedSources.push(values[1]);
+              return result;
+            };
+            // The exercised calls use pg's promise overload.
+            // eslint-disable-next-line @typescript-eslint/no-misused-promises
+            spy.mockImplementation(forward as typeof client.query);
+            try {
+              await deleteInboxTypeWithClient(client, {
+                inboxDatabaseId: inbox,
+                inboxItemTypesDatabaseId: types,
+                processingProposalsDatabaseId: proposals,
+                typeItemId: edge.targetItemId,
+              });
+            } finally {
+              spy.mockRestore();
+            }
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "version_conflict", message: "Inbox proposal is busy" });
         expect(deletedSources).toEqual([sources[0]]);
         expect((await state()).rows).toEqual(before.rows);
         expect((await relations()).rows).toEqual(edgesBefore.rows);
-        expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobs.rows);
+        expect(
+          (
+            await admin.query<{ id: string; key: string | null }>(
+              "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+            )
+          ).rows,
+        ).toEqual(jobs.rows);
         expect(events).toEqual([]);
-      } catch (error) { primary = { error }; }
+      } catch (error) {
+        primary = { error };
+      }
       release();
-      try { await finishRaceActors(actors, primary); }
-      finally { if (!pendingRaceActors.size) setInvalidationHook(() => {}); }
+      try {
+        await finishRaceActors(actors, primary);
+      } finally {
+        if (!pendingRaceActors.size) setInvalidationHook(() => {});
+      }
     }));
 
   it("refuses a type change racing a real confirmation that holds the card", async () =>

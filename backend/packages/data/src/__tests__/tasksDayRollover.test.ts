@@ -408,10 +408,15 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       date: day(-1),
       occurrenceDate: day(-1),
     });
-    const seriesBeforeRepeat = await inTenant(() => pool.query<{ item_id: string; rule: unknown; active: boolean }>(
-      "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1", [series.item.properties.seriesId],
-    ));
-    const jobsBeforeRepeat = await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id");
+    const seriesBeforeRepeat = await inTenant(() =>
+      pool.query<{ item_id: string; rule: unknown; active: boolean }>(
+        "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1",
+        [series.item.properties.seriesId],
+      ),
+    );
+    const jobsBeforeRepeat = await admin.query<{ id: string; key: string | null }>(
+      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+    );
     const repeatEvents: InvalidationEvent[] = [];
     setInvalidationHook((event) => repeatEvents.push(event));
     try {
@@ -419,10 +424,20 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     } finally {
       setInvalidationHook(() => {});
     }
-    expect((await inTenant(() => pool.query<{ item_id: string; rule: unknown; active: boolean }>(
-      "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1", [series.item.properties.seriesId],
-    ))).rows).toEqual(seriesBeforeRepeat.rows);
-    expect((await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBeforeRepeat.rows);
+    expect(
+      (
+        await inTenant(() =>
+          pool.query<{ item_id: string; rule: unknown; active: boolean }>(
+            "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1",
+            [series.item.properties.seriesId],
+          ),
+        )
+      ).rows,
+    ).toEqual(seriesBeforeRepeat.rows);
+    expect(
+      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+        .rows,
+    ).toEqual(jobsBeforeRepeat.rows);
     expect(repeatEvents).toEqual([]);
     expect(
       (
@@ -587,7 +602,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       const errors: unknown[] = primary ? [primary.error] : [];
       for (const [index, result] of settled.entries()) {
         if (result.status === "rejected") errors.push(result.reason);
-        else if (!result.value.ok && !(index === 0 && rolloverActorRecords.get(holder)?.consumed)) errors.push(result.value.error);
+        else if (!result.value.ok && !(index === 0 && rolloverActorRecords.get(holder)?.consumed))
+          errors.push(result.value.error);
       }
       if (errors.length)
         throw new AggregateError(errors, "Older occurrence action failed", {
@@ -1114,7 +1130,11 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     ]);
     const actors = [holder, ...(contender ? [contender] : [])];
     const failures = settled.flatMap((result, index) =>
-      result.status === "rejected" ? [result.reason] : result.value.ok || rolloverActorRecords.get(actors[index]!)?.consumed ? [] : [result.value.error],
+      result.status === "rejected"
+        ? [result.reason]
+        : result.value.ok || rolloverActorRecords.get(actors[index]!)?.consumed
+          ? []
+          : [result.value.error],
     );
     if (pendingRolloverActors.size)
       failures.push(new Error("Completion actor remains unsettled; action pool remains open"));

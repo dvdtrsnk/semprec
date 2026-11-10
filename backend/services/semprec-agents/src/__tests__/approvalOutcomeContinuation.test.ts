@@ -256,7 +256,9 @@ describe("settled tick approval outcome continuation", () => {
     const errors: unknown[] = [];
     const records: CleanupRecord[] = [];
     await settleCleanup(records, errors, "conflict queue runner", () => runner.stop());
-    await settleCleanup(records, errors, "conflict thread sessions", async () => { await closeIdleThreadSessions(runtime); });
+    await settleCleanup(records, errors, "conflict thread sessions", async () => {
+      await closeIdleThreadSessions(runtime);
+    });
     if (lifecycleUnsafe) retainedCleanupCases.push({ primary: failure, records });
     if (errors.length) throw cleanupAggregate(failure, errors);
     if (failure) throw failure.error;
@@ -564,13 +566,17 @@ describe("settled tick approval outcome continuation", () => {
       ]);
       if (!reply.rows[0]) throw new Error("Missing queued result");
       expect(await waitForReply(reply.rows[0].id)).toEqual([{ status: "done", text: "Approved result noted" }]);
-      const continuationRun = await runInTenant(tenant, () => runtime.query<{ project_item_id: string }>(
-        "SELECT r.project_item_id FROM agent_runs r JOIN semp_messages m ON m.tenant_id = r.tenant_id AND m.agent_run_id = r.id WHERE m.id = $1",
-        [reply.rows[0]!.id],
-      ));
-      const heartbeatProject = await runInTenant(tenant, () => runtime.query<{ project_item_id: string }>(
-        "SELECT project_item_id FROM project_heartbeats WHERE id = $1", [fixture.heartbeatId],
-      ));
+      const continuationRun = await runInTenant(tenant, () =>
+        runtime.query<{ project_item_id: string }>(
+          "SELECT r.project_item_id FROM agent_runs r JOIN semp_messages m ON m.tenant_id = r.tenant_id AND m.agent_run_id = r.id WHERE m.id = $1",
+          [reply.rows[0]!.id],
+        ),
+      );
+      const heartbeatProject = await runInTenant(tenant, () =>
+        runtime.query<{ project_item_id: string }>("SELECT project_item_id FROM project_heartbeats WHERE id = $1", [
+          fixture.heartbeatId,
+        ]),
+      );
       expect(heartbeatProject.rows).toEqual([{ project_item_id: fixture.projectId }]);
       expect(continuationRun.rows).toEqual(heartbeatProject.rows);
       expect(prompts).toHaveLength(1);
