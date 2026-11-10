@@ -827,11 +827,30 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       contender = trackRolloverActor(
         inTenant(async () => {
           const client = await actionPool.connect();
+          let own: Identity;
           try {
-            contenderReady(await identity(client));
-          } finally {
-            client.release();
+            own = await identity(client);
+          } catch (error) {
+            client.release(error instanceof Error ? error : new Error(String(error)));
+            throw error;
           }
+          // Scoped checkout resets its GUC asynchronously; wait for this exact client to return to the pool.
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              actionPool.off("release", onRelease);
+              reject(new Error("Action client did not return to its pool"));
+            }, WAIT_MS);
+            const onRelease = (error: Error | undefined, returned: PoolClient) => {
+              if (returned !== client) return;
+              clearTimeout(timer);
+              actionPool.off("release", onRelease);
+              if (error) reject(error);
+              else resolve();
+            };
+            actionPool.on("release", onRelease);
+            client.release();
+          });
+          contenderReady(own);
           await createTasksDayRolloverAction(actionPool)(heartbeat.config, {
             heartbeatId: heartbeat.id,
             projectItemId: heartbeat.projectItemId,
