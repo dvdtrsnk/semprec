@@ -8,6 +8,8 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -598,7 +600,10 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
             "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
           );
           if (!identity.rows[0]) throw new Error("Missing holder identity");
-          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, latest]);
+          const trashed = await itemDeleteWithClient(client, tasksId, latest, {
+            queueAffinity: createActionQueueAffinity(),
+          });
+          if (!trashed?.deletedAt) throw new Error("Latest occurrence was not trashed");
           signalReady(identity.rows[0]);
           await gate;
         }),
@@ -670,6 +675,14 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       });
     if (!outcome.ok) throw outcome.error;
     if (failure) throw failure.error;
+    const trashed = await inTenant(() =>
+      pool.query<{ deleted: boolean }>(
+        "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE database_id = $1 AND id = $2",
+        [tasksId, latest],
+      ),
+    );
+    expect(trashed.rows).toEqual([{ deleted: true }]);
+    expect(await row(old)).toEqual(beforeOld);
   });
 
   it.each(["done", "wontDo", "missed"] as const)(
@@ -748,6 +761,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     );
     const seriesId = series.item.properties.seriesId;
     if (typeof seriesId !== "string") throw new Error("Missing series id");
+    const actionPool = await createRuntimeRolePool(admin, "semprec_data");
     type Identity = { pid: number; started: string };
     let release = () => {};
     let holderReady: (identity: Identity) => void = () => {};
@@ -811,12 +825,18 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       };
       const owner = await bounded(held, [holder]);
       contender = trackRolloverActor(
-        inTenant(() =>
-          withTransaction(pool, async (client) => {
+        inTenant(async () => {
+          const client = await actionPool.connect();
+          try {
             contenderReady(await identity(client));
-            await closeMissedOccurrence(client, tasksId, old, day(0));
-          }),
-        ).then(
+          } finally {
+            client.release();
+          }
+          await createTasksDayRolloverAction(actionPool)(heartbeat.config, {
+            heartbeatId: heartbeat.id,
+            projectItemId: heartbeat.projectItemId,
+          });
+        }).then(
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
@@ -847,6 +867,15 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     const failures = settled.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : result.value.ok ? [] : [result.value.error],
     );
+    if (pendingRolloverActors.size)
+      failures.push(new Error("Completion actor remains unsettled; action pool remains open"));
+    else {
+      try {
+        await actionPool.end();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     if (failure && failures.length)
       throw new AggregateError([failure.error, ...failures], "Completion overlap failed", { cause: failure.error });
     if (failure) throw failure.error;
