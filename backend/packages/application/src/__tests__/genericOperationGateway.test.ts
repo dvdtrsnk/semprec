@@ -1340,6 +1340,112 @@ describe("createGenericOperationGateway (issue #220)", () => {
     if (failure) throw failure.error;
   });
 
+  it("rolls back a recurrence approval request if its notification insert fails", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let triggerCreated = false;
+    const invalidations: unknown[] = [];
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
+        if (!tasks) throw new Error("Tasks missing");
+        const cp = createChokePoint(runtime);
+        const item = await cp.createItem({
+          databaseId: tasks.id,
+          properties: { name: "Atomic task", date: "2026-10-22" },
+        });
+        const weekly = await cp.updateItem({
+          databaseId: tasks.id,
+          itemId: item.id,
+          propertiesPatch: { recurrence: { preset: "weekly" } },
+        });
+        const projectItemId = randomUUID();
+        const run = await createAgentRun(runtime, {
+          projectItemId,
+          triggeredBy: "user",
+          task: "change recurrence",
+        });
+        const actor: AuthenticatedActor = {
+          userId: run.actorUserId,
+          runId: run.id,
+          agentProjectItemId: projectItemId,
+        };
+        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        const beforeItem = await cp.findItem(item.id);
+        const beforeSeries = await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
+          "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
+          [item.id],
+        );
+        const beforeRequests = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
+        const beforeNotifications = await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id");
+        const beforeJobs = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        );
+        await pool.query(`CREATE FUNCTION reject_recurrence_notification_test() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'injected recurrence notification failure'; END $$`);
+        await pool.query(`CREATE TRIGGER reject_recurrence_notification_test BEFORE INSERT ON notifications
+          FOR EACH ROW WHEN (NEW.kind = 'approval_pending') EXECUTE FUNCTION reject_recurrence_notification_test()`);
+        triggerCreated = true;
+        setInvalidationHook((event) => invalidations.push(event));
+        await expect(
+          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+            itemId: item.id,
+            properties: { recurrence: { preset: "monthly" }, name: "Not committed" },
+            ifVersion: weekly.updatedAt,
+          }),
+        ).rejects.toThrow("injected recurrence notification failure");
+        expect(await cp.findItem(item.id)).toEqual(beforeItem);
+        expect(
+          (
+            await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
+              "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
+              [item.id],
+            )
+          ).rows,
+        ).toEqual(beforeSeries.rows);
+        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
+          beforeRequests.rows,
+        );
+        expect((await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id")).rows).toEqual(
+          beforeNotifications.rows,
+        );
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(beforeJobs.rows);
+        expect(invalidations).toEqual([]);
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    setInvalidationHook(() => {});
+    const cleanup: unknown[] = [];
+    for (const step of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER reject_recurrence_notification_test ON notifications");
+      },
+      async () => {
+        await pool.query("DROP FUNCTION IF EXISTS reject_recurrence_notification_test()");
+      },
+      async () => {
+        await runtime.end();
+      },
+    ]) {
+      try {
+        await step();
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanup] : cleanup,
+        "Recurrence notification cleanup failed",
+        { cause: failure?.error ?? cleanup[0] },
+      );
+    if (failure) throw failure.error;
+  });
+
   it("snapshots and replays a flagged item patch without the original version guard", async () =>
     inTenantZero(async () => {
       const database = await chokePoint.createDatabase({ name: "Flag patch" });
