@@ -351,7 +351,9 @@ describe("settled tick approval outcome continuation", () => {
             [executionFailure.error, error],
             "Approval execution and policy restoration failed",
             {
-              cause: executionFailure.error,
+              // The execution failure is primary; the caught restoration error is retained in the aggregate.
+            // eslint-disable-next-line preserve-caught-error
+            cause: executionFailure.error,
             },
           );
         throw error;
