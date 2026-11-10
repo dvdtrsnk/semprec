@@ -2508,7 +2508,10 @@ describe("queued Semp messages", () => {
         task({ threadId: fixture.threadId, assistantMessageId: fixture.warm }, { job: { id: "warm" } }),
       );
       const closeErrors: unknown[] = [];
+      // Both originals are invoked with their actual receiver using .call below.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const originalFresh = SempConversation.prototype.ensureFresh;
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const originalSend = SempConversation.prototype.send;
       const primary = new Error("injected turn failure after actual send");
       let calls = 0;
