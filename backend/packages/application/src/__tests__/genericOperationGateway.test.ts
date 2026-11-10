@@ -1384,10 +1384,26 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
         const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
         if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
-        expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
-          true,
+        const seriesBeforeConflict = await seriesSnapshot();
+        const jobsBeforeConflict = await pool.query<{ id: string; key: string | null }>(
+          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
         );
+        const conflictInvalidations: unknown[] = [];
+        setInvalidationHook((event) => conflictInvalidations.push(event));
+        try {
+          expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
+            true,
+          );
+        } finally {
+          setInvalidationHook(() => {});
+        }
         expect(await cp.findItem(item.id)).toEqual(changedProjection);
+        expect((await seriesSnapshot()).rows).toEqual(seriesBeforeConflict.rows);
+        expect(
+          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+            .rows,
+        ).toEqual(jobsBeforeConflict.rows);
+        expect(conflictInvalidations).toEqual([]);
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
