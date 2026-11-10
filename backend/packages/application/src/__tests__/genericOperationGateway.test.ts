@@ -1463,6 +1463,48 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
         ).toEqual(jobsAfterEnd.rows);
+        if (!ended) throw new Error("Missing ended task");
+        const requestsBeforeUser = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
+        const userStart = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: { preset: "daily" } },
+            ifVersion: ended.updatedAt,
+          },
+        );
+        const userStarted = await cp.findItem(item.id);
+        expect(userStarted?.updatedAt).toBe(userStart.updatedAt);
+        const userSeriesId = userStarted?.properties.seriesId;
+        expect(userSeriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+        const userEnd = await gateway.invoke(
+          "item.patch",
+          { userId: actor.userId, restSession: true },
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+            properties: { recurrence: null },
+            ifVersion: userStart.updatedAt,
+          },
+        );
+        expect((await cp.findItem(item.id))?.properties).toMatchObject({
+          recurrence: null,
+          seriesId: null,
+          occurrenceDate: null,
+        });
+        expect((await cp.findItem(item.id))?.updatedAt).toBe(userEnd.updatedAt);
+        expect(
+          (
+            await runtime.query<{ active: boolean }>("SELECT active FROM task_recurrence WHERE series_id = $1", [
+              userSeriesId,
+            ])
+          ).rows,
+        ).toEqual([{ active: false }]);
+        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
+          requestsBeforeUser.rows,
+        );
       });
     } catch (error) {
       failure = { error };
