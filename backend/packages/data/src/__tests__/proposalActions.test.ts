@@ -46,7 +46,7 @@ import { insertValueLink, listValueLinksByItemIds } from "../chokePoint/valueLin
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
-import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
+import { loadDoc, loadDocWithClient, mutateDoc } from "../docs/docPersistence.js";
 import { createSubpageWithClient } from "../docs/pageOperations.js";
 import { proposalBlockId } from "../inbox/proposalPageContent.js";
 import { listPageChanges } from "../docs/pageChanges.js";
@@ -839,14 +839,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     );
   }
 
-  async function createDatabaseProposal(text = "Buy milk") {
+  async function createDatabaseProposal(text = "Buy milk", targetDatabase: "tasks" | "files" = "tasks") {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
         inboxItemTypesDatabaseId: typesId,
         name: "Task",
         emoji: "☑️",
         processingMethod: "database",
-        targetDatabase: "tasks",
+        targetDatabase,
       }),
     );
     const item = await withTransaction(pool, (client) =>
@@ -950,7 +950,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       tenantId: getTenantZeroId(),
       locale: "en",
     });
-    const proposal = await createDatabaseProposal("English capture");
+    const proposal = await createDatabaseProposal("English capture\nSecond line", "files");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
       await runInTenant(getTenantZeroId(), async () => {
@@ -965,8 +965,20 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         );
         const itemId = z.string().parse(confirmed.properties.resultItemId);
         const page = await withTransaction(runtime, (client) => readPageMarkdown(client, itemId));
-        expect(page.markdown).toBe("Created from Inbox: English capture");
-        expect(page.docId).not.toBeNull();
+        expect(page.markdown).toBe("Created from Inbox: English capture<br>Second line");
+        const docId = page.docId;
+        if (!docId) throw new Error("Missing origin page");
+        const blocks = await withTransaction(runtime, async (client) => {
+          const doc = await loadDocWithClient(client, docId);
+          try {
+            return readPageBlocks(doc);
+          } finally {
+            doc.destroy();
+          }
+        });
+        expect(blocks.map((block) => block.text.map((run) => run.insert).join(""))).toEqual([
+          "Created from Inbox: English capture\nSecond line",
+        ]);
         const updates = await runtime.query<{ created_by: string }>(
           "SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id",
           [page.docId],
@@ -2293,6 +2305,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("links an existing person to a created company once and rolls back a later failure", async () => {
       const person = await createIn("people", { name: "Jane" });
+      const personPageBefore = await docStore.readPageMarkdown(person);
       const steps: Step[] = [
         { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
         {
@@ -2316,6 +2329,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const company = first.properties.resultItemId;
       if (typeof company !== "string") throw new Error("Expected created company");
       expect(await edgeExists(person, company)).toBe(true);
+      expect(await docStore.readPageMarkdown(person)).toEqual(personPageBefore);
       const repeated = await confirm(card);
       expect(repeated.id).toBe(first.id);
       expect(repeated.properties).toEqual(first.properties);
@@ -3674,6 +3688,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect(rows).toHaveLength(2);
         expect(rows.map((row) => row.item_id).sort()).toEqual((await createdIds()).sort());
         for (const row of rows) {
+          expect((await docStore.readPageMarkdown(row.item_id)).markdown).toBe("Vytvořeno ze schránky: seed");
           expect(row.proposal_id).toBe(card);
           expect(row.inbox_item_id).toBe(inboxItemId);
           expect(row.source_transcript_id).toBeNull();
