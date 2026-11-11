@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createUser,
   hashPassword,
@@ -12,6 +12,7 @@ import {
   LocalFsBlobStorageWriter,
   login,
   noopPasswordResetMailer,
+  seedSystem,
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
 import { createDispatcher } from "../../app.js";
@@ -315,6 +316,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue(DEPENDENT_DEFINITIONS);
     const startMailbox = vi.fn(async () => {});
     const stopMailbox = vi.fn(async () => {});
+    const restartAccount = vi.fn(async () => {});
     const dispatcher = await createDispatcher(pool, {
       passwordResetMailer: noopPasswordResetMailer,
       appBaseUrl: "https://app.example.test",
@@ -322,7 +324,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       moduleRegistry,
       blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
       maxFileSizeBytes: 1024,
-      customRouteDependencies: { mailLiveSync: { startMailbox, stopMailbox } },
+      customRouteDependencies: { mailLiveSync: { startMailbox, stopMailbox, restartAccount } },
     });
     const server = createServer(dispatcher);
     openServers.push(server);
@@ -337,6 +339,60 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(await response.json()).toEqual({ started: true });
     expect(startMailbox).toHaveBeenCalledExactlyOnceWith("tenant-fixture", "mailbox-fixture");
     expect(stopMailbox).not.toHaveBeenCalled();
+    expect(restartAccount).not.toHaveBeenCalled();
+  });
+
+  it("the password connect route answers 500 on a dispatcher built without its verification (issue gh-1736)", async () => {
+    await inTenantZero(() => seedSystem(pool));
+    const token = await tokenFor("password-connect@example.com");
+    const moduleRegistry = await loadFullModuleRegistry();
+    /** Serves the real custom routes of every module with `customRouteDependencies`, or with no container. */
+    const serve = async (customRouteDependencies?: CustomRouteDependencies): Promise<string> => {
+      const dispatcher = await createDispatcher(pool, {
+        passwordResetMailer: noopPasswordResetMailer,
+        appBaseUrl: "https://app.example.test",
+        setupToken: "deps-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+        maxFileSizeBytes: 1024,
+        customRouteDependencies,
+      });
+      const server = createServer(dispatcher);
+      openServers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      return baseUrlOf(server);
+    };
+    const connect = (baseUrl: string): Promise<Response> =>
+      fetch(`${baseUrl}/api/mail/mailboxes`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "generic",
+          address: "owner@example.test",
+          password: "connect-password",
+          imapHost: "imap.example.test",
+          smtpHost: "smtp.example.test",
+        }),
+      });
+
+    const unconfigured = await connect(await serve());
+
+    expect(unconfigured.status).toBe(500);
+    expect(await unconfigured.json()).toEqual({ error: { code: "internal_error" } });
+
+    // The same request creates the mailbox once a root configures the member, so nothing else refused it above.
+    const configured = await connect(
+      await serve({
+        mailServerClients: {
+          verifyPassword: async () => ({
+            imap: { host: "imap.example.test", port: 993, security: "tls" },
+            smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+          }),
+        },
+      }),
+    );
+
+    expect(configured.status).toBe(201);
   });
 
   it("createDispatcher supplies only its registry provider when the caller gives no container", async () => {

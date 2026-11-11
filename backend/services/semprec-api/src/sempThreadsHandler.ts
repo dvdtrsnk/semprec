@@ -4,12 +4,16 @@ import { sempMessageRefSchema } from "@semprec/shared";
 import {
   getSempThread,
   listSempThreadMessages,
+  listSempThreads,
   NotFoundError,
+  parseSempThreadListCursor,
+  SEMP_THREAD_KINDS,
   sendSempMessage,
   validateSempMessageRefs,
   ValidationError,
   withTransaction,
   type HeartbeatRuleKindRegistry,
+  type SempThreadKind,
 } from "@semprec/data";
 import {
   assertUuid,
@@ -93,12 +97,72 @@ function parseCursor(value: string | null): { createdAt: string; id: string } | 
   }
 }
 
+/** The kinds `GET /api/semp/threads` returns when the request names none: chats and Inbox item threads. */
+const DEFAULT_LIST_KINDS: readonly SempThreadKind[] = ["chat", "item"];
+
+/** The value of a query parameter that may be given at most once; null when it is absent. */
+function singleQueryValue(query: URLSearchParams, name: string): string | null {
+  const values = query.getAll(name);
+  if (values.length > 1) throw new ValidationError(`'${name}' must be given at most once`, { field: name });
+  return values[0] ?? null;
+}
+
+function parseListKinds(value: string): SempThreadKind[] {
+  const kinds = new Set<SempThreadKind>();
+  for (const entry of value.split(",")) {
+    const kind = SEMP_THREAD_KINDS.find((known) => known === entry);
+    if (kind === undefined) {
+      throw new ValidationError("'kind' must be a comma-separated list of chat, item and tick", { field: "kind" });
+    }
+    kinds.add(kind);
+  }
+  return [...kinds];
+}
+
+/** Longest search text `GET /api/semp/threads` takes in `q`, in Unicode code points. */
+const MAX_SEARCH_CODE_POINTS = 100;
+
+/** The validated query of `GET /api/semp/threads` (issues #1729 and #1737). */
+function parseThreadListQuery(query: URLSearchParams) {
+  const rawKind = singleQueryValue(query, "kind");
+  const rawSubject = singleQueryValue(query, "subjectInboxItemId");
+  const rawLimit = singleQueryValue(query, "limit");
+  if (rawLimit !== null && (!/^[1-9]\d*$/.test(rawLimit) || Number(rawLimit) > 100))
+    throw new ValidationError("'limit' must be an integer between 1 and 100", { field: "limit" });
+  const rawCursor = singleQueryValue(query, "cursor");
+  // Trimmed first: only the text that is searched counts against the cap, and a blank `q` is no filter.
+  // Postgres refuses a NUL character in a text value, so one is refused here.
+  const search = singleQueryValue(query, "q")?.trim() ?? "";
+  if (search.includes("\u0000") || Array.from(search).length > MAX_SEARCH_CODE_POINTS)
+    throw new ValidationError(`'q' must be at most ${MAX_SEARCH_CODE_POINTS} characters without a NUL character`, {
+      field: "q",
+    });
+  return {
+    kinds: rawKind === null ? DEFAULT_LIST_KINDS : parseListKinds(rawKind),
+    subjectInboxItemId: rawSubject === null ? null : assertUuid(rawSubject, "subjectInboxItemId"),
+    search: search === "" ? null : search,
+    limit: rawLimit === null ? 50 : Number(rawLimit),
+    cursor: rawCursor === null ? null : parseSempThreadListCursor(rawCursor),
+  };
+}
+
 /** `heartbeatRuleKinds` resolves the active modules' rule kinds per request (`resolveModuleRuleKinds`). */
 export function createSempThreadRoutes(
   pool: Pool,
   heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,
 ): RouteDefinition[] {
   return [
+    {
+      method: "GET",
+      path: "/api/semp/threads",
+      handler: async (ctx) => {
+        const input = parseThreadListQuery(new URL(ctx.req.url ?? "/", "http://localhost").searchParams);
+        const result = await withTransaction(pool, (client) =>
+          listSempThreads(client, { ...input, locale: ctx.identity.user.locale }),
+        );
+        return { status: 200, body: result };
+      },
+    },
     {
       method: "POST",
       path: "/api/semp/threads",

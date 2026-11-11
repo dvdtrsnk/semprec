@@ -270,6 +270,22 @@ describe("exchangeAuthorizationCode", () => {
     expect(params.get("client_secret")).toBe(SENTINELS.clientSecret);
   });
 
+  it("sends the token request through an injected fetch and never the global one (issue gh-1686)", async () => {
+    const globalFetch = mockFetch(500, {});
+    const requested: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const verifier = init?.body instanceof URLSearchParams ? init.body.get("code_verifier") : null;
+      requested.push(`${init?.method} ${typeof url === "string" ? url : "not a string"} ${verifier}`);
+      return new Response(JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 60 }));
+    };
+
+    const result = await exchangeAuthorizationCode({ ...input, fetchImpl });
+
+    expect(result).toMatchObject({ accessToken: "at", refreshToken: "rt" });
+    expect(requested).toEqual([`POST ${MICROSOFT_TOKEN_URL} ${SENTINELS.codeVerifier}`]);
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["refresh token", { access_token: "SENTINEL-ACCESS", expires_in: 3600 }],
     ["access token", { refresh_token: "SENTINEL-REFRESH", expires_in: 3600 }],

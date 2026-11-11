@@ -1,6 +1,7 @@
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
+import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -29,6 +30,12 @@ export {
   createTaskRecurrenceSetRouteHandler,
 } from "../tasks/taskRecurrenceRoutes.js";
 export { createTaskSeriesPatchRouteHandler } from "../tasks/taskSeriesRoutes.js";
+export { createTaskOccurrenceMaterializeRouteHandler } from "../tasks/taskOccurrenceRoutes.js";
+export {
+  createTaskHostEventPutRouteHandler,
+  createTaskHostEventRemoveRouteHandler,
+  createTaskHostEventsClearRouteHandler,
+} from "../tasks/taskHostEventRouteHandlers.js";
 export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
@@ -42,9 +49,11 @@ export {
   createCreateTranscriptionRouteHandler,
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
+  createTranscriptActionItemStateRouteHandler,
   createTranscriptDeleteRouteHandler,
   createTranscriptDetailRouteHandler,
   createTranscriptListRouteHandler,
+  createTranscriptSummariesRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -359,6 +368,31 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: FILES_MODULE_ID, propertyKey: "companies" },
       via: { databaseKey: FILES_MODULE_ID, relationKey: "projects" },
     },
+    // A transcript takes over its Event's project and participants, and its company from its project
+    // (issue #1697). Ownership handoff: `Transcripts.project`, `Transcripts.company` and `Transcripts.people`
+    // stay `owner: user`, and the `valueLinks` process writes them only while the item's value link for that
+    // property is `on`. See
+    // docs/adr/2026-11-10-transcript-values-are-inherited-by-link-rules-whichever-process-writes-the-edge.md.
+    {
+      key: "transcriptProjectFromEvent",
+      source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: TRANSCRIPTS_MODULE_ID, propertyKey: "project" },
+      via: { databaseKey: TRANSCRIPTS_MODULE_ID, relationKey: "event" },
+    },
+    // The tenant's own person (System settings `selfPerson`), the Event's organizer, is left out.
+    {
+      key: "transcriptPeopleFromEvent",
+      source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "people" },
+      target: { databaseKey: TRANSCRIPTS_MODULE_ID, propertyKey: "people" },
+      via: { databaseKey: TRANSCRIPTS_MODULE_ID, relationKey: "event" },
+      valueFilter: { omit: { databaseKey: SYSTEM_SETTINGS_MODULE_ID, propertyKey: "selfPerson" } },
+    },
+    {
+      key: "transcriptCompanyFromProject",
+      source: { databaseKey: PROJECTS_MODULE_ID, propertyKey: "company" },
+      target: { databaseKey: TRANSCRIPTS_MODULE_ID, propertyKey: "company" },
+      via: { databaseKey: TRANSCRIPTS_MODULE_ID, relationKey: "project" },
+    },
   ],
   customRoutes: [
     {
@@ -413,6 +447,40 @@ export const manifest: ModuleManifest = {
       path: "/api/tasks/series/:seriesId",
       handlerExport: "createTaskSeriesPatchRouteHandler",
       // The series template and its open occurrences change together under the occurrence and series locks (issue #1667).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "materializeTaskOccurrence",
+      method: "POST",
+      path: "/api/tasks/series/:seriesId/occurrences/:date",
+      handlerExport: "createTaskOccurrenceMaterializeRouteHandler",
+      // Finding or creating the occurrence's item and writing it commit together under the item and series locks (issue #1720).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "putTaskIntoEvent",
+      method: "PUT",
+      path: "/api/tasks/:id/host-events/:eventId",
+      handlerExport: "createTaskHostEventPutRouteHandler",
+      // Writes a system-owned edge with metadata the server fills (`addedAt`), which the generic relation
+      // endpoint refuses for this relation and cannot fill (issue #1764).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "removeTaskFromEvent",
+      method: "DELETE",
+      path: "/api/tasks/:id/host-events/:eventId",
+      handlerExport: "createTaskHostEventRemoveRouteHandler",
+      // Removes a system-owned edge, which the generic relation endpoint refuses for this relation (issue #1764).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "removeTaskFromAllEvents",
+      method: "DELETE",
+      path: "/api/tasks/:id/host-events",
+      handlerExport: "createTaskHostEventsClearRouteHandler",
+      // Every host event edge of the task is removed and the task's new date and time are written in one
+      // transaction, which the generic endpoints cannot express (issue #1764).
       justification: "transactional-semantics",
     },
     {
@@ -481,6 +549,24 @@ export const manifest: ModuleManifest = {
       // computed segment keys with its `speakers` edge metadata and the mapped People's names,
       // which no generic item read returns together.
       justification: "single-consumer-read",
+    },
+    {
+      name: "listTranscriptSummaries",
+      method: "GET",
+      path: "/api/transcript-summaries",
+      handlerExport: "createTranscriptSummariesRouteHandler",
+      // Shaped for exactly one consumer, the journal's day: one statement counts the transcripts of
+      // each of the day's events, which the transcript list answers for one event per request.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "setTranscriptActionItemState",
+      method: "PUT",
+      path: "/api/transcripts/:id/action-items/:actionItemId/state",
+      handlerExport: "createTranscriptActionItemStateRouteHandler",
+      // The existence check of the action item, the owner lookup and the state write commit together
+      // under the transcript's row lock (issue #1754); the state is no item property.
+      justification: "transactional-semantics",
     },
   ],
 };

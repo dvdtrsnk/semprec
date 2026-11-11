@@ -557,7 +557,7 @@ export class ModuleRegistry {
     };
   }
 
-  /** Link rules of active modules, in load order then manifest order. */
+  /** Link rules of active modules, in load order then manifest order. A rule without a `valueFilter` has no such key. */
   async getLinkRules(): Promise<ModuleLinkRuleProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -567,6 +567,7 @@ export class ModuleRegistry {
         source: { ...rule.source },
         target: { ...rule.target },
         via: { ...rule.via },
+        ...(rule.valueFilter ? { valueFilter: { omit: { ...rule.valueFilter.omit } } } : {}),
       })),
     );
   }
@@ -576,7 +577,10 @@ export class ModuleRegistry {
    * may name a database of another module, which a single `loadModule` cannot see. Covers all
    * loaded modules regardless of activation. Throws on an unknown database key, a `via`
    * database that is neither the source's nor the target's, or a cycle in the property graph
-   * (one node per `databaseKey.propertyKey`, one edge per rule from source to target).
+   * (one node per `databaseKey.propertyKey`, one edge per rule from source to target). The keys of
+   * a rule's `valueFilter` are not checked here: they name a singleton system database that no
+   * manifest declares, so only the manifest schema (their shape) and the seeded-schema drift check
+   * of `@semprec/data` (their existence) cover them.
    */
   validateLinkRules(): void {
     const rules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);

@@ -89,3 +89,65 @@ export async function recordReconcile(client: Queryable, input: RecordReconcileI
 export async function recordFolderSyncError(client: Queryable, itemId: string, error: string): Promise<void> {
   await client.query(`UPDATE mail_folder_sync_state SET last_error = $2 WHERE item_id = $1`, [itemId, error]);
 }
+
+/**
+ * Deletes the sync state of every Folders item related to `mailboxItemId` through `Folders.mailbox`,
+ * trashed folders included (issue gh-1690); returns the number of rows deleted. Only a folder the IMAP
+ * adapter synced has a row. The relation definition is found by the property key on the Folders
+ * database, the way `mailboxRemovalImpact.ts` finds it.
+ */
+export async function deleteMailFolderSyncStatesOfMailbox(
+  client: Queryable,
+  input: { foldersDatabaseId: string; mailboxItemId: string },
+): Promise<number> {
+  const result = await client.query(
+    `DELETE FROM mail_folder_sync_state
+      WHERE item_id IN (
+        SELECT f.id
+          FROM relation_definitions rd
+          JOIN properties p ON p.id IN (rd.property_id_a, rd.property_id_b)
+          JOIN item_relations r ON r.relation_definition_id = rd.id
+          JOIN items f ON f.database_id = $2::uuid
+           AND f.id = CASE WHEN r.item_a = $1::uuid THEN r.item_b ELSE r.item_a END
+         WHERE p.database_id = $2::uuid
+           AND p.key = 'mailbox'
+           AND (r.item_a = $1::uuid OR r.item_b = $1::uuid)
+      )`,
+    [input.mailboxItemId, input.foldersDatabaseId],
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Deletes the sync state of every Folders item that no mailbox is related to through `Folders.mailbox`,
+ * trashed folders included (issue gh-1691); returns the number of rows deleted. The permanent purge
+ * deletes a purged mailbox's relation edges before its purge hooks run, so by then
+ * `deleteMailFolderSyncStatesOfMailbox` finds none of that mailbox's folders: they are among the folders
+ * without a mailbox, next to any folder that had none before. The relation definition is found the way
+ * that function finds it; when `foldersDatabaseId` has no `mailbox` relation, nothing is deleted.
+ * Constrained by: docs/adr/2026-11-11-mail-purge-hook-takes-the-thread-guard-after-the-purge-locks.md
+ */
+export async function deleteMailFolderSyncStatesOfFoldersWithoutMailbox(
+  client: Queryable,
+  foldersDatabaseId: string,
+): Promise<number> {
+  const result = await client.query(
+    `DELETE FROM mail_folder_sync_state
+      WHERE item_id IN (
+        SELECT f.id
+          FROM relation_definitions rd
+          JOIN properties p ON p.id IN (rd.property_id_a, rd.property_id_b)
+          JOIN items f ON f.database_id = $1::uuid
+         WHERE p.database_id = $1::uuid
+           AND p.key = 'mailbox'
+           AND NOT EXISTS (
+             SELECT 1
+               FROM item_relations r
+              WHERE r.relation_definition_id = rd.id
+                AND (r.item_a = f.id OR r.item_b = f.id)
+           )
+      )`,
+    [foldersDatabaseId],
+  );
+  return result.rowCount ?? 0;
+}

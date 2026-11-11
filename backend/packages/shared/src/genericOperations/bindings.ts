@@ -11,12 +11,15 @@ import {
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
   PageChangesInputSchema,
+  PageDuplicateInputSchema,
+  PageRenameInputSchema,
   DatabaseCreateInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
   DatabasePatchInputSchema,
   DatabaseQueryInputSchema,
   DatabaseRestoreInputSchema,
+  ItemCountInputSchema,
   ItemCreateInputSchema,
   ItemDeleteInputSchema,
   ItemGetInputSchema,
@@ -57,7 +60,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 38 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 42 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -79,6 +82,11 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
     input: PageCreateSubpageInputSchema,
     invoke: (service, actor, input) => service.createSubpage(actor, input),
   },
+  "page.duplicate": {
+    input: PageDuplicateInputSchema,
+    invoke: (service, actor, input) => service.duplicatePage(actor, input),
+  },
+  "page.rename": { input: PageRenameInputSchema, invoke: (service, actor, input) => service.renamePage(actor, input) },
   "page.get": { input: PageGetInputSchema, invoke: (service, actor, input) => service.getPage(actor, input) },
   "link.unlink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.unlinkValue(actor, input) },
   "link.relink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.relinkValue(actor, input) },
@@ -209,5 +217,9 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.restoreVersion": {
     input: PageRestoreVersionInputSchema,
     invoke: (service, actor, input) => service.restorePageVersion(actor, input),
+  },
+  "item.count": {
+    input: ItemCountInputSchema,
+    invoke: (service, actor, input) => service.countItems(actor, input),
   },
 };

@@ -53,16 +53,31 @@ function toPropertyCatalogEntry(
 }
 
 /**
+ * The default view type each active module's manifest declares for one of its databases, by database key
+ * (issue #1707). A database whose descriptor declares none has no entry.
+ */
+async function declaredDefaultViewTypes(moduleRegistry: ModuleRegistry): Promise<ReadonlyMap<string, string>> {
+  const declared = new Map<string, string>();
+  for (const descriptor of await moduleRegistry.getDatabases()) {
+    if (descriptor.defaultViewType !== undefined) declared.set(descriptor.key, descriptor.defaultViewType);
+  }
+  return declared;
+}
+
+/**
  * Resolves `database`'s display name through issue #35's localized-metadata catalog and projects
  * it onto the #240 wire envelope — the one place every database route (list/create/detail/patch/
  * archive/restore) turns a generic-catalog `Database` into its response body, so a system
  * database's `name: null` override slot is never sent to a REST caller as a literal `null`.
+ * `defaultViewTypes` is the map of `declaredDefaultViewTypes`; only a system database has a key, so
+ * a user-created database never takes a declared type.
  */
 async function resolvedDatabaseBody(
   catalogResolver: CatalogResolver,
   database: Database,
   locale: ManifestLocale,
   metadataResolver: CollectionMetadataResolver,
+  defaultViewTypes: ReadonlyMap<string, string>,
 ): Promise<ReturnType<typeof toDatabaseEnvelope>> {
   const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
   return toDatabaseEnvelope(
@@ -70,6 +85,7 @@ async function resolvedDatabaseBody(
     resolveDatabaseName(database.name, database.key, database.id, catalogs, locale),
     await resolveDatabasePlaceholderForRow(catalogResolver, database, locale),
     metadataResolver.resolve(database),
+    database.key === null ? null : (defaultViewTypes.get(database.key) ?? null),
   );
 }
 
@@ -161,6 +177,7 @@ export function createDatabaseRoutes(
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
         const rows = await listAllDatabases(service, ctx.identity.user.id);
         const entries = await Promise.all(
           rows.map(async (db) => {
@@ -180,7 +197,7 @@ export function createDatabaseRoutes(
           after === undefined ? entries : entries.filter((e) => compareCollections(e.sortable, after) > 0);
         const window = remaining.slice(0, limit);
         const databases = await Promise.all(
-          window.map((e) => resolvedDatabaseBody(catalogResolver, e.db, locale, metadataResolver)),
+          window.map((e) => resolvedDatabaseBody(catalogResolver, e.db, locale, metadataResolver, defaultViewTypes)),
         );
         const nextCursor = remaining.length > limit ? encodeListCursor(window[window.length - 1]!.sortable) : null;
         return { status: 200, body: { databases, nextCursor } };
@@ -198,7 +215,11 @@ export function createDatabaseRoutes(
         });
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
-        return { status: 201, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
+        return {
+          status: 201,
+          body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver, defaultViewTypes),
+        };
       },
     },
     {
@@ -212,7 +233,11 @@ export function createDatabaseRoutes(
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
+        return {
+          status: 200,
+          body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver, defaultViewTypes),
+        };
       },
     },
     {
@@ -228,7 +253,11 @@ export function createDatabaseRoutes(
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
+        return {
+          status: 200,
+          body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver, defaultViewTypes),
+        };
       },
     },
     {
@@ -242,7 +271,11 @@ export function createDatabaseRoutes(
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
+        return {
+          status: 200,
+          body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver, defaultViewTypes),
+        };
       },
     },
     {
@@ -256,7 +289,11 @@ export function createDatabaseRoutes(
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
-        return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };
+        const defaultViewTypes = await declaredDefaultViewTypes(moduleRegistry);
+        return {
+          status: 200,
+          body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver, defaultViewTypes),
+        };
       },
     },
     {

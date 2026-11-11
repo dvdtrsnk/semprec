@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 38 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 42 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -89,6 +89,7 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "viewItem.remove": nonDestructive("core.view.write", "write"),
   "viewItem.reorder": nonDestructive("core.view.write", "write"),
   "item.get": nonDestructive("core.item.read", "read"),
+  "item.count": nonDestructive("core.item.read", "read"),
   "item.create": nonDestructive("core.item.write", "write"),
   "item.patch": nonDestructive("core.item.write", "write"),
   "item.delete": destructive("core.item.write", true),
@@ -104,6 +105,12 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "page.changes": nonDestructive("core.page.read", "read"),
   // Additive and reversible through `item.delete`; the item-write capability is the issue's choice (#1844 refines it).
   "page.createSubpage": nonDestructive("core.item.write", "write"),
+  // Additive: it creates new Pages items and documents and adds one `page` block to the parent's document. The
+  // item-write capability is the issue's choice (docs/adr/2026-11-10-page-duplication-copies-the-subtree-as-new-pages.md).
+  "page.duplicate": nonDestructive("core.item.write", "write"),
+  // Undone by renaming back. The item-write capability is the issue's choice
+  // (docs/adr/2026-11-10-page-rename-writes-the-item-title-and-the-parent-block-together.md).
+  "page.rename": nonDestructive("core.item.write", "write"),
   // Additive: it destroys no content and its blocks carry the caller as `created_by` (docs/adr/2026-10-29-agent-page-write-policy.md).
   "page.insert": nonDestructive("core.page.write", "write"),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).

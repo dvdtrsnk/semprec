@@ -162,7 +162,7 @@ describe("mail thread list", () => {
     );
     expect(applied.rows).toEqual([{ n: 1 }]);
   });
-  it("aggregates a conversation, deduplicates mailbox copies and ignores provider and Semp drafts", async () => {
+  it("aggregates a conversation, deduplicates mailbox copies and keeps provider and Semp drafts out of the aggregate", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const person = await f.cp.createItem({
@@ -248,7 +248,8 @@ describe("mail thread list", () => {
           },
         }),
       );
-      expect((await list()).body.threads[0]).toEqual(row);
+      // Neither draft changes an aggregated value; the Semp draft only sets the thread's flag.
+      expect((await list()).body.threads[0]).toEqual({ ...row, hasSempDraft: true });
     });
   });
   it("does not count an own sent-only message as unread", async () => {

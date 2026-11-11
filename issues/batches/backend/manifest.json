@@ -3,7 +3,7 @@
   "baseline": "9b4929ba4e672a8f2b0c83a955bdf0679757fcc3",
   "programIssue": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
   "scope": "backend-only",
-  "sourceCount": 669,
+  "sourceCount": 673,
   "activeBatchCount": 74,
   "heldBatchCount": 2,
   "externalPrerequisites": [
@@ -3901,11 +3901,34 @@
     {
       "id": "sp-36136548-e5b0-4c76-a0e6-d765c19b08bb",
       "sequence": 40,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 40/74] Implement data/mail, data/transcription, data/manifest changes",
       "bodyCharacters": 57845,
       "specSha256": "b39003041cc2d4dc41e5a1a8bc5d84d2b4420306476c75499a8cc2eeca1e55d9",
       "members": [
+        {
+          "id": "sp-0ef30642-7659-4424-9527-180d99a33ae9",
+          "specSha256": "72dbb4e87d4c5faa8a973f2ca83a711c6c755dfba7b77d04b0d66c8a5b754428",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [],
+          "approval": "approved"
+        },
+        {
+          "id": "sp-962cf217-c004-462b-941b-702f5d7536b8",
+          "specSha256": "d5d8c82f2beadda21d3725aa7e7185740ee5764ab22b8bfdfb77e02df3ea6fee",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [
+            "gh-1601"
+          ],
+          "approval": "approved"
+        },
+        {
+          "id": "sp-44dfcbd8-7363-4918-855b-95dbd7673e8d",
+          "specSha256": "300a80b7cd60e8961011a80446c44915722cf37e83aeb8cab2339f15c7d5c39b",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [],
+          "approval": "approved"
+        },
         {
           "id": "gh-1686",
           "specSha256": "b89442e2b7dc4b17b58782c04e027c0b17e15effe0451eeed6771e6c545361ed",
@@ -4024,13 +4047,22 @@
             "gh-1693"
           ],
           "approval": "approved"
+        },
+        {
+          "id": "sp-5419cac1-f4a7-4717-b870-4f244b1ad166",
+          "specSha256": "9c73999105128accf2f118949e705edfe6446ca3cebd7b3f9e50f5365b661f55",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [
+            "gh-1697"
+          ],
+          "approval": "approved"
         }
       ]
     },
     {
       "id": "sp-4885858c-3b75-4b03-a181-e5e29e451101",
       "sequence": 41,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 41/74] Implement data/transcription, application, data/chokePoint changes",
       "bodyCharacters": 54345,
       "specSha256": "3bc56269a4297d31597c36ee94cc372c22f8f28823154aaacb19357560fbd54b",
@@ -4116,7 +4148,7 @@
     {
       "id": "sp-1601c9f8-0a3e-473e-9370-1c47f71ad0aa",
       "sequence": 42,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 42/74] Implement data/notifications, data/push, data/sleep changes",
       "bodyCharacters": 55584,
       "specSha256": "c609546cb4927b8b3fdf45bb3a39c37b0ebb4a55f1c07a145c02b227e28cb36d",
@@ -4211,7 +4243,7 @@
     {
       "id": "sp-5afb1625-a609-4f21-a3a0-b2d5e4bd554c",
       "sequence": 43,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 43/74] Implement data/auth, data/tasks, application changes",
       "bodyCharacters": 57154,
       "specSha256": "000ae2d14d38e71cb89a172eb34aeb3d2634f5a66223e61076adab52f2da44d5",
@@ -4300,7 +4332,7 @@
     {
       "id": "sp-00ebafd8-da78-4b44-983f-6f9705c28a6c",
       "sequence": 44,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 44/74] Implement data/docs, application, data/journal changes",
       "bodyCharacters": 57389,
       "specSha256": "4c81e307d7f3e290b6a11ef5d5b62b77120fcec1a649b2a6ff006f79925bd096",
@@ -4373,7 +4405,7 @@
         },
         {
           "id": "gh-1729",
-          "specSha256": "84498a33e47956483fde3aa769b49745fbc72752bb4a1af58853ff0ee4de816f",
+          "specSha256": "5b56ba50a8e94889b153c391cf7cd7a61a37814f37e2623a3e56c8fd8b1ebca0",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1683",
@@ -4405,7 +4437,7 @@
     {
       "id": "sp-d2ba0da1-0737-4141-92e2-5c5afcb30f90",
       "sequence": 45,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 45/74] Implement data/mail, data/agentRuns, data/mcp changes",
       "bodyCharacters": 54554,
       "specSha256": "ba1362a8ff05449b42bd7d78a6eef48c7c55cbe4889838ce5f2353792e813159",
@@ -4500,10 +4532,12 @@
         },
         {
           "id": "gh-1756",
-          "specSha256": "a2d503cc25f0d65cf8c2e6dd7642f3e8e9608a564dabdd1c40e248bf2f936894",
+          "specSha256": "b249298ef7c94e31bf29e42bb061a553abeeea8c5af32ec1932b84acb0be5d3c",
           "parent": "gh-1329",
           "dependencies": [
-            "gh-1754"
+            "gh-1697",
+            "gh-1754",
+            "sp-5419cac1-f4a7-4717-b870-4f244b1ad166"
           ],
           "approval": "approved"
         }
@@ -4512,7 +4546,7 @@
     {
       "id": "sp-836a321e-e717-4f96-a2e6-c1a236ee5b59",
       "sequence": 46,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 46/74] Implement data/calendar, application, data/tasks changes",
       "bodyCharacters": 56642,
       "specSha256": "a011c756eb581a23081a9504c9d844d4b09ddfa5b2765b23a42f990c559df999",
@@ -4596,7 +4630,7 @@
     {
       "id": "sp-bea1bfc2-3e62-4290-af28-7818fa1e2b3a",
       "sequence": 47,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 47/74] Implement application, data/mcp, data/docs changes",
       "bodyCharacters": 57697,
       "specSha256": "2100e7756af0a772467499dd93c29e8825507322eec26e56884a7424b84355b5",
@@ -4674,7 +4708,7 @@
     {
       "id": "sp-767c0955-daf8-4edd-882e-3eac16846fc3",
       "sequence": 48,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 48/74] Implement data/calendar, data/mcp, data/tasks changes",
       "bodyCharacters": 56954,
       "specSha256": "d080fc0f56de05e01c639311e1ee84579f0238a3467e6ab831de48a0f19e4ecd",
@@ -4773,7 +4807,7 @@
     {
       "id": "sp-48013c73-79f6-41ee-9bec-990c39e2647e",
       "sequence": 49,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 49/74] Implement data/chokePoint, data/sleep, data/tasks changes",
       "bodyCharacters": 57211,
       "specSha256": "2cf3d0e1886a1fb7637ed497347e6482f36c9c4567bbf32b7ad7f50dfcf4e3b6",
@@ -4860,7 +4894,7 @@
     {
       "id": "sp-9ea90977-e3d2-48ae-bdb1-fa0c1decd6f7",
       "sequence": 50,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 50/74] Implement application, shared/genericOperations, data/agentGrants changes",
       "bodyCharacters": 57255,
       "specSha256": "b1b4cd304aef2a5fa10fa38fde1e3874540e30230fc0d8d4229c9b1d3393c183",
@@ -4964,7 +4998,7 @@
     {
       "id": "sp-75c1b975-fd26-4662-a40a-f40d02177d8a",
       "sequence": 51,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 51/74] Implement data/calendar, data/tasks changes",
       "bodyCharacters": 56143,
       "specSha256": "f61d62c033c9e271a317c35eed6935783eb08e976b7c3fe3fd409862697df501",
@@ -5059,7 +5093,7 @@
     {
       "id": "sp-8ef85048-a887-4f5b-bfca-a524601d48ad",
       "sequence": 52,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 52/74] Implement agent-runtime, data/agentRuns, agent-runtime/tools changes",
       "bodyCharacters": 56580,
       "specSha256": "1b5961162b75497e9c497c9ca92600d5c4067cc9f8d80f0fa5aed91c50d64317",
@@ -5168,7 +5202,7 @@
     {
       "id": "sp-404ad782-8ff8-4a64-80b4-a29fdf333e36",
       "sequence": 53,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 53/74] Implement data/transcription, semprec-transcribe, data/inbox changes",
       "bodyCharacters": 53845,
       "specSha256": "a60221c5fd25ce3fa16301897b8e0bd6fcd3e896da203828ee6787ae8b6f86cf",
@@ -5247,7 +5281,7 @@
     {
       "id": "sp-16d8729d-031f-4384-91f0-9fb7eaa8326b",
       "sequence": 54,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 54/74] Implement realtime, realtime-client, ai-gateway changes",
       "bodyCharacters": 54873,
       "specSha256": "fd21cad23a5c632413f53cbe79fc3c887b14e4775d74151853c9e7591792be96",
@@ -5345,7 +5379,7 @@
     {
       "id": "sp-f1428e6a-2200-476f-8115-7cc16ec8104f",
       "sequence": 55,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 55/74] Implement data/agentRuns, data/mcp, data/semp changes",
       "bodyCharacters": 57805,
       "specSha256": "5da18aa7f78d2f1fbb0f0e9af0f5c34d2671788525f847c5b12b2a011593377f",
@@ -5436,7 +5470,7 @@
     {
       "id": "sp-9f4aa1e3-40d6-4408-bc51-577c8bbbef38",
       "sequence": 56,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 56/74] Implement data/semp, semprec-agents, application/projectAgentGuidance changes",
       "bodyCharacters": 54477,
       "specSha256": "b1a5fe8fe92c4b8ee220f345e2a66b99945a07582c86cddde935ae8fe56b859a",
@@ -5501,13 +5535,15 @@
         },
         {
           "id": "gh-1783",
-          "specSha256": "c9c7a47d7db6ed50145490a024b14a125ff0d6c7520def11ce1249ee58d9c055",
+          "specSha256": "1918df18e5df48022928a00e0477344f7d2d434df6ad2568fa6811f92618d3c1",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1589",
+            "gh-1620",
+            "gh-1727",
             "gh-1737"
           ],
-          "approval": "unapproved"
+          "approval": "approved"
         },
         {
           "id": "gh-1888",
@@ -5524,7 +5560,7 @@
     {
       "id": "sp-8822ea9b-25c6-44b8-8504-5d5af7654c0e",
       "sequence": 57,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 57/74] Implement data/mcp, realtime, realtime-client changes",
       "bodyCharacters": 57344,
       "specSha256": "6750ceff5acdaf971f4d1a560e1b976daef2e3e1d2164c3df475ee50bfbfc530",
@@ -5630,7 +5666,7 @@
     {
       "id": "sp-e851d02d-f9e9-4d46-8d74-399d757d4b2d",
       "sequence": 58,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 58/74] Implement data/sleep, data/chokePoint, application changes",
       "bodyCharacters": 53327,
       "specSha256": "bc91314b03eb0629e13b4efdd469f144d9f4ab81f0f02ba2c1602a19bdcac4b9",
@@ -5713,7 +5749,7 @@
     {
       "id": "sp-b01c7b1d-a5d0-4404-935f-b0455ab2aed1",
       "sequence": 59,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 59/74] Implement data/calendar, data/chokePoint, data/search changes",
       "bodyCharacters": 55960,
       "specSha256": "cafd2e5b9bb7fb68760ce91bcc8e461f66873627939c6727aac29a103b1c7467",
@@ -5811,7 +5847,7 @@
     {
       "id": "sp-c085d86f-fed6-4d7c-b983-a73c72d95223",
       "sequence": 60,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 60/74] Implement data/chokePoint, data/inbox, data/transcription changes",
       "bodyCharacters": 57495,
       "specSha256": "b3db8cc97806b0dfc67d9e6858ccf8b6396f9634d5d516dad0c3f942f34471aa",
@@ -5908,7 +5944,7 @@
     {
       "id": "sp-2f2ffdd3-af61-4d7f-b072-a54ddd4dab8a",
       "sequence": 61,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 61/74] Implement data/mail, data/search, shared/genericOperations changes",
       "bodyCharacters": 55657,
       "specSha256": "55c0d05c6f86678253b67c5d3e0672438467a52db1ab06ca8b246f5d8208139b",
@@ -6012,7 +6048,7 @@
     {
       "id": "sp-b5e18c99-27b0-4479-8882-bdaf0fbe9a72",
       "sequence": 62,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 62/74] Implement data/chokePoint, data/calendar, data/trash changes",
       "bodyCharacters": 57775,
       "specSha256": "0f1b56bf56c795b7737fbdccd71378c711b59489e0e5007a96e3df09c29b22ad",
@@ -6112,7 +6148,7 @@
     {
       "id": "sp-559d3b2a-9178-4247-b9e1-67ece8a18fa4",
       "sequence": 63,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 63/74] Implement data/mail, data/inbox, semprec-api/adapter changes",
       "bodyCharacters": 57790,
       "specSha256": "a20526dda336a54c0cb5bf4a9285095b897be26b733898d078704679ef7acf46",
@@ -6225,7 +6261,7 @@
     {
       "id": "sp-cc56c645-b2de-4ad5-82fb-c907011425d6",
       "sequence": 64,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 64/74] Implement data/inbox, data/calendar, data/manifest changes",
       "bodyCharacters": 55053,
       "specSha256": "d90bfa2d19c28446c08dc8d9dd10b795bc715e183213ba1a423b86289d869899",
@@ -6312,7 +6348,7 @@
     {
       "id": "sp-f8cc252b-49f1-4b64-a6a2-4c65839ea3b3",
       "sequence": 65,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 65/74] Implement data/chokePoint, data/agentRuns, data/scheduler changes",
       "bodyCharacters": 57900,
       "specSha256": "74a048b61e2f598ce5aeb0c8505889f640acb08680f77f1996ca89e2b1a2bf13",
@@ -6398,7 +6434,7 @@
     {
       "id": "sp-e039076f-0c82-4f3e-90ca-37a813ebcd28",
       "sequence": 66,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 66/74] Implement data/mail, data/inbox, data/semp changes",
       "bodyCharacters": 55316,
       "specSha256": "67b0d7bbf176b1a7863313e8945231bae55d98765e42545b093232a5337e0ac8",
@@ -6517,7 +6553,7 @@
     {
       "id": "sp-5848d216-b194-4bdb-9afb-e05c4d3a0fb6",
       "sequence": 67,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 67/74] Implement data/calendar, data/semp, agent-runtime changes",
       "bodyCharacters": 54126,
       "specSha256": "993af1e6c5b12a5abcc27c67040e3cd837733fd33285c895401a351171a70bd0",
@@ -6592,7 +6628,7 @@
     {
       "id": "sp-4c05dd52-f9eb-4474-92d0-feaf5c252da2",
       "sequence": 68,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 68/74] Implement data/calendar, data/inbox, data/notifications changes",
       "bodyCharacters": 54226,
       "specSha256": "41a38d813b92927e415c08b3fe9bfaedd9bceb2581fc66265450efb5fcaf0478",
@@ -6670,7 +6706,7 @@
     {
       "id": "sp-d2796d07-70a9-4c60-b951-e0062c704e5d",
       "sequence": 69,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 69/74] Implement data/calendar, queue, data/chokePoint changes",
       "bodyCharacters": 54419,
       "specSha256": "b91f7e45005e2ae4567e0f51656d6832bb8ae917f472df349859e18a559cc6aa",
@@ -6747,7 +6783,7 @@
     {
       "id": "sp-e1a8e572-15ed-4568-b9be-33e76f66d8af",
       "sequence": 70,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 70/74] Implement data/inbox, data/blobs, data/docs changes",
       "bodyCharacters": 56413,
       "specSha256": "dc4ef6977d5effc6e8b69845d808351af280e7e04b6abef403c025c0a60553e9",
@@ -6849,7 +6885,7 @@
     {
       "id": "sp-9c059097-487d-4e51-950d-2ea975f0ed08",
       "sequence": 71,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 71/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
       "bodyCharacters": 55908,
       "specSha256": "f0cb987118df077f72cbdbe5c6b38ea5884817c5ef0a0eec7e3ee1c753581156",
@@ -6931,7 +6967,7 @@
     {
       "id": "sp-3ccbdb63-4e68-4015-aa44-4dff162d1e91",
       "sequence": 72,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes",
       "bodyCharacters": 58514,
       "specSha256": "2301ebf7b71810b8ac396a2eabf3498b419626c487c0b6a12d3195b5608d50f3",
@@ -7029,7 +7065,7 @@
     {
       "id": "sp-56893bf7-2d28-48ba-bc63-2129e44d82bd",
       "sequence": 73,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 73/74] Implement data/inbox, data/mcp, queue changes",
       "bodyCharacters": 57226,
       "specSha256": "dc4131ca79452a6fd12aabafdf394b8e62e044cf37a1516bba297e8b60ceb9e0",
@@ -7129,7 +7165,7 @@
     {
       "id": "sp-c4a4aa37-b11e-47da-8b15-4931b712b71d",
       "sequence": 74,
-      "status": "proposed",
+      "status": "merged",
       "title": "[backend-delivery 74/74] Implement data/inbox, data/mcp, data/recipes changes",
       "bodyCharacters": 52239,
       "specSha256": "71c789b245aceff7fd2bc2f8061aa300cd6f701c5c224b6cfc086123aa1c4e27",
@@ -7264,5 +7300,10 @@
       ]
     }
   ],
-  "planningBaseline": "ccdf6042ac29bf94fcdf3d81bfb96b8defc80dea"
+  "planningBaseline": "ccdf6042ac29bf94fcdf3d81bfb96b8defc80dea",
+  "parallelProgram": {
+    "decision": "2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue",
+    "integrationBranch": "feature/backend-parallel",
+    "base": "745aea3f6fe9cef26cb2260843e52eae5dd5e315"
+  }
 }

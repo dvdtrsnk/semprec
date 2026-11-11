@@ -51,6 +51,7 @@ import { createMcpRequestListener } from "../mcpHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 const PASSWORD = "s3cret-password";
@@ -152,6 +153,8 @@ interface Fixtures {
   targetItem: ItemRow;
   relationProperty: PropertyRow;
   singleRelationProperty: PropertyRow;
+  /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
+  subpageItemId?: string;
 }
 
 /**
@@ -222,7 +225,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 38-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 42-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -401,6 +404,23 @@ const CASES: Record<GenericOperationName, Case> = {
       arguments: { parent: { itemId: fx.itemA.id }, title: "Contract subpage" },
     }),
   },
+  "page.duplicate": {
+    tool: (fx) => ({ name: "semprec.page.duplicate", arguments: { pageItemId: fx.subpageItemId } }),
+    prepare: async (fx) => {
+      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+      fx.subpageItemId = created.pages[0]?.pageItemId;
+    },
+  },
+  "page.rename": {
+    tool: (fx) => ({
+      name: "semprec.page.rename",
+      arguments: { pageItemId: fx.subpageItemId, title: "Contract title" },
+    }),
+    prepare: async (fx) => {
+      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+      fx.subpageItemId = created.pages[0]?.pageItemId;
+    },
+  },
   "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },
   "page.changes": {
     tool: (fx) => ({
@@ -439,6 +459,9 @@ const CASES: Record<GenericOperationName, Case> = {
         [fx.itemA.id],
       );
     },
+  },
+  "item.count": {
+    tool: (fx) => ({ name: "semprec.item.count", arguments: { items: [{ databaseId: fx.database.id }] } }),
   },
 };
 
@@ -1367,6 +1390,43 @@ describe("generic operation MCP contract (issue #220)", () => {
       expect(response.error?.data).toMatchObject({ field: "itemId" });
     },
   );
+
+  it("counts a database with relation groups through MCP item.count and refuses an oversized batch and an ungroupable key", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const fx = await buildFixtures();
+    const headers = await authHeader();
+
+    const counted = await rpc(baseUrl, headers, "semprec.item.count", {
+      items: [{ databaseId: fx.database.id, groupBy: fx.relationProperty.key }, { databaseId: fx.targetDatabase.id }],
+    });
+    expect(counted.error).toBeUndefined();
+    const counts: unknown = JSON.parse(z.string().parse(counted.result?.content[0]?.text));
+    // `itemA` is linked to the target item and `itemB` to none.
+    expect(counts).toEqual([
+      {
+        databaseId: fx.database.id,
+        count: 2,
+        groups: [
+          { key: fx.targetItem.id, count: 1 },
+          { key: null, count: 1 },
+        ],
+      },
+      { databaseId: fx.targetDatabase.id, count: 1 },
+    ]);
+
+    const oversized = await rpc(baseUrl, headers, "semprec.item.count", {
+      items: Array.from({ length: 21 }, () => ({ databaseId: fx.database.id })),
+    });
+    expect(oversized.error?.code).toBe(-32602);
+    expect(oversized.error?.data).toMatchObject({ field: "items" });
+
+    const ungroupable = await rpc(baseUrl, headers, "semprec.item.count", {
+      items: [{ databaseId: fx.database.id, groupBy: fx.property.key }],
+    });
+    expect(ungroupable.error?.code).toBe(-32602);
+    expect(ungroupable.error?.data).toMatchObject({ field: "groupBy" });
+  });
 
   it("rejects an empty database patch at the MCP operation boundary", async () => {
     const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });

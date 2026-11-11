@@ -12,9 +12,12 @@ import type { BulkMailHeaders } from "./bulkMail.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
- * Thrown by `exchangeAuthorizationCode` when the provider answered 400/401: the authorization
- * code (or PKCE verifier) was rejected. `providerError` is the provider's short `error` code
- * (for example `invalid_grant`) when it is a plain token, never free text.
+ * Thrown by `exchangeAuthorizationCode` when the provider answered 400/401 and the refusal is no
+ * request for administrator consent. `providerError` is the provider's short `error` code when it
+ * is a plain token, never free text, and it says what was refused: `invalid_grant` is the
+ * authorization code or its PKCE verifier, which the caller presented. Any other value, or none,
+ * is the OAuth client or the request itself (`invalid_client` for a wrong or expired client secret),
+ * which is a fault of the deployment and no input error of the caller.
  */
 export class MailAuthorizationCodeRejectedError extends Error {
   constructor(

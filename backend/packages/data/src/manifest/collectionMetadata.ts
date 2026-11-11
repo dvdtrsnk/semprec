@@ -18,6 +18,11 @@ export interface CollectionMetadataResolver {
   resolve(
     database: Pick<DatabaseRow, "key" | "system"> & Partial<Pick<DatabaseRow, "icon" | "color">>,
   ): CollectionMetadata;
+  /**
+   * The filter tree of the items that belong in the database's collection, as its module manifest declares
+   * it (issue #1647). `undefined` for a user-created database and for a system database without one.
+   */
+  collectionFilter(database: Pick<DatabaseRow, "key" | "system">): Record<string, unknown> | undefined;
 }
 
 const NO_METADATA: CollectionMetadata = {
@@ -58,6 +63,11 @@ export async function createCollectionMetadataResolver(
         switcherOrder,
         clientVisible: overviewOrder !== null || switcherOrder !== null || descriptor.clientVisible === true,
       };
+    },
+    collectionFilter(database) {
+      if (!database.system || database.key === null) return undefined;
+      const declared = descriptors.get(database.key)?.collectionFilter;
+      return declared === undefined ? undefined : structuredClone(declared);
     },
   };
 }

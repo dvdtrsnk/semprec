@@ -5,6 +5,7 @@ import { ValidationError } from "../errors.js";
 import { parseMailSearchQuery } from "./search.js";
 import { listMailThreads } from "./mailThreadListQuery.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
+import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
 
 const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
 
@@ -34,7 +35,8 @@ export function createMailThreadListRouteHandler(pool: Pool) {
       cursor = parsed.data;
     }
     const box = url.searchParams.get("box") ?? "inbox";
-    if (box !== "inbox" && box !== "flagged") throw new ValidationError("Invalid box", { field: "box" });
+    if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
+      throw new ValidationError("Invalid box", { field: "box" });
     const uuidParam = (field: string) => {
       const value = url.searchParams.get(field);
       if (value !== null && !z.uuid().safeParse(value).success)
@@ -99,5 +101,26 @@ export function createMailThreadDetailRouteHandler(pool: Pool) {
       isolation: "repeatable_read",
     });
     return { status: 200, body };
+  };
+}
+
+/**
+ * `GET /api/mail/threads/facets[?areaId=<uuid>][&projectId=<uuid>]` (issue gh-1747): the thread counts
+ * of the mailbox filter bar, per area and per project, from one statement (`readMailThreadFacets`).
+ * The selected project narrows the area counts and the selected area narrows the project counts. A
+ * value that is not a UUID is a 400 naming its parameter. An id that names no project or area of the
+ * caller's tenant selects no thread and is no error.
+ */
+export function createMailThreadFacetsRouteHandler(pool: Pool) {
+  return async (ctx: { req: { url?: string } }): Promise<{ status: number; body: MailThreadFacets }> => {
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const selected = (field: "areaId" | "projectId"): string | null => {
+      const value = url.searchParams.get(field);
+      if (value !== null && !z.uuid().safeParse(value).success)
+        throw new ValidationError(`Invalid ${field}`, { field });
+      return value;
+    };
+    const selection = { areaId: selected("areaId"), projectId: selected("projectId") };
+    return { status: 200, body: await withTransaction(pool, (client) => readMailThreadFacets(client, selection)) };
   };
 }

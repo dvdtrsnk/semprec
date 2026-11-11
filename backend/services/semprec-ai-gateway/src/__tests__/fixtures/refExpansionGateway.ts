@@ -36,7 +36,7 @@ type QuerySchemaObservation = {
   allResolved: boolean;
 };
 
-function querySchemaObservation(input: unknown, name: string): QuerySchemaObservation {
+function querySchemaObservation(input: unknown, name: string, holder: "filter" | "items"): QuerySchemaObservation {
   const absent = { count: 0, bytes: 0, nestedDefinitions: false, rootDefinitions: false, refs: 0, allResolved: false };
   const parsed = z
     .object({
@@ -54,8 +54,8 @@ function querySchemaObservation(input: unknown, name: string): QuerySchemaObserv
   const root = object.safeParse(schema);
   if (!root.success) return { ...absent, count: 1 };
   const properties = object.safeParse(root.data.properties);
-  const filter = properties.success ? object.safeParse(properties.data.filter) : undefined;
-  const nestedDefinitions = filter?.success === true && object.safeParse(filter.data.$defs).success;
+  const holderSchema = properties.success ? object.safeParse(properties.data[holder]) : undefined;
+  const nestedDefinitions = holderSchema?.success === true && object.safeParse(holderSchema.data.$defs).success;
   const pending: unknown[] = [schema];
   let refs = 0;
   let nodes = 0;
@@ -171,8 +171,9 @@ const provider = createServer((request, response) => {
       imageMimes: [...mimeTypes].sort(),
       providerSerializedBytes: Buffer.byteLength(body),
       querySchemas: {
-        database: querySchemaObservation(parsed, "database_query"),
-        view: querySchemaObservation(parsed, "view_query"),
+        database: querySchemaObservation(parsed, "database_query", "filter"),
+        view: querySchemaObservation(parsed, "view_query", "filter"),
+        count: querySchemaObservation(parsed, "item_count", "items"),
       },
     });
     const events = [

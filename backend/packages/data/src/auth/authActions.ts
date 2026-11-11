@@ -12,8 +12,10 @@ import {
   revokeOtherSessionsForUser,
   revokeSession,
   revokeSessionForUser,
+  revokeSessionsForDevice,
   touchSessionLastSeen,
 } from "./sessionsStore.js";
+import { lockSessionDevice } from "./sessionDeviceLock.js";
 import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
@@ -142,6 +144,18 @@ export interface LoginResult {
  * transaction re-reads the tenant status through `lockUserTenantBinding`, so a session is never
  * created for a tenant a concurrent suspension has already left non-active. The `role` in the result
  * is read by that same locked query.
+ *
+ * A login whose `device` carries a `deviceId` replaces the earlier sessions of that installation
+ * (issue #1687): in the success transaction, after the new session is created, it revokes the same
+ * user's other unrevoked sessions with that `deviceId` and their push registrations, and each
+ * revoked session's realtime event fires after the commit. Before creating the session it takes a
+ * transaction-scoped advisory lock on the user and the `deviceId` (`lockSessionDevice`), so of two
+ * overlapping logins of one installation the second waits for the first one's transaction to end and
+ * then revokes the session that one committed. The client chooses the `deviceId`, so that lock has an
+ * advisory lock class of its own and cannot equal a lock another path takes. A login without a
+ * `deviceId` (web, or a native client that sends none) revokes nothing, and neither does a rejected
+ * one, which never creates a session. See
+ * docs/adr/2026-11-10-login-replaces-the-sessions-of-its-installation.md.
  */
 export async function login(pool: Pool, input: LoginInput): Promise<LoginResult> {
   const email = normalizeEmail(input.email);
@@ -175,6 +189,12 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
     // one that has not yet locked the user waits for this commit and then revokes this session.
     const locked = await lockUserTenantBinding(client, user.id);
     if (!locked || locked.status !== "active") return null;
+    const deviceId = input.device?.deviceId ?? null;
+    if (deviceId !== null) {
+      // Held until this transaction ends, so a concurrent login of the same installation creates its
+      // session only afterwards, and its own replacement then revokes the session committed here.
+      await lockSessionDevice(client, user.id, deviceId);
+    }
     const created = await createSession(client, {
       userId: user.id,
       tokenHash,
@@ -183,6 +203,10 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
       userAgent: input.userAgent,
       ...input.device,
     });
+    if (deviceId !== null) {
+      const replaced = await revokeSessionsForDevice(client, user.id, deviceId, created.id);
+      for (const sessionId of replaced) await revokePushSubscriptionsForSession(client, sessionId);
+    }
     await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
     return { session: created, role: locked.role };
   });

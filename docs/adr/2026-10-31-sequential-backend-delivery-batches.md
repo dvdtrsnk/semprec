@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-31
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue
 ---
 
 # Execute the backend backlog as sequential technical delivery batches

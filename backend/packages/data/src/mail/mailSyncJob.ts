@@ -36,6 +36,7 @@ import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 import { logger } from "./logger.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
+import { lockMailboxSync } from "./mailboxSyncGuard.js";
 import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 
@@ -199,6 +200,24 @@ export async function handleSyncMailAccountTask(
       { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
     );
   };
+  /**
+   * The first statements of a pass's write transaction (issue gh-1690,
+   * docs/adr/2026-11-10-mailbox-removal-is-one-transaction-that-also-writes-sync-status.md). It takes
+   * the mailbox's sync guard, which the removal of the mailbox takes as its first lock too, so no
+   * removal runs from here to the end of this transaction. Then it reads the mailbox again, because
+   * the prologue's reads are older than this transaction and a removal may have committed since.
+   * `false` means there is nothing to sync any more: the Mailboxes item is in the trash or gone, or
+   * its `mail_account_sync_state` row is gone, as for a removed mailbox that was restored. The pass
+   * then does no work, so it writes no sync state row for a mailbox the removal emptied. The two reads
+   * take no row lock: the guard is what keeps the removal out. The generic trash of the item takes no
+   * guard, so it can still happen during a pass, as before.
+   */
+  const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
+    await lockMailboxSync(client, payload.mailboxItemId);
+    const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId);
+    if (!mailbox || mailbox.deletedAt) return false;
+    return (await getMailAccountSyncState(client, payload.mailboxItemId)) !== null;
+  };
   try {
     // Its own short, read-only transaction — not part of the write transaction below — because
     // these are plain lookups of stable ids that don't need to be atomic with anything the sync
@@ -278,6 +297,8 @@ export async function handleSyncMailAccountTask(
       mailboxAliases: parseAddressListProperty(mailboxItem.properties.addresses),
     };
 
+    // Whether the pass ran: `false` when `enterSyncPass` found nothing to sync any more.
+    let ran: boolean;
     if (state.syncMode === "imap") {
       if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
       const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem.properties.connectionLimit);
@@ -303,10 +324,13 @@ export async function handleSyncMailAccountTask(
       // The limiter's wait for a free slot happens here, outside any transaction — a pooled
       // database connection is only ever checked out once a slot is actually granted, so a
       // long queue wait (up to `ACCOUNT_QUEUE_WAIT_TIMEOUT_MS`) never pins one for nothing.
-      await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
+      ran = await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
         withTransaction(pool, async (client) => {
+          // Opened before the transaction's first statement, as before the guard existed: a mailbox removed
+          // while this pass waited still costs one connection, which the `finally` below closes.
           const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
           try {
+            if (!(await enterSyncPass(client))) return false;
             await reconcileImapAccount(client, imap, shared);
           } finally {
             // Releases the socket whether the pass completed or threw (issue #1510). close() never rejects,
@@ -319,26 +343,38 @@ export async function handleSyncMailAccountTask(
           // The Semp problem of this mailbox is resolved in the same transaction (issue #1506).
           await writeSyncStatus(client, "ok");
           await resolveMailboxProblem(client, payload.mailboxItemId);
+          return true;
         }),
       );
     } else if (state.syncMode === "gmail_api") {
       if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
       await drainGmailMoves(pool, payload.mailboxItemId, gmail);
-      await withTransaction(pool, async (client) => {
+      ran = await withTransaction(pool, async (client) => {
+        if (!(await enterSyncPass(client))) return false;
         await reconcileGmailAccount(client, gmail, shared);
         await writeSyncStatus(client, "ok");
         await resolveMailboxProblem(client, payload.mailboxItemId);
+        return true;
       });
     } else {
       if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
       const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
       await drainGraphMoves(pool, payload.mailboxItemId, graph, moduleIds.foldersDatabaseId, mailboxFolderProperty.id);
-      await withTransaction(pool, async (client) => {
+      ran = await withTransaction(pool, async (client) => {
+        if (!(await enterSyncPass(client))) return false;
         await reconcileGraphAccount(client, graph, shared);
         await writeSyncStatus(client, "ok");
         await resolveMailboxProblem(client, payload.mailboxItemId);
+        return true;
       });
+    }
+    if (!ran) {
+      logger.info(
+        { mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode },
+        "Mail sync skipped: the mailbox is in the trash or has no sync state",
+      );
+      return;
     }
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
   } catch (err) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
@@ -14,7 +15,7 @@ import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { createTestTenant } from "../testSupport/tenantFixtures.js";
+import { createRuntimeRolePool, createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import {
   login,
@@ -23,10 +24,17 @@ import {
   revokeUserSession,
   revokeOtherUserSessions,
   bootstrapFirstAccount,
+  type LoginDevice,
+  type LoginResult,
 } from "../auth/authActions.js";
-import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
+import {
+  listPushSubscriptionsForUser,
+  upsertApnsSubscription,
+  upsertWebPushSubscription,
+} from "../push/pushSubscriptionsStore.js";
 import { SESSION_IDLE_TTL_SECONDS_BY_PLATFORM, SESSION_MAX_LIFETIME_SECONDS } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
+import { SESSION_DEVICE_LOCK_CLASS } from "../auth/sessionDeviceLock.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
 let pool: Pool;
@@ -833,6 +841,354 @@ describe("auth actions (issue #140)", () => {
       expect(events).toEqual([]);
       for (const other of others) expect(await isSessionActive(pool, other.session.id)).toBe(true);
       expect(await revokedAt(otherRegistration.id)).toBeNull();
+    });
+  });
+
+  describe("login replacing the sessions of its installation (issue #1687)", () => {
+    const password = "s3cret-password";
+    const deviceId = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
+    const otherDeviceId = "0b7e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b";
+    // The role the API connects as. Every login below runs on it inside a system scope, as the auth listener runs it.
+    let runtime: Pool;
+
+    beforeEach(async () => {
+      runtime ??= await createRuntimeRolePool(pool, "semprec_data");
+    });
+
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
+    afterAll(async () => {
+      await runtime?.end();
+    });
+
+    function signIn(
+      email: string,
+      device?: LoginDevice,
+      attempt: { password?: string; ip?: string } = {},
+    ): Promise<LoginResult> {
+      return runAsSystem("test:login", () =>
+        login(runtime, {
+          email,
+          password: attempt.password ?? password,
+          platform: "ios",
+          ip: attempt.ip ?? "1.1.1.1",
+          device,
+        }),
+      );
+    }
+
+    function authenticate(token: string) {
+      return runAsSystem("test:authenticate", () => verifySessionToken(runtime, token));
+    }
+
+    async function expectAccepted(...logins: LoginResult[]): Promise<void> {
+      for (const { token, session } of logins) expect((await authenticate(token)).session.id).toBe(session.id);
+    }
+
+    async function registration(userId: string, sessionId: string | null): Promise<string> {
+      const row = await upsertApnsSubscription(pool, {
+        userId,
+        sessionId,
+        platform: "ios",
+        deviceToken: randomUUID(),
+        apnsEnvironment: "sandbox",
+      });
+      return row.id;
+    }
+
+    async function revokedRegistrations(userId: string): Promise<string[]> {
+      const rows = await listPushSubscriptionsForUser(pool, userId);
+      return rows.filter((row) => row.revokedAt !== null).map((row) => row.id);
+    }
+
+    function recordRevocations(): SessionRevokedEvent[] {
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      return events;
+    }
+
+    /** Resolves once exactly `count` backends of the test database server wait for a lock. */
+    async function expectWaitingBackends(count: number): Promise<void> {
+      await vi.waitFor(
+        async () => {
+          const { rows } = await pool.query<{ waiting: number }>(
+            "SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted",
+          );
+          expect(rows[0]?.waiting).toBe(count);
+        },
+        { timeout: 20_000, interval: 25 },
+      );
+    }
+
+    /**
+     * Locks one session row on another connection until `release` is called. A login whose replacement has
+     * to revoke that session stops there: after it took its installation lock and created its session, and
+     * before it commits. `done` settles when the holding transaction has ended.
+     */
+    async function holdSessionRow(sessionId: string): Promise<{ release: () => void; done: Promise<void> }> {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let markLocked!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        markLocked = resolve;
+      });
+      const done = withTransaction(pool, async (client) => {
+        await client.query<{ id: string }>("SELECT id FROM sessions WHERE id = $1 FOR UPDATE", [sessionId]);
+        markLocked();
+        await held;
+      });
+      await Promise.race([locked, done]);
+      return { release, done };
+    }
+
+    it("revokes the earlier session of the same deviceId and its push registrations, and keeps the user's other sessions", async () => {
+      const user = await makeUser("person@example.com", password);
+      const otherDevice = await signIn(user.email, { deviceId: otherDeviceId });
+      const withoutDevice = await signIn(user.email);
+      const previous = await signIn(user.email, { deviceId });
+      const previousRegistration = await registration(user.id, previous.session.id);
+      await registration(user.id, otherDevice.session.id);
+      await registration(user.id, withoutDevice.session.id);
+      await registration(user.id, null);
+
+      const next = await signIn(user.email, { deviceId });
+
+      await expect(authenticate(previous.token)).rejects.toThrow(UnauthorizedError);
+      await expectAccepted(next, otherDevice, withoutDevice);
+      expect(await revokedRegistrations(user.id)).toEqual([previousRegistration]);
+    });
+
+    it.each<[string, LoginDevice | undefined]>([
+      ["another deviceId", { deviceId: otherDeviceId }],
+      ["a null deviceId", { deviceId: null }],
+      ["no device", undefined],
+    ])("revokes nothing when the next login carries %s", async (_name, device) => {
+      const user = await makeUser("person@example.com", password);
+      const first = await signIn(user.email, { deviceId });
+      await registration(user.id, first.session.id);
+      const events = recordRevocations();
+
+      const second = await signIn(user.email, device);
+
+      await expectAccepted(first, second);
+      expect(await revokedRegistrations(user.id)).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("leaves another user's session with the same deviceId alone, in both directions", async () => {
+      const owner = await makeUser("owner@example.com", password);
+      const other = await makeUser("other@example.com", password);
+      const ownerSession = await signIn(owner.email, { deviceId });
+      await registration(owner.id, ownerSession.session.id);
+      const events = recordRevocations();
+
+      const otherSession = await signIn(other.email, { deviceId });
+
+      await expectAccepted(ownerSession, otherSession);
+      expect(await revokedRegistrations(owner.id)).toEqual([]);
+      expect(events).toEqual([]);
+
+      const ownerNext = await signIn(owner.email, { deviceId });
+
+      await expectAccepted(otherSession, ownerNext);
+      expect(events).toEqual([{ sessionId: ownerSession.session.id }]);
+    });
+
+    it("announces the replaced session only, and only once its revocation is committed", async () => {
+      const user = await makeUser("person@example.com", password);
+      const loggedOut = await signIn(user.email, { deviceId });
+      await logout(pool, loggedOut.session.id);
+      const previous = await signIn(user.email, { deviceId });
+      const announced: Array<{ sessionId: string; stillActive: Promise<boolean> }> = [];
+      setSessionRevokedHook((event) => {
+        // Read on another connection as the event fires: an uncommitted revocation would still read as active.
+        const stillActive = isSessionActive(pool, event.sessionId);
+        // Awaited below; observed here too, so a failed read is never an unhandled rejection.
+        stillActive.catch(() => undefined);
+        announced.push({ sessionId: event.sessionId, stillActive });
+      });
+
+      await signIn(user.email, { deviceId });
+
+      expect(announced.map((event) => event.sessionId)).toEqual([previous.session.id]);
+      for (const event of announced) expect(await event.stillActive).toBe(false);
+    });
+
+    it.each([
+      ["the same spelling", deviceId],
+      ["another spelling", deviceId.toUpperCase()],
+    ])(
+      "leaves exactly one active session when two logins of one installation overlap, the second with %s of the deviceId",
+      async (_name, secondDeviceId) => {
+        const user = await makeUser("person@example.com", password);
+        const previous = await signIn(user.email, { deviceId });
+        const holder = await holdSessionRow(previous.session.id);
+
+        const overlapping: Array<Promise<LoginResult>> = [];
+        try {
+          overlapping.push(signIn(user.email, { deviceId }));
+          await expectWaitingBackends(1);
+          overlapping.push(signIn(user.email, { deviceId: secondDeviceId }));
+          await expectWaitingBackends(2);
+        } finally {
+          holder.release();
+          await Promise.allSettled([holder.done, ...overlapping]);
+        }
+        await holder.done;
+        const [first, second] = await Promise.all(overlapping);
+        if (!first || !second) throw new Error("both overlapping logins must have started");
+
+        // The second login waited for the first one's commit and then replaced the first one's session.
+        expect((await listActiveSessionsForUser(pool, user.id)).map((session) => session.id)).toEqual([
+          second.session.id,
+        ]);
+        await expectAccepted(second);
+        await expect(authenticate(first.token)).rejects.toThrow(UnauthorizedError);
+        await expect(authenticate(previous.token)).rejects.toThrow(UnauthorizedError);
+      },
+    );
+
+    it("holds the installation lock in a two-key class of its own and leaves the single-key lock of the same hash free", async () => {
+      const user = await makeUser("person@example.com", password);
+      const previous = await signIn(user.email, { deviceId });
+      const holder = await holdSessionRow(previous.session.id);
+      let stopped: Promise<LoginResult> | undefined;
+      let probe: { singleKeyFree: boolean; installationKeyFree: boolean } | undefined;
+      try {
+        stopped = signIn(user.email, { deviceId });
+        await expectWaitingBackends(1);
+        // The login holds its installation lock here. Each probe asks for a lock without waiting for it.
+        probe = await withTransaction(pool, async (client) => {
+          const { rows } = await client.query<{ singleKeyFree: boolean; installationKeyFree: boolean }>(
+            `SELECT pg_try_advisory_xact_lock(hashtext($2)) AS "singleKeyFree",
+                    pg_try_advisory_xact_lock($1::int4, hashtext($2)) AS "installationKeyFree"`,
+            [SESSION_DEVICE_LOCK_CLASS, `semprec_device:${user.id}:${deviceId}`],
+          );
+          return rows[0];
+        });
+      } finally {
+        holder.release();
+        await Promise.allSettled([holder.done, stopped]);
+      }
+      await holder.done;
+      await stopped;
+
+      expect(probe).toEqual({ singleKeyFree: true, installationKeyFree: false });
+    });
+
+    it("does not deadlock a transaction that takes the single-key lock of the same hash and then the user row", async () => {
+      const user = await makeUser("person@example.com", password);
+      const previous = await signIn(user.email, { deviceId });
+      const holder = await holdSessionRow(previous.session.id);
+      const overlapping: Array<Promise<LoginResult>> = [];
+      let mutation: Promise<void> | undefined;
+      try {
+        overlapping.push(signIn(user.email, { deviceId }));
+        await expectWaitingBackends(1);
+        // An admin mutation's lock order (`lockTarget`): a single-key advisory lock, then the user row
+        // `FOR UPDATE`, which waits here for the first login. The key has this installation's hash, as the
+        // membership key would for a deviceId chosen to collide with it.
+        mutation = withTransaction(pool, async (client) => {
+          await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`semprec_device:${user.id}:${deviceId}`]);
+          await client.query<{ id: string }>("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user.id]);
+        });
+        await expectWaitingBackends(2);
+        overlapping.push(signIn(user.email, { deviceId }));
+        await expectWaitingBackends(3);
+      } finally {
+        holder.release();
+        await Promise.allSettled([holder.done, mutation, ...overlapping]);
+      }
+      await holder.done;
+      await mutation;
+      const [first, second] = await Promise.all(overlapping);
+      if (!first || !second) throw new Error("both overlapping logins must have started");
+
+      expect((await listActiveSessionsForUser(pool, user.id)).map((session) => session.id)).toEqual([
+        second.session.id,
+      ]);
+      await expectAccepted(second);
+      await expect(authenticate(first.token)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("revokes nothing when the password is wrong", async () => {
+      const user = await makeUser("person@example.com", password);
+      const first = await signIn(user.email, { deviceId });
+      await registration(user.id, first.session.id);
+      const events = recordRevocations();
+
+      await expect(signIn(user.email, { deviceId }, { password: "wrong-password" })).rejects.toThrow(UnauthorizedError);
+
+      await expectAccepted(first);
+      expect(await listSessionsForUser(pool, user.id)).toHaveLength(1);
+      expect(await revokedRegistrations(user.id)).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("revokes nothing when the correct password is refused by the lockout", async () => {
+      const user = await makeUser("person@example.com", password);
+      const first = await signIn(user.email, { deviceId }, { ip: "2.2.2.2" });
+      await registration(user.id, first.session.id);
+      const events = recordRevocations();
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        await expect(signIn(user.email, { deviceId }, { password: "wrong-password", ip: "3.3.3.3" })).rejects.toThrow(
+          UnauthorizedError,
+        );
+      }
+
+      await expect(signIn(user.email, { deviceId }, { ip: "3.3.3.3" })).rejects.toThrow(UnauthorizedError);
+
+      await expectAccepted(first);
+      expect(await listSessionsForUser(pool, user.id)).toHaveLength(1);
+      expect(await revokedRegistrations(user.id)).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("rolls the replacement back and announces nothing when the login transaction fails after it", async () => {
+      const user = await makeUser("person@example.com", password);
+      const first = await signIn(user.email, { deviceId });
+      await registration(user.id, first.session.id);
+      const events = recordRevocations();
+      // The success row is the transaction's last write, after the replacement; refusing it fails the login there.
+      await pool.query(`
+        CREATE FUNCTION login_test_reject_success() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.succeeded THEN RAISE EXCEPTION 'forced failure'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER login_test_reject_success BEFORE INSERT ON login_attempts
+          FOR EACH ROW EXECUTE FUNCTION login_test_reject_success();`);
+      try {
+        await expect(signIn(user.email, { deviceId })).rejects.toThrow("forced failure");
+      } finally {
+        await pool.query(
+          "DROP TRIGGER login_test_reject_success ON login_attempts; DROP FUNCTION login_test_reject_success()",
+        );
+      }
+
+      await expectAccepted(first);
+      expect(await listSessionsForUser(pool, user.id)).toHaveLength(1);
+      expect(await revokedRegistrations(user.id)).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("lists one active session per deviceId after repeated logins", async () => {
+      const user = await makeUser("person@example.com", password);
+      for (let i = 0; i < 3; i++) await signIn(user.email, { deviceId });
+      const lastOfDevice = await signIn(user.email, { deviceId });
+      await signIn(user.email, { deviceId: otherDeviceId });
+      const lastOfOtherDevice = await signIn(user.email, { deviceId: otherDeviceId });
+      const withoutDevice = [await signIn(user.email), await signIn(user.email)];
+
+      const active = await listActiveSessionsForUser(pool, user.id);
+
+      expect(active.map((session) => session.id).sort()).toEqual(
+        [lastOfDevice, lastOfOtherDevice, ...withoutDevice].map((result) => result.session.id).sort(),
+      );
     });
   });
 

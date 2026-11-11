@@ -8,7 +8,7 @@ import { ValidationError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { manifest } from "../seed/systemDatabasesModuleManifest.js";
-import { createRuntimeRolePool, createTestTenant } from "../testSupport/tenantFixtures.js";
+import { createRuntimeRolePool, createTestTenant, inTenantZero } from "../testSupport/tenantFixtures.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { expandAreaFilter, resolveDatabaseAreaFilters } from "../views/areaFilter.js";
 import type { FilterNode } from "../views/filterTree.js";
@@ -44,7 +44,11 @@ describe("declarative area filters (issue #1597)", () => {
   async function link(databaseKey: string, propertyKey: string, callerItemId: string, targetItemId: string) {
     const property = (await chokePoint.listProperties(ids[databaseKey]!)).find((p) => p.key === propertyKey);
     if (!property) throw new Error(`No property '${databaseKey}.${propertyKey}'`);
-    await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId, targetItemId });
+    // An Events `project` edge is a link-rule source (issue #1697): its write queues a propagation job, which
+    // needs a tenant scope.
+    await inTenantZero(() =>
+      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId, targetItemId }),
+    );
   }
 
   async function query(databaseKey: string, filter: FilterNode): Promise<string[]> {

@@ -29,6 +29,8 @@ export const ITEM_ERROR_CODES = [
   "mail_app_password_required",
   "mail_server_unreachable",
   "mail_tls_failed",
+  "mail_admin_consent_required",
+  "mail_reauth_wrong_account",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -62,6 +64,8 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   mail_app_password_required: 400,
   mail_server_unreachable: 400,
   mail_tls_failed: 400,
+  mail_admin_consent_required: 400,
+  mail_reauth_wrong_account: 400,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

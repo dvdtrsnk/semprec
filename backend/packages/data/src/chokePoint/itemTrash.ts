@@ -4,13 +4,15 @@
 // database-level archiving do not belong here.
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md,
 // docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md,
-// docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
+// docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md,
+// docs/adr/2026-11-10-item-purge-domain-hooks.md,
+// docs/adr/2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
-import { runItemDeleteHooks, runItemRestoreHooks } from "./hooks.js";
+import { runItemDeleteHooks, runItemPurgeHooks, runItemRestoreHooks } from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
@@ -54,6 +56,9 @@ function databaseLookup(client: PoolClient): (databaseId: string) => Promise<Dat
   };
 }
 
+/** The text form of a trash epoch: what Postgres renders with `YYYY-MM-DD"T"HH24:MI:SS.US"Z"` in UTC. */
+const EXACT_TRASH_EPOCH_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
  * same reason as `propertyDeleteWithClient` above. Runs the identical subtree cascade, including
@@ -61,6 +66,10 @@ function databaseLookup(client: PoolClient): (databaseId: string) => Promise<Dat
  * actually soft-deletes, root first, runs the item delete hooks (issue #1601) right after its soft
  * delete, inside this transaction; a row already in the trash runs none, and a repeat delete of a
  * trashed root returns it without running any. A hook's rejection rolls the whole cascade back.
+ *
+ * `options.deletedAtExact` (issue gh-2029) makes the cascade join the trash epoch of an item trashed
+ * earlier: every row this call soft-deletes gets that `deleted_at` instead of this transaction's
+ * `now()`. A value that is not UTC text with six fraction digits is refused before anything is written.
  */
 export async function itemDeleteWithClient(
   client: PoolClient,
@@ -71,8 +80,13 @@ export async function itemDeleteWithClient(
     actingUserId?: string;
     /** Passed to every delete hook; `system` when absent. */
     writer?: WriterIdentity;
+    /** The trash epoch to join, as `itemsStore.lockItemTrashEpoch` returns it; the transaction's `now()` when absent. */
+    deletedAtExact?: string;
   },
 ): Promise<ItemRow | null> {
+  if (options.deletedAtExact !== undefined && !EXACT_TRASH_EPOCH_RE.test(options.deletedAtExact)) {
+    throw new Error("deletedAtExact must be UTC text with six fraction digits (YYYY-MM-DDTHH:MI:SS.ffffffZ)");
+  }
   await assertDatabaseNotArchived(client, databaseId);
   const before = await itemsStore.lockItemById(client, databaseId, itemId);
   if (!before) return null;
@@ -90,10 +104,10 @@ export async function itemDeleteWithClient(
   const databaseOf = databaseLookup(client);
   let rootResult: ItemRow | null = null;
   for (const row of subtree) {
-    const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
+    const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id, options.deletedAtExact);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
-    // `now()` is fixed for the transaction, so every row this cascade trashes shares this `deletedAt`.
+    // Every row this cascade trashes shares one `deletedAt`: the given epoch, or `now()`, which is fixed for the transaction.
     if (item.deletedAt === null) throw new Error(`Soft delete of item ${item.id} returned a live row`);
     await runItemDeleteHooks({
       client,
@@ -300,8 +314,9 @@ function derivedBlobIds(row: ItemRow): string[] {
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), and its
- * value links and the value-link sources naming it (issue #1656).
+ * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), its
+ * value links and the value-link sources naming it (issue #1656), and the action item states of a
+ * transcript (issue #1754).
  * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
  * the blob checks below rely on the row already being gone.
  *
@@ -348,6 +363,10 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
     await deleteRecordingRequestForFile(client, row.id);
   await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
+  await client.query(
+    "DELETE FROM transcript_action_item_states WHERE tenant_id = app_tenant_default() AND transcript_item_id = $1",
+    [row.id],
+  );
 
   const blobStorageKeys: string[] = [];
   // The attachment rows go first: a row still present would keep its blob referenced.
@@ -416,8 +435,19 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
      * subtree is archived, same as `softDeleteItem`/`restoreItem`.
      *
+     * The delete loop reads each row of the walk again with `itemsStore.lockItemById`, immediately
+     * before its delete. That is the row lock the delete itself takes, one statement earlier, so
+     * no other transaction can change or remove the row between that read and the delete: the
+     * locked row is the row exactly as it was removed, not as the unlocked walk first saw it. The
+     * locked read does not decide the removal, `hardDeleteItem` still does; a row that is gone by
+     * then is skipped, and a race-restored row stays locked until this transaction ends without
+     * being removed.
+     *
      * Every removed row's dependents go with it in the same transaction (`deleteItemDependents`,
-     * issue #675); a race-restored row keeps all of them. Once the delete loop is done, each
+     * issue #675), derived from that locked row; a race-restored row keeps all of them. Each
+     * removed row then runs the item purge hooks (`runItemPurgeHooks`) in this transaction, with
+     * that locked row; a row that was not removed runs none, and a hook's rejection rolls this
+     * whole call back, so nothing of the subtree is purged. Once the delete loop is done, each
      * inline database owned by a removed item (never the root's own database) whose partition is
      * now empty is dropped together with its partition; one that still holds a live or too-fresh
      * row is left in place. Returns the ids actually removed (never one a concurrent restore
@@ -455,11 +485,22 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
 
         const purgedItemIds: string[] = [];
         const blobStorageKeys: string[] = [];
+        const databaseOf = databaseLookup(client);
         for (const row of subtree) {
-          const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
+          // `row` is what the unlocked walk read; a write committed since then is not in it. The
+          // locked read returns the row the delete below removes, and holds it until then.
+          const locked = await itemsStore.lockItemById(client, row.databaseId, row.id);
+          if (!locked) continue; // gone since the walk: nothing to remove
+          const removed = await itemsStore.hardDeleteItem(client, locked.databaseId, locked.id);
           if (!removed) continue;
-          purgedItemIds.push(row.id);
-          blobStorageKeys.push(...(await deleteItemDependents(client, row)).blobStorageKeys);
+          purgedItemIds.push(locked.id);
+          blobStorageKeys.push(...(await deleteItemDependents(client, locked)).blobStorageKeys);
+          await runItemPurgeHooks({
+            client,
+            database: await databaseOf(locked.databaseId),
+            item: locked,
+            rootItemId,
+          });
         }
 
         // Keyed off the purged owners rather than `subtreeDatabaseIds`: a nested row is usually an

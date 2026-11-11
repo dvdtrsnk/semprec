@@ -18,6 +18,13 @@ const catalogs: ReadonlyArray<{ moduleId: string; property: string; colors: Read
     colors: { pdf: "#FF3B30", xlsx: "#34C759", docx: "#007AFF", jpg: "#FF9500" },
   },
   { moduleId: HEALTH_RECORDS_MODULE_ID, property: "status", colors: { monitoring: "#FF9500", resolved: "#34C759" } },
+  // Issue #1705. An older tenant gets `bloodPressure` and `prevention` from the tags cutover of #1700, which
+  // `runTenantCutoverMigrations` runs before this one, so the same run colors them.
+  {
+    moduleId: HEALTH_RECORDS_MODULE_ID,
+    property: "tags",
+    colors: { bloodTests: "#FF9500", medication: "#AF52DE", bloodPressure: "#FF2D55", prevention: "#34C759" },
+  },
   {
     moduleId: PEOPLE_MODULE_ID,
     property: "relationship",

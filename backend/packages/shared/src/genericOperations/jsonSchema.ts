@@ -6,16 +6,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Move generated definitions under filter, which the native tool projection preserves. */
-function compactAgentQuerySchema(schema: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Move generated definitions under the top-level property `holder`, which the native tool projection
+ * preserves, and point every local reference at them there.
+ */
+function shareLocalDefinitions(schema: Record<string, unknown>, holder: "filter" | "items"): Record<string, unknown> {
   const properties = schema.properties;
   const definitions = schema.$defs;
+  const holderSchema = isRecord(properties) ? properties[holder] : undefined;
   if (
     schema.type !== "object" ||
-    !isRecord(properties) ||
-    !isRecord(properties.filter) ||
+    !isRecord(holderSchema) ||
     !isRecord(definitions) ||
-    Object.hasOwn(properties.filter, "$defs") ||
+    Object.hasOwn(holderSchema, "$defs") ||
     Object.keys(definitions).length === 0
   )
     throw new Error("Unsupported generated query schema");
@@ -41,7 +44,7 @@ function compactAgentQuerySchema(schema: Record<string, unknown>): Record<string
           throw new Error("Unsupported generated query schema reference");
         if (owner) dependencies.get(owner)?.add(target);
         if (!isRecord(value)) throw new Error("Unsupported generated query schema");
-        value[key] = `#/properties/filter/$defs/${encoded}`;
+        value[key] = `#/properties/${holder}/$defs/${encoded}`;
       } else if (key === "$defs" && value === schema) {
         for (const [name, definition] of Object.entries(checkedDefinitions)) {
           if (!isRecord(definition)) throw new Error("Unsupported generated query schema");
@@ -66,7 +69,7 @@ function compactAgentQuerySchema(schema: Record<string, unknown>): Record<string
     checked.add(name);
   }
   for (const name of dependencies.keys()) check(name);
-  properties.filter.$defs = definitions;
+  holderSchema.$defs = definitions;
   delete schema.$defs;
   return schema;
 }
@@ -77,15 +80,22 @@ function compactAgentQuerySchema(schema: Record<string, unknown>): Record<string
  * `tools/call` validates against, so the two can never drift apart. `io: "input"` reports what a
  * caller must actually supply (a field with a Zod `.default()` is not `required`), rather than
  * `z.toJSONSchema`'s own default of describing the parsed *output* shape.
+ *
+ * `item.count` carries the filter tree in each entry, so its schema shares local definitions under
+ * `properties.items`; it has this one schema and no compact mode
+ * (docs/adr/2026-11-10-item-count-schema-shares-local-definitions.md).
  */
 export function operationInputJsonSchema(
   operation: GenericOperationName,
   mode?: "agent-query-compact",
 ): Record<string, unknown> {
-  if (!mode) return z.toJSONSchema(GENERIC_OPERATION_BINDINGS[operation].input, { io: "input" });
-  if (operation !== "database.query" && operation !== "view.query")
-    throw new Error("Compact agent schema requires a query operation");
-  return compactAgentQuerySchema(
-    z.toJSONSchema(GENERIC_OPERATION_BINDINGS[operation].input, { io: "input", reused: "ref" }),
-  );
+  const input = GENERIC_OPERATION_BINDINGS[operation].input;
+  if (mode) {
+    if (operation !== "database.query" && operation !== "view.query")
+      throw new Error("Compact agent schema requires a query operation");
+    return shareLocalDefinitions(z.toJSONSchema(input, { io: "input", reused: "ref" }), "filter");
+  }
+  if (operation === "item.count")
+    return shareLocalDefinitions(z.toJSONSchema(input, { io: "input", reused: "ref" }), "items");
+  return z.toJSONSchema(input, { io: "input" });
 }

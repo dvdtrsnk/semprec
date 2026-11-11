@@ -1,0 +1,16 @@
+{
+  "database.recipes.name": "Recipes",
+  "database.recipes.searchPlaceholder": "Search recipes",
+  "property.recipes.name.name": "Name",
+  "property.recipes.category.name": "Category",
+  "property.recipes.category.option.main": "Main course",
+  "property.recipes.category.option.breakfast": "Breakfast",
+  "property.recipes.category.option.dessert": "Dessert",
+  "property.recipes.prepMinutes.name": "Time",
+  "property.recipes.prepMinutes.preset.15": "Up to 15 min",
+  "property.recipes.prepMinutes.preset.30": "Up to 30 min",
+  "property.recipes.prepMinutes.preset.60": "Up to an hour",
+  "property.recipes.servings.name": "Servings",
+  "property.recipes.favorite.name": "Favorite",
+  "property.recipes.photo.name": "Photo"
+}

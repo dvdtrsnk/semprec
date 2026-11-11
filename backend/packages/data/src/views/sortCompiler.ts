@@ -102,7 +102,7 @@ function sortKeyExpression(key: ResolvedSortKey, params: unknown[], collation: S
  * any other type. A select sorts by the position of its stored value in this array, not by the
  * value's text. Entries without a string key are skipped.
  */
-function selectOptionKeys(property: Pick<PropertyRow, "type" | "config">): string[] | undefined {
+export function selectOptionKeys(property: Pick<PropertyRow, "type" | "config">): string[] | undefined {
   if (property.type !== "select") return undefined;
   const options: unknown = property.config.options;
   if (!Array.isArray(options)) return [];

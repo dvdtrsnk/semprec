@@ -169,6 +169,8 @@ export interface ExchangeAuthorizationCodeInput {
   code: string;
   /** The PKCE verifier whose S256 challenge was sent on the authorization request. */
   codeVerifier: string;
+  /** Replaces the global `fetch` for the token request (see `RefreshAccessTokenInput.fetchImpl`). */
+  fetchImpl?: typeof fetch;
 }
 
 export interface AuthorizationCodeTokens {
@@ -277,9 +279,10 @@ export async function exchangeAuthorizationCode(
     code_verifier: input.codeVerifier,
   });
 
+  const doFetch = input.fetchImpl ?? fetch;
   let response: Response;
   try {
-    response = await fetch(input.tokenUrl, {
+    response = await doFetch(input.tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,

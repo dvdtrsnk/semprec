@@ -1,11 +1,16 @@
 import { Pool, type PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
-import { markManagedTransactionRollbackOnly, requireManagedTransaction, requireSingleRow } from "../db/pool.js";
+import {
+  markManagedTransactionRollbackOnly,
+  requireAffectedRows,
+  requireManagedTransaction,
+  requireSingleRow,
+} from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
-import { lockItemById } from "../chokePoint/itemsStore.js";
+import { getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
 import { transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
@@ -289,6 +294,52 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
     markManagedTransactionRollbackOnly(client, error);
     throw error;
   }
+}
+
+/**
+ * Deletes the `mail_message_meta` row of the permanently deleted Emails item `itemId` (issue gh-1691),
+ * in the purge's transaction. An item without a row, as an unsent draft is, and a row that names no
+ * thread end it there.
+ *
+ * When no other `mail_message_meta` row names the row's thread (the row of a message in the trash
+ * counts as naming it), the thread goes too, the way `deleteMailMessageMetaByItemId` removes an
+ * emptied thread: the Threads item the `mail_threads` row is bound to is trashed through the choke
+ * point as the system writer, then the row is deleted, and the aliases that point at it go with it by
+ * their foreign key. A Threads item that is already in the trash is left as it is. Unlike that cleanup
+ * it does not fail on a thread whose Threads item is already purged, nor on a row bound to no item:
+ * it deletes the row.
+ *
+ * It takes the tenant's mail-thread mutation guard before its first statement on a mail table.
+ * Constrained by: docs/adr/2026-11-11-mail-purge-hook-takes-the-thread-guard-after-the-purge-locks.md
+ */
+export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, itemId: string): Promise<void> {
+  await lockMailThreadMutation(client);
+  const deleted = await client.query<{ thread_id: string | null }>(
+    `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
+    [itemId],
+  );
+  if (deleted.rowCount === 0) return;
+  const threadId = deleted.rows[0]?.thread_id;
+  if (!threadId) return;
+  const emptied = await client.query<{ item_id: string | null }>(
+    `SELECT item_id FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id) FOR UPDATE`,
+    [threadId],
+  );
+  const thread = emptied.rows[0];
+  if (!thread) return;
+  if (thread.item_id !== null) {
+    const [threadItem] = await getItemsByIdsIncludingDeleted(client, [thread.item_id]);
+    if (threadItem) {
+      await itemDeleteWithClient(client, threadItem.databaseId, threadItem.id, {
+        queueAffinity: createActionQueueAffinity(),
+        writer: SYSTEM_WRITER,
+      });
+    }
+  }
+  requireAffectedRows(
+    await client.query(`DELETE FROM mail_threads WHERE id = $1`, [threadId]),
+    "delete of an emptied mail thread",
+  );
 }
 
 export interface MailThreadRow {

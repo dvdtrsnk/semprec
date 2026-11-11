@@ -58,11 +58,13 @@ import {
   mintMcpRunCredential,
   mutateYDoc,
   provisionTenant,
+  removeMailbox,
   resolveMailModuleIds,
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
   sendSempMessage,
+  setInvalidationHook,
   startSempMessageTurn,
   upsertWebPushSubscription,
   withTransaction,
@@ -70,6 +72,7 @@ import {
   type ChokePoint,
   type DocStore,
   type BlobStorageWriter,
+  type InvalidationEvent,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -78,6 +81,7 @@ import {
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  ingestEmailMessage,
   resetDatabase,
   storeCredential,
   upsertMailMessageMeta,
@@ -588,6 +592,51 @@ async function lastContactOf(tenant: Tenant, personId: string): Promise<unknown>
 /** A date with a fixed past value, so the case does not depend on the wall clock. */
 const PAST_EVENT_DATE = "2025-06-15";
 
+/** A realtime invalidation with the tenant scope its hook was called in; `null` outside a tenant scope. */
+interface RecordedInvalidation {
+  tenantId: string | null;
+  event: InvalidationEvent;
+}
+
+let recordedInvalidations: RecordedInvalidation[] = [];
+
+/**
+ * Records every realtime invalidation announced from now on, through the in-process hook `wireRealtimeHooks`
+ * publishes as NOTIFYs. A job that only announces changes no row, so its effect shows nowhere else.
+ */
+function recordInvalidations(): void {
+  const recorded: RecordedInvalidation[] = [];
+  recordedInvalidations = recorded;
+  setInvalidationHook((event) => {
+    const scope = currentTenantScope();
+    recorded.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, event });
+  });
+}
+
+/** Removes the recording hook and returns what it recorded. */
+function stopRecordingInvalidations(): RecordedInvalidation[] {
+  setInvalidationHook(() => {});
+  return recordedInvalidations;
+}
+
+/** A project of `tenant` with one task linked to it through `Tasks.project`, through the choke point. */
+async function createProjectWithTask(tenant: Tenant): Promise<string> {
+  const projectsId = await requireModuleDatabaseId(tenant, "projects");
+  const tasksId = await requireModuleDatabaseId(tenant, "tasks");
+  return inTenant(tenant, async () => {
+    const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Project" } });
+    const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Project task" } });
+    const projectProperty = (await chokePoint.listProperties(tasksId)).find((property) => property.key === "project");
+    if (!projectProperty) throw new Error("expected Tasks.project to be seeded");
+    await chokePoint.createRelation({
+      relationPropertyId: projectProperty.id,
+      callerItemId: task.id,
+      targetItemId: project.id,
+    });
+    return project.id;
+  });
+}
+
 async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
   const { databaseId, itemId } = await inTenant(tenant, async () => {
     const database = await chokePoint.createDatabase({ name: `Trash ${randomUUID()}` });
@@ -908,6 +957,62 @@ const cases: Record<string, TaskCase> = {
           mailboxItemId,
         ]),
       ).toEqual([{ user_id: tenant.userId }]);
+    },
+  },
+  [CORE_TASK_NAMES.MAILBOX_REMOVAL]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant);
+      await inTenant(tenant, async () => {
+        await withTransaction(pool, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const propertyId = async (databaseId: string, key: string): Promise<string> => {
+            const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
+            if (!property) throw new Error(`expected the ${key} property to be seeded`);
+            return property.id;
+          };
+          const folderItemId = await ensureFolderItem(client, {
+            foldersDatabaseId: ids.foldersDatabaseId,
+            mailboxItemId,
+            mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
+            providerId: "INBOX",
+            name: "Inbox",
+            behavior: "folder",
+            specialPurpose: "inbox",
+          });
+          await ingestEmailMessage(client, {
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
+            attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
+            folderItemId,
+            mailboxItemId,
+            messageId: `<${randomUUID()}@example.test>`,
+            envelope: { from: { address: "sender@example.test" } },
+            attachments: [],
+            storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
+            storageKeyPrefix: mailboxItemId,
+          });
+        });
+        // The removal queues this job itself; the driver discards that one and enqueues its own. An empty
+        // affinity map routes the removal's heartbeats to the default queue.
+        if (!(await removeMailbox(pool, mailboxItemId, { queueAffinity: new Map() }))) {
+          throw new Error("expected the seeded mailbox to be removed");
+        }
+      });
+      return { mailboxItemId };
+    },
+    async expectDone(tenant, payload) {
+      // The mailbox's one folder and one message carry the mailbox's own deletion time.
+      expect(
+        await rows(
+          tenant,
+          `SELECT d.owner_module_id AS module FROM items i JOIN databases d ON d.id = i.database_id
+            WHERE i.id <> $1 AND i.deleted_at = (SELECT m.deleted_at FROM items m WHERE m.id = $1)
+            ORDER BY d.owner_module_id`,
+          [requirePayloadString(payload, "mailboxItemId")],
+        ),
+      ).toEqual([{ module: "emails" }, { module: "folders" }]);
     },
   },
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: {
@@ -1329,6 +1434,38 @@ const cases: Record<string, TaskCase> = {
     },
     async expectDone(tenant, payload) {
       expect(await lastContactOf(tenant, requirePayloadString(payload, "personId"))).toBe(PAST_EVENT_DATE);
+    },
+  },
+  [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const projectItemId = await createProjectWithTask(tenant);
+      // Started after the fixture's own writes, so only the job under test is recorded.
+      recordInvalidations();
+      return { projectItemId };
+    },
+    async expectDone(tenant, payload) {
+      const announced = stopRecordingInvalidations();
+      // `Tasks.project` is the inverse side of its definition: the project is `item_a`, its task `item_b`.
+      const tasks = await rows<{ id: string; database_id: string; updated_at: Date }>(
+        tenant,
+        `SELECT i.id, i.database_id, i.updated_at FROM item_relations r JOIN items i ON i.id = r.item_b
+         WHERE r.item_a = $1`,
+        [requirePayloadString(payload, "projectItemId")],
+      );
+      expect(tasks).toHaveLength(1);
+      expect(announced).toEqual(
+        tasks.map((task) => ({
+          tenantId: tenant.tenantId,
+          event: {
+            scope: "item",
+            databaseId: task.database_id,
+            itemId: task.id,
+            op: "update",
+            updatedAt: task.updated_at.toISOString(),
+          },
+        })),
+      );
     },
   },
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: {
@@ -1790,6 +1927,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           titlePortCalls.length = 0;
         }
         if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
+        if (name === CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE) {
+          // The job only announces, which no fingerprint shows: neither run in B announced anything.
+          expect(stopRecordingInvalidations()).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },

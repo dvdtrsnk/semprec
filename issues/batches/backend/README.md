@@ -1,4 +1,35 @@
-# Sequential backend delivery batches
+# Backend delivery program
+
+## Current execution: parallel program for sequences 40-74
+
+Sequences 1-39 were delivered as sequential batches and are finished. The
+remaining sources of sequences 40-74 are delivered in parallel under
+[parallel-backend-delivery-through-a-serialized-merge-queue](../../../docs/adr/2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue.md),
+which supersedes the sequential decision. [CONTROLLER.md](CONTROLLER.md) is the
+working protocol.
+
+- The unit of approval, review, evidence and completion is the source record.
+  The 35 aggregate records of sequences 40-74 are withdrawn (closed as
+  `not_planned`); their manifest entries have status `merged` and remain
+  routing groups for the `delivery:` labels.
+- Workers implement chains of one to four sources in their own worktrees. One
+  queue runner lands them on the local branch `feature/backend-parallel`, cut
+  from `origin/develop` at `745aea3f`.
+- A blocker marked `Shared-file ordering` in a source gates landing only. Every
+  other blocker gates the start. `Blocked by` lines are not edited.
+- Open sources keep `execution:batch-source`, their `delivery:` label and
+  `agent:blocked`, and never get `agent:ready`, so Relay does not dispatch them.
+- The preparation issues
+  [sp-0ef30642-7659-4424-9527-180d99a33ae9](../../items/sp-0ef30642-7659-4424-9527-180d99a33ae9.md)
+  and [sp-962cf217-c004-462b-941b-702f5d7536b8](../../items/sp-962cf217-c004-462b-941b-702f5d7536b8.md)
+  are members of sequence 40. With them the manifest holds 671 sources.
+- Acceptance receipts are per source, under `acceptance/sources/`.
+
+Everything below this section describes how sequences 1-39 were planned and
+executed. Its inventory, tables and the validation commands still apply; its
+execution protocol does not apply to sequences 40-74.
+
+## Sequential batches (sequences 1-39)
 
 The implementation unit is a technical batch, not an original feature epic or
 an individual source issue. All work stays in one working tree with one source

@@ -124,8 +124,9 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 });
 
 // Recorded from the unchanged compiled shared generator at the repair base. `page.get` was re-recorded when issue #1678
-// added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676) and
-// `page.insert` (#1679) and `page.changes` (#1680) were recorded when they joined the catalog.
+// added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676),
+// `page.insert` (#1679), `page.changes` (#1680), `page.duplicate` (#1722) and `page.rename` (#1725) were recorded when
+// they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions.
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -166,6 +167,9 @@ const defaultHashes: Record<string, string> = {
   "page.createSubpage": "cc97079ec654aec1f2804c23835b13a78a08edaed8ed7c94813ff2ad0587b9ab",
   "page.insert": "d284651aff522abffd1f21dabefe7ff196fca8e5c028ef37316f3c5d51ea0ac8",
   "page.changes": "f0ff5e6ad26a100a3ab35d676dcf5541d2a7906700cd94b225623e8f7865a384",
+  "item.count": "2b1b1cac530e8917c376fee63e66098c6d8640341935e58b4b38ab14c2ed823f",
+  "page.duplicate": "cf496713017be99d4da1acbc5863c5c057e45606f6d644070ca62c6708e990e6",
+  "page.rename": "75be99147d9267ad2db8c9a90c6b2b76161ea30b7bbeb18d5a9c45aa41d667cb",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {
@@ -178,39 +182,87 @@ it("preserves every default operation schema byte for MCP callers", () => {
   }
 });
 
+/** Expects `root` to keep its definitions under `properties.<holder>` only, small, with every reference local and resolvable. */
+function expectFiniteLocalReferenceGraph(root: Record<string, unknown>, holder: "filter" | "items"): void {
+  const properties = objectSchema.parse(root.properties);
+  const definitions = objectSchema.parse(objectSchema.parse(properties[holder]).$defs);
+  expect(root.$defs).toBeUndefined();
+  expect(Object.keys(definitions).length).toBeGreaterThan(0);
+  expect(root.additionalProperties).toBe(false);
+  expect(Buffer.byteLength(JSON.stringify(root))).toBeLessThan(20_000);
+  const pending: unknown[] = [root];
+  let references = 0;
+  let nodes = 0;
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null) continue;
+    expect(++nodes).toBeLessThan(10_000);
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "$ref") {
+        const ref = z.string().parse(child);
+        expect(ref.startsWith(`#/properties/${holder}/$defs/`)).toBe(true);
+        expect(ref.slice(`#/properties/${holder}/$defs/`.length)).toMatch(/^(?:[^/~]|~[01])+$/);
+        let target: unknown = root;
+        for (const part of ref.slice(2).split("/"))
+          target = objectSchema.parse(target)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
+        expect(objectSchema.safeParse(target).success).toBe(true);
+        references += 1;
+      } else if (typeof child === "object" && child !== null) pending.push(child);
+    }
+  }
+  expect(references).toBeGreaterThan(0);
+}
+
 describe.each(["database.query", "view.query"] as const)("%s compact schema references", (operation) => {
   it("retains a finite, entirely local reference graph under the existing filter", () => {
-    const root = operationInputJsonSchema(operation, "agent-query-compact");
-    const properties = objectSchema.parse(root.properties);
-    const filter = objectSchema.parse(properties.filter);
-    const definitions = objectSchema.parse(filter.$defs);
-    expect(root.$defs).toBeUndefined();
-    expect(Object.keys(definitions).length).toBeGreaterThan(0);
-    expect(root.additionalProperties).toBe(false);
-    expect(Buffer.byteLength(JSON.stringify(root))).toBeLessThan(20_000);
-    const pending: unknown[] = [root];
-    let references = 0;
-    let nodes = 0;
-    while (pending.length) {
-      const value = pending.pop();
-      if (typeof value !== "object" || value === null) continue;
-      expect(++nodes).toBeLessThan(10_000);
-      for (const [key, child] of Object.entries(value)) {
-        if (key === "$ref") {
-          const ref = z.string().parse(child);
-          expect(ref).toMatch(/^#\/properties\/filter\/\$defs\/(?:[^/~]|~[01])+$/);
-          let target: unknown = root;
-          for (const part of ref.slice(2).split("/"))
-            target = objectSchema.parse(target)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
-          expect(objectSchema.safeParse(target).success).toBe(true);
-          references += 1;
-        } else if (typeof child === "object" && child !== null) pending.push(child);
-      }
-    }
-    expect(references).toBeGreaterThan(0);
+    expectFiniteLocalReferenceGraph(operationInputJsonSchema(operation, "agent-query-compact"), "filter");
   });
 });
 
 it("does not allow compact mode for a non-query operation", () => {
   expect(() => operationInputJsonSchema("database.patch", "agent-query-compact")).toThrow();
+  expect(() => operationInputJsonSchema("item.count", "agent-query-compact")).toThrow();
+});
+
+describe("item.count generated input", () => {
+  const root = operationInputJsonSchema("item.count");
+  const items = objectSchema.parse(objectSchema.parse(root.properties).items);
+
+  function resolve(input: unknown): Record<string, unknown> {
+    const schema = objectSchema.parse(input);
+    if (typeof schema.$ref !== "string") return schema;
+    let target: unknown = root;
+    for (const key of schema.$ref.slice(2).split("/")) {
+      target = objectSchema.parse(target)[key.replaceAll("~1", "/").replaceAll("~0", "~")];
+    }
+    return resolve(target);
+  }
+
+  it("keeps a finite, entirely local reference graph under the entry list", () => {
+    expectFiniteLocalReferenceGraph(root, "items");
+  });
+
+  it("advertises one to twenty strict entries that require only the database", () => {
+    expect(root.required).toEqual(["items"]);
+    expect(items).toMatchObject({ type: "array", minItems: 1, maxItems: 20 });
+    const entry = resolve(items.items);
+    expect(entry).toMatchObject({ type: "object", required: ["databaseId"], additionalProperties: false });
+    const properties = objectSchema.parse(entry.properties);
+    expect(Object.keys(properties).sort()).toEqual(["collection", "databaseId", "filter", "groupBy"]);
+    expect(resolve(properties.groupBy)).toEqual({ type: "string", minLength: 1 });
+    expect(resolve(properties.collection)).toEqual({ type: "boolean" });
+  });
+
+  it("advertises the entry filter with its and, or and not groups", () => {
+    const filter = resolve(objectSchema.parse(resolve(items.items).properties).filter);
+    const groups = z
+      .array(z.unknown())
+      .parse(filter.anyOf)
+      .map(resolve)
+      .flatMap((member) => {
+        const type = member.properties === undefined ? undefined : objectSchema.parse(member.properties).type;
+        return type === undefined ? [] : [resolve(type).const];
+      });
+    expect(groups).toEqual(["and", "or", "not"]);
+  });
 });

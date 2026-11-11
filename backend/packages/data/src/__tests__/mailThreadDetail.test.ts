@@ -292,8 +292,10 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
       const list = await createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads" } });
       const row = list.body.threads.find((candidate) => candidate.threadId === threadId);
       if (!row) throw new Error("Thread missing from the list");
-      const { messages, ...header } = (await detail(threadId)).body;
+      // `tasks` (issue gh-1692) is not part of the list row; this thread has none.
+      const { messages, tasks, ...header } = (await detail(threadId)).body;
       expect(messages).toHaveLength(4);
+      expect(tasks).toEqual([]);
       expect(header).toEqual({
         threadId: row.threadId,
         subject: row.subject,

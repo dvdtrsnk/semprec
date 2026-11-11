@@ -5,6 +5,7 @@ import {
   createRuntimeRolePool,
   getTenantZeroId,
   getTestPool,
+  inTenantZero,
   resetDatabase,
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
@@ -783,12 +784,16 @@ describe("Transcript speaker mappings (issue #185)", () => {
       ).id;
       const aliceId = await createPerson("Alice");
 
-      const edge = await chokePoint.createRelation({
-        relationPropertyId: peoplePropertyId,
-        callerItemId: eventId,
-        targetItemId: aliceId,
-        metadata: { anything: true },
-      });
+      // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
+      // needs a tenant scope.
+      const edge = await inTenantZero(() =>
+        chokePoint.createRelation({
+          relationPropertyId: peoplePropertyId,
+          callerItemId: eventId,
+          targetItemId: aliceId,
+          metadata: { anything: true },
+        }),
+      );
 
       expect(edge.metadata).toEqual({ anything: true });
     });

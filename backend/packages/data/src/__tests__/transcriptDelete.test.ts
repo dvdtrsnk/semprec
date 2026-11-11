@@ -358,7 +358,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
                   if (
                     !relinked &&
                     typeof args[0] === "string" &&
-                    args[0].startsWith("UPDATE items SET deleted_at = now()") &&
+                    args[0].startsWith("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())") &&
                     Array.isArray(values) &&
                     values[1] === f.file.id
                   ) {

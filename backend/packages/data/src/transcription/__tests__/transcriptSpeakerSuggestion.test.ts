@@ -7,6 +7,7 @@ import { CORE_TASK_NAMES } from "@semprec/queue";
 import * as relationStore from "../../chokePoint/relationsStore.js";
 import "../../domainWriteHooks.js";
 import {
+  bindToTenantZero,
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
@@ -78,7 +79,9 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     peopleId = await databaseIdFor("people");
     eventsId = await databaseIdFor("events");
     proposalsId = await databaseIdFor("processingProposals");
-    chokePoint = createChokePoint(pool);
+    // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
+    // needs a tenant scope.
+    chokePoint = bindToTenantZero(createChokePoint(pool));
 
     transcriptId = await withTransaction(pool, async (client) => {
       const item = await createItemWithClient(client, { databaseId: transcriptsId, properties: { name: "Sync" } });
@@ -970,9 +973,11 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: aliceId, resultLabel: "Alice" });
       expect(await mappedPersonIds()).toEqual([null, aliceId]);
+      // Only the `speakers` relation: the transcript also holds Alice in `people`, inherited from its Event (issue #1697).
       const { rows } = await pool.query<{ metadata: unknown }>(
-        `SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)`,
-        [transcriptId, aliceId],
+        `SELECT r.metadata FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+         WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b) AND d.property_id_a = $3`,
+        [transcriptId, aliceId, await propertyIdFor(transcriptsId, "speakers")],
       );
       expect(rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
     });

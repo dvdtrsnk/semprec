@@ -702,6 +702,252 @@ describe("createSchemaRequestListener (issue #147)", () => {
     });
   });
 
+  it("lists the six Health records tags with Czech and English labels for new tenants and for tenants the cutover upgraded (issue #1700)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let serverRuntime: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      serverRuntime = createServer(createSchemaRequestListener(runtime, moduleRegistry));
+      await new Promise<void>((resolve) => serverRuntime?.listen(0, "127.0.0.1", resolve));
+      const address = serverRuntime.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const originalKeys = ["bloodTests", "medication", "epilepsy", "dentalHygiene"];
+      const expected = {
+        cs: [
+          { key: "bloodTests", label: "Krevní testy" },
+          { key: "medication", label: "Léky" },
+          { key: "epilepsy", label: "Epilepsie" },
+          { key: "dentalHygiene", label: "Dentální hygiena" },
+          { key: "bloodPressure", label: "Krevní tlak" },
+          { key: "prevention", label: "Prevence" },
+        ],
+        en: [
+          { key: "bloodTests", label: "Blood tests" },
+          { key: "medication", label: "Medication" },
+          { key: "epilepsy", label: "Epilepsy" },
+          { key: "dentalHygiene", label: "Dental hygiene" },
+          { key: "bloodPressure", label: "Blood pressure" },
+          { key: "prevention", label: "Prevention" },
+        ],
+      };
+      const schemaBody = z.object({
+        databases: z.array(
+          z.object({
+            key: z.string().nullable(),
+            properties: z.array(
+              z.object({
+                key: z.string(),
+                options: z.array(z.object({ key: z.string(), label: z.string() })).optional(),
+              }),
+            ),
+          }),
+        ),
+      });
+      const tagOptions = async (headers: { Authorization: string }) => {
+        const response = await fetch(`${base}/api/schema`, { headers });
+        expect(response.status).toBe(200);
+        const options = schemaBody
+          .parse(await response.json())
+          .databases.find((db) => db.key === "healthRecords")
+          ?.properties.find((property) => property.key === "tags")?.options;
+        if (!options) throw new Error("Health records tags options missing from the schema");
+        return options;
+      };
+      const tenants: { id: string; headers: { Authorization: string }; locale: "cs" | "en" }[] = [];
+      for (const locale of ["cs", "en"] as const) {
+        const id = await createTestTenant(pool);
+        const email = `${randomUUID()}@example.com`;
+        await createUser(pool, { tenantId: id, email, passwordHash: await hashPassword(PASSWORD), locale });
+        const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+        tenants.push({ id, headers: { Authorization: `Bearer ${token}` }, locale });
+      }
+      for (const tenant of tenants) {
+        expect(await tagOptions(tenant.headers)).toEqual(expected[tenant.locale]);
+      }
+      for (const tenant of tenants) {
+        await runInTenant(tenant.id, async () => {
+          // Synthetic older catalog: Health records is schema-locked, so no public write can remove a shipped option.
+          const reverted = await runtime.query(
+            `UPDATE properties p SET config = jsonb_set(p.config, '{options}', $1::jsonb) FROM databases d
+              WHERE p.database_id = d.id AND d.owner_module_id = 'healthRecords' AND d.system AND p.key = 'tags'`,
+            [JSON.stringify(originalKeys.map((key) => ({ key })))],
+          );
+          expect(reverted.rowCount).toBe(1);
+        });
+        expect(await tagOptions(tenant.headers)).toEqual(expected[tenant.locale].slice(0, originalKeys.length));
+      }
+
+      await runAsSystem("test:health-record-tags-cutover", () => runTenantCutoverMigrations(runtime));
+
+      for (const tenant of tenants) {
+        expect(await tagOptions(tenant.headers)).toEqual(expected[tenant.locale]);
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    if (serverRuntime)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          serverRuntime?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
+  });
+
+  it("colors four Health records tags and leaves epilepsy and dentalHygiene without one, for a new tenant and for tenants the cutover upgraded (issue #1705)", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let serverRuntime: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      serverRuntime = createServer(createSchemaRequestListener(runtime, moduleRegistry));
+      await new Promise<void>((resolve) => serverRuntime?.listen(0, "127.0.0.1", resolve));
+      const address = serverRuntime.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const colored = [
+        { key: "bloodTests", color: "#FF9500" },
+        { key: "medication", color: "#AF52DE" },
+        { key: "epilepsy" },
+        { key: "dentalHygiene" },
+        { key: "bloodPressure", color: "#FF2D55" },
+        { key: "prevention", color: "#34C759" },
+      ];
+      const schemaBody = z.object({
+        databases: z.array(
+          z.object({
+            key: z.string().nullable(),
+            properties: z.array(
+              z.object({
+                key: z.string(),
+                options: z
+                  .array(z.strictObject({ key: z.string(), label: z.string(), color: z.string().optional() }))
+                  .optional(),
+              }),
+            ),
+          }),
+        ),
+      });
+      /** The `tags` options of `GET /api/schema` as `{ key }` or `{ key, color }`: an option without a color has no `color` field. */
+      const tagColors = async (headers: { Authorization: string }) => {
+        const response = await fetch(`${base}/api/schema`, { headers });
+        expect(response.status).toBe(200);
+        const options = schemaBody
+          .parse(await response.json())
+          .databases.find((db) => db.key === "healthRecords")
+          ?.properties.find((property) => property.key === "tags")?.options;
+        if (!options) throw new Error("Health records tags options missing from the schema");
+        return options.map(({ key, color }) => (color === undefined ? { key } : { key, color }));
+      };
+      const tagsVersion = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          const { rows } = await runtime.query<{ version: string }>(
+            `SELECT p.xmin::text AS version FROM properties p JOIN databases d ON d.id = p.database_id
+              WHERE d.owner_module_id = 'healthRecords' AND d.system AND p.key = 'tags'`,
+          );
+          if (!rows[0]) throw new Error("Health records tags property missing");
+          return rows[0].version;
+        });
+      const createTenant = async (): Promise<{ id: string; headers: { Authorization: string } }> => {
+        const id = await createTestTenant(pool);
+        const email = `${randomUUID()}@example.com`;
+        await createUser(pool, { tenantId: id, email, passwordHash: await hashPassword(PASSWORD) });
+        const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+        return { id, headers: { Authorization: `Bearer ${token}` } };
+      };
+      const storeTags = (tenantId: string, options: { key: string; color?: string }[]) =>
+        runInTenant(tenantId, async () => {
+          // Synthetic older catalog: Health records is schema-locked, so no public write can change a shipped option.
+          const stored = await runtime.query(
+            `UPDATE properties p SET config = jsonb_set(p.config, '{options}', $1::jsonb) FROM databases d
+              WHERE p.database_id = d.id AND d.owner_module_id = 'healthRecords' AND d.system AND p.key = 'tags'`,
+            [JSON.stringify(options)],
+          );
+          expect(stored.rowCount).toBe(1);
+        });
+
+      const fresh = await createTenant();
+      expect(await tagColors(fresh.headers)).toStrictEqual(colored);
+      const freshVersion = await tagsVersion(fresh.id);
+
+      // The stored catalog of a tenant seeded before issues #1700 and #1705: the four original tags, none colored.
+      const upgraded = await createTenant();
+      const uncolored = [{ key: "bloodTests" }, { key: "medication" }, { key: "epilepsy" }, { key: "dentalHygiene" }];
+      await storeTags(upgraded.id, uncolored);
+      expect(await tagColors(upgraded.headers)).toStrictEqual(uncolored);
+
+      // A tenant whose catalog already carries colors of its own, on a listed option and on an unlisted one.
+      const customized = await createTenant();
+      await storeTags(customized.id, [
+        { key: "bloodTests", color: "#112233" },
+        { key: "medication" },
+        { key: "epilepsy", color: "#445566" },
+        { key: "dentalHygiene" },
+        { key: "bloodPressure" },
+        { key: "prevention" },
+      ]);
+      const customizedAfterCutover = [
+        { key: "bloodTests", color: "#112233" },
+        { key: "medication", color: "#AF52DE" },
+        { key: "epilepsy", color: "#445566" },
+        { key: "dentalHygiene" },
+        { key: "bloodPressure", color: "#FF2D55" },
+        { key: "prevention", color: "#34C759" },
+      ];
+
+      await runAsSystem("test:health-record-tag-colors-cutover", () => runTenantCutoverMigrations(runtime));
+
+      expect(await tagColors(upgraded.headers)).toStrictEqual(colored);
+      expect(await tagColors(customized.headers)).toStrictEqual(customizedAfterCutover);
+      expect(await tagColors(fresh.headers)).toStrictEqual(colored);
+      expect(await tagsVersion(fresh.id)).toBe(freshVersion);
+      const versions = [await tagsVersion(upgraded.id), await tagsVersion(customized.id)];
+
+      await runAsSystem("test:health-record-tag-colors-cutover", () => runTenantCutoverMigrations(runtime));
+
+      expect(await tagColors(upgraded.headers)).toStrictEqual(colored);
+      expect(await tagColors(customized.headers)).toStrictEqual(customizedAfterCutover);
+      expect(await tagColors(fresh.headers)).toStrictEqual(colored);
+      expect([await tagsVersion(upgraded.id), await tagsVersion(customized.id)]).toEqual(versions);
+      expect(await tagsVersion(fresh.id)).toBe(freshVersion);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (serverRuntime)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          serverRuntime?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
+  });
+
   it("returns the tenant zone and its current day, and reflects a zone change on the next request", async () => {
     const headers = await authHeader("en");
     const fetchProjection = async () => {

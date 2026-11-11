@@ -14,6 +14,8 @@
   "property.mailboxes.syncStatus.option.never": "Nikdy",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Vyžaduje novou autorizaci",
   "property.mailboxes.folders.name": "Složky",
+  "mail.mailbox.defaultName.icloud": "iCloud",
+  "mail.mailbox.defaultName.generic": "Jiný účet",
   "database.folders.name": "Složky",
   "property.folders.name.name": "Název",
   "property.folders.behavior.name": "Chování",
@@ -49,5 +51,11 @@
   "property.threads.name.name": "Název",
   "property.threads.project.name": "Projekt",
   "property.threads.company.name": "Firma",
-  "property.threads.tasks.name": "Úkoly"
+  "property.threads.tasks.name": "Úkoly",
+  "mail.folder.inbox": "Doručená pošta",
+  "mail.folder.sent": "Odeslané",
+  "mail.folder.drafts": "Koncepty",
+  "mail.folder.archive": "Archiv",
+  "mail.folder.junk": "Nevyžádaná pošta",
+  "mail.folder.trash": "Koš"
 }

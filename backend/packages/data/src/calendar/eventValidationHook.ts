@@ -15,7 +15,8 @@ function isEventsDatabase(database: DatabaseRow): boolean {
   return database.system && database.ownerModuleId === EVENTS_MODULE_ID;
 }
 
-function isCalendarDate(value: unknown): value is string {
+/** A calendar date `YYYY-MM-DD` that exists; the timeline read (issue #1717) judges stored and requested days by it. */
+export function isCalendarDate(value: unknown): value is string {
   return (
     typeof value === "string" && CALENDAR_DATE_PATTERN.test(value) && DateTime.fromISO(value, { zone: "utc" }).isValid
   );

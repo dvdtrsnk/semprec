@@ -38,5 +38,11 @@
   "status.service.backup": "Backup",
   "status.processStale.title": "Semp is unavailable",
   "status.processStale.text": "The agent service needs attention.",
-  "status.processStale.shortText": "Semp is unavailable."
+  "status.processStale.shortText": "Semp is unavailable.",
+  "status.aiBudgetMissing.title": "AI has no limit set",
+  "status.aiBudgetMissing.text": "Semp cannot use AI until an administrator sets a spending limit for this account.",
+  "status.aiBudgetMissing.shortText": "AI has no limit set.",
+  "status.aiBudgetExhausted.title": "AI limit exhausted",
+  "status.aiBudgetExhausted.text": "The AI spending limit is used up. It resets on {resetTime}.",
+  "status.aiBudgetExhausted.shortText": "AI limit exhausted, resets on {resetTime}."
 }

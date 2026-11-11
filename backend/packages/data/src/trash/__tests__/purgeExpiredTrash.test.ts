@@ -5,8 +5,10 @@ import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.j
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { createBlob } from "../../blobs/blobsStore.js";
-import { withClient } from "../../db/pool.js";
+import { withClient, withTransaction } from "../../db/pool.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
+import { TRANSCRIPTS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
+import { setActionItemState } from "../../transcription/transcriptActionItemStates.js";
 import { purgeExpiredTrash } from "../purgeExpiredTrash.js";
 import { logger } from "../logger.js";
 
@@ -364,6 +366,40 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(children).toEqual([]);
       // The root's own database keeps its row and partition.
       expect(await partitionExists(db.id)).toBe(true);
+    });
+
+    it("removes the action item states of a purged transcript and keeps another transcript's (issue #1754)", async () => {
+      const db = await chokePoint.createDatabase({
+        name: "Transcripts",
+        ownerModuleId: TRANSCRIPTS_MODULE_ID,
+        system: true,
+      });
+      const purged = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      const kept = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      await withTransaction(pool, async (client) => {
+        for (const [transcriptId, actionItemId] of [
+          [purged.id, 0],
+          [purged.id, 1],
+          [kept.id, 0],
+        ] as const) {
+          await setActionItemState(client, {
+            transcriptId,
+            actionItemId,
+            state: "noted",
+            taskItemId: null,
+            ownerPersonId: null,
+          });
+        }
+      });
+      expect(await countRows("transcript_action_item_states WHERE transcript_item_id = $1", [purged.id])).toBe(2);
+
+      await chokePoint.softDeleteItem(db.id, purged.id);
+      await ageDeletion(purged.id, 31, db.id);
+
+      expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(1);
+
+      expect(await countRows("transcript_action_item_states WHERE transcript_item_id = $1", [purged.id])).toBe(0);
+      expect(await countRows("transcript_action_item_states WHERE transcript_item_id = $1", [kept.id])).toBe(1);
     });
 
     it("drops an inline database whose rows an earlier root purged once its owning page is purged", async () => {

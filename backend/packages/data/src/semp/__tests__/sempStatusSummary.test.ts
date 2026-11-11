@@ -3,6 +3,9 @@ import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { recordTokenGatewayCall } from "../../aiGateway/aiGatewayCallsStore.js";
+import { getAiUsageSummary } from "../../aiGateway/aiUsageSummary.js";
+import { setTenantAiBudget } from "../../aiGateway/tenantAiBudgetsStore.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
@@ -67,6 +70,17 @@ const mailProblem = (tenant: string, userId: string, mailboxId: string, severity
     dedupeKey: mailProblemKey(mailboxId),
   });
 
+/** Writes the tenant's caps with the writer the admin route uses. */
+async function adminSetsBudget(
+  tenantId: string,
+  updatedBy: string,
+  caps: { dailyCapUsd: number | null; monthlyCapUsd: number | null },
+): Promise<void> {
+  await runAsSystem("summary test budget", () =>
+    withTransaction(data, (client) => setTenantAiBudget(client, { tenantId, updatedBy, ...caps })),
+  );
+}
+
 const agentsProblem = (tenant: string, userId: string) =>
   raise(tenant, userId, {
     category: "agents",
@@ -105,6 +119,9 @@ describe("Semp status summary (issue #1631)", () => {
       })
     ).id;
     for (const tenant of [own, foreign]) await runInTenant(tenant, () => seedSystem(data));
+    // A tenant without a budget row lists `aiBudgetMissing` (issue gh-1871), so both get a row without caps.
+    await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: null });
+    await adminSetsBudget(foreign, foreignUser, { dailyCapUsd: null, monthlyCapUsd: null });
   });
 
   afterAll(async () => {
@@ -219,5 +236,54 @@ describe("Semp status summary (issue #1631)", () => {
     expect(summary).toEqual({ activeCount: 1, banner: null });
     expect(JSON.stringify(summary)).not.toContain(foreignProblem);
     expect(ownProblem).toEqual(expect.any(String));
+  });
+
+  it("counts a missing AI budget and makes it the banner ahead of a stored critical problem", async () => {
+    const bare = await createTestTenant(admin);
+    const bareUser = (
+      await createUser(admin, {
+        tenantId: bare,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "x",
+        locale: "en",
+      })
+    ).id;
+    await runInTenant(bare, () => seedSystem(data));
+    await agentsProblem(bare, bareUser);
+
+    expect(await runInTenant(bare, () => getSempStatusSummary(data))).toEqual({
+      activeCount: 2,
+      banner: {
+        problemId: "aiBudgetMissing",
+        title: label("en", "status.aiBudgetMissing.title"),
+        shortText: label("en", "status.aiBudgetMissing.shortText"),
+        impactKey: "agentsNotRunning",
+        instanceId: "aiBudgetMissing",
+      },
+    });
+  });
+
+  it("gives the banner of an exhausted AI budget the reset instant of its window as instance", async () => {
+    await adminSetsBudget(own, ownUser, { dailyCapUsd: 5, monthlyCapUsd: null });
+    await runInTenant(own, () =>
+      recordTokenGatewayCall(data, {
+        provider: "anthropic",
+        model: "summary-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 6,
+      }),
+    );
+    const resetInstant = async () => (await runInTenant(own, () => getAiUsageSummary(data))).resetsAt;
+
+    // The window can roll between two reads, so the banner may carry the reset instant of either side.
+    const before = await resetInstant();
+    const summary = await runInTenant(own, () => getSempStatusSummary(data));
+    const after = await resetInstant();
+
+    expect(before).toEqual(expect.any(String));
+    expect(summary.activeCount).toBe(1);
+    expect([before, after].map((resetsAt) => `aiBudgetExhausted:${resetsAt}`)).toContain(summary.banner?.instanceId);
+    expect(summary.banner).toMatchObject({ problemId: summary.banner?.instanceId, impactKey: "agentsNotRunning" });
   });
 });

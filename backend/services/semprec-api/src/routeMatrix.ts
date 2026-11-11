@@ -1,3 +1,43 @@
+import { RECORDINGS_ROUTES } from "./routeMatrix/recordings.js";
+import { MAIL_MAILBOXES_ROUTES } from "./routeMatrix/mailMailboxes.js";
+import { AGENT_GUIDANCE_ROUTES } from "./routeMatrix/agentGuidance.js";
+import { SEMP_ROUTES } from "./routeMatrix/semp.js";
+import { SERVER_INFO_ROUTES } from "./routeMatrix/serverInfo.js";
+import { HEALTHZ_ROUTES } from "./routeMatrix/healthz.js";
+import { AUTH_ROUTES } from "./routeMatrix/auth.js";
+import { PUSH_SUBSCRIPTIONS_ROUTES } from "./routeMatrix/pushSubscriptions.js";
+import { NOTIFICATIONS_ROUTES } from "./routeMatrix/notifications.js";
+import { NOTIFICATION_PREFERENCES_ROUTES } from "./routeMatrix/notificationPreferences.js";
+import { HEARTBEATS_ROUTES } from "./routeMatrix/heartbeats.js";
+import { SEMP_STATUS_ROUTES } from "./routeMatrix/sempStatus.js";
+import { SCHEMA_ROUTES } from "./routeMatrix/schema.js";
+import { AI_USAGE_ROUTES } from "./routeMatrix/aiUsage.js";
+import { SYSTEM_HEALTH_ROUTES } from "./routeMatrix/systemHealth.js";
+import { PROPOSALS_ROUTES } from "./routeMatrix/proposals.js";
+import { TASKS_ROUTES } from "./routeMatrix/tasks.js";
+import { JOURNAL_ROUTES } from "./routeMatrix/journal.js";
+import { TRANSCRIPTIONS_ROUTES } from "./routeMatrix/transcriptions.js";
+import { TRANSCRIPTS_ROUTES } from "./routeMatrix/transcripts.js";
+import { INBOX_TYPES_ROUTES } from "./routeMatrix/inboxTypes.js";
+import { APPROVAL_REQUESTS_ROUTES } from "./routeMatrix/approvalRequests.js";
+import { MCP_ROUTES } from "./routeMatrix/mcp.js";
+import { AGENT_RUNS_ROUTES } from "./routeMatrix/agentRuns.js";
+import { MCP_GRANTS_ROUTES } from "./routeMatrix/mcpGrants.js";
+import { MCP_TOOL_REGISTRATIONS_ROUTES } from "./routeMatrix/mcpToolRegistrations.js";
+import { DATABASES_ROUTES } from "./routeMatrix/databases.js";
+import { PROPERTIES_ROUTES } from "./routeMatrix/properties.js";
+import { VIEWS_ROUTES } from "./routeMatrix/views.js";
+import { ITEMS_ROUTES } from "./routeMatrix/items.js";
+import { FILES_ROUTES } from "./routeMatrix/files.js";
+import { BLOBS_ROUTES } from "./routeMatrix/blobs.js";
+import { ACCOUNT_ROUTES } from "./routeMatrix/account.js";
+import { ADMIN_ROUTES } from "./routeMatrix/admin.js";
+import { VOICE_ROUTES } from "./routeMatrix/voice.js";
+import { SYNC_ROUTES } from "./routeMatrix/sync.js";
+import { MAIL_ROUTES } from "./routeMatrix/mail.js";
+import { TRANSCRIPT_SUMMARIES_ROUTES } from "./routeMatrix/transcriptSummaries.js";
+import { CALENDAR_ROUTES } from "./routeMatrix/calendar.js";
+
 /**
  * The single documented artifact issue #143 asks for: every route delivered through auth-v1,
  * HTTP or client-side view, and whether it is reachable without a session.
@@ -8,6 +48,10 @@
  * means adding (and justifying) an entry. `surface: "view"` entries have no backend of their own
  * to fetch-test — this service doesn't serve the SPA — so they're listed for the record only;
  * the "documents a reason for every public entry" test still covers them.
+ *
+ * The entries live in the slice modules under `routeMatrix/`, which `ROUTE_MATRIX` below
+ * concatenates: a new entry goes at the end of the slice of its path family, or in a new slice
+ * appended to the concatenation when no slice fits.
  *
  * `surface: "ws"` (issue #160's `WS /api/sync`) is listed for the same documentation purpose as
  * `"view"`, but isn't fetch-tested here either — a plain HTTP fetch with no `Upgrade` header never
@@ -22,11 +66,11 @@
  *   other method returns typed data to other backend code. It never opens a socket.
  * - Other view paths: the web client (`web/`) has no router and no login page yet — every page
  *   is a query-param-selected React component with no per-view auth guard. The only view path
- *   auth-v1 actually delivered is the setup wizard below (issue #234). Gating the client's other
+ *   auth-v1 actually delivered is the setup wizard in `routeMatrix/auth.ts` (issue #234). Gating the client's other
  *   views is a follow-up for whichever issue adds a login page; this service's routes are what
  *   auth-v1 #143 can enforce today, and every read/write those views depend on is in the table.
  * - Health-style probes: `GET /healthz` (issue #168) is the one probe this service serves; see
- *   its entry below.
+ *   its entry in `routeMatrix/healthz.ts`.
  */
 export interface RouteMatrixEntry {
   /** For docs/failure messages only — matching is driven by `method` + `path` below. */
@@ -64,900 +108,44 @@ export interface RouteMatrixEntry {
 export const ROUTE_TENANCIES = ["tenant", "account", "admin", "anonymous"] as const;
 export type RouteTenancy = (typeof ROUTE_TENANCIES)[number];
 
-const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
-
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
-  {
-    name: "recording upload",
-    method: "POST",
-    path: "/api/recordings",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mailbox list",
-    method: "GET",
-    path: "/api/mail/mailboxes",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mailbox detail",
-    method: "GET",
-    path: `/api/mail/mailboxes/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "project guidance read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance`, surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "project guidance save",
-    method: "PUT",
-    path: `/api/projects/${EXAMPLE_ID}/agent-guidance`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "project guidance drift read", method: "GET", path: `/api/projects/${EXAMPLE_ID}/agent-guidance/drift`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "guidance drift resolve", method: "POST", path: `/api/agent-guidance-drift/${EXAMPLE_ID}/resolve`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "semp thread create message", method: "POST", path: "/api/semp/threads", surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "semp thread send message", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "semp message speech", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages/${EXAMPLE_ID}/speech`, surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "semp thread detail",
-    method: "GET",
-    path: `/api/semp/threads/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "semp thread messages",
-    method: "GET",
-    path: `/api/semp/threads/${EXAMPLE_ID}/messages`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "server identity",
-    method: "GET",
-    path: "/api/server-info",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #1355: clients must confirm a server address before they have a session; the body contains only the product name.",
-  },
-  {
-    name: "shallow health check",
-    method: "GET",
-    path: "/healthz",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #168: a deployment/orchestrator probe run with no session — its only content is a status word, never account or deployment detail.",
-  },
-  {
-    name: "login",
-    method: "POST",
-    path: "/api/auth/login",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason: "Issue #140: logging in is necessarily unauthenticated — it's how a session is obtained.",
-  },
-  {
-    name: "password-reset request",
-    method: "POST",
-    path: "/api/auth/password-reset/request",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #142: a forgotten password means there's no session yet; the response never reveals whether the email exists.",
-  },
-  {
-    name: "password-reset consume",
-    method: "POST",
-    path: "/api/auth/password-reset/consume",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason: "Issue #142: the single-use reset token itself is the credential presented here, not a session.",
-  },
-  {
-    name: "first-account setup (API)",
-    method: "POST",
-    path: "/api/setup",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #233: there is no user yet to authenticate as. Gated instead by SETUP_TOKEN and a hard 404 once any user exists.",
-  },
-  {
-    name: "first-account setup wizard (view)",
-    method: "GET",
-    path: "/?page=setup&token=<setupToken>",
-    surface: "view",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #234: the wizard that calls the setup API above must itself be reachable before any account exists, for the same reason the API is public.",
-  },
-  {
-    name: "accept invitation",
-    method: "POST",
-    path: "/api/invitations/accept",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #1087: the invitee has no session yet. The single-use invitation token is the credential, and every unusable token gets the same 404.",
-  },
-  { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false, tenancy: "account" },
-  {
-    name: "list sessions",
-    method: "GET",
-    path: "/api/auth/sessions",
-    surface: "api",
-    public: false,
-    tenancy: "account",
-  },
-  {
-    name: "revoke session",
-    method: "POST",
-    path: `/api/auth/sessions/${EXAMPLE_ID}/revoke`,
-    surface: "api",
-    public: false,
-    tenancy: "account",
-  },
-  // prettier-ignore
-  { name: "revoke other sessions", method: "POST", path: "/api/auth/sessions/revoke-others", surface: "api", public: false, tenancy: "account" },
-  {
-    name: "set self person",
-    method: "PUT",
-    path: "/api/auth/self-person",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "current session",
-    method: "GET",
-    path: "/api/auth/session",
-    surface: "api",
-    public: false,
-    tenancy: "account",
-  },
-  {
-    name: "register push subscription",
-    method: "POST",
-    path: "/api/push-subscriptions",
-    surface: "api",
-    public: false,
-    tenancy: "account",
-  },
-  {
-    name: "revoke push subscription",
-    method: "POST",
-    path: `/api/push-subscriptions/${EXAMPLE_ID}/revoke`,
-    surface: "api",
-    public: false,
-    tenancy: "account",
-  },
-  {
-    name: "unread notifications",
-    method: "GET",
-    path: "/api/notifications/unread",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "resolved notifications",
-    method: "GET",
-    path: "/api/notifications/resolved",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "visit notification",
-    method: "POST",
-    path: `/api/notifications/${EXAMPLE_ID}/visit`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mark all notifications read",
-    method: "POST",
-    path: "/api/notifications/mark-all-read",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "get notification preferences",
-    method: "GET",
-    path: "/api/notification-preferences",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "patch notification preferences",
-    method: "PATCH",
-    path: "/api/notification-preferences",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "trigger heartbeat",
-    method: "POST",
-    path: `/api/heartbeats/${EXAMPLE_ID}/trigger`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "set heartbeat enabled",
-    method: "PATCH",
-    path: `/api/heartbeats/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "semp status",
-    method: "GET",
-    path: "/api/semp-status",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "semp status summary", method: "GET", path: "/api/semp-status/summary", surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "schema projection",
-    method: "GET",
-    path: "/api/schema",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "ai usage report",
-    method: "GET",
-    path: "/api/ai-usage?from=2026-01-01&to=2026-01-02",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "ai usage summary",
-    method: "GET",
-    path: "/api/ai-usage/summary",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "system health report",
-    method: "GET",
-    path: "/api/system-health",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "confirm proposal",
-    method: "POST",
-    path: `/api/proposals/${EXAMPLE_ID}/confirm`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "task recurrence set", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "task series edit", method: "PATCH", path: `/api/tasks/series/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "task recurrence clear", method: "DELETE", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "journal period ensure",
-    method: "PUT",
-    path: "/api/journal/periods/day/2026-10-16/doc",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "journal period read",
-    method: "GET",
-    path: "/api/journal/periods/day/2026-10-16",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "create transcription",
-    method: "POST",
-    path: "/api/transcriptions",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "transcription rerun",
-    method: "POST",
-    path: `/api/transcriptions/${EXAMPLE_ID}/rerun`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "transcript list", method: "GET", path: "/api/transcripts", surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "transcript delete", method: "DELETE", path: `/api/transcripts/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "transcript detail",
-    method: "GET",
-    path: `/api/transcripts/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "transcript speakers",
-    method: "GET",
-    path: `/api/transcripts/${EXAMPLE_ID}/speakers`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "inbox types",
-    method: "GET",
-    path: "/api/inbox-types",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "approval queue",
-    method: "GET",
-    path: "/api/approval-requests",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "approval decision",
-    method: "PATCH",
-    path: `/api/approval-requests/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  { name: "mcp json-rpc endpoint", method: "POST", path: "/mcp", surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "agent run detail",
-    method: "GET",
-    path: `/api/agent-runs/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mint mcp run credential",
-    method: "POST",
-    path: "/api/agent-runs/mcp-credentials",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "project mcp grants",
-    method: "GET",
-    path: `/api/projects/${EXAMPLE_ID}/mcp-grants`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "project mcp grant toggle",
-    method: "PATCH",
-    path: `/api/projects/${EXAMPLE_ID}/mcp-grants/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mcp tool registration reclassify",
-    method: "PATCH",
-    path: `/api/mcp-tool-registrations/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  { name: "list databases", method: "GET", path: "/api/databases", surface: "api", public: false, tenancy: "tenant" },
-  { name: "create database", method: "POST", path: "/api/databases", surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "database detail",
-    method: "GET",
-    path: `/api/databases/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "rename database",
-    method: "PATCH",
-    path: `/api/databases/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "archive database",
-    method: "DELETE",
-    path: `/api/databases/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "restore database",
-    method: "POST",
-    path: `/api/databases/${EXAMPLE_ID}/restore`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "property catalog",
-    method: "GET",
-    path: `/api/databases/${EXAMPLE_ID}/properties`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "create property",
-    method: "POST",
-    path: `/api/databases/${EXAMPLE_ID}/properties`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "property list",
-    method: "GET",
-    path: `/api/properties?databaseId=${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "property detail",
-    method: "GET",
-    path: `/api/properties/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "update property",
-    method: "PATCH",
-    path: `/api/properties/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "delete property",
-    method: "DELETE",
-    path: `/api/properties/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "list views",
-    method: "GET",
-    path: "/api/views",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "view detail",
-    method: "GET",
-    path: `/api/views/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "create view",
-    method: "POST",
-    path: `/api/databases/${EXAMPLE_ID}/views`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "patch view",
-    method: "PATCH",
-    path: `/api/views/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "delete view",
-    method: "DELETE",
-    path: `/api/views/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "add/reposition curated view item",
-    method: "PUT",
-    path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "reorder curated view item",
-    method: "PATCH",
-    path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "remove curated view item",
-    method: "DELETE",
-    path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "create item",
-    method: "POST",
-    path: `/api/databases/${EXAMPLE_ID}/items`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "item detail",
-    method: "GET",
-    path: `/api/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "patch item",
-    method: "PATCH",
-    path: `/api/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "delete item",
-    method: "DELETE",
-    path: `/api/items/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "restore item",
-    method: "POST",
-    path: `/api/items/${EXAMPLE_ID}/restore`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "query database",
-    method: "POST",
-    path: `/api/databases/${EXAMPLE_ID}/query`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "query view",
-    method: "POST",
-    path: `/api/views/${EXAMPLE_ID}/query`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  ...(["unlink", "relink"] as const).map((action): RouteMatrixEntry => ({
-    name: `${action} value`,
-    method: "POST",
-    path: `/api/items/${EXAMPLE_ID}/links/exampleKey/${action}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  })),
-  {
-    name: "set relation",
-    method: "PUT",
-    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "create/replace relation",
-    method: "PUT",
-    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "delete relation",
-    method: "DELETE",
-    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "list relations",
-    method: "GET",
-    path: `/api/items/${EXAMPLE_ID}/relations`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "ensure page", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "get page", method: "GET", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "read page markdown", method: "GET", path: `/api/items/${EXAMPLE_ID}/page.md`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "insert page markdown", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/insert`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "list page changes", method: "GET", path: `/api/items/${EXAMPLE_ID}/page/changes`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "create subpage", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/subpages`, surface: "api", public: false, tenancy: "tenant" },
-  // prettier-ignore
-  { name: "restore page version", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/restore`, surface: "api", public: false, tenancy: "tenant" },
-  // Also takes the optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645), which link the
-  // upload to an item in the same request; tenantIsolationRoutes.test.ts answers a foreign target like a random one.
-  {
-    name: "upload file",
-    method: "POST",
-    path: "/api/files",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "upload blob",
-    method: "POST",
-    path: "/api/blobs",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "download blob",
-    method: "GET",
-    path: `/api/blobs/${EXAMPLE_ID}`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "request account export",
-    method: "POST",
-    path: "/api/account/exports",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "list account exports",
-    method: "GET",
-    path: "/api/account/exports",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "download account export",
-    method: "GET",
-    path: `/api/account/exports/${EXAMPLE_ID}/download`,
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "delete own account",
-    method: "POST",
-    path: "/api/account/delete",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "admin account list",
-    method: "GET",
-    path: "/api/admin/accounts",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin operations health",
-    method: "GET",
-    path: "/api/admin/health",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin ai budgets",
-    method: "GET",
-    path: "/api/admin/ai-budgets",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin set ai budget",
-    method: "PUT",
-    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/ai-budget",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin suspend account",
-    method: "POST",
-    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/suspend",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin reactivate account",
-    method: "POST",
-    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/reactivate",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin delete account",
-    method: "POST",
-    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/delete",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin change account role",
-    method: "PUT",
-    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/role",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin create invite",
-    method: "POST",
-    path: "/api/admin/invites",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin list invites",
-    method: "GET",
-    path: "/api/admin/invites",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "admin revoke invite",
-    method: "POST",
-    path: "/api/admin/invites/00000000-0000-0000-0000-000000000000/revoke",
-    surface: "api",
-    public: false,
-    tenancy: "admin",
-    admin: true,
-  },
-  {
-    name: "voice (WS upgrade)",
-    method: "GET",
-    path: "/api/voice",
-    surface: "ws",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "sync (WS upgrade)",
-    method: "GET",
-    path: "/api/sync",
-    surface: "ws",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "mail autonomous send projects", method: "GET", path: "/api/mail/autonomous-send-projects", surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "mail contacts",
-    method: "GET",
-    path: "/api/mail/contacts?q=contact",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "mail threads",
-    method: "GET",
-    path: "/api/mail/threads",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  // prettier-ignore
-  { name: "mail thread detail", method: "GET", path: `/api/mail/threads/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
-  {
-    name: "mailbox removal impact",
-    method: "GET",
-    path: "/api/mail/mailboxes/00000000-0000-0000-0000-000000000000/removal-impact",
-    surface: "api",
-    public: false,
-    tenancy: "tenant",
-  },
-  {
-    name: "Microsoft Graph mail webhook",
-    method: "POST",
-    path: "/api/mail/graph/webhook",
-    surface: "api",
-    public: true,
-    tenancy: "anonymous",
-    publicReason:
-      "Issue #198: Microsoft Graph itself calls this with no session to deliver subscription validation and change notifications; each notification's clientState (checked in constant time) is the receiver's own authenticity check, not a session.",
-  },
+  ...RECORDINGS_ROUTES,
+  ...MAIL_MAILBOXES_ROUTES,
+  ...AGENT_GUIDANCE_ROUTES,
+  ...SEMP_ROUTES,
+  ...SERVER_INFO_ROUTES,
+  ...HEALTHZ_ROUTES,
+  ...AUTH_ROUTES,
+  ...PUSH_SUBSCRIPTIONS_ROUTES,
+  ...NOTIFICATIONS_ROUTES,
+  ...NOTIFICATION_PREFERENCES_ROUTES,
+  ...HEARTBEATS_ROUTES,
+  ...SEMP_STATUS_ROUTES,
+  ...SCHEMA_ROUTES,
+  ...AI_USAGE_ROUTES,
+  ...SYSTEM_HEALTH_ROUTES,
+  ...PROPOSALS_ROUTES,
+  ...TASKS_ROUTES,
+  ...JOURNAL_ROUTES,
+  ...TRANSCRIPTIONS_ROUTES,
+  ...TRANSCRIPTS_ROUTES,
+  ...INBOX_TYPES_ROUTES,
+  ...APPROVAL_REQUESTS_ROUTES,
+  ...MCP_ROUTES,
+  ...AGENT_RUNS_ROUTES,
+  ...MCP_GRANTS_ROUTES,
+  ...MCP_TOOL_REGISTRATIONS_ROUTES,
+  ...DATABASES_ROUTES,
+  ...PROPERTIES_ROUTES,
+  ...VIEWS_ROUTES,
+  ...ITEMS_ROUTES,
+  ...FILES_ROUTES,
+  ...BLOBS_ROUTES,
+  ...ACCOUNT_ROUTES,
+  ...ADMIN_ROUTES,
+  ...VOICE_ROUTES,
+  ...SYNC_ROUTES,
+  ...MAIL_ROUTES,
+  ...TRANSCRIPT_SUMMARIES_ROUTES,
+  ...CALENDAR_ROUTES,
 ];

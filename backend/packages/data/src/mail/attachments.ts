@@ -169,3 +169,13 @@ export async function ingestAttachments(
   }
   return { extractedTexts };
 }
+
+/**
+ * Deletes the `mail_attachments` rows of message `messageItemId` (issue gh-1691) and returns how many
+ * there were; a message without attachments has none. The `blobs` rows they named and the Files items
+ * `ingestAttachments` created for them are not touched.
+ */
+export async function deleteMailAttachmentsOfMessage(client: PoolClient, messageItemId: string): Promise<number> {
+  const result = await client.query("DELETE FROM mail_attachments WHERE message_item_id = $1", [messageItemId]);
+  return result.rowCount ?? 0;
+}

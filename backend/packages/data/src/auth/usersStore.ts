@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
+import type { SupportedLocale } from "./locales.js";
 import type { UserRole, UserRow } from "./types.js";
 
 /** The raw `users` row shape this module reads back from Postgres. */
@@ -133,4 +134,24 @@ export async function updateUserPasswordHash(
   passwordHash: string,
 ): Promise<void> {
   await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, id]);
+}
+
+/**
+ * Sets `users.locale` of the user `userId` to `locale` when the stored value differs, and returns the
+ * updated row (issue #1704). Returns `null` when the statement wrote nothing: the stored locale already
+ * is `locale`, or no user has that id. The comparison is part of the `UPDATE`, so a returned row means
+ * this call changed the stored value.
+ */
+export async function updateUserLocale(
+  client: Pool | PoolClient,
+  userId: string,
+  locale: SupportedLocale,
+): Promise<UserRow | null> {
+  const result = await client.query<UserDbRow>(
+    `UPDATE users SET locale = $2 WHERE id = $1 AND locale IS DISTINCT FROM $2
+     RETURNING id, email, display_name, password_hash, locale, created_at`,
+    [userId, locale],
+  );
+  if ((result.rowCount ?? 0) === 0) return null;
+  return mapRow(requireSingleRow(result.rows, "users row"));
 }

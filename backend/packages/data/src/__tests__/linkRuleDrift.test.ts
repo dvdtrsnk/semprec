@@ -136,6 +136,78 @@ describe("link rule schema drift", () => {
     }
   });
 
+  it("accepts a value filter over System settings selfPerson and flags one whose database or property is missing or not a relation", async () => {
+    const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
+    const rule = (await registry.getLinkRules())[0];
+    if (!rule) throw new Error("Missing link rule fixture");
+    const filtered = (key: string, databaseKey: string, propertyKey: string) => ({
+      ...rule,
+      key,
+      valueFilter: { omit: { databaseKey, propertyKey } },
+    });
+    const spy = vi
+      .spyOn(registry, "getLinkRules")
+      .mockResolvedValue([
+        filtered("fixtureFilter.valid", "systemSettings", "selfPerson"),
+        filtered("fixtureFilter.misspelledProperty", "systemSettings", "selfPersn"),
+        filtered("fixtureFilter.unknownDatabase", "noSuchSettings", "selfPerson"),
+        filtered("fixtureFilter.notRelation", "systemSettings", "timezone"),
+      ]);
+    try {
+      const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
+      expect(findings).toEqual([
+        {
+          ruleKey: "fixtureFilter.misspelledProperty",
+          moduleId: "fixtureLinkRuleValid",
+          reason: "missingValueFilterProperty",
+          property: "systemSettings.selfPersn",
+        },
+        {
+          ruleKey: "fixtureFilter.unknownDatabase",
+          moduleId: "fixtureLinkRuleValid",
+          reason: "missingValueFilterProperty",
+          property: "noSuchSettings.selfPerson",
+        },
+        {
+          ruleKey: "fixtureFilter.notRelation",
+          moduleId: "fixtureLinkRuleValid",
+          reason: "valueFilterNotRelation",
+          property: "systemSettings.timezone",
+        },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("reads a value filter's property in the caller's tenant only", async () => {
+    const tenantB = await createTestTenant(pool);
+    const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
+    const rule = (await registry.getLinkRules())[0];
+    if (!rule) throw new Error("Missing link rule fixture");
+    const spy = vi
+      .spyOn(registry, "getLinkRules")
+      .mockResolvedValue([
+        { ...rule, valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "selfPerson" } } },
+      ]);
+    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    try {
+      // Tenant B was never seeded: tenant zero's System settings must not satisfy its filter.
+      const findings = await withTenantTransaction(runtime, tenantB, (client) =>
+        findInvalidLinkRuleReferences(client, registry),
+      );
+      expect(findings.map((finding) => [finding.reason, finding.property])).toEqual([
+        ["missingSourceProperty", "areas.name"],
+        ["missingTargetProperty", "projects.name"],
+        ["missingValueFilterProperty", "systemSettings.selfPerson"],
+        ["missingViaProperty", "projects.area"],
+      ]);
+    } finally {
+      spy.mockRestore();
+      await runtime.end();
+    }
+  });
+
   it("reports a link_rule_schema_drift finding from the drift check action", async () => {
     const project = await chokePoint.createDatabase({ name: "Drift projects" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });

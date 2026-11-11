@@ -18,10 +18,11 @@ export interface WriteMailboxAddressesInput {
 
 /**
  * The sanctioned writer of `Mailboxes.addresses` (issue #1454). The property is `owner: 'system'`, so
- * the generic item write path refuses it with `owner_violation`. The connect and reauthorization
- * flows (#1686, #1736) will call this instead, passing the aliases they keep. It replaces the whole
- * list, so a flow that keeps existing aliases must pass them in `aliases`. The write runs in the
- * caller's transaction through the choke point's update path.
+ * the generic item write path refuses it with `owner_violation`. The OAuth connect flow (issue
+ * gh-1686, `mailOauthRouteHandlers.ts`) calls this instead, passing the aliases it keeps, and the
+ * password connect flow (issue gh-1736, `mailboxPasswordRouteHandlers.ts`) calls it without aliases.
+ * It replaces the whole list, so a flow that keeps existing aliases must pass them in `aliases`. The
+ * write runs in the caller's transaction through the choke point's update path.
  */
 export async function writeMailboxAddresses(client: PoolClient, input: WriteMailboxAddressesInput): Promise<void> {
   const primary = normalizeEmailAddress(input.address);

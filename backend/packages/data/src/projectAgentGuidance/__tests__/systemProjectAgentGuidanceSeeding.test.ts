@@ -13,6 +13,7 @@ import { PROJECTS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../../seed/libraryModuleKeys.js";
 import { MAILBOXES_MODULE_ID } from "../../seed/emailModuleKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../../seed/mcpModuleKeys.js";
+import { RECIPES_MODULE_ID } from "../../seed/recipesModuleKeys.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../../systemSettings.js";
 import { createInvite } from "../../tenancy/invites.js";
 import { logger } from "../../tenancy/logger.js";
@@ -47,6 +48,9 @@ const EXPECTED_MARKDOWN: Record<string, string> = {
   [BOOKS_MODULE_ID]: BOOKS_MARKDOWN,
   [MOVIES_MODULE_ID]:
     "## Purpose\ncatalog movies and TV series watched or planned to watch.\n\n## Allowed\ncreate a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n\n## Not allowed\nwrite 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n\n## General instructions\nuse the same create-item path as the UI; there is no separate AI path.\n",
+  // The Recipes system project (issue #1707).
+  [RECIPES_MODULE_ID]:
+    "## Purpose\ncatalog the user's recipes; the ingredients and the method are written on each recipe's page.\n\n## Allowed\ncreate or update a Recipes item (name/category/prepMinutes/servings/favorite/photo) via the generic item endpoints.\n\n## Not allowed\nwrite 'photo' with anything other than { blobId } of an image blob of this tenant, or null to clear it — every other value is rejected.\n\n## General instructions\nuse the same item paths as the UI; there is no separate AI path.\n",
 };
 
 async function expectSystemGuidance(dataPool: Pool, tenantId: string, ownerId: string): Promise<void> {
@@ -64,7 +68,7 @@ async function expectSystemGuidance(dataPool: Pool, tenantId: string, ownerId: s
         ).rows,
     ),
   );
-  expect(rows).toHaveLength(5);
+  expect(rows).toHaveLength(6);
   for (const row of rows)
     expect(row).toEqual({
       module_id: row.module_id,
@@ -139,11 +143,17 @@ describe("system project guidance seeding (issue #1449)", () => {
     const account = await bootstrap();
 
     const rows = await allGuidance();
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     expect(rows.every((row) => row.owner_user_id === account.id)).toBe(true);
     const booksRow = rows.find((row) => row.project_item_id === projects.get(BOOKS_MODULE_ID));
     expect(booksRow?.markdown).toBe(BOOKS_MARKDOWN);
-    for (const moduleId of [SYSTEM_SETTINGS_MODULE_ID, MCP_SERVERS_MODULE_ID, MAILBOXES_MODULE_ID, MOVIES_MODULE_ID]) {
+    for (const moduleId of [
+      SYSTEM_SETTINGS_MODULE_ID,
+      MCP_SERVERS_MODULE_ID,
+      MAILBOXES_MODULE_ID,
+      MOVIES_MODULE_ID,
+      RECIPES_MODULE_ID,
+    ]) {
       expect(rows.map((row) => row.project_item_id)).toContain(projects.get(moduleId));
     }
   });
@@ -158,7 +168,7 @@ describe("system project guidance seeding (issue #1449)", () => {
       );
 
       const rows = await allGuidance();
-      expect(rows).toHaveLength(5);
+      expect(rows).toHaveLength(6);
       expect(rows.every((row) => row.owner_user_id === account.id)).toBe(true);
       await expectSystemGuidance(dataPool, getTenantZeroId(), account.id);
     } finally {
@@ -172,7 +182,7 @@ describe("system project guidance seeding (issue #1449)", () => {
     const { rows } = await pool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM project_heartbeats WHERE action_id = 'core.agentGuidanceDrift' AND enabled",
     );
-    expect(rows[0]?.n).toBe(5);
+    expect(rows[0]?.n).toBe(6);
   });
 
   it("gives a renamed system project its guidance row from the seed text of its module", async () => {
@@ -199,7 +209,7 @@ describe("system project guidance seeding (issue #1449)", () => {
 
     const rows = await allGuidance();
     expect(rows.map((row) => row.project_item_id)).not.toContain(userProjectId);
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
   });
 
   it("gives no guidance row to a system project that is deleted", async () => {
@@ -213,7 +223,7 @@ describe("system project guidance seeding (issue #1449)", () => {
 
     const rows = await allGuidance();
     expect(rows.map((row) => row.project_item_id)).not.toContain(mcpProjectId);
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
   });
 
   it("gives no guidance row to a system project that is not active", async () => {
@@ -226,7 +236,7 @@ describe("system project guidance seeding (issue #1449)", () => {
 
     const rows = await allGuidance();
     expect(rows.map((row) => row.project_item_id)).not.toContain(emailProjectId);
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
   });
 
   it("gives no guidance row to a tenant that has no Projects database", async () => {
@@ -325,7 +335,7 @@ describe("system project guidance for an invited account (issue #1449)", () => {
           "SELECT project_item_id, owner_user_id, markdown FROM project_agent_guidance WHERE owner_user_id = $1",
           [invited.id],
         );
-        expect(rows).toHaveLength(5);
+        expect(rows).toHaveLength(6);
       } finally {
         await dataPool.end();
       }

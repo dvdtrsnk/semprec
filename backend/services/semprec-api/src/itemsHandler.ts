@@ -75,13 +75,14 @@ async function resolveRelationProperty(
  * The item endpoint family (rebased onto the generic-operation bindings by issue #219): `POST
  * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
- * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `GET /api/items/:id/relations`
- * (with optional `?propertyKey=`), `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
- * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field) and `POST /api/items/:id/page/subpages`
- * (issue #1676).
+ * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `POST /api/items/count` (issue #1709),
+ * `GET /api/items/:id/relations` (with optional `?propertyKey=`),
+ * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
+ * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field), `POST /api/items/:id/page/subpages`
+ * (issue #1676), `POST /api/items/:id/page/duplicate` (issue #1722) and `PATCH /api/items/:id/page/title` (issue #1725).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
- * own `createChokePoint(pool)` for an operation the 39-operation catalog covers. `?include=path`'s breadcrumb chain
+ * own `createChokePoint(pool)` for an operation the 42-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
@@ -231,6 +232,19 @@ export function createItemRoutes(
           includeCount: body.includeCount,
         });
         return { status: 200, body: await toItemQueryEnvelope(pool, result) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/count",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "items");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected count field", { field: unexpected });
+        const counts = await dispatchGenericOperation(service, "item.count", restActor(ctx.identity.user.id), {
+          items: body.items,
+        });
+        return { status: 200, body: { counts } };
       },
     },
     {
@@ -390,6 +404,32 @@ export function createItemRoutes(
           fromBlockIds: body.fromBlockIds,
         });
         return { status: 201, body: created };
+      },
+    },
+    {
+      // The path item is the subpage to copy (ADR 2026-10-28-page-operation-family); nothing of the request body is used.
+      method: "POST",
+      path: "/api/items/:id/page/duplicate",
+      handler: async (ctx) => ({
+        status: 201,
+        body: await dispatchGenericOperation(service, "page.duplicate", restActor(ctx.identity.user.id), {
+          pageItemId: requireUuidParam(ctx.params, "id"),
+        }),
+      }),
+    },
+    {
+      // The path item is the subpage to rename (ADR 2026-10-28-page-operation-family); the body carries only `title`.
+      method: "PATCH",
+      path: "/api/items/:id/page/title",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "title");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected rename field", { field: unexpected });
+        const renamed = await dispatchGenericOperation(service, "page.rename", restActor(ctx.identity.user.id), {
+          pageItemId: requireUuidParam(ctx.params, "id"),
+          title: body.title,
+        });
+        return { status: 200, body: renamed };
       },
     },
     {

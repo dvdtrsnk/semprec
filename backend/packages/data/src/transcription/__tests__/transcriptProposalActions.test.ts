@@ -2,7 +2,13 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import "../../domainWriteHooks.js";
-import { getTestPool, getTenantZeroId, resetDatabase, withTenantTransaction } from "../../testSupport/testDb.js";
+import {
+  getTestPool,
+  getTenantZeroId,
+  inTenantZero,
+  resetDatabase,
+  withTenantTransaction,
+} from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -106,9 +112,15 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     );
   }
 
+  /**
+   * Confirms inside tenant zero: a confirmed Event with a project writes an Events `project` edge, a link-rule
+   * source (issue #1697), and that write queues a propagation job, which needs a tenant scope.
+   */
   function confirm(cardId: string) {
-    return withTransaction(pool, (client) =>
-      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+    return inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+      ),
     );
   }
 
@@ -243,38 +255,55 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       const peopleId = await databaseIdFor("people");
       const personId = await createItem(peopleId, "Alice");
       const eventId = await existingEvent("Meeting");
-      await withTransaction(pool, async (client) => {
-        await writeComputed(client, transcriptsId, transcriptId, "segments", [
-          { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
-        ]);
-        await createRelationWithClient(client, {
-          relationPropertyId: await propertyIdFor(eventsId, "people"),
-          callerItemId: eventId,
-          targetItemId: personId,
-        });
-        await createRelationWithClient(client, {
-          relationPropertyId: await propertyIdFor(transcriptsId, "event"),
-          callerItemId: transcriptId,
-          targetItemId: eventId,
-        });
-        await proposeSpeakerMappings(client, {
-          transcriptId,
-          suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
-        });
-        await insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] });
-      });
+      // In tenant zero: the Events `people` edge is a link-rule source (issue #1697), so its write queues a
+      // propagation job, which needs a tenant scope.
+      await inTenantZero(() =>
+        withTransaction(pool, async (client) => {
+          await writeComputed(client, transcriptsId, transcriptId, "segments", [
+            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+          ]);
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(eventsId, "people"),
+            callerItemId: eventId,
+            targetItemId: personId,
+          });
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+            callerItemId: transcriptId,
+            targetItemId: eventId,
+          });
+          await proposeSpeakerMappings(client, {
+            transcriptId,
+            suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
+          });
+          await insertValueLink(client, {
+            itemId: transcriptId,
+            propertyKey: "speakers",
+            ruleKey: "test",
+            sources: [],
+          });
+        }),
+      );
       const cards = await pool.query<{ id: string }>(
         "SELECT id FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'",
         [proposalsId],
       );
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing speaker proposal");
       const cardId = cards.rows[0].id;
+      // Only the `speakers` relation and link: linking the Event also gave the transcript the person in `people`,
+      // with links for `people` and `project` (issue #1697).
+      const speakersPropertyId = await propertyIdFor(transcriptsId, "speakers");
       const speakerEdges = () =>
         withTenantTransaction(pool, getTenantZeroId(), (client) =>
           client.query<{ metadata: unknown }>(
-            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b) AND tenant_id = $3",
-            [transcriptId, personId, getTenantZeroId()],
+            `SELECT r.metadata FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+             WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b) AND r.tenant_id = $3 AND d.property_id_a = $4`,
+            [transcriptId, personId, getTenantZeroId(), speakersPropertyId],
           ),
+        );
+      const speakersLink = async () =>
+        (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId]))).find(
+          (link) => link.propertyKey === "speakers",
         );
       const beforeEdges = (await speakerEdges()).rows;
       expect(beforeEdges).toEqual([]);
@@ -297,22 +326,14 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
           }),
         ).rejects.toBe(failure);
         expect(events).toEqual([]);
-        expect(
-          (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0]?.state,
-        ).toBe("on");
+        expect((await speakersLink())?.state).toBe("on");
         expect((await cardProperties(cardId)).status).toBe("proposed");
         expect((await speakerEdges()).rows).toEqual(beforeEdges);
         await withTransaction(pool, (client) =>
           confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, undefined, actorId),
         );
-        const edges = await pool.query<{ metadata: unknown }>(
-          "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
-          [transcriptId, personId],
-        );
-        expect(edges.rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
-        expect(
-          (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0],
-        ).toMatchObject({ state: "broken", brokenBy: "user" });
+        expect((await speakerEdges()).rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
+        expect(await speakersLink()).toMatchObject({ state: "broken", brokenBy: "user" });
         expect(events.filter((event) => event.scope === "item" && event.itemId === transcriptId)).toEqual([
           expect.objectContaining({ userId: actorId }),
         ]);

@@ -117,15 +117,7 @@ export async function repointJournalPeriodReservation(
   input: { journalDatabaseId: string; type: string; period: string; itemId: string },
 ): Promise<void> {
   const key = journalPeriodReservationKey(input.journalDatabaseId, input.type, input.period);
-  const reserved = await client.query<{ database_id: string }>(
-    `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-     ON CONFLICT (tenant_id, key) DO UPDATE SET item_id = idempotency_keys.item_id
-     RETURNING database_id`,
-    [key, input.journalDatabaseId, input.itemId],
-  );
-  if (requireSingleRow(reserved.rows, "journal period reservation").database_id !== input.journalDatabaseId) {
-    throw new ConflictError(`Idempotency key '${key}' was already used for a different database`, { key });
-  }
+  await takeJournalPeriodReservation(client, key, input.journalDatabaseId, input.itemId);
   const { rows: live } = await client.query<{ id: string }>(
     `SELECT id FROM items
      WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL
@@ -137,10 +129,93 @@ export async function repointJournalPeriodReservation(
   if (peer) {
     throw new ConflictError("This Journal period already has a live entry", { liveItemId: peer.id });
   }
+  await pointJournalPeriodReservation(client, key, input.journalDatabaseId, input.itemId);
+}
+
+/**
+ * Takes the reservation row `key` for the rest of the transaction: inserts it for `itemId` when it is missing,
+ * otherwise waits for and row-locks the current row without changing a value. A row that belongs to another database
+ * is a `ConflictError`.
+ */
+async function takeJournalPeriodReservation(
+  client: PoolClient,
+  key: string,
+  journalDatabaseId: string,
+  itemId: string,
+): Promise<void> {
+  const reserved = await client.query<{ database_id: string }>(
+    `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, key) DO UPDATE SET item_id = idempotency_keys.item_id
+     RETURNING database_id`,
+    [key, journalDatabaseId, itemId],
+  );
+  if (requireSingleRow(reserved.rows, "journal period reservation").database_id !== journalDatabaseId) {
+    throw new ConflictError(`Idempotency key '${key}' was already used for a different database`, { key });
+  }
+}
+
+/** Points the reservation row `key`, which the transaction already holds, at `itemId`. */
+async function pointJournalPeriodReservation(
+  client: PoolClient,
+  key: string,
+  journalDatabaseId: string,
+  itemId: string,
+): Promise<void> {
   const pointed = await client.query("UPDATE idempotency_keys SET item_id = $2 WHERE key = $1 AND database_id = $3", [
     key,
-    input.itemId,
-    input.journalDatabaseId,
+    itemId,
+    journalDatabaseId,
   ]);
   requireAffectedRows(pointed, "journal period reservation");
+}
+
+/** The live entries of one Journal period, the entry created first leading (ties by id), cut to the first two. */
+const OLDEST_LIVE_PERIOD_ENTRIES_SQL = `SELECT id FROM items
+     WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'type' = $2 AND properties->>'period' = $3
+     ORDER BY created_at, id LIMIT 2`;
+/** The same read, row-locking what it returns. Both statements are constants; the period is bound as parameters. */
+const OLDEST_LIVE_PERIOD_ENTRIES_FOR_UPDATE_SQL = `${OLDEST_LIVE_PERIOD_ENTRIES_SQL} FOR UPDATE`;
+
+/** The two entries one merge of a duplicated Journal period works on. */
+export interface JournalDuplicatePair {
+  /** The live entry of the period that was created first. */
+  survivorId: string;
+  /** The live entry of the period that was created next. */
+  duplicateId: string;
+}
+
+/**
+ * Finds the two live entries of a Journal period that were created first and holds them for a merge (issue #1726),
+ * or returns `null` when the period has fewer than two.
+ *
+ * 1. A plain read looks for them. With fewer than two, nothing is locked and nothing is written.
+ * 2. The period reservation is taken with the statement `repointJournalPeriodReservation` uses, inserted for the older
+ *    entry of step 1 when it is missing. A transaction that takes the reservation later (`getOrCreateJournalItem`, a
+ *    restore of an entry of the period, another merge) waits for this one to end.
+ * 3. Holding it, the read of step 1 runs again with `FOR UPDATE`. The rows it returns are live entries of the period as
+ *    committed at that moment, and they stay row-locked. With fewer than two (another transaction trashed or merged
+ *    one in between) the result is `null`; the reservation keeps the entry it pointed at, or the entry step 2 inserted
+ *    it for.
+ * 4. The reservation is pointed at the older entry, so the next `getOrCreateJournalItem` for the period returns it
+ *    once the newer one is in the Trash.
+ *
+ * See docs/adr/2026-11-10-journal-duplicate-merge-locks-the-reservation-before-both-entries.md.
+ */
+export async function lockJournalDuplicatePair(
+  client: PoolClient,
+  input: { journalDatabaseId: string; type: JournalPeriodType; period: string },
+): Promise<JournalDuplicatePair | null> {
+  const period = [input.journalDatabaseId, input.type, input.period];
+  const seen = await client.query<{ id: string }>(OLDEST_LIVE_PERIOD_ENTRIES_SQL, period);
+  const [older, newer] = seen.rows;
+  if (!older || !newer) return null;
+
+  const key = journalPeriodReservationKey(input.journalDatabaseId, input.type, input.period);
+  await takeJournalPeriodReservation(client, key, input.journalDatabaseId, older.id);
+  const locked = await client.query<{ id: string }>(OLDEST_LIVE_PERIOD_ENTRIES_FOR_UPDATE_SQL, period);
+  const [survivor, duplicate] = locked.rows;
+  if (!survivor || !duplicate) return null;
+
+  await pointJournalPeriodReservation(client, key, input.journalDatabaseId, survivor.id);
+  return { survivorId: survivor.id, duplicateId: duplicate.id };
 }

@@ -1,7 +1,19 @@
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mailboxRouteHandlers.js";
+export { createMailboxPasswordConnectRouteHandler } from "./mailboxPasswordRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
-export { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } from "./mailThreadRoutes.js";
+export {
+  createMailThreadDetailRouteHandler,
+  createMailThreadFacetsRouteHandler,
+  createMailThreadListRouteHandler,
+} from "./mailThreadRoutes.js";
 export { createMailAutonomousSendProjectsRouteHandler } from "./mailAutonomousSendRouteHandlers.js";
+export {
+  createMailboxReauthorizeRouteHandler,
+  createMailOauthCompleteRouteHandler,
+  createMailOauthStartRouteHandler,
+} from "./mailOauthRouteHandlers.js";
+export { createMailSummaryRouteHandler } from "./mailSummary.js";
+export { createMailFolderListRouteHandler } from "./mailFolderList.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
@@ -14,6 +26,7 @@ import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 export { createMailboxRemovalImpactRouteHandler } from "./mailboxRemovalImpact.js";
+export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
 
 /**
  * Retrofit manifest (module-contract issue #227) for mail sync and mailbox (issue #26):
@@ -79,10 +92,29 @@ export const manifest: ModuleManifest = {
       justification: "single-consumer-read",
     },
     {
+      name: "mailboxPasswordConnect",
+      method: "POST",
+      path: "/api/mail/mailboxes",
+      handlerExport: "createMailboxPasswordConnectRouteHandler",
+      // Issue gh-1736: after the login is verified, creates the Mailboxes item, its sealed password, its server
+      // settings, its sync state and its first sync job in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
       name: "mailThreadList",
       method: "GET",
       path: "/api/mail/threads",
       handlerExport: "createMailThreadListRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailThreadFacets",
+      method: "GET",
+      path: "/api/mail/threads/facets",
+      handlerExport: "createMailThreadFacetsRouteHandler",
+      // Issue gh-1747: the filter bar's thread counts per area and per project, from one statement. Declared
+      // before `mailThreadDetail`, whose `:threadId` also matches this path: the first declared match answers
+      // (docs/adr/2026-11-10-custom-routes-are-matched-in-declaration-order.md).
       justification: "single-consumer-read",
     },
     {
@@ -118,6 +150,61 @@ export const manifest: ModuleManifest = {
       // Shaped for exactly one consumer, the mailbox removal confirmation (issue gh-1501): four counts
       // from one statement over Emails, Folders, mail_message_meta and mail_attachments.
       justification: "single-consumer-read",
+    },
+    {
+      name: "mailOauthStart",
+      method: "POST",
+      path: "/api/mail/mailboxes/oauth/start",
+      handlerExport: "createMailOauthStartRouteHandler",
+      // Issue gh-1686: stores a one-time sign-in state with its sealed verifier and answers the provider's
+      // authorization URL. It writes a row of the mail module's own table and no item.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailOauthComplete",
+      method: "POST",
+      path: "/api/mail/mailboxes/oauth/complete",
+      handlerExport: "createMailOauthCompleteRouteHandler",
+      // Issue gh-1686: consumes the state, then creates the Mailboxes item, its sealed refresh token, its
+      // sync state and its first sync job in one transaction. Issue gh-1742: for a state that carries a
+      // mailbox id it replaces that mailbox's refresh token and queues its sync in one transaction instead.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailboxReauthorize",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/reauthorize",
+      handlerExport: "createMailboxReauthorizeRouteHandler",
+      // Issue gh-1742: checks the mailbox and stores a one-time sign-in state that carries its id in one
+      // transaction, and answers the provider's authorization URL. It writes no item.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailSummary",
+      method: "GET",
+      path: "/api/mail/summary",
+      handlerExport: "createMailSummaryRouteHandler",
+      // Issue gh-1688: thread and mailbox counts from one statement, over the thread list's own predicates.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailFolderList",
+      method: "GET",
+      path: "/api/mail/mailboxes/:id/folders",
+      handlerExport: "createMailFolderListRouteHandler",
+      // Issue gh-1689: the sidebar's folder rows of one mailbox, with the unread thread count and the message
+      // count of every folder from one statement.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailboxRemoval",
+      method: "DELETE",
+      path: "/api/mail/mailboxes/:id",
+      handlerExport: "createMailboxRemovalRouteHandler",
+      // One transaction over the Mailboxes item and four side tables (issue gh-1690): the trash, the
+      // `syncStatus` write and the deletes of the credential, the sync state, the folder sync state
+      // and the server settings. The generic item delete cannot express it.
+      justification: "transactional-semantics",
     },
   ],
 };

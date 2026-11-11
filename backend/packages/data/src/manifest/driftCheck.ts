@@ -34,7 +34,9 @@ export type InvalidLinkRuleReasonKind =
   | "missingTargetProperty"
   | "missingViaProperty"
   | "viaNotRelation"
-  | "viaDoesNotLeadToOtherDatabase";
+  | "viaDoesNotLeadToOtherDatabase"
+  | "missingValueFilterProperty"
+  | "valueFilterNotRelation";
 
 export interface InvalidLinkRuleReference {
   ruleKey: string;
@@ -48,7 +50,9 @@ export interface InvalidLinkRuleReference {
  * Checks every link rule of an active module against the tenant's seeded schema: its source,
  * target and `via` relation properties must exist in the named databases, the `via` property
  * must be a relation, and that relation (its `config.targetDatabaseId`) must lead to the other
- * database of the rule. Reports every problem; one rule can appear more than once.
+ * database of the rule. The property a rule's `valueFilter.omit` names must exist in the system
+ * database whose owner module id is `omit.databaseKey`, and be a relation. Reports every problem;
+ * one rule can appear more than once.
  */
 export async function findInvalidLinkRuleReferences(
   client: PoolClient,
@@ -57,19 +61,30 @@ export async function findInvalidLinkRuleReferences(
   const rules = await registry.getLinkRules();
   if (rules.length === 0) return [];
 
-  const { rows } = await client.query<{
+  const { rows: allRows } = await client.query<{
     database_id: string;
-    database_key: string;
+    database_key: string | null;
+    owner_module_id: string | null;
+    system: boolean;
     key: string;
     type: string;
     target_database_id: string | null;
   }>(
-    `SELECT d.id AS database_id, d.key AS database_key, p.key, p.type, p.config->>'targetDatabaseId' AS target_database_id
+    `SELECT d.id AS database_id, d.key AS database_key, d.owner_module_id, d.system, p.key, p.type,
+            p.config->>'targetDatabaseId' AS target_database_id
      FROM properties p JOIN databases d ON d.id = p.database_id AND d.tenant_id = p.tenant_id
-     WHERE p.tenant_id = app_tenant_default() AND d.tenant_id = app_tenant_default() AND d.key IS NOT NULL`,
+     WHERE p.tenant_id = app_tenant_default() AND d.tenant_id = app_tenant_default()
+       AND (d.key IS NOT NULL OR (d.system AND d.owner_module_id IS NOT NULL))`,
   );
+  const rows = allRows.filter((row) => row.database_key !== null);
   const propertyByName = new Map(rows.map((row) => [`${row.database_key}.${row.key}`, row]));
   const databaseIdByKey = new Map(rows.map((row) => [row.database_key, row.database_id]));
+  // A value filter names a system database by its owner module id, as `resolveValueFilter` reads it.
+  const valueFilterPropertyByName = new Map(
+    allRows
+      .filter((row) => row.system && row.owner_module_id !== null)
+      .map((row) => [`${row.owner_module_id}.${row.key}`, row]),
+  );
 
   const findings: InvalidLinkRuleReference[] = [];
   for (const rule of rules) {
@@ -81,6 +96,12 @@ export async function findInvalidLinkRuleReferences(
     const viaName = `${rule.via.databaseKey}.${rule.via.relationKey}`;
     if (!propertyByName.has(sourceName)) report("missingSourceProperty", sourceName);
     if (!propertyByName.has(targetName)) report("missingTargetProperty", targetName);
+    if (rule.valueFilter) {
+      const omitName = `${rule.valueFilter.omit.databaseKey}.${rule.valueFilter.omit.propertyKey}`;
+      const omit = valueFilterPropertyByName.get(omitName);
+      if (!omit) report("missingValueFilterProperty", omitName);
+      else if (omit.type !== "relation") report("valueFilterNotRelation", omitName);
+    }
     const via = propertyByName.get(viaName);
     if (!via) {
       report("missingViaProperty", viaName);

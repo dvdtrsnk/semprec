@@ -138,6 +138,23 @@ describe("PATCH /api/tasks/series/:seriesId (issue #1667)", () => {
     expect((await stored(future)).properties).toMatchObject({ timeFrom: "08:00", date: "2026-10-18" });
   });
 
+  it("reaches the open materialized occurrences for a series id sent in upper case, and answers with the stored id", async () => {
+    let started = await series();
+    // Nearly every random UUID has a letter; a series whose id has none is left in the tenant and another is started.
+    for (let attempt = 0; attempt < 5 && started.seriesId.toUpperCase() === started.seriesId; attempt += 1) {
+      started = await series();
+    }
+    const { seriesId, currentId } = started;
+    expect(seriesId.toUpperCase()).not.toBe(seriesId);
+    const future = await occurrence(seriesId, "2026-10-18", "notDone");
+    const response = await patchSeries(seriesId.toUpperCase(), { timeFrom: "08:00" });
+    expect(response.status).toBe(200);
+    expect((await stored(future)).properties).toMatchObject({ timeFrom: "08:00", date: "2026-10-18" });
+    expect((await stored(currentId)).properties).toMatchObject({ timeFrom: "08:00" });
+    expect(await template(seriesId)).toMatchObject({ timeFrom: "08:00" });
+    expect(seriesBody.parse(response.body)).toMatchObject({ seriesId, currentInstanceId: currentId });
+  });
+
   it("keeps a done, a wontDo and a missed occurrence and an open one before the current occurrence unchanged", async () => {
     const { seriesId } = await series();
     const untouched = [

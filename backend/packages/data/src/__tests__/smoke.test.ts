@@ -57,6 +57,8 @@ describe("smoke: choke-point end to end", () => {
         "movies",
         "people",
         "projects",
+        // The Recipes system database (issue #1707).
+        "recipes",
         "tasks",
         "transcripts",
       ].sort(),

@@ -57,6 +57,7 @@ import { createItemRoutes } from "../itemsHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 const PASSWORD = "s3cret-password";
@@ -2791,6 +2792,209 @@ describe("item routes (issue #241)", () => {
         expect(res.status).toBe(400);
         const body = (await res.json()) as ErrorBody;
         expect(JSON.stringify(body.error)).toContain("includeCount");
+      }
+    });
+  });
+
+  describe("count items (issue #1709)", () => {
+    /** The whole body of a successful count. */
+    const countsBody = z
+      .object({
+        counts: z.array(
+          z
+            .object({
+              databaseId: z.string(),
+              count: z.number(),
+              groups: z.array(z.object({ key: z.string().nullable(), count: z.number() }).strict()).optional(),
+            })
+            .strict(),
+        ),
+      })
+      .strict();
+
+    async function postCount(headers: Record<string, string>, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/items/count`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/count`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ databaseId: randomUUID() }] }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns the counts in request order, with a filter applied and groups in option order", async () => {
+      const db = await chokePoint.createDatabase({ name: "Board" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "stage",
+        name: "Stage",
+        type: "select",
+        config: { options: [{ key: "todo" }, { key: "doing" }, { key: "done" }] },
+      });
+      const other = await makeMoviesDb();
+      for (const [title, stage] of [
+        ["A", "done"],
+        ["B", "todo"],
+        ["C", "done"],
+        ["D", undefined],
+      ] as const) {
+        await chokePoint.createItem({
+          databaseId: db.id,
+          properties: { title, ...(stage === undefined ? {} : { stage }) },
+        });
+      }
+      await chokePoint.createItem({ databaseId: other.id, properties: { title: "Dune" } });
+
+      const res = await postCount(await authHeader(), {
+        items: [
+          { databaseId: other.id },
+          { databaseId: db.id, groupBy: "stage" },
+          { databaseId: db.id, filter: { type: "not_equals", property: "title", value: "A" }, groupBy: "stage" },
+        ],
+      });
+
+      expect(res.status).toBe(200);
+      expect(countsBody.parse(await res.json())).toEqual({
+        counts: [
+          { databaseId: other.id, count: 1 },
+          {
+            databaseId: db.id,
+            count: 4,
+            groups: [
+              { key: "todo", count: 1 },
+              { key: "done", count: 2 },
+              { key: null, count: 1 },
+            ],
+          },
+          {
+            databaseId: db.id,
+            count: 3,
+            groups: [
+              { key: "todo", count: 1 },
+              { key: "done", count: 1 },
+              { key: null, count: 1 },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("applies the collection filter the module registry declares, through the real composition root", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!projects) throw new Error("Projects database was not seeded");
+      const everyProject = async () => (await chokePoint.listItems(projects.id, { limit: 200 })).items.length;
+      const systemProjects = await everyProject();
+      expect(systemProjects).toBeGreaterThan(0);
+      await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Garden" } });
+
+      const res = await postCount(await authHeader(), {
+        items: [{ databaseId: projects.id }, { databaseId: projects.id, collection: true }],
+      });
+
+      expect(res.status).toBe(200);
+      expect(countsBody.parse(await res.json())).toEqual({
+        counts: [
+          { databaseId: projects.id, count: systemProjects + 1 },
+          { databaseId: projects.id, count: 1 },
+        ],
+      });
+    });
+
+    it("returns 400 for more than 20 entries, and for none", async () => {
+      const db = await makeMoviesDb();
+      const headers = await authHeader();
+      for (const length of [21, 0]) {
+        const res = await postCount(headers, { items: Array.from({ length }, () => ({ databaseId: db.id })) });
+        expect(res.status, String(length)).toBe(400);
+        expect(httpError.parse(await res.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "items" },
+        });
+      }
+      const allowed = await postCount(headers, { items: Array.from({ length: 20 }, () => ({ databaseId: db.id })) });
+      expect(allowed.status).toBe(200);
+      expect(countsBody.parse(await allowed.json()).counts).toHaveLength(20);
+    });
+
+    it("returns 400 naming groupBy for a property that cannot group, and for an unknown key", async () => {
+      const db = await makeMoviesDb();
+      const headers = await authHeader();
+      for (const groupBy of ["title", "missing"]) {
+        const res = await postCount(headers, { items: [{ databaseId: db.id, groupBy }] });
+        expect(res.status, groupBy).toBe(400);
+        expect(httpError.parse(await res.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "groupBy" },
+        });
+      }
+    });
+
+    it.each([
+      ["a missing items list", {}, "items"],
+      ["an unknown body key", { items: [], inTrash: true }, "inTrash"],
+      ["a malformed database id", { items: [{ databaseId: "not-a-uuid" }] }, "items.0.databaseId"],
+      ["an unknown entry key", { items: [{ databaseId: randomUUID(), inTrash: true }] }, "items.0"],
+    ])("returns 400 for %s", async (_name, body, field) => {
+      const res = await postCount(await authHeader(), body);
+      expect(res.status).toBe(400);
+      expect(httpError.parse(await res.json()).error).toEqual({ code: "validation_failed", details: { field } });
+    });
+
+    it("refuses a malformed entry filter with the answer the database query gives for it", async () => {
+      const db = await makeMoviesDb();
+      const headers = await authHeader();
+      for (const filter of [{ type: "nope" }, { type: "relation_path_contains", path: ["only"], value: "x" }]) {
+        const query = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ filter }),
+        });
+        expect(query.status).toBe(400);
+        const queryAnswer: unknown = await query.json();
+        const res = await postCount(headers, { items: [{ databaseId: db.id, filter }] });
+        expect(res.status).toBe(400);
+        const answer: unknown = await res.json();
+        expect(answer, JSON.stringify(filter)).toEqual(queryAnswer);
+      }
+    });
+
+    it("returns 400 for a body that is not a JSON object", async () => {
+      const res = await postCount(await authHeader(), [{ databaseId: randomUUID() }]);
+      expect(res.status).toBe(400);
+      expect(z.object({ error: z.object({ code: z.string() }) }).parse(await res.json()).error.code).toBe(
+        "validation_failed",
+      );
+    });
+
+    it("answers an unknown database exactly as the database query does, wherever it is in the batch", async () => {
+      const db = await makeMoviesDb();
+      const headers = await authHeader();
+      const unknown = randomUUID();
+      const query = await fetch(`${baseUrl}/api/databases/${unknown}/query`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(query.status).toBe(404);
+      const queryAnswer: unknown = await query.json();
+      expect(queryAnswer).toEqual({
+        error: { code: "not_found", details: { resource: "database", databaseId: unknown } },
+      });
+
+      for (const items of [[{ databaseId: unknown }], [{ databaseId: db.id }, { databaseId: unknown }]]) {
+        const res = await postCount(headers, { items });
+        expect(res.status).toBe(404);
+        const answer: unknown = await res.json();
+        expect(answer).toEqual(queryAnswer);
       }
     });
   });

@@ -13,6 +13,7 @@
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
 import {
   markManagedTransactionRollbackOnly,
@@ -769,6 +770,117 @@ export async function deleteRelationWithClient(
       });
     return edge;
   });
+}
+
+export interface MoveRelationEdgesInput {
+  /** The relation property the edges are written through; it governs who may write them. */
+  relationPropertyId: string;
+  /** The side of `relationPropertyId` that `fromItemId` and `toItemId` are on. */
+  side: "caller" | "target";
+  fromItemId: string;
+  toItemId: string;
+}
+
+/** An edge `moveRelationEdgesWithClient` left on `fromItemId`, because the choke point refuses it for `toItemId`. */
+export interface RefusedRelationEdge {
+  /** The relation property the move was asked for. */
+  relationPropertyId: string;
+  /** The item at the other end of the edge; it is still linked to `fromItemId`. */
+  otherItemId: string;
+  /** The `code` of the `ValidationError` that refuses the edge for `toItemId`. */
+  code: string;
+  /**
+   * The `details.field` of that error, or `null` when it names none: `callerItemId` or `targetItemId` for an endpoint
+   * that is in the trash or missing, the property key for a value derived from the item's project.
+   */
+  field: string | null;
+}
+
+export interface MoveRelationEdgesResult {
+  /** How many edges the call deleted from `fromItemId`. */
+  moved: number;
+  /** The edges the call left on `fromItemId`; empty when the choke point refused none. */
+  refused: RefusedRelationEdge[];
+}
+
+const errorDetailsWithField = z.object({ field: z.string() });
+
+/** The `details.field` of a choke-point error, or `null` when its details carry none. */
+function errorField(details: unknown): string | null {
+  const parsed = errorDetailsWithField.safeParse(details);
+  return parsed.success ? parsed.data.field : null;
+}
+
+/**
+ * The `ValidationError` with which the checks `createRelationWithClient` runs before its write refuse the edge
+ * (`assertRelationCreatableWithClient`: authorization, endpoints, derived values, edge metadata), or `null` when they
+ * pass. Such an error names an edge that cannot exist as things stand (an endpoint in the trash or missing, a value
+ * derived from the item's project, metadata a domain rule refuses). Every other error propagates. Cardinality is not
+ * part of the answer: only the write enforces it, so `null` does not promise that the create succeeds.
+ */
+async function relationCreationRefusal(
+  client: PoolClient,
+  input: CreateRelationInput,
+  context: SystemRelationWriteContext | undefined,
+): Promise<ValidationError | null> {
+  try {
+    await assertRelationCreatableWithClient(client, input, context);
+    return null;
+  } catch (error) {
+    if (error instanceof ValidationError) return error;
+    throw error;
+  }
+}
+
+/**
+ * Moves the edges of one relation property from `fromItemId` to `toItemId` (issue #1726), each as a delete plus a
+ * create through `deleteRelationWithClient` and `createRelationIfAbsentWithClient`, with their guards, hooks and
+ * announcements. Three kinds of edge are not moved:
+ * - an edge `createRelationWithClient` would refuse for `toItemId` with a `ValidationError`
+ *   (`relationCreationRefusal`) stays on `fromItemId` untouched and is returned in `refused`, so the caller decides
+ *   what a move that left edges behind means and reports it;
+ * - an edge `toItemId` already has keeps its own metadata there, and the one of `fromItemId` is only deleted;
+ * - an edge that is no longer stored when its delete runs is not created on `toItemId`.
+ * Cardinality is not among them: only the write checks it. When `toItemId` already holds the only edge a `one_to_one`
+ * or `one_to_many` relation allows it, the move fails with the `CardinalityViolationError` of the insert, which runs
+ * after that edge was deleted from `fromItemId`.
+ * Returns how many edges this call deleted from `fromItemId` and the edges it left there. Same `context` contract as
+ * `createRelationWithClient`.
+ */
+export async function moveRelationEdgesWithClient(
+  client: PoolClient,
+  input: MoveRelationEdgesInput,
+  context?: SystemRelationWriteContext,
+): Promise<MoveRelationEdgesResult> {
+  const { reldef } = await loadRelationEdgeContext(client, input.relationPropertyId);
+  const edges = await relationsStore.listRelationsForItem(client, reldef.id, input.fromItemId);
+  const edgeOf = (itemId: string, otherItemId: string) => ({
+    relationPropertyId: input.relationPropertyId,
+    ...(input.side === "caller"
+      ? { callerItemId: itemId, targetItemId: otherItemId }
+      : { callerItemId: otherItemId, targetItemId: itemId }),
+  });
+
+  const result: MoveRelationEdgesResult = { moved: 0, refused: [] };
+  for (const edge of edges) {
+    const otherItemId = relationsStore.otherSide(edge, input.fromItemId);
+    const target = edgeOf(input.toItemId, otherItemId);
+    const refusal = await relationCreationRefusal(client, { ...target, metadata: edge.metadata }, context);
+    if (refusal) {
+      result.refused.push({
+        relationPropertyId: input.relationPropertyId,
+        otherItemId,
+        code: refusal.code,
+        field: errorField(refusal.details),
+      });
+      continue;
+    }
+    const removed = await deleteRelationWithClient(client, edgeOf(input.fromItemId, otherItemId), context);
+    if (!removed) continue;
+    result.moved++;
+    await createRelationIfAbsentWithClient(client, { ...target, metadata: removed.metadata }, context);
+  }
+  return result;
 }
 
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {

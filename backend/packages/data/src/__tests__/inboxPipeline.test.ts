@@ -649,7 +649,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
     // dependency lookup for each of the two unlocked items' edges, so those alone would pass
     // with or without this fix — what only the fix produces is one *further* lookup, for the
     // locked item's surviving edge, issued after the soft-delete `UPDATE`.
-    const softDeleteIndex = queries.findIndex((sql) => sql.includes("UPDATE items SET deleted_at = now()"));
+    const softDeleteIndex = queries.findIndex((sql) =>
+      sql.includes("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())"),
+    );
     expect(softDeleteIndex).toBeGreaterThanOrEqual(0);
     const dependencyLookupsAfterSoftDelete = queries
       .slice(softDeleteIndex + 1)

@@ -34,7 +34,7 @@ function readEventDate(value: string): ReadDate {
 }
 
 /** `HH:MM`, or `null` for no value; `undefined` when the value is present but unreadable. */
-function readTime(value: unknown, field: "timeFrom" | "timeTo"): string | null | undefined {
+export function readTime(value: unknown, field: "timeFrom" | "timeTo"): string | null | undefined {
   try {
     // Only an end time may be `24:00` (`normalizeWallClockTime`'s own contract, gh-1536).
     return normalizeWallClockTime(value, { field, allow2400: field === "timeTo" });

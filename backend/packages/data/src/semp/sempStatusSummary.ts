@@ -34,15 +34,22 @@ export interface SempStatusBanner {
   title: string;
   shortText: string;
   impactKey: string;
-  /** The problem id: a problem that is resolved and occurs again is a new row, so a hidden notice reappears. */
+  /**
+   * The problem id, so a hidden notice reappears when the id changes: a stored problem that is
+   * resolved and occurs again is a new row, and the id of an exhausted AI budget (issue gh-1871)
+   * carries the reset instant of its window. An exhaustion that ends and returns inside one window
+   * keeps its id.
+   */
   instanceId: string;
 }
 
 /**
  * The profile and chat summary of the Semp status (issue #1631): the active problem count and the
  * banner, both taken from the one report read of issue #1555. The banner is the first critical
- * `mail` or `agents` problem in the report's order (critical first, then the latest `last_seen_at`,
- * then id), so the most severe and most recently seen one wins; `null` when there is none.
+ * `mail` or `agents` problem in the report's order: the AI budget problem of issue gh-1871 when the
+ * tenant has one, then the stored problems (critical first, then the latest `last_seen_at`, then
+ * id), so of the stored problems the most severe and most recently seen one wins; `null` when
+ * there is none.
  */
 export async function getSempStatusSummary(
   pool: Pool,

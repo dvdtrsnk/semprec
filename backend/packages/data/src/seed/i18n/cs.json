@@ -2,6 +2,7 @@
   "approval.recurrence.end": "ukončení",
   "approval.changesSeries": "Změnit opakování úkolu {taskName} z {fromRule} na {toRule}",
   "inbox.originNote.prefix": "Vytvořeno ze schránky:",
+  "semp.thread.itemTitle": "Úprava: {itemName}",
   "collection.custom.searchPlaceholder": "Hledat ve sbírce",
   "database.areas.name": "Oblasti",
   "database.areas.searchPlaceholder": "Hledat v Oblastech",
@@ -76,6 +77,7 @@
   "property.tasks.time.name": "Čas",
   "property.tasks.notifications.name": "Oznámení",
   "property.tasks.project.name": "Projekt",
+  "property.tasks.healthRecords.name": "Zdravotní záznamy",
 
   "database.people.name": "Lidé",
   "database.people.searchPlaceholder": "Hledat v Lidech",
@@ -163,9 +165,12 @@
   "property.healthRecords.tags.option.medication": "Léky",
   "property.healthRecords.tags.option.epilepsy": "Epilepsie",
   "property.healthRecords.tags.option.dentalHygiene": "Dentální hygiena",
+  "property.healthRecords.tags.option.bloodPressure": "Krevní tlak",
+  "property.healthRecords.tags.option.prevention": "Prevence",
   "property.healthRecords.area.name": "Oblast",
   "property.healthRecords.files.name": "Přílohy",
   "property.healthRecords.projects.name": "Projekty",
+  "property.healthRecords.tasks.name": "Úkoly",
 
   "database.companies.name": "Firmy",
   "database.companies.searchPlaceholder": "Hledat ve Firmách",

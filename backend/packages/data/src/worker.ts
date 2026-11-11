@@ -15,6 +15,7 @@ import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js"
 import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolderCleanupJob.js";
 import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
 import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
+import { handleMailboxRemovalTask } from "./mail/mailboxRemovalJob.js";
 import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
@@ -65,6 +66,7 @@ import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsP
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "./tenancy/tenantPurgeJob.js";
 import { handlePeopleLastContactRecomputeTask, handlePeopleLastContactSweep } from "./people/lastContact.js";
+import { handleDerivedValuesInvalidateTask } from "./derived/projectDerivedValueInvalidation.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -229,6 +231,10 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
       await handleMailThreadBackfillTask(pool);
     },
+    // Issue gh-2029: soft-deletes a removed mailbox's Emails and Folders in committed chunks.
+    [CORE_TASK_NAMES.MAILBOX_REMOVAL]: async (payload) => {
+      await handleMailboxRemovalTask(pool, payload);
+    },
     [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: async () => {
       await handleMailSearchTextReindexTask(pool, mailBlobStorage, filesBlobStorage);
     },
@@ -274,6 +280,10 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: async () => {
       await handlePeopleLastContactSweep(pool);
+    },
+    // Issue #1710: announces the items of a project whose area or company edge changed.
+    [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: async (payload) => {
+      await handleDerivedValuesInvalidateTask(pool, payload);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

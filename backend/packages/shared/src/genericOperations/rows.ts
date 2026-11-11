@@ -194,3 +194,23 @@ export interface Page<T> {
 export interface ItemPage extends Page<Item> {
   totalCount?: number;
 }
+
+/**
+ * One group of an `item.count` entry (issue #1709). `key` is the id of a relation target or the stored
+ * option key of a select property; `null` is the group of the items that have neither.
+ */
+export interface ItemCountGroup {
+  key: string | null;
+  count: number;
+}
+
+/**
+ * The answer to one `item.count` entry: `count` is the number of items the entry matches and `groups`
+ * their split by the entry's `groupBy`, present exactly when the entry named one. `databaseId` repeats
+ * the entry's own value.
+ */
+export interface ItemCountEntry {
+  databaseId: string;
+  count: number;
+  groups?: ItemCountGroup[];
+}

@@ -315,7 +315,12 @@ export async function seedTenDatabasesInTransaction(
       name: "Tags",
       type: "multi_select",
       owner: "user",
-      config: selectConfig(["bloodTests", "medication", "epilepsy", "dentalHygiene"]),
+      config: selectConfig(["bloodTests", "medication", "epilepsy", "dentalHygiene", "bloodPressure", "prevention"], {
+        bloodTests: "#FF9500",
+        medication: "#AF52DE",
+        bloodPressure: "#FF2D55",
+        prevention: "#34C759",
+      }),
     },
   ]);
 
@@ -599,6 +604,17 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: projects.id,
     cardinality: "many_to_many",
     inverse: { key: "healthRecords", name: "Health records" },
+  });
+  // Tasks <-> Health records: a follow-up task and the records it belongs to (issue #1836). Populated installs get
+  // the same pair from `seed/healthRecordTasksCutoverMigration.ts`.
+  await relate({
+    sourceDatabaseId: tasks.id,
+    key: "healthRecords",
+    name: "Health records",
+    targetDatabaseId: healthRecords.id,
+    cardinality: "many_to_many",
+    owner: "user",
+    inverse: { key: "tasks", name: "Tasks", owner: "user" },
   });
   // Transcripts -> People ("speakers"): one-directional; each edge maps one diarization speaker
   // key to a person through its { speaker } metadata, which the choke point's relation write

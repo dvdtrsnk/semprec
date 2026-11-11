@@ -29,6 +29,7 @@ import { createDatabaseRoutes } from "../databasesHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 const PASSWORD = "s3cret-password";
@@ -384,7 +385,7 @@ describe("database routes (issue #240)", () => {
     await chokePoint.createDatabase({ name: "alpha custom" });
     const { databases } = await listPage("?limit=200");
     const keys = databases.map((db) => db.key);
-    expect(keys.slice(0, 8)).toEqual([
+    expect(keys.slice(0, 9)).toEqual([
       "projects",
       "tasks",
       "events",
@@ -393,11 +394,13 @@ describe("database routes (issue #240)", () => {
       "companies",
       "files",
       "healthRecords",
+      // Recipes holds position 9 of the switcher (issue #1707).
+      "recipes",
     ]);
     const overviewOnly = databases.filter((db) => db.switcherOrder === null && db.overviewOrder !== null);
     expect(overviewOnly.map((db) => db.overviewOrder)).toEqual([...overviewOnly.map((db) => db.overviewOrder)].sort());
-    expect(keys.slice(8, 10)).toEqual(["books", "movies"]);
-    const rest = databases.slice(8 + overviewOnly.length).map((db) => db.name.toLowerCase());
+    expect(keys.slice(9, 11)).toEqual(["books", "movies"]);
+    const rest = databases.slice(9 + overviewOnly.length).map((db) => db.name.toLowerCase());
     expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b)));
 
     const byKey = new Map(databases.map((db) => [db.key, db]));
