@@ -21,6 +21,7 @@ import { createViewRoutes } from "../viewsHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 const value = "11111111-1111-4111-8111-111111111111";

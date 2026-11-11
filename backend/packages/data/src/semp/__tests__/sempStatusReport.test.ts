@@ -4,9 +4,14 @@ import { randomUUID } from "node:crypto";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { recordTokenGatewayCall } from "../../aiGateway/aiGatewayCallsStore.js";
+import { getAiUsageSummary } from "../../aiGateway/aiUsageSummary.js";
+import { setTenantAiBudget } from "../../aiGateway/tenantAiBudgetsStore.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
-import { withTransaction } from "../../db/pool.js";
+import { requireAffectedRows, withTransaction } from "../../db/pool.js";
+import { ValidationError } from "../../errors.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createHeartbeat, setHeartbeatEnabled } from "../../scheduler/schedulerStore.js";
@@ -15,6 +20,12 @@ import { ensureMailAccountSyncState, recordSyncError } from "../../mail/mailAcco
 import { getOrCreateTickThread } from "../sempTickThreadStore.js";
 import { raiseProblem } from "../sempProblemsStore.js";
 import { getSempStatusReport } from "../sempStatusReport.js";
+import { createSempStatusRouteHandler } from "../sempStatusRouteHandler.js";
+
+/** UTC+14 and UTC-11, neither with daylight saving: a reset time written in UTC is visibly not theirs. */
+const KIRITIMATI = "Pacific/Kiritimati";
+const PAGO_PAGO = "Pacific/Pago_Pago";
+
 let admin: Pool;
 let data: Pool;
 let own: string;
@@ -55,11 +66,24 @@ describe("Semp status report", () => {
     ownUser = users[0].id;
     foreignUser = users[1].id;
     for (const tenant of [own, foreign]) await runInTenant(tenant, () => seedSystem(data));
+    // A tenant without a budget row lists `aiBudgetMissing` (issue gh-1871), so both get a row without caps.
+    await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: null });
+    await adminSetsBudget(foreign, foreignUser, { dailyCapUsd: null, monthlyCapUsd: null });
   });
   afterAll(async () => {
     await data.end();
     await admin.end();
   });
+  /** Writes the tenant's caps with the writer the admin route uses. */
+  async function adminSetsBudget(
+    tenantId: string,
+    updatedBy: string,
+    caps: { dailyCapUsd: number | null; monthlyCapUsd: number | null },
+  ) {
+    await runAsSystem("status test budget", () =>
+      withTransaction(data, (client) => setTenantAiBudget(client, { tenantId, updatedBy, ...caps })),
+    );
+  }
   async function mailboxProblem(tenant: string, userId: string) {
     return runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
@@ -362,6 +386,369 @@ describe("Semp status report", () => {
       ]);
       expect(JSON.stringify(report)).not.toContain("private error");
       expect(report.problems[0]?.text).toContain("Planning");
+    });
+  });
+
+  describe("AI budget problems (issue gh-1871)", () => {
+    let catalogs: Awaited<ReturnType<typeof loadModuleCatalogs>>;
+
+    /** The fields every AI budget problem carries besides its id and its three texts. */
+    const BUDGET_PROBLEM_FIELDS = {
+      category: "agents",
+      severity: "critical",
+      since: null,
+      mergedCount: 1,
+      projectName: null,
+      source: { table: "tenant_ai_budgets", id: null },
+      affectedService: "agents",
+      actions: [],
+    };
+
+    beforeAll(async () => {
+      catalogs = await loadModuleCatalogs(new URL("../sempStatusReport.js", import.meta.url).href);
+    });
+
+    /** A seeded tenant with one user and no budget row: the state of a new account. */
+    async function tenantWithoutBudget(locale: "cs" | "en"): Promise<{ tenantId: string; userId: string }> {
+      const tenantId = await createTestTenant(admin);
+      const user = await runAsSystem("status test user without a budget", () =>
+        createUser(admin, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused", locale }),
+      );
+      await runInTenant(tenantId, () => seedSystem(data));
+      return { tenantId, userId: user.id };
+    }
+
+    async function setZone(tenantId: string, timezone: string): Promise<void> {
+      await runInTenant(tenantId, async () => {
+        const settings = await withTransaction(data, async (client) => ({
+          databaseId: await getSystemSettingsDatabaseId(client),
+          itemId: await getSystemSettingsItemId(client),
+        }));
+        await createChokePoint(data).updateItem({ ...settings, propertiesPatch: { timezone } });
+      });
+    }
+
+    /** One settled call at `costUsd`, written by the gateway's accounting writer in the tenant's scope. */
+    async function spend(tenantId: string, costUsd: number): Promise<string> {
+      const call = await runInTenant(tenantId, () =>
+        recordTokenGatewayCall(data, {
+          provider: "anthropic",
+          model: "status-test",
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd,
+        }),
+      );
+      return call.id;
+    }
+
+    const read = (tenantId: string) => runInTenant(tenantId, () => getSempStatusReport(data));
+
+    /** The reset instant the budget summary reports; a summary without one fails the test rather than passing it. */
+    async function resetInstant(tenantId: string): Promise<string> {
+      const summary = await runInTenant(tenantId, () => getAiUsageSummary(data));
+      if (summary.resetsAt === null) throw new Error("expected an exhausted window");
+      return summary.resetsAt;
+    }
+
+    /**
+     * The catalog entry itself, never the key the resolver falls back to, with the reset time put in
+     * and whitespace collapsed as the report collapses it.
+     */
+    function catalogText(locale: "cs" | "en", key: string, resetTime = ""): string {
+      const entry = catalogs[locale][key];
+      if (entry === undefined) throw new Error(`Missing ${locale} catalog entry ${key}`);
+      return entry.replace("{resetTime}", resetTime).replace(/\s+/g, " ").trim();
+    }
+
+    /**
+     * The reset instant as its tenant reads it, written by `Intl` with the options the report gives
+     * Luxon, which formats through `Intl` too. So no expectation depends on this runtime's ICU data.
+     */
+    function resetTimeText(locale: "cs" | "en", timeZone: string, resetsAt: string): string {
+      return new Intl.DateTimeFormat(locale, { timeZone, dateStyle: "long", timeStyle: "short" }).format(
+        new Date(resetsAt),
+      );
+    }
+
+    function exhaustedProblem(locale: "cs" | "en", timeZone: string, resetsAt: string) {
+      const resetTime = resetTimeText(locale, timeZone, resetsAt);
+      return {
+        id: `aiBudgetExhausted:${resetsAt}`,
+        ...BUDGET_PROBLEM_FIELDS,
+        title: catalogText(locale, "status.aiBudgetExhausted.title"),
+        text: catalogText(locale, "status.aiBudgetExhausted.text", resetTime),
+        shortText: catalogText(locale, "status.aiBudgetExhausted.shortText", resetTime),
+      };
+    }
+
+    /**
+     * One fingerprint per table outside the system schemas: the position (`ctid`) and the inserting
+     * transaction (`xmin`) of every row version. An insert, an update and a delete each change it, so
+     * two equal snapshots mean no row was written in between. It reads through the superuser pool
+     * because it must see every tenant's rows; it asserts nothing about isolation.
+     */
+    async function tableFingerprints(): Promise<Record<string, string>> {
+      // Postgres assembles the statement and quotes every schema and table name itself (%L, %I).
+      const generated = await admin.query<{ statement: string | null }>(
+        `SELECT string_agg(
+                  format('SELECT %L AS table_name, coalesce(md5(string_agg(t.ctid::text || '':'' || t.xmin::text, '','' ORDER BY t.ctid)), '''') AS fingerprint FROM %I.%I t',
+                         n.nspname || '.' || c.relname, n.nspname, c.relname),
+                  ' UNION ALL ' ORDER BY n.nspname, c.relname) AS statement
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'`,
+      );
+      const statement = generated.rows[0]?.statement;
+      if (!statement) throw new Error("Found no table to fingerprint");
+      const { rows } = await admin.query<{ table_name: string; fingerprint: string }>(statement);
+      return Object.fromEntries(rows.map((row) => [row.table_name, row.fingerprint]));
+    }
+
+    it("lists aiBudgetMissing in the user's locale for a tenant without a budget row, until an admin sets limits", async () => {
+      expect(catalogText("en", "status.aiBudgetMissing.title")).toBe("AI has no limit set");
+      for (const locale of ["en", "cs"] as const) {
+        const bare = await tenantWithoutBudget(locale);
+        const report = await read(bare.tenantId);
+        expect(report.activeCount).toBe(1);
+        expect(report.problems).toEqual([
+          {
+            id: "aiBudgetMissing",
+            ...BUDGET_PROBLEM_FIELDS,
+            title: catalogText(locale, "status.aiBudgetMissing.title"),
+            text: catalogText(locale, "status.aiBudgetMissing.text"),
+            shortText: catalogText(locale, "status.aiBudgetMissing.shortText"),
+          },
+        ]);
+        await adminSetsBudget(bare.tenantId, bare.userId, { dailyCapUsd: 5, monthlyCapUsd: 50 });
+        expect(await read(bare.tenantId)).toMatchObject({ activeCount: 0, problems: [] });
+      }
+      for (const field of ["title", "text", "shortText"]) {
+        const key = `status.aiBudgetMissing.${field}`;
+        expect(catalogText("cs", key)).not.toBe(catalogText("en", key));
+      }
+    });
+
+    it.each([
+      ["daily", { dailyCapUsd: 5, monthlyCapUsd: null }],
+      ["monthly", { dailyCapUsd: null, monthlyCapUsd: 5 }],
+    ] as const)(
+      "lists aiBudgetExhausted for a %s cap with the reset time in the tenant's time zone and the user's locale",
+      async (window, caps) => {
+        for (const [tenantId, userId, locale, timeZone] of [
+          [own, ownUser, "en", KIRITIMATI],
+          [foreign, foreignUser, "cs", PAGO_PAGO],
+        ] as const) {
+          await setZone(tenantId, timeZone);
+          await adminSetsBudget(tenantId, userId, caps);
+          await spend(tenantId, 6);
+          expect((await runInTenant(tenantId, () => getAiUsageSummary(data))).exhausted).toBe(window);
+
+          // The window can roll between two reads, so the report may carry the reset instant of either side.
+          const before = await resetInstant(tenantId);
+          const report = await read(tenantId);
+          const after = await resetInstant(tenantId);
+
+          expect(report.activeCount).toBe(1);
+          expect(report.problems).toHaveLength(1);
+          expect([before, after].map((resetsAt) => exhaustedProblem(locale, timeZone, resetsAt))).toContainEqual(
+            report.problems[0],
+          );
+          // Both texts take the reset time, and the tenant's zone reads differently from UTC.
+          expect(catalogs[locale]["status.aiBudgetExhausted.text"]).toContain("{resetTime}");
+          expect(catalogs[locale]["status.aiBudgetExhausted.shortText"]).toContain("{resetTime}");
+          expect(resetTimeText(locale, timeZone, before)).not.toBe(resetTimeText(locale, "UTC", before));
+        }
+        for (const field of ["title", "text", "shortText"]) {
+          const key = `status.aiBudgetExhausted.${field}`;
+          expect(catalogText("cs", key)).not.toBe(catalogText("en", key));
+        }
+      },
+    );
+
+    // The settings writer accepts a fixed offset, and `Intl.DateTimeFormat` refuses one written this way
+    // as its `timeZone`. Each is paired with an IANA zone that has had the same offset all year since
+    // before 1970, so `Intl` can still write the expected text.
+    it.each([
+      ["UTC+2", "Etc/GMT-2"],
+      ["UTC+5:30", "Asia/Kolkata"],
+    ] as const)(
+      "lists aiBudgetExhausted with the reset time for a tenant whose stored zone is the fixed offset %s",
+      async (storedZone, sameOffsetZone) => {
+        for (const [tenantId, userId, locale] of [
+          [own, ownUser, "en"],
+          [foreign, foreignUser, "cs"],
+        ] as const) {
+          await setZone(tenantId, storedZone);
+          await adminSetsBudget(tenantId, userId, { dailyCapUsd: 5, monthlyCapUsd: null });
+          await spend(tenantId, 6);
+
+          // The window can roll between two reads, so the report may carry the reset instant of either side.
+          const before = await resetInstant(tenantId);
+          const report = await read(tenantId);
+          const after = await resetInstant(tenantId);
+
+          expect(report.activeCount).toBe(1);
+          expect(report.problems).toHaveLength(1);
+          expect([before, after].map((resetsAt) => exhaustedProblem(locale, sameOffsetZone, resetsAt))).toContainEqual(
+            report.problems[0],
+          );
+          expect(resetTimeText(locale, sameOffsetZone, before)).not.toBe(resetTimeText(locale, "UTC", before));
+        }
+      },
+    );
+
+    it("validates the tenant's zone only for an exhausted window, and then refuses one Luxon cannot read", async () => {
+      // Raw SQL: the settings writer refuses this zone, so only a row written past it holds one.
+      // Postgres reads `GMT+2` as a POSIX zone, so the budget summary still reports the window.
+      await runInTenant(own, async () => {
+        const itemId = await withTransaction(data, (client) => getSystemSettingsItemId(client));
+        requireAffectedRows(
+          await data.query<{ id: string }>(
+            `UPDATE items SET properties = jsonb_set(properties, '{timezone}', to_jsonb($2::text)) WHERE id = $1 RETURNING id`,
+            [itemId, "GMT+2"],
+          ),
+          "storing a zone the settings writer refuses",
+        );
+      });
+      await adminSetsBudget(own, ownUser, { dailyCapUsd: 5, monthlyCapUsd: null });
+      expect(await read(own)).toMatchObject({ activeCount: 0, problems: [] });
+
+      await spend(own, 6);
+      expect(await resetInstant(own)).toEqual(expect.any(String));
+      const failure = await read(own).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(ValidationError);
+      expect(failure).toMatchObject({ details: { field: "timezone" } });
+    });
+
+    it.each([
+      ["daily", "day", { dailyCapUsd: 5, monthlyCapUsd: null }],
+      ["monthly", "month", { dailyCapUsd: null, monthlyCapUsd: 5 }],
+    ] as const)("no longer lists the exhausted problem once the %s window has rolled", async (_window, unit, caps) => {
+      await setZone(own, KIRITIMATI);
+      await adminSetsBudget(own, ownUser, caps);
+      const callId = await spend(own, 6);
+      expect((await read(own)).problems.map((problem) => problem.id)).toEqual([
+        expect.stringMatching(/^aiBudgetExhausted:/),
+      ]);
+
+      // The accounting writer stamps now and the test cannot move the database clock. A call one minute
+      // before the start of the current window is the state after that call's reset instant has passed.
+      await runInTenant(own, async () =>
+        requireAffectedRows(
+          await data.query<{ id: string }>(
+            `UPDATE ai_gateway_calls
+                SET at = (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3) - interval '1 minute'
+              WHERE id = $1 RETURNING id`,
+            [callId, unit, KIRITIMATI],
+          ),
+          "backdating test call",
+        ),
+      );
+
+      expect(await read(own)).toMatchObject({ activeCount: 0, problems: [] });
+    });
+
+    it("keeps the id of an exhausted window when the exhaustion ends and returns before the reset instant", async () => {
+      const exhaustedIds = async () => (await read(own)).problems.map((problem) => problem.id);
+      await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: 5 });
+      await spend(own, 6);
+      const window = await resetInstant(own);
+      const first = await exhaustedIds();
+      expect(first).toEqual([`aiBudgetExhausted:${window}`]);
+
+      // An administrator raises the cap, which ends the exhaustion inside its window.
+      await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: 10 });
+      expect(await read(own)).toMatchObject({ activeCount: 0, problems: [] });
+
+      // The raised cap is reached before the window resets.
+      await spend(own, 6);
+      expect(await exhaustedIds()).toEqual(first);
+      expect(await resetInstant(own)).toBe(window);
+    });
+
+    it("lists the budget problem first and counts it with the stored problems", async () => {
+      const bare = await tenantWithoutBudget("en");
+      const stored = await runInTenant(bare.tenantId, () =>
+        withTransaction(data, (client) =>
+          raiseProblem(client, {
+            userId: bare.userId,
+            category: "mail",
+            kind: "mailSyncError",
+            severity: "critical",
+            sourceTable: "items",
+            sourceId: randomUUID(),
+            dedupeKey: "fixture:critical",
+          }),
+        ),
+      );
+      const report = await read(bare.tenantId);
+      expect(report.activeCount).toBe(2);
+      expect(report.problems.map((problem) => problem.id)).toEqual(["aiBudgetMissing", stored.problemId]);
+    });
+
+    it("lists no budget problem below the tenant's own caps, whatever other tenants spend or lack", async () => {
+      // The operator-wide caps live in the gateway, outside this package. Another tenant's spend far
+      // above this tenant's caps stands in for the all-tenant total that reaches them; the refusal
+      // itself is driven in packages/ai-gateway/src/__tests__/gateway.test.ts.
+      const bare = await tenantWithoutBudget("en");
+      await adminSetsBudget(own, ownUser, { dailyCapUsd: 10, monthlyCapUsd: 100 });
+      await spend(own, 1);
+      await adminSetsBudget(foreign, foreignUser, { dailyCapUsd: 5, monthlyCapUsd: null });
+      await spend(foreign, 1000);
+
+      expect(await read(own)).toMatchObject({ activeCount: 0, problems: [] });
+      expect((await read(foreign)).problems.map((problem) => problem.id)).toEqual([
+        expect.stringMatching(/^aiBudgetExhausted:/),
+      ]);
+      expect((await read(bare.tenantId)).problems.map((problem) => problem.id)).toEqual(["aiBudgetMissing"]);
+    });
+
+    it("writes no row to any table when the status is read", async () => {
+      const bare = await tenantWithoutBudget("cs");
+      await adminSetsBudget(own, ownUser, { dailyCapUsd: 5, monthlyCapUsd: null });
+      await spend(own, 6);
+      const handler = createSempStatusRouteHandler(data);
+
+      const before = await tableFingerprints();
+      const answers = [];
+      for (const tenantId of [bare.tenantId, own, foreign]) answers.push(await runInTenant(tenantId, () => handler()));
+      const after = await tableFingerprints();
+
+      expect(answers.map((answer) => answer.body.problems.map((problem) => problem.id))).toEqual([
+        ["aiBudgetMissing"],
+        [expect.stringMatching(/^aiBudgetExhausted:/)],
+        [],
+      ]);
+      expect(after).toEqual(before);
+      expect(Object.keys(before)).toEqual(
+        expect.arrayContaining([
+          "public.semp_problems",
+          "public.notifications",
+          "public.tenant_ai_budgets",
+          "public.ai_gateway_calls",
+        ]),
+      );
+
+      // The fingerprint does change when a row is written, so the equality above can fail.
+      await runInTenant(own, () =>
+        withTransaction(data, (client) =>
+          raiseProblem(client, {
+            userId: ownUser,
+            category: "mail",
+            kind: "mailSyncError",
+            severity: "warning",
+            sourceTable: "items",
+            sourceId: randomUUID(),
+            dedupeKey: "fixture:written",
+          }),
+        ),
+      );
+      const written = await tableFingerprints();
+      expect(written["public.semp_problems"]).not.toBe(before["public.semp_problems"]);
+      expect(written["public.notifications"]).not.toBe(before["public.notifications"]);
     });
   });
 });

@@ -2,7 +2,14 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
-import type { PageCreateSubpageInput, PageCreateSubpageOutput, PageRestoreOutput } from "@semprec/shared";
+import type {
+  PageCreateSubpageInput,
+  PageCreateSubpageOutput,
+  PageDuplicateOutput,
+  PageRenameInput,
+  PageRenameOutput,
+  PageRestoreOutput,
+} from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
@@ -13,7 +20,12 @@ import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
 import { openDocVersionAt } from "./docHistory.js";
 import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
-import { createSubpageWithClient } from "./pageOperations.js";
+import {
+  createSubpageWithClient,
+  duplicatePageWithClient,
+  renamePageWithClient,
+  type DuplicatePageOptions,
+} from "./pageOperations.js";
 import { insertPageMarkdown, readPageMarkdown, type InsertPageMarkdownInput } from "./pageMarkdown.js";
 import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
 
@@ -128,6 +140,16 @@ export function createDocStore(pool: Pool) {
     /** Creates one subpage (issue #1676) in one transaction; `origin` is derived server-side from the caller. */
     async createSubpage(input: PageCreateSubpageInput, origin: CreatedBy): Promise<PageCreateSubpageOutput> {
       return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin));
+    },
+
+    /** Copies a subpage with every page nested in it (issue #1722) in one transaction; see `duplicatePageWithClient`. */
+    async duplicatePage(pageItemId: string, options: DuplicatePageOptions): Promise<PageDuplicateOutput> {
+      return withTransaction(pool, (client) => duplicatePageWithClient(client, pageItemId, options));
+    },
+
+    /** Renames a subpage (issue #1725) in one transaction; `origin` is derived server-side from the caller. */
+    async renamePage(input: PageRenameInput, origin: CreatedBy): Promise<PageRenameOutput> {
+      return withTransaction(pool, (client) => renamePageWithClient(client, input, origin));
     },
 
     // ---- page content (blocks) ----

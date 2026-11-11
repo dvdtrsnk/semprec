@@ -15,6 +15,7 @@ import {
   listActiveSessionsForUser,
   requestPasswordReset,
   resetPassword,
+  changePassword,
   SESSION_MAX_LIFETIME_SECONDS,
   SESSION_PLATFORMS,
   SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
@@ -29,7 +30,7 @@ import {
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
-import { assertUuid } from "./adapter/requestValidation.js";
+import { assertUuid, requireJsonObjectBody, requireStringField } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import {
@@ -195,7 +196,8 @@ export interface AuthRequestListenerOptions {
  * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
  * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
  * password-reset routes are necessarily public, and the session routes gate on a real session
- * via `authenticateRequest` instead.
+ * via `authenticateRequest` instead. `POST /api/auth/password-change` (issue #1701) gates on a real
+ * session too and re-verifies the current password.
  *
  * `SESSION_COOKIE_NAME` is one of two ways a request can carry its token; the other is
  * `Authorization: Bearer` (native clients only, per `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
@@ -347,6 +349,24 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           throw err;
         }
         reservation.release();
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // Issue #1701: the caller re-enters the current password; `changePassword` keeps the calling session.
+      if (req.method === "POST" && url.pathname === "/api/auth/password-change") {
+        const identity = await authenticateRequest(pool, req);
+        const body = requireJsonObjectBody(await readJsonBody(req, { maxBytes: MAX_BODY_BYTES }));
+        const currentPassword = requireStringField(body, "currentPassword");
+        const newPassword = requireStringField(body, "newPassword");
+        await changePassword(pool, {
+          userId: identity.user.id,
+          sessionId: identity.session.id,
+          currentPassword,
+          newPassword,
+          // The same address `login` keys its lockout on, so both count toward one (email, IP) streak.
+          ip: clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false }),
+        });
         sendJson(res, 200, { ok: true });
         return;
       }

@@ -281,13 +281,43 @@ export async function updateItemProperties(client: Queryable, input: UpdateItemI
   };
 }
 
-export async function softDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+/**
+ * Soft-deletes a live row. Its `deleted_at` is the transaction's `now()`, or `deletedAtExact` when given:
+ * UTC text with six fraction digits, cast by Postgres, so the row joins that trash epoch at the column's
+ * full precision (issue gh-2029).
+ */
+export async function softDeleteItem(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+  deletedAtExact?: string,
+): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
-    `UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
+    `UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())
+      WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
      RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
-    [databaseId, itemId],
+    [databaseId, itemId, deletedAtExact ?? null],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/**
+ * Locks one item `FOR SHARE` and returns its trash epoch: `deleted_at` as UTC text with six fraction
+ * digits (`YYYY-MM-DDTHH:MI:SS.ffffffZ`), the format of the restore hooks' `deletedAtExact`. Returns
+ * `null` when the item is live or there is no such row. The share lock makes a trash or a restore of the
+ * item, which lock it `FOR UPDATE`, wait until the caller's transaction ends (issue gh-2029).
+ */
+export async function lockItemTrashEpoch(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ deleted_at_exact: string | null }>(
+    `SELECT to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deleted_at_exact
+       FROM items WHERE database_id = $1 AND id = $2 FOR SHARE`,
+    [databaseId, itemId],
+  );
+  return rows[0]?.deleted_at_exact ?? null;
 }
 
 export async function restoreItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
@@ -307,6 +337,20 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
 export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1`,
+    [databaseId],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * `getAllItemsInDatabase` with a `FOR SHARE` lock on every row, taken in id order: until the caller's
+ * transaction ends, no other transaction can update a row or lock it `FOR UPDATE`, and this call waits
+ * for one that already has. For a database of a few rows, such as a singleton (issue #1697).
+ */
+export async function lockAllItemsInDatabaseForShare(client: Queryable, databaseId: string): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1
+     ORDER BY id FOR SHARE`,
     [databaseId],
   );
   return rows.map(mapItemRow);
@@ -478,6 +522,128 @@ export async function countItems(
     params,
   );
   return Number(requireSingleRow(rows, "items count").count);
+}
+
+/** How `countItemsGrouped` splits the items it counts. */
+export type ItemCountGrouping =
+  | {
+      kind: "select";
+      propertyKey: string;
+      /** The property's declared option keys in display order; they decide the order of the groups. */
+      optionKeys: string[];
+    }
+  | {
+      kind: "relation";
+      relationDefinitionId: string;
+      /** The side of the definition the counted items sit on; the other side holds the targets. */
+      ownSide: "a" | "b";
+      targetDatabaseId: string;
+    };
+
+export interface ItemCountGroup {
+  key: string | null;
+  count: number;
+}
+
+export interface GroupedItemCount {
+  count: number;
+  /** Present exactly when a grouping was asked for. */
+  groups?: ItemCountGroup[];
+}
+
+/**
+ * Counts the live items of `databaseId` that `buildFilterSql` matches and, with `grouping`, splits them
+ * into groups, in one statement (issue #1709). `count` is the number of matching items whatever the
+ * grouping. Soft-deleted items are never counted, and a database whose `archived_at` is set counts
+ * nothing: `count` is 0 and there is no group.
+ *
+ * A `select` grouping has one group per stored value of the property that occurs: the declared options
+ * first, in `optionKeys` order, then any other stored value in byte order, then `null` for the items
+ * whose value is missing, JSON null or the empty string.
+ *
+ * A `relation` grouping has one group per target item that occurs, ordered by target id, then `null` for
+ * the items without a target. A target is an item of `targetDatabaseId` at the other end of an edge of
+ * the definition; it counts while it is not soft-deleted and that database is not archived. An item whose
+ * every edge ends at a trashed item or in an archived database is therefore in the `null` group. An item
+ * with several targets is in each of their groups and once in `count`.
+ *
+ * The items table is read under its own name, as `listItems` reads it, because a compiled filter refers
+ * to `items.id` and to the bare `properties` and `computed` columns.
+ */
+export async function countItemsGrouped(
+  client: Queryable,
+  databaseId: string,
+  options: { buildFilterSql?: (params: unknown[]) => string | undefined; grouping?: ItemCountGrouping } = {},
+): Promise<GroupedItemCount> {
+  const conditions = [
+    "items.database_id = $1",
+    "items.deleted_at IS NULL",
+    "EXISTS (SELECT 1 FROM databases counted WHERE counted.id = $1 AND counted.archived_at IS NULL)",
+  ];
+  const params: unknown[] = [databaseId];
+  const filterSql = options.buildFilterSql?.(params);
+  if (filterSql) conditions.push(filterSql);
+  const where = conditions.join(" AND ");
+
+  const { grouping } = options;
+  if (!grouping) {
+    const { rows } = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM items WHERE ${where}`,
+      params,
+    );
+    return { count: Number(requireSingleRow(rows, "items count").count) };
+  }
+
+  let groupedSql: string;
+  let orderBySql: string;
+  if (grouping.kind === "select") {
+    params.push(grouping.propertyKey);
+    groupedSql = `SELECT items.id, NULLIF(items.properties ->> $${params.length}, '') AS group_key FROM items WHERE ${where}`;
+    params.push(grouping.optionKeys);
+    orderBySql = `(group_key IS NULL), array_position($${params.length}::text[], group_key) NULLS LAST, group_key COLLATE "C"`;
+  } else {
+    // The two column names are chosen from these fixed identifiers by the definition's side, never from input.
+    const ownColumn = grouping.ownSide === "a" ? "item_a" : "item_b";
+    const targetColumn = grouping.ownSide === "a" ? "item_b" : "item_a";
+    params.push(grouping.relationDefinitionId);
+    const definitionParam = params.length;
+    params.push(grouping.targetDatabaseId);
+    const targetDatabaseParam = params.length;
+    groupedSql = `SELECT matched.id, target.id::text AS group_key
+       FROM (SELECT items.id FROM items WHERE ${where}) matched
+       LEFT JOIN LATERAL (
+         SELECT live_target.id
+         FROM item_relations edge
+         JOIN items live_target
+           ON live_target.database_id = $${targetDatabaseParam}::uuid
+          AND live_target.id = edge.${targetColumn}
+          AND live_target.deleted_at IS NULL
+         WHERE edge.relation_definition_id = $${definitionParam}::uuid
+           AND edge.${ownColumn} = matched.id
+           AND EXISTS (
+             SELECT 1 FROM databases target_database
+             WHERE target_database.id = $${targetDatabaseParam}::uuid AND target_database.archived_at IS NULL
+           )
+       ) target ON true`;
+    orderBySql = `group_key COLLATE "C" NULLS LAST`;
+  }
+
+  const { rows } = await client.query<{ is_total: boolean; key: string | null; count: string }>(
+    `SELECT GROUPING(group_key) = 1 AS is_total, group_key AS key, count(DISTINCT id)::text AS count
+     FROM (${groupedSql}) grouped
+     GROUP BY GROUPING SETS ((group_key), ())
+     ORDER BY GROUPING(group_key) DESC, ${orderBySql}`,
+    params,
+  );
+  // The empty grouping set yields the total as one row whatever the input, an empty one included.
+  const total = requireSingleRow(
+    rows.filter((row) => row.is_total),
+    "grouped items count total",
+  );
+  return {
+    count: Number(total.count),
+    groups: rows.filter((row) => !row.is_total).map((row) => ({ key: row.key, count: Number(row.count) })),
+  };
 }
 
 /**

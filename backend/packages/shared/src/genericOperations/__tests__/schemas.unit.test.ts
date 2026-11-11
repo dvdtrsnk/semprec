@@ -8,6 +8,7 @@ import {
   DatabasePatchInputSchema,
   DatabaseQueryInputSchema,
   DatabaseRestoreInputSchema,
+  ItemCountInputSchema,
   ItemCreateInputSchema,
   ItemDeleteInputSchema,
   ItemGetInputSchema,
@@ -73,6 +74,7 @@ const ALL_SCHEMAS = [
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
+  ItemCountInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -608,6 +610,70 @@ describe("PageChangesInputSchema (issue #1680)", () => {
       { itemId, since, extra: true },
     ]) {
       expect(PageChangesInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+});
+
+describe("ItemCountInputSchema (issue #1709)", () => {
+  const databaseId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const entries = (length: number) => Array.from({ length }, () => ({ databaseId }));
+
+  it("accepts one to twenty entries and refuses none or twenty-one, naming items", () => {
+    for (const length of [1, 20]) {
+      expect(ItemCountInputSchema.safeParse({ items: entries(length) }).success, String(length)).toBe(true);
+    }
+    for (const length of [0, 21]) {
+      const parsed = ItemCountInputSchema.safeParse({ items: entries(length) });
+      expect(parsed.success, String(length)).toBe(false);
+      if (parsed.success) throw new Error("Expected the entry count to be refused");
+      expect(validationIssueField(parsed.error.issues)).toBe("items");
+    }
+  });
+
+  it("accepts an entry with a filter tree, a groupBy key and the collection flag", () => {
+    const entry = {
+      databaseId: databaseId.toUpperCase(),
+      filter: { type: "and", nodes: [{ type: "equals", property: "status", value: "notDone" }] },
+      groupBy: "project",
+      collection: true,
+    };
+    expect(ItemCountInputSchema.parse({ items: [entry] })).toEqual({ items: [entry] });
+  });
+
+  it.each([
+    ["a missing items list", {}, "items"],
+    ["a non-array items value", { items: { databaseId } }, "items"],
+    ["an unknown top-level key", { items: [{ databaseId }], inTrash: true }, undefined],
+    ["an entry without a database", { items: [{}] }, "items.0.databaseId"],
+    ["a malformed database id", { items: [{ databaseId: "bad" }] }, "items.0.databaseId"],
+    ["an empty groupBy", { items: [{ databaseId, groupBy: "" }] }, "items.0.groupBy"],
+    ["a non-string groupBy", { items: [{ databaseId, groupBy: 1 }] }, "items.0.groupBy"],
+    ["a non-boolean collection", { items: [{ databaseId, collection: "yes" }] }, "items.0.collection"],
+    ["an unknown entry key", { items: [{ databaseId }, { databaseId, inTrash: true }] }, "items.1"],
+  ])("refuses %s", (_name, input, field) => {
+    const parsed = ItemCountInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected the input to be refused");
+    expect(validationIssueField(parsed.error.issues)).toBe(field);
+  });
+
+  it("refuses the filter trees database.query refuses", () => {
+    const relation = {
+      type: "relation_path_contains",
+      path: ["project", "area"],
+      value: "11111111-1111-4111-8111-111111111111",
+    };
+    const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
+    expect(ItemCountInputSchema.safeParse({ items: [{ databaseId, filter: nested(8) }] }).success).toBe(true);
+    for (const filter of [
+      nested(9),
+      { type: "unknown", property: "name" },
+      { type: "and", nodes: [] },
+      { type: "equals", property: "name", value: "x", extra: true },
+    ]) {
+      const forCount = ItemCountInputSchema.safeParse({ items: [{ databaseId, filter }] });
+      expect(forCount.success, JSON.stringify(filter).slice(0, 80)).toBe(false);
+      expect(DatabaseQueryInputSchema.safeParse({ databaseId, filter }).success).toBe(false);
     }
   });
 });

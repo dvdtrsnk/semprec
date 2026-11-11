@@ -14,6 +14,7 @@ import { createGenericOperationAgentTools } from "@semprec/agent-runtime";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 /**

@@ -1,22 +1,28 @@
 ---
 name: implement-issue
-description: "The execution contract for implementing one Semprec issue or a scoped sequential backend delivery batch end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch, a sequential backend delivery batch, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
+description: "The execution contract for implementing one Semprec issue, or a chain of sources of the parallel backend delivery program, end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch-source, a chain of the parallel backend delivery program, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
 ---
 
 # Implementing one issue
 
-## Scoped sequential backend batches
+## Sources of the parallel backend delivery program
 
-When the issue has `execution:batch`, use
-`issues/batches/backend/README.md` and the scoped exception in
-`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`. Implement every
-embedded member Task and AC in the declared order, with one writer in one
-working tree. Keep targeted checks during development; perform independent
-review, complete AC acceptance and full backend verification at the batch gate.
-Do not dispatch records labeled `execution:batch-source` independently. Do not
-run web/mobile checks for this backend-only program. All aggregate and source
-approval/completion guards remain in force. External-gate and held records
-cannot be passed or implemented by an ordinary implementation agent.
+When the issue has `execution:batch-source`, it belongs to the program in
+`issues/batches/backend/README.md` and you follow
+`issues/batches/backend/CONTROLLER.md` and
+`docs/adr/2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue.md`.
+You implement the sources of your chain in the given order, one contiguous
+commit segment per source, in your own worktree and branch. The base for your
+diff, for a rebase and for migration ordinals is the integration branch
+`feature/backend-parallel`, wherever the steps below name `origin/develop`. A
+blocker that the issue text marks as `Shared-file ordering` does not have to be
+delivered before you start; read its handover if it exists. If something the
+Task presupposes is missing from the tree, report the missing prerequisite and
+stop before that source. Do not edit anything under `issues/`, do not run
+`approve` or `complete`, and do not push: the queue runner lands the chain and
+completes each source. Do not run web or mobile checks for this backend-only
+program. A record labeled `execution:batch` is a withdrawn or historical
+aggregate and is not implemented.
 
 Check `issues/migration/state.json` first. If authority is `repository`, read
 the local record with `node .github/scripts/issues.mjs show <id>`, and read

@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { listItems } from "../chokePoint/itemsStore.js";
 import { defaultSyncModeForProvider, ensureMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
@@ -74,14 +75,35 @@ export interface MailLiveSyncRoot {
   /** One discovery pass, exposed directly so callers (tests, an explicit "reconcile now" trigger) don't have to wait on the interval. */
   reconcileOnce(): Promise<void>;
   /**
-   * Waits for every discovery pass in flight, then stops every hosted lifecycle of `tenantId`
-   * through the same path a deactivated account takes. A lifecycle is stopped once even when a
-   * pass started meanwhile retires it too, and the call resolves only after that pass's stop of
-   * it finished. A second call for the same tenant finds nothing hosted
+   * Waits for every discovery pass and every `restartAccount` in flight, then stops every hosted
+   * lifecycle of `tenantId` through the same path a deactivated account takes. A lifecycle is
+   * stopped once even when a pass started meanwhile retires it too, and the call resolves only
+   * after that pass's stop of it finished. A second call for the same tenant finds nothing hosted
    * and does nothing. It does not stop a later pass from hosting the tenant again:
    * that is prevented by the tenant no longer being `active`, which discovery skips.
    */
   stopTenant(tenantId: string): Promise<void>;
+  /**
+   * Replaces the hosted lifecycle of one account (issue gh-1742): stops it through the same path a
+   * deactivated account takes, then hosts a new one from the root's lifecycle factory for the same
+   * tenant and sync mode, whether or not the old `start()` succeeded. The new lifecycle is created
+   * after the call began, so its `start()` reads what the caller committed beforehand, such as a
+   * replaced credential. Resolves once the new lifecycle started or its failed start was reported
+   * through `onLifecycleError`.
+   *
+   * An account the root does not host is left alone: a discovery pass hosts it with a lifecycle
+   * created then. That covers an account not discovered yet, one retired meanwhile, one whose
+   * lifecycle another pass or restart is replacing at that moment, and every account after
+   * `stop()`. A caller inside a tenant scope restarts only an account hosted for that tenant; any
+   * other account is treated as not hosted.
+   *
+   * The work runs in the async context the root was created in, not in the caller's
+   * (docs/adr/2026-11-11-mailbox-reauthorization-restarts-the-hosted-lifecycle-in-the-live-sync-roots-context.md).
+   * When a discovery pass hosted the account while the old lifecycle stopped, that lifecycle is
+   * kept and no second one is created. `stopTenant` waits for a restart in flight as it waits for
+   * a pass, and a restart whose old lifecycle is still stopping when `stop()` runs hosts nothing.
+   */
+  restartAccount(mailboxItemId: string): Promise<void>;
 }
 
 interface HostedEntry {
@@ -142,9 +164,9 @@ export function createMailLiveSyncRoot(
   // The discovery pass most recently started by the interval, so `stop()` can wait for it to
   // finish. Never rejects — the interval callback attaches its own handler before storing it.
   let inFlightDiscovery: Promise<unknown> = Promise.resolve();
-  // Every `reconcileOnce` pass still running, whoever started it, as a promise that settles with it
-  // and never rejects, so `stopTenant` can wait for them. The pass's own promise, and its rejection,
-  // still go to its caller.
+  // Every `reconcileOnce` pass and every `restartAccount` still running, whoever started it, as a
+  // promise that settles with it and never rejects, so `stopTenant` can wait for them. The promise
+  // of the pass or restart itself, and its rejection, still go to its caller.
   const runningPasses = new Set<Promise<void>>();
   // Every entry `stopHosted` has removed from `hosted` whose stop is still running, so `stopTenant`
   // and `stop()` wait for a stop another caller started instead of resolving ahead of it.
@@ -153,6 +175,10 @@ export function createMailLiveSyncRoot(
   // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
   // set), so two un-awaited `start()` calls can't both observe it unset.
   let started = false;
+  // The async context this root is created in, outside any request. `restartAccount` is called from
+  // a request's tenant scope and trace context, which a lifecycle's timers and sockets and the
+  // per-account heartbeat must not inherit, so it runs its work through this instead.
+  const runInRootContext = AsyncLocalStorage.snapshot();
 
   interface DiscoveredAccount {
     tenantId: string;
@@ -221,8 +247,8 @@ export function createMailLiveSyncRoot(
 
   /**
    * Stops `entry` once: callers pass entries from a snapshot of `hosted` (another pass's retire
-   * loop, `stopTenant`, `stop()`), so an entry another caller already removed is not stopped
-   * again; the call instead waits for that caller's stop, if it is still running. An entry whose
+   * loop, `restartAccount`, `stopTenant`, `stop()`), so an entry another caller already removed is
+   * not stopped again; the call instead waits for that caller's stop, if it is still running. An entry whose
    * `start()` is still running (an overlapping pass retired it) is stopped only after that start
    * settled, and the pass that started it then installs no heartbeat for it.
    */
@@ -252,14 +278,69 @@ export function createMailLiveSyncRoot(
       .map((entry) => entry.stopping ?? Promise.resolve());
   }
 
-  function reconcileOnce(): Promise<void> {
-    const pass = runPass();
+  /** Registers `work` in `runningPasses` until it settles, and returns it unchanged. */
+  function tracked(work: Promise<void>): Promise<void> {
     const forget = (): void => {
       runningPasses.delete(settled);
     };
-    const settled = pass.then(forget, forget);
+    const settled = work.then(forget, forget);
     runningPasses.add(settled);
-    return pass;
+    return work;
+  }
+
+  function reconcileOnce(): Promise<void> {
+    return tracked(runPass());
+  }
+
+  /**
+   * Hosts a new lifecycle for an account `hosted` holds no entry for, and waits for its `start()`.
+   * A start that fails is reported and leaves the entry hosted, so a later stop still reaches it.
+   */
+  async function host(mailboxItemId: string, tenantId: string, syncMode: SyncMode): Promise<void> {
+    const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
+    const entry: HostedEntry = { tenantId, lifecycle, syncMode, heartbeat: null };
+    hosted.set(mailboxItemId, entry);
+    const start = runInTenant(tenantId, () => lifecycle.start());
+    entry.starting = start.then(
+      () => {},
+      () => {},
+    );
+    try {
+      await start;
+      // Retired by an overlapping pass, a restart, `stopTenant` or `stop()` while it started: its
+      // stop runs after this start, and a heartbeat installed now would outlive it.
+      if (entry.stopping) return;
+      entry.heartbeat = startProcessHeartbeat(
+        pool,
+        {
+          process: mailSyncProcessName(mailboxItemId),
+          pid: process.pid,
+          version: process.env.APP_VERSION ?? "0.0.0",
+        },
+        { onError: (err) => options.onLifecycleError?.(mailboxItemId, "heartbeat", err) },
+      );
+    } catch (err) {
+      options.onLifecycleError?.(mailboxItemId, "start", err);
+    }
+  }
+
+  /** `restartAccount`'s work, run in the root's own context. `callerTenantId` is the tenant scope the call came from, if any. */
+  async function restartHosted(mailboxItemId: string, callerTenantId: string | undefined): Promise<void> {
+    const existing = hosted.get(mailboxItemId);
+    if (!existing) return;
+    if (callerTenantId !== undefined && callerTenantId !== existing.tenantId) return;
+    const myGeneration = generation;
+    await stopHosted(mailboxItemId, existing);
+    // `stop()` ran while the old lifecycle stopped: the root hosts nothing any more.
+    if (generation !== myGeneration) return;
+    // A discovery pass hosted the account meanwhile. Its lifecycle was created after this restart
+    // began, so it is the replacement; hosting another would be a second one.
+    const replacement = hosted.get(mailboxItemId);
+    if (replacement) {
+      await replacement.starting;
+      return;
+    }
+    await host(mailboxItemId, existing.tenantId, existing.syncMode);
   }
 
   async function runPass(): Promise<void> {
@@ -273,32 +354,7 @@ export function createMailLiveSyncRoot(
         // the previous lifecycle (if any) no longer matches and is retired before the new one
         // starts, so an account never has two lifecycles hosted for it at once.
         if (existing) await stopHosted(mailboxItemId, existing);
-
-        const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
-        const entry: HostedEntry = { tenantId, lifecycle, syncMode, heartbeat: null };
-        hosted.set(mailboxItemId, entry);
-        const start = runInTenant(tenantId, () => lifecycle.start());
-        entry.starting = start.then(
-          () => {},
-          () => {},
-        );
-        try {
-          await start;
-          // Retired by an overlapping pass, `stopTenant` or `stop()` while it started: its stop
-          // runs after this start, and a heartbeat installed now would outlive it.
-          if (entry.stopping) continue;
-          entry.heartbeat = startProcessHeartbeat(
-            pool,
-            {
-              process: mailSyncProcessName(mailboxItemId),
-              pid: process.pid,
-              version: process.env.APP_VERSION ?? "0.0.0",
-            },
-            { onError: (err) => options.onLifecycleError?.(mailboxItemId, "heartbeat", err) },
-          );
-        } catch (err) {
-          options.onLifecycleError?.(mailboxItemId, "start", err);
-        }
+        await host(mailboxItemId, tenantId, syncMode);
       }
 
       for (const [mailboxItemId, entry] of [...hosted]) {
@@ -310,6 +366,14 @@ export function createMailLiveSyncRoot(
 
   return {
     reconcileOnce,
+    async restartAccount(mailboxItemId) {
+      // Read here, in the caller's context, before the work moves to the root's.
+      const caller = currentTenantScope();
+      const callerTenantId = caller?.kind === "tenant" ? caller.tenantId : undefined;
+      await runInRootContext(() =>
+        runAsSystem("mail:liveSync", () => tracked(restartHosted(mailboxItemId, callerTenantId))),
+      );
+    },
     async stopTenant(tenantId) {
       await Promise.all([...runningPasses]);
       await Promise.all(

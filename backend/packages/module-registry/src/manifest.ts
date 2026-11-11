@@ -198,12 +198,18 @@ export interface ModuleLinkRuleEndpoint {
  * the relation property `via.relationKey` of `via.databaseKey`. `via.databaseKey` is the
  * target's or the source's database and the relation leads to the other one. `key` is unique
  * across all modules.
+ *
+ * `valueFilter.omit` names a relation property of a singleton system database, such as System
+ * settings `selfPerson`: the items that relation points to are left out of the copied values.
+ * `omit.databaseKey` is that database's owner module id (`systemSettings`), because the System
+ * settings database has no `databases.key` and no manifest declares it.
  */
 export interface ModuleLinkRuleDescriptor {
   key: string;
   source: ModuleLinkRuleEndpoint;
   target: ModuleLinkRuleEndpoint;
   via: { databaseKey: string; relationKey: string };
+  valueFilter?: { omit: ModuleLinkRuleEndpoint };
 }
 
 /**
@@ -577,6 +583,7 @@ const moduleLinkRuleDescriptorSchema = z.strictObject({
   source: moduleLinkRuleEndpointSchema,
   target: moduleLinkRuleEndpointSchema,
   via: z.strictObject({ databaseKey: z.string().min(1), relationKey: z.string().min(1) }),
+  valueFilter: z.strictObject({ omit: moduleLinkRuleEndpointSchema }).optional(),
 });
 
 export const editorFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);

@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import type { HeartbeatRuleKindRegistry, MailSendAdapterFactory, MailServerSettingsInput } from "@semprec/data";
+import type {
+  HeartbeatRuleKindRegistry,
+  MailSendAdapterFactory,
+  VerifiedMailServerSettings,
+  VerifyMailCredentialsInput,
+} from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
 import { mountRoutes, type RouteDefinition } from "./routeTable.js";
 import type { AdapterHandler } from "./adapterRoute.js";
@@ -21,16 +26,23 @@ export interface CustomRouteOAuthConfig {
 
 /** The mail server clients the password and send routes use (issues #1736 and #1896). */
 export interface MailServerClients {
-  /** Resolves when the server accepts the password for these endpoints, and rejects when it refuses it. Runs before any mailbox is stored. */
-  verifyPassword?: (settings: MailServerSettingsInput, password: string) => Promise<void>;
+  /**
+   * Verifies the login in the password connect route (issue gh-1736, `mail/mailboxPasswordRouteHandlers.ts`):
+   * resolves with the IMAP and SMTP endpoints that accepted the login, and rejects when none did. Runs
+   * before any mailbox is stored. `serve.ts` sets it to `verifyMailCredentials`. A mount without it fails
+   * each request of that route with a configuration error.
+   */
+  verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
   /** The SMTP transports `sendDraftEmail` takes (mail/send.ts). */
   send?: MailSendAdapterFactory;
 }
 
-/** The per-mailbox control of the mail live-sync root that the mailbox routes call (issues #1686 and #1690). */
+/** The per-mailbox control of the mail live-sync root that the mailbox routes call (issues #1686, #1690 and #1742). */
 export interface MailLiveSyncControl {
   startMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
   stopMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
+  /** Replaces the mailbox's hosted lifecycle (`MailLiveSyncRoot.restartAccount`); a reauthorization calls it after its commit. */
+  restartAccount(mailboxItemId: string): Promise<void>;
 }
 
 /**

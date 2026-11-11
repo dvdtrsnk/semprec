@@ -1,10 +1,14 @@
-import type { Pool } from "pg";
+import { DateTime } from "luxon";
+import type { Pool, PoolClient } from "pg";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { z } from "zod";
+import { getAiUsageSummary } from "../aiGateway/aiUsageSummary.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { readRestoreTestOutcome, RESTORE_TEST_CHECK_KEY } from "../observability/restoreTestResult.js";
+import { getSystemTimezone } from "../systemSettings.js";
+import { assertValidTimezone } from "../timezone.js";
 
 const problemSchema = z.object({
   id: z.uuid(),
@@ -33,9 +37,48 @@ const causes = new Set(["budgetExceeded", "modelError", "cancelled", "interrupte
 type StatusAction = { kind: string; target: string | { threadId: string; messageId: string } };
 
 /**
+ * The AI budget problem of the current tenant (issue gh-1871), or null when there is none. It is
+ * derived on every read from the budget summary of issue gh-1456 and has no `semp_problems` row
+ * (docs/adr/2026-11-10-semp-status-problems-derived-at-read-time.md): `aiBudgetMissing` while the
+ * tenant has no budget row, `aiBudgetExhausted` while a cap of its own is reached. The summary sets
+ * `resetsAt` exactly while a window is exhausted, so that field alone selects the second problem.
+ * The summary does not read the operator-wide caps, so reaching them produces no problem.
+ *
+ * `id` is the problem key, followed for an exhausted window by its reset instant, so the next
+ * exhausted window is a different problem to a client. `replacements.resetTime` is that instant in
+ * the tenant's time zone, written in `language`.
+ *
+ * Luxon writes the reset time, because the settings writer validates the zone with Luxon
+ * (`assertValidTimezone`): a fixed offset such as `UTC+2` is a zone a tenant can store, and
+ * `Intl.DateTimeFormat` throws for it as a `timeZone`. The zone is validated only for an exhausted
+ * window, where the text needs it: a stored zone Luxon cannot read throws `ValidationError` then,
+ * instead of putting "Invalid DateTime" into the text.
+ */
+async function readAiBudgetProblem(
+  client: PoolClient,
+  language: "cs" | "en",
+): Promise<{ id: string; kind: "aiBudgetMissing" | "aiBudgetExhausted"; replacements: Record<string, string> } | null> {
+  const usage = await getAiUsageSummary(client);
+  if (!usage.hasBudget) return { id: "aiBudgetMissing", kind: "aiBudgetMissing", replacements: {} };
+  if (usage.resetsAt === null) return null;
+  const zone = await getSystemTimezone(client);
+  assertValidTimezone(zone);
+  const resetTime = DateTime.fromISO(usage.resetsAt, { zone, locale: language }).toLocaleString({
+    dateStyle: "long",
+    timeStyle: "short",
+  });
+  return { id: `aiBudgetExhausted:${usage.resetsAt}`, kind: "aiBudgetExhausted", replacements: { resetTime } };
+}
+
+/**
  * The Semp status report of the current tenant (issue #1555), together with the stored `kind` of
- * every problem it lists, keyed by problem id. The summary (issue #1631) derives its banner from this
- * same read, so the count, the order and the rendered text have one source.
+ * every stored problem it lists, keyed by problem id. The summary (issue #1631) derives its banner
+ * from this same read, so the count, the order and the rendered text have one source.
+ *
+ * The list starts with the AI budget problem when the tenant has one (`readAiBudgetProblem`), which
+ * is derived in this read and written nowhere. The stored active problems follow, `critical` first,
+ * then the latest `last_seen_at`. `activeCount` counts both. `services` take their state from the
+ * stored problems only.
  */
 export async function readSempStatusReport(pool: Pool) {
   const catalogs = await loadModuleCatalogs(import.meta.url);
@@ -158,8 +201,14 @@ export async function readSempStatusReport(pool: Pool) {
         .parse(runs.rows)
         .map((row) => [row.root, row]),
     );
+    const budgetProblem = await readAiBudgetProblem(client, locale === "cs" ? "cs" : "en");
     const label = (key: string) =>
       resolveCatalogLabel(undefined, locale === "cs" ? catalogs.cs : catalogs.en, catalogs.en, key);
+    const renderLabel = (key: string, replacements: Record<string, string>) =>
+      label(key)
+        .replace(/\{(\w+)\}/g, (_, name: string) => replacements[name] ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
     const itemName = (id: string | null) => {
       const name = id ? items.get(id)?.properties.name : undefined;
       return typeof name === "string" ? name : "";
@@ -212,7 +261,7 @@ export async function readSempStatusReport(pool: Pool) {
         detail: backupDetail,
       },
     ];
-    const report = {
+    const stored = {
       activeCount: problems.length,
       services,
       problems: problems.map((problem) => {
@@ -233,10 +282,7 @@ export async function readSempStatusReport(pool: Pool) {
         };
         const render = (field: "title" | "text" | "shortText") => {
           const catalogField = kind === "reply" && field === "text" && !message?.thread_title ? "textUnnamed" : field;
-          return label(`status.${kind}.${catalogField}`)
-            .replace(/\{(\w+)\}/g, (_, name: string) => replacements[name] ?? "")
-            .replace(/\s+/g, " ")
-            .trim();
+          return renderLabel(`status.${kind}.${catalogField}`, replacements);
         };
         const actions: StatusAction[] = [];
         if (kind === "mailSyncError") actions.push({ kind: "reauthMailbox", target: problem.source_id });
@@ -273,6 +319,29 @@ export async function readSempStatusReport(pool: Pool) {
           actions,
         };
       }),
+    };
+    const derivedProblems = budgetProblem
+      ? [
+          {
+            id: budgetProblem.id,
+            category: "agents" as const,
+            severity: "critical" as const,
+            title: renderLabel(`status.${budgetProblem.kind}.title`, budgetProblem.replacements),
+            text: renderLabel(`status.${budgetProblem.kind}.text`, budgetProblem.replacements),
+            shortText: renderLabel(`status.${budgetProblem.kind}.shortText`, budgetProblem.replacements),
+            since: null,
+            mergedCount: 1,
+            projectName: null,
+            source: { table: "tenant_ai_budgets", id: null },
+            affectedService: "agents" as const,
+            actions: [] as StatusAction[],
+          },
+        ]
+      : [];
+    const report = {
+      ...stored,
+      activeCount: derivedProblems.length + stored.activeCount,
+      problems: [...derivedProblems, ...stored.problems],
     };
     return { report, problemKinds: new Map(problems.map((problem) => [problem.id, problem.kind])) };
   });

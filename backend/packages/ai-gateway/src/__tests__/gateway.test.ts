@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool } from "pg";
 import {
   createAgentRun,
+  createSempStatusRouteHandler,
   createUser,
   failGatewayCall,
   ForbiddenError,
@@ -708,6 +709,40 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
     });
     expect(await rowCount()).toBe(1);
   });
+
+  it("lists the exhausted budget in the Semp status after a refusal at the tenant's own cap", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+    await spend(tenantA, 1);
+
+    await expectRefused(callIn(tenantA));
+
+    expect(logWarn).toHaveBeenCalledWith({ limit: "tenantDaily" }, expect.any(String));
+    const status = await runInTenant(tenantA, () => createSempStatusRouteHandler(dataPool)());
+    expect(status.body.activeCount).toBe(1);
+    expect(status.body.problems.map((problem) => problem.id)).toEqual([expect.stringMatching(/^aiBudgetExhausted:/)]);
+  });
+
+  it.each([
+    ["daily", { dailyCapUsd: 1, monthlyCapUsd: 1_000 }, "globalDaily"],
+    ["monthly", { dailyCapUsd: 1_000, monthlyCapUsd: 1 }, "globalMonthly"],
+  ] as const)(
+    "lists no budget problem in the Semp status when only the operator-wide %s cap refuses",
+    async (_window, globalCaps, limit) => {
+      const logWarn = vi.spyOn(logger, "warn");
+      await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 10, monthlyCapUsd: 100 });
+      await setTenantAiBudget(adminPool, tenantB, { dailyCapUsd: 10, monthlyCapUsd: 100 });
+      await spend(tenantA, 1);
+
+      await expectRefused(callIn(tenantB, globalCaps));
+
+      expect(logWarn).toHaveBeenCalledWith({ limit }, expect.any(String));
+      for (const tenantId of [tenantA, tenantB]) {
+        const status = await runInTenant(tenantId, () => createSempStatusRouteHandler(dataPool)());
+        expect(status).toMatchObject({ status: 200, body: { activeCount: 0, problems: [] } });
+      }
+    },
+  );
 
   it("refuses tenant A at its daily cap, writing no row, while tenant B is admitted", async () => {
     const logWarn = vi.spyOn(logger, "warn");

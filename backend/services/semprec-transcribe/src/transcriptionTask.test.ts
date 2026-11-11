@@ -52,9 +52,10 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
+  runTenantCutoverMigrations,
   withTenantTransaction,
 } from "@semprec/data/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
@@ -460,6 +461,583 @@ describe("transcription step 0", () => {
       expect(err.code).toBe("owner_violation");
     }
   });
+});
+
+/**
+ * Issue #1644: step 0 links the transcript to the Event its upload named. Two seeded tenants on a
+ * `semprec_data` pool. An upload is the recordings route's composition: the shared Files upload with
+ * `recordRecordingIntake` in its transaction. The jobs it enqueues are drained one lane at a time
+ * with the tasks `createTranscribeQueueRuntime` registers, the fake gateways in place of HTTP.
+ */
+describe("transcription step 0: the upload's Event (issue #1644)", () => {
+  let runtime: Pool;
+  let tenant: string;
+  let foreign: string;
+  let tmpBlobDir: string;
+  let blobStorage: LocalFsBlobStorageWriter;
+  let gatewayClient: FakeAudioGatewayClient;
+  let audioFixture: Buffer;
+
+  beforeAll(async () => {
+    audioFixture = await generateMp4Fixture({ creationTime: FIXTURE_CREATION_TIME });
+  });
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    runtime = await createRuntimeRolePool(pool, "semprec_data");
+    tenant = await createTestTenant(pool);
+    foreign = await createTestTenant(pool);
+    for (const id of [tenant, foreign]) await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+    const role = await inTenant(tenant, (client) =>
+      client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    tmpBlobDir = join(tmpdir(), `semprec-transcribe-test-${randomUUID()}`);
+    blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);
+    gatewayClient = new FakeAudioGatewayClient();
+    summaryClient = new FakeSummaryClient();
+    gatewayClient.diarizeResult = [
+      { speaker: "SPEAKER_00", start: 0, end: 0.5 },
+      { speaker: "SPEAKER_01", start: 0.5, end: 1 },
+    ];
+    gatewayClient.transcribeResult = () => ({
+      text: "Hello. Hi there.",
+      language: "en",
+      segments: [
+        { start: 0, end: 0.4, text: " Hello." },
+        { start: 0.6, end: 0.9, text: " Hi there." },
+      ],
+    });
+  });
+
+  afterEach(async () => {
+    await runtime.end();
+    await rm(tmpBlobDir, { recursive: true, force: true });
+  });
+
+  /** Runs `fn` in one transaction of the runtime-role pool, inside `tenantId`. */
+  function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    return runInTenant(tenantId, () => withTransaction(runtime, fn));
+  }
+
+  async function requireDatabaseId(client: PoolClient, moduleId: string): Promise<string> {
+    const database = await getDatabaseByModuleId(client, moduleId);
+    if (!database) throw new Error(`The ${moduleId} database was not seeded`);
+    return database.id;
+  }
+
+  /** A date-only Event: it has no start, so step 6 never links a recording to it by time. */
+  function createEvent(tenantId: string): Promise<string> {
+    return inTenant(tenantId, async (client) => {
+      const event = await createItemWithClient(client, {
+        databaseId: await requireDatabaseId(client, "events"),
+        properties: { name: "Planning", type: "meeting", date: "2026-10-22" },
+      });
+      return event.id;
+    });
+  }
+
+  /** Adds a person to the Event's `people`, the candidates step 7 suggests speakers from. */
+  async function addParticipant(tenantId: string, eventId: string, name: string): Promise<string> {
+    const { personId, peoplePropertyId } = await inTenant(tenantId, async (client) => {
+      const person = await createItemWithClient(client, {
+        databaseId: await requireDatabaseId(client, "people"),
+        properties: { name },
+      });
+      const { rows } = await client.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
+        [await requireDatabaseId(client, "events")],
+      );
+      if (!rows[0]) throw new Error("Events 'people' property was not seeded");
+      return { personId: person.id, peoplePropertyId: rows[0].id };
+    });
+    await runInTenant(tenantId, () =>
+      createChokePoint(runtime).createRelation({
+        relationPropertyId: peoplePropertyId,
+        callerItemId: eventId,
+        targetItemId: personId,
+      }),
+    );
+    return personId;
+  }
+
+  /**
+   * Uploads a recording as `POST /api/recordings` does, naming `eventId` as its `X-Event-Id`; returns
+   * the Files item id. `bytes` defaults to the audio fixture; other bytes make another Files item.
+   */
+  function uploadRecording(tenantId: string, eventId: string | null, bytes: Buffer = audioFixture): Promise<string> {
+    return runInTenant(tenantId, async () => {
+      const filesDatabaseId = await withTransaction(runtime, (client) => requireDatabaseId(client, "files"));
+      const uploaded = await ingestUploadedFileWithTransaction(
+        runtime,
+        {
+          filesDatabaseId,
+          filename: "recording.m4a",
+          contentType: "audio/mp4",
+          source: Readable.from(bytes),
+          storageKeyPrefix: "files",
+          maxBytes: 2_000_000,
+          storage: blobStorage,
+        },
+        (client, result) => recordRecordingIntake(client, { fileItemId: result.item.id, eventId, recordedAt: null }),
+      );
+      return uploaded.result.item.id;
+    });
+  }
+
+  /** Rejects when `promise` has not settled within five seconds, so a missed barrier fails instead of hanging. */
+  async function bounded<T>(promise: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Step 0 overlap barrier timed out")), 5000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Starts step 0 for `fileItemId` on its own connection and holds its transaction open right after
+   * its row-locking read of `eventId` returned. Resolves with that transaction's backend pid;
+   * `commit` lets step 0 run on to its commit and waits for it.
+   */
+  async function holdStepZeroAtEventLock(
+    fileItemId: string,
+    eventId: string,
+  ): Promise<{ workerPid: number; commit: () => Promise<void> }> {
+    let release!: () => void;
+    let signalLocked!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<number>((resolve) => {
+      signalLocked = resolve;
+    });
+    let held = false;
+    const workerPool = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key !== "connect") {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, property, innerReceiver) {
+              if (property !== "query") {
+                const value: unknown = Reflect.get(connection, property, innerReceiver);
+                return typeof value === "function" ? value.bind(connection) : value;
+              }
+              return async (...args: unknown[]) => {
+                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                const [sql, params] = args;
+                if (
+                  !held &&
+                  typeof sql === "string" &&
+                  sql.includes("FOR UPDATE") &&
+                  Array.isArray(params) &&
+                  params[1] === eventId
+                ) {
+                  held = true;
+                  const pid = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  if (!pid.rows[0]) throw new Error("Missing step 0 backend PID");
+                  signalLocked(pid.rows[0].pid);
+                  await gate;
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    const worker = runInTenant(tenant, () => createTranscriptionCreateTask(workerPool)({ fileItemId }));
+    const commit = async (): Promise<void> => {
+      release();
+      await worker;
+    };
+    try {
+      const workerPid = await bounded(
+        Promise.race([
+          locked,
+          worker.then(() => {
+            throw new Error("Step 0 finished without a row-locking read of the Event");
+          }),
+        ]),
+      );
+      return { workerPid, commit };
+    } catch (error) {
+      release();
+      const settled = await worker.then(
+        () => null,
+        (workerError: unknown) => ({ workerError }),
+      );
+      if (settled && settled.workerError !== error)
+        throw new AggregateError([error, settled.workerError], "Step 0 barrier and step 0 both failed", {
+          cause: error,
+        });
+      throw error;
+    }
+  }
+
+  async function readEventTrashed(eventId: string): Promise<boolean | undefined> {
+    const { rows } = await inTenant(tenant, (client) =>
+      client.query<{ trashed: boolean }>("SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1", [
+        eventId,
+      ]),
+    );
+    return rows[0]?.trashed;
+  }
+
+  /** Drains the queued jobs of the fast create lane; the pipeline lane's jobs stay queued. */
+  async function runCreateLane(): Promise<void> {
+    await runOnce({
+      pgPool: pool,
+      taskList: {
+        [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_CREATE,
+          createTranscriptionCreateTask(runtime),
+        ),
+      },
+    });
+  }
+
+  /** Drains the queued jobs of the pipeline lane, with the fake gateways in place of HTTP. */
+  async function runPipelineLane(): Promise<void> {
+    await runOnce({
+      pgPool: pool,
+      taskList: {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
+        ),
+      },
+    });
+  }
+
+  /** The keys among `keys` that still have a queued job, read through graphile-worker's public `jobs` view. */
+  async function queuedJobKeys(keys: string[]): Promise<string[]> {
+    const { rows } = await pool.query<{ key: string }>(
+      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+      [keys],
+    );
+    return rows.map((row) => row.key);
+  }
+
+  /**
+   * What step 0 and the pipeline left for the recording, read inside `tenantId`: the transcripts
+   * created for the file with their status, the Events those transcripts are linked to, the
+   * tenant's pairing cards (every Processing proposal that is not a speaker card) and the statuses
+   * of its speaker cards.
+   */
+  function readRecording(tenantId: string, fileItemId: string) {
+    return inTenant(tenantId, async (client) => {
+      const transcriptsDatabaseId = await requireDatabaseId(client, "transcripts");
+      const { rows: transcripts } = await client.query<{ id: string; status: string | null }>(
+        "SELECT id, properties ->> 'status' AS status FROM items WHERE database_id = $1 AND properties ->> 'link' = $2",
+        [transcriptsDatabaseId, `semprec://items/${fileItemId}`],
+      );
+      const { rows: edges } = await client.query<{ event_id: string }>(
+        `SELECT CASE WHEN r.item_a = ANY($1::uuid[]) THEN r.item_b ELSE r.item_a END AS event_id
+         FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b)
+         WHERE p.key = 'event' AND p.database_id = $2
+           AND (r.item_a = ANY($1::uuid[]) OR r.item_b = ANY($1::uuid[]))`,
+        [transcripts.map((row) => row.id), transcriptsDatabaseId],
+      );
+      const { rows: cards } = await client.query<{ kind: string | null; role: string | null; status: string | null }>(
+        `SELECT properties ->> 'kind' AS kind, properties -> 'context' ->> 'role' AS role,
+                properties ->> 'status' AS status
+         FROM items WHERE database_id = $1 ORDER BY properties ->> 'status'`,
+        [await requireDatabaseId(client, "processingProposals")],
+      );
+      return {
+        statuses: transcripts.map((row) => row.status),
+        eventIds: edges.map((edge) => edge.event_id),
+        pairingCards: cards.filter((card) => card.role !== "speaker").map((card) => card.kind),
+        speakerCards: cards.filter((card) => card.role === "speaker").map((card) => card.status),
+      };
+    });
+  }
+
+  /** How many relation edges of any kind end at `itemId`, read inside `tenantId`. */
+  async function countEdgesOf(tenantId: string, itemId: string): Promise<number | undefined> {
+    const { rows } = await inTenant(tenantId, (client) =>
+      client.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM item_relations WHERE item_a = $1 OR item_b = $1",
+        [itemId],
+      ),
+    );
+    return rows[0]?.count;
+  }
+
+  it("links the transcript to the upload's live Event while it is still processing, and the pipeline adds no pairing card", async () => {
+    const eventId = await createEvent(tenant);
+    const aliceId = await addParticipant(tenant, eventId, "Alice");
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+    const fileItemId = await uploadRecording(tenant, eventId);
+    const pipelineJobKey = `transcription-job:${fileItemId}`;
+
+    await runCreateLane();
+
+    // The pipeline job has not run: the edge below is step 0's own, written before any media work.
+    expect(await queuedJobKeys([`transcription-create:${fileItemId}`, pipelineJobKey])).toEqual([pipelineJobKey]);
+    expect(await readRecording(tenant, fileItemId)).toEqual({
+      statuses: ["processing"],
+      eventIds: [eventId],
+      pairingCards: [],
+      speakerCards: [],
+    });
+
+    await runPipelineLane();
+
+    expect(await queuedJobKeys([pipelineJobKey])).toEqual([]);
+    expect(await readRecording(tenant, fileItemId)).toEqual({
+      statuses: ["done"],
+      eventIds: [eventId],
+      pairingCards: [],
+      speakerCards: ["needsClarification", "proposed"],
+    });
+    // Step 7 took its candidates from the Event step 0 linked.
+    const suggestionCalls = summaryClient.calls.filter((call) => call.operation === "transcript_speaker_suggestion");
+    expect(suggestionCalls).toHaveLength(1);
+    expect(suggestionCalls[0]?.messages[0]?.content).toContain(`${aliceId}: Alice`);
+  });
+
+  it.each(["trashed", "purged"] as const)(
+    "writes no edge when the Event was %s between the upload and step 0, and the transcript is matched normally",
+    async (eventState) => {
+      const eventId = await createEvent(tenant);
+      const fileItemId = await uploadRecording(tenant, eventId);
+      expect((await inTenant(tenant, (client) => readRecordingRequest(client, fileItemId)))?.eventId).toBe(eventId);
+      await runInTenant(tenant, async () => {
+        const eventsDatabaseId = await withTransaction(runtime, (client) => requireDatabaseId(client, "events"));
+        const chokePoint = createChokePoint(runtime);
+        await chokePoint.softDeleteItem(eventsDatabaseId, eventId);
+        if (eventState === "purged")
+          expect(
+            (await chokePoint.purgeExpiredTrashSubtree(eventId, new Date(Date.now() + 60_000))).purgedItemIds,
+          ).toEqual([eventId]);
+      });
+
+      await runCreateLane();
+
+      expect(await queuedJobKeys([`transcription-create:${fileItemId}`])).toEqual([]);
+      expect(await readRecording(tenant, fileItemId)).toEqual({
+        statuses: ["processing"],
+        eventIds: [],
+        pairingCards: [],
+        speakerCards: [],
+      });
+      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+
+      await runPipelineLane();
+
+      // No Event starts inside the recording's window, so the normal match proposes one on a card.
+      expect(await readRecording(tenant, fileItemId)).toEqual({
+        statuses: ["done"],
+        eventIds: [],
+        pairingCards: ["transcript"],
+        speakerCards: ["needsClarification", "needsClarification"],
+      });
+      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+    },
+  );
+
+  it("writes one edge and one transcript when step 0 runs twice", async () => {
+    const eventId = await createEvent(tenant);
+    const fileItemId = await uploadRecording(tenant, eventId);
+    const task = createTranscriptionCreateTask(runtime);
+
+    await runInTenant(tenant, async () => {
+      await task({ fileItemId });
+      await task({ fileItemId });
+    });
+
+    expect(await readRecording(tenant, fileItemId)).toEqual({
+      statuses: ["processing"],
+      eventIds: [eventId],
+      pairingCards: [],
+      speakerCards: [],
+    });
+    expect(await countEdgesOf(tenant, eventId)).toBe(1);
+  });
+
+  it("keeps a concurrent trash of the Event waiting until step 0 has committed its edge", async () => {
+    const eventId = await createEvent(tenant);
+    const fileItemId = await uploadRecording(tenant, eventId);
+    const eventsDatabaseId = await inTenant(tenant, (client) => requireDatabaseId(client, "events"));
+    const stepZero = await holdStepZeroAtEventLock(fileItemId, eventId);
+    let signalTrash!: (pid: number) => void;
+    const trashStarted = new Promise<number>((resolve) => {
+      signalTrash = resolve;
+    });
+    let trash: Promise<void> | undefined;
+    const failures: unknown[] = [];
+    try {
+      trash = inTenant(tenant, async (client) => {
+        const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        if (!pid.rows[0]) throw new Error("Missing trash backend PID");
+        signalTrash(pid.rows[0].pid);
+        await itemDeleteWithClient(client, eventsDatabaseId, eventId, { queueAffinity: createActionQueueAffinity() });
+      });
+      const trashPid = await bounded(
+        Promise.race([
+          trashStarted,
+          trash.then(() => {
+            throw new Error("The trash finished while step 0 held the Event");
+          }),
+        ]),
+      );
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [stepZero.workerPid, trashPid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+      expect(blocked).toBe(true);
+      expect(await readEventTrashed(eventId)).toBe(false);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const pending of [stepZero.commit(), trash])
+      if (pending) {
+        try {
+          await pending;
+        } catch (error) {
+          if (!failures.includes(error)) failures.push(error);
+        }
+      }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Step 0 and trash overlap or its cleanup failed");
+
+    // The edge was written to a live Event; the trash that waited for it then went through.
+    expect((await readRecording(tenant, fileItemId)).eventIds).toEqual([eventId]);
+    expect(await readEventTrashed(eventId)).toBe(true);
+  });
+
+  it("answers a concurrent upload naming the same Event recording_busy while step 0 holds the Event, and accepts it afterwards", async () => {
+    const eventId = await createEvent(tenant);
+    const fileItemId = await uploadRecording(tenant, eventId);
+    const secondRecording = Buffer.from("a second recording of the same meeting");
+    const stepZero = await holdStepZeroAtEventLock(fileItemId, eventId);
+    const failures: unknown[] = [];
+    try {
+      await expect(uploadRecording(tenant, eventId, secondRecording)).rejects.toMatchObject({
+        status: 409,
+        code: "recording_busy",
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await stepZero.commit();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Step 0 and upload overlap or its cleanup failed");
+
+    const secondFileItemId = await uploadRecording(tenant, eventId, secondRecording);
+    expect(secondFileItemId).not.toBe(fileItemId);
+    expect((await inTenant(tenant, (client) => readRecordingRequest(client, secondFileItemId)))?.eventId).toBe(eventId);
+  });
+
+  it.each(["another tenant's Event", "an unknown id"] as const)(
+    "writes no edge for a request naming %s, and nothing in the other tenant",
+    async (requested) => {
+      const foreignEventId = await createEvent(foreign);
+      const fileItemId = await uploadRecording(tenant, null);
+      // recordRecordingIntake refuses an Event outside the tenant, so only a direct write can leave such an id in the request.
+      const planted = await runInTenant(tenant, () =>
+        runtime.query(
+          "UPDATE recording_requests SET event_item_id = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+          [fileItemId, requested === "another tenant's Event" ? foreignEventId : randomUUID()],
+        ),
+      );
+      expect(planted.rowCount).toBe(1);
+
+      await runCreateLane();
+
+      expect(await queuedJobKeys([`transcription-create:${fileItemId}`])).toEqual([]);
+      expect(await readRecording(tenant, fileItemId)).toEqual({
+        statuses: ["processing"],
+        eventIds: [],
+        pairingCards: [],
+        speakerCards: [],
+      });
+      expect(await countEdgesOf(foreign, foreignEventId)).toBe(0);
+      expect(await readRecording(foreign, fileItemId)).toEqual({
+        statuses: [],
+        eventIds: [],
+        pairingCards: [],
+        speakerCards: [],
+      });
+    },
+  );
+
+  it("runs this process's relation-edge hooks for the edge: the Event's search reindex is queued with it", async () => {
+    const eventId = await createEvent(tenant);
+    const fileItemId = await uploadRecording(tenant, eventId);
+    const reindexKey = `item-search-reindex:item:${eventId}`;
+    expect(await queuedJobKeys([reindexKey])).toEqual([]);
+
+    await runCreateLane();
+
+    expect((await readRecording(tenant, fileItemId)).eventIds).toEqual([eventId]);
+    expect(await queuedJobKeys([reindexKey])).toEqual([reindexKey]);
+  });
+
+  it.each([
+    [
+      "Events database",
+      "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'events'",
+      "Events database not found",
+    ],
+    [
+      "Transcripts 'event' relation",
+      `UPDATE properties SET key = 'eventUnavailable'
+       WHERE key = 'event' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'transcripts')`,
+      "Transcript event relation not found",
+    ],
+  ] as const)(
+    "fails and writes nothing when the %s is missing from the catalog",
+    async (_label, removeCatalogEntry, message) => {
+      const eventId = await createEvent(tenant);
+      const fileItemId = await uploadRecording(tenant, eventId);
+      // Simulate a missing built-in catalog entry, which normal APIs cannot remove.
+      const removed = await runInTenant(tenant, () => runtime.query(removeCatalogEntry));
+      expect(removed.rowCount).toBe(1);
+
+      await expect(runInTenant(tenant, () => createTranscriptionCreateTask(runtime)({ fileItemId }))).rejects.toThrow(
+        message,
+      );
+
+      expect(await readRecording(tenant, fileItemId)).toEqual({
+        statuses: [],
+        eventIds: [],
+        pairingCards: [],
+        speakerCards: [],
+      });
+      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+      const checkpoint = await inTenant(tenant, (client) =>
+        client.query<{ created: boolean }>("SELECT computed ? 'create' AS created FROM items WHERE id = $1", [
+          fileItemId,
+        ]),
+      );
+      expect(checkpoint.rows).toEqual([{ created: false }]);
+    },
+  );
 });
 
 const prepareCheckpointSchema = z.object({
@@ -2142,11 +2720,15 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       if (!rows[0]) throw new Error("Events 'people' property was not seeded");
       return { person: created, peoplePropertyId: rows[0].id };
     });
-    await createChokePoint(pool).createRelation({
-      relationPropertyId: peoplePropertyId,
-      callerItemId: eventId,
-      targetItemId: person.id,
-    });
+    // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
+    // needs a tenant scope.
+    await inTenantZero(() =>
+      createChokePoint(pool).createRelation({
+        relationPropertyId: peoplePropertyId,
+        callerItemId: eventId,
+        targetItemId: person.id,
+      }),
+    );
     return person.id;
   }
 
@@ -4353,6 +4935,492 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         expect(await readRunnableJobs()).toEqual([]);
         expect(await readAutomation(transcriptId)).toMatchObject({ status: "locked", attempts: 3 });
         expect(summaryClient.calls).toHaveLength(3);
+      });
+    });
+
+    describe("rerun of a finished transcript without meeting notes (issue #1712)", () => {
+      /**
+       * Runs the pipeline to `done`, then removes `meetingNotes`, which a transcript finished before
+       * issue #1695 does not have. No production write removes the key, so the row is edited directly.
+       * Everything else is what today's pipeline leaves, the source's `suggestSpeakers` checkpoint and
+       * the speaker cards included; `finishWithoutNotesOrSpeakerProposals` removes those as well.
+       */
+      async function finishWithoutNotes(fileItemId: string) {
+        await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId }, FIRST_ATTEMPT);
+        const finished = await readTranscript(fileItemId);
+        expect(finished.properties.status).toBe("done");
+        const stripped = await pool.query("UPDATE items SET computed = computed - 'meetingNotes' WHERE id = $1", [
+          finished.id,
+        ]);
+        expect(stripped.rowCount).toBe(1);
+        return readTranscript(fileItemId);
+      }
+
+      /**
+       * `finishWithoutNotes`, then the shape an earlier pipeline left when step 7 had nobody to ask
+       * about (no linked Event, or none with a named participant): no `suggestSpeakers` checkpoint on
+       * the source and no speaker card. The cards leave through the Trash and its purge, so their
+       * idempotency keys are free again. No production write removes the checkpoint, so the source row
+       * is edited directly.
+       */
+      async function finishWithoutNotesOrSpeakerProposals(fileItemId: string) {
+        const transcript = await finishWithoutNotes(fileItemId);
+        const { rows: speakerCards } = await pool.query<{ id: string; database_id: string }>(
+          `SELECT i.id, i.database_id FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'processingProposals' AND i.properties -> 'context' ->> 'role' = 'speaker'
+           ORDER BY i.id`,
+        );
+        // One card per speaker of the fixture's two.
+        expect(speakerCards).toHaveLength(2);
+        const chokePoint = createChokePoint(pool);
+        for (const card of speakerCards) {
+          await inTenantZero(() => chokePoint.softDeleteItem(card.database_id, card.id));
+          // Any cutoff after the moment the card was trashed makes it eligible; no wall-clock wait is involved.
+          const purged = await inTenantZero(() =>
+            chokePoint.purgeExpiredTrashSubtree(card.id, new Date(Date.now() + 60_000)),
+          );
+          expect(purged.purgedItemIds).toEqual([card.id]);
+        }
+        const stripped = await pool.query("UPDATE items SET computed = computed - 'suggestSpeakers' WHERE id = $1", [
+          fileItemId,
+        ]);
+        expect(stripped.rowCount).toBe(1);
+        return transcript;
+      }
+
+      /** Every Processing proposals card, the Event pairing card and the speaker cards alike. */
+      async function readCardIds(): Promise<string[]> {
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'processingProposals' ORDER BY i.id`,
+        );
+        return rows.map((row) => row.id);
+      }
+
+      async function readSourceComputed(filesDatabaseId: string, fileItemId: string) {
+        const source = await withTransaction(pool, (client) => getItemById(client, filesDatabaseId, fileItemId));
+        if (!source) throw new Error("expected the source Files item");
+        return source.computed;
+      }
+
+      async function readFailure(transcriptId: string) {
+        const { rows } = await pool.query<{
+          status: string;
+          error: string | null;
+          error_code: string | null;
+          attempts: number;
+        }>("SELECT status, error, error_code, attempts FROM item_automation WHERE item_id = $1", [transcriptId]);
+        return rows;
+      }
+
+      async function countNotifications(): Promise<number> {
+        const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM notifications");
+        return rows[0]?.count ?? 0;
+      }
+
+      async function readTranscriptionJobs(): Promise<Array<{ key: string | null; attempts: number }>> {
+        const { rows } = await pool.query<{ key: string | null; attempts: number }>(
+          "SELECT key, attempts FROM graphile_worker.jobs WHERE task_identifier = $1",
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB],
+        );
+        return rows;
+      }
+
+      it("pays only the summarize call, keeps status done while it runs and adds no card", async () => {
+        const { files, file } = await createSourceFile();
+        await createUser();
+        const before = await finishWithoutNotes(file.id);
+        const sourceBefore = await readSourceComputed(files.id, file.id);
+        const matchBefore = await readMatch(before.id);
+        const cardsBefore = await readCardIds();
+        // No Event matched: the first run left the pairing card and one card per speaker.
+        expect(matchBefore.cards).toHaveLength(1);
+        expect(cardsBefore).toHaveLength(3);
+        const observed: Array<{ status: unknown; automation: string | undefined }> = [];
+        /** Reads the row's visible state while the paid call of the rerun is out. */
+        const observing = new (class extends FakeSummaryClient {
+          override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+            observed.push({
+              status: (await readTranscript(file.id)).properties.status,
+              automation: await readAutomationStatus(before.id),
+            });
+            return super.complete(input);
+          }
+        })();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          observing,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        expect(observing.calls.map((call) => call.operation)).toEqual(["transcript_summary"]);
+        expect(observed).toEqual([{ status: "done", automation: "pending" }]);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toHaveLength(1);
+        const after = await readTranscript(file.id);
+        expect(after.properties).toEqual(before.properties);
+        expect(after.computed).toEqual({ ...before.computed, meetingNotes: { ...FAKE_NOTES, actionItems: [] } });
+        expect(await readSourceComputed(files.id, file.id)).toEqual(sourceBefore);
+        expect(await readMatch(after.id)).toEqual(matchBefore);
+        expect(await readCardIds()).toEqual(cardsBefore);
+        expect(await readAutomation(after.id)).toEqual({ status: "done", error: null, attempts: 2 });
+        expect(await countNotifications()).toBe(0);
+      });
+
+      it("makes no second speaker suggestion call and keeps the Event edge and the speaker cards", async () => {
+        const { file } = await createSourceFile();
+        const eventId = await createEvent(FIXTURE_CREATION_TIME);
+        const aliceId = await createParticipant(eventId, "Alice");
+        summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+        const before = await finishWithoutNotes(file.id);
+        expect(summaryClient.calls.map((call) => call.operation)).toEqual([
+          "transcript_summary",
+          "transcript_speaker_suggestion",
+        ]);
+        const cardsBefore = await readCardIds();
+        expect(cardsBefore).toHaveLength(2);
+        expect(await readMatch(before.id)).toEqual({ eventIds: [eventId], cards: [] });
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        expect(summaryClient.calls.map((call) => call.operation)).toEqual([
+          "transcript_summary",
+          "transcript_speaker_suggestion",
+          "transcript_summary",
+        ]);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toHaveLength(1);
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(after.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+        expect(await readMatch(after.id)).toEqual({ eventIds: [eventId], cards: [] });
+        expect(await readCardIds()).toEqual(cardsBefore);
+        expect(await countSpeakerEdges()).toBe(0);
+      });
+
+      it("adds no speaker card and no checkpoint for a transcript an earlier pipeline finished without them", async () => {
+        const { files, file } = await createSourceFile();
+        const before = await finishWithoutNotesOrSpeakerProposals(file.id);
+        const sourceBefore = await readSourceComputed(files.id, file.id);
+        expect(sourceBefore).not.toHaveProperty("suggestSpeakers");
+        const cardsBefore = await readCardIds();
+        // No Event matched: only the pairing card of the first run is left.
+        expect(cardsBefore).toHaveLength(1);
+        expect(await readSpeakerCards()).toEqual([]);
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        const after = await readTranscript(file.id);
+        expect(after.properties).toEqual(before.properties);
+        expect(after.computed).toEqual({ ...before.computed, meetingNotes: { ...FAKE_NOTES, actionItems: [] } });
+        expect(await readCardIds()).toEqual(cardsBefore);
+        expect(await readSpeakerCards()).toEqual([]);
+        expect(await readSourceComputed(files.id, file.id)).toEqual(sourceBefore);
+        // The first run's notes call and the rerun's; nothing else was asked.
+        expect(summaryClient.calls.map((call) => call.operation)).toEqual(["transcript_summary", "transcript_summary"]);
+        expect(await readAutomation(after.id)).toEqual({ status: "done", error: null, attempts: 2 });
+      });
+
+      it("pays no speaker suggestion call for such a transcript whose Event has a named participant", async () => {
+        const { files, file } = await createSourceFile();
+        const eventId = await createEvent(FIXTURE_CREATION_TIME);
+        const aliceId = await createParticipant(eventId, "Alice");
+        summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+        // The state of a transcript whose Event got its named participant only after it was finished.
+        const before = await finishWithoutNotesOrSpeakerProposals(file.id);
+        const sourceBefore = await readSourceComputed(files.id, file.id);
+        expect(sourceBefore).not.toHaveProperty("suggestSpeakers");
+        // The linked Event left no pairing card, and the speaker cards are gone.
+        expect(await readCardIds()).toEqual([]);
+        const callsBefore = summaryClient.calls.length;
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        // Alice is still an unmapped participant: an unfinished transcript would be asked about here.
+        expect(summaryClient.calls.slice(callsBefore).map((call) => call.operation)).toEqual(["transcript_summary"]);
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(after.computed).toEqual({ ...before.computed, meetingNotes: { ...FAKE_NOTES, actionItems: [] } });
+        expect(await readCardIds()).toEqual([]);
+        expect(await readSourceComputed(files.id, file.id)).toEqual(sourceBefore);
+        expect(await readMatch(after.id)).toEqual({ eventIds: [eventId], cards: [] });
+        expect(await countSpeakerEdges()).toBe(0);
+      });
+
+      it("neither links nor proposes an Event again after the user removed the transcript's Event edge", async () => {
+        const { file } = await createSourceFile();
+        const eventId = await createEvent(FIXTURE_CREATION_TIME);
+        const before = await finishWithoutNotes(file.id);
+        expect(await readMatch(before.id)).toEqual({ eventIds: [eventId], cards: [] });
+        const { rows: eventProperty } = await pool.query<{ id: string }>(
+          `SELECT p.id FROM properties p JOIN databases d ON d.id = p.database_id
+           WHERE d.owner_module_id = 'transcripts' AND p.key = 'event'`,
+        );
+        const relationPropertyId = eventProperty[0]?.id;
+        if (!relationPropertyId) throw new Error("Transcripts 'event' property was not seeded");
+        // The relation is the user's: removed the way the relation endpoint removes it.
+        const removed = await createChokePoint(pool).deleteRelation({
+          relationPropertyId,
+          callerItemId: before.id,
+          targetItemId: eventId,
+        });
+        expect(removed).not.toBeNull();
+        expect(await readMatch(before.id)).toEqual({ eventIds: [], cards: [] });
+        const cardsBefore = await readCardIds();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        // The Event still starts inside the recording's window: an unfinished transcript would be linked to it.
+        expect(await readMatch(before.id)).toEqual({ eventIds: [], cards: [] });
+        expect(await readCardIds()).toEqual(cardsBefore);
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(after.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+      });
+
+      it("still converges on the Event edge and the speaker checkpoint when an unfinished run resumes", async () => {
+        const { files, file } = await createSourceFile();
+        const eventId = await createEvent(FIXTURE_CREATION_TIME);
+        const aliceId = await createParticipant(eventId, "Alice");
+        summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+        const controller = new AbortController();
+        /** Requests the shutdown while step 7's call is out: the step still commits, and the run stops before finalize. */
+        const interrupting: AiGatewayClientPort = {
+          complete: (input) => {
+            if (input.operation === "transcript_speaker_suggestion") controller.abort();
+            return summaryClient.complete(input);
+          },
+        };
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          interrupting,
+        )({ fileItemId: file.id }, { ...FIRST_ATTEMPT, abortSignal: controller.signal });
+        const interrupted = await readTranscript(file.id);
+        expect(interrupted.properties.status).toBe("processing");
+        expect(await readMatch(interrupted.id)).toEqual({ eventIds: [eventId], cards: [] });
+        const cardsBefore = await readCardIds();
+        expect(cardsBefore).toHaveLength(2);
+        const sourceBefore = await readSourceComputed(files.id, file.id);
+        expect(sourceBefore).toHaveProperty("suggestSpeakers");
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        expect((await readTranscript(file.id)).properties.status).toBe("done");
+        expect(summaryClient.calls.map((call) => call.operation)).toEqual([
+          "transcript_summary",
+          "transcript_speaker_suggestion",
+        ]);
+        expect(await readMatch(interrupted.id)).toEqual({ eventIds: [eventId], cards: [] });
+        expect(await readCardIds()).toEqual(cardsBefore);
+        expect(await readSourceComputed(files.id, file.id)).toEqual(sourceBefore);
+      });
+
+      it("writes no speaker card and no checkpoint when the transcript is finished while the suggestion call is out", async () => {
+        const { files, file } = await createSourceFile();
+        const eventId = await createEvent(FIXTURE_CREATION_TIME);
+        const aliceId = await createParticipant(eventId, "Alice");
+        /**
+         * Finishes the transcript while this run's suggestion call is out, through the owner-process
+         * write finalize uses. It stands in for a concurrent run that had nobody left to ask about and so
+         * finished the transcript without the checkpoint.
+         */
+        class FinishingSummaryClient extends FakeSummaryClient {
+          override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+            if (input.operation === "transcript_speaker_suggestion") {
+              const transcript = await readTranscript(file.id);
+              await withTransaction(pool, async (client) => {
+                const transcripts = await getDatabaseByModuleId(client, "transcripts");
+                if (!transcripts) throw new Error("Transcripts database was not seeded");
+                await updateItemWithClient(
+                  client,
+                  { databaseId: transcripts.id, itemId: transcript.id, propertiesPatch: { status: "done" } },
+                  { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+                );
+              });
+            }
+            return super.complete(input);
+          }
+        }
+        const finishing = new FinishingSummaryClient();
+        finishing.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          finishing,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        // The call was already out and is paid; its answer is dropped.
+        expect(finishing.calls.map((call) => call.operation)).toEqual([
+          "transcript_summary",
+          "transcript_speaker_suggestion",
+        ]);
+        expect(await readCardIds()).toEqual([]);
+        expect(await readSourceComputed(files.id, file.id)).not.toHaveProperty("suggestSpeakers");
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(await readMatch(after.id)).toEqual({ eventIds: [eventId], cards: [] });
+        expect(await readAutomation(after.id)).toMatchObject({ status: "done", attempts: 1 });
+      });
+
+      it("gets its notes from the job the backfill cutover enqueues, and the next cutover run enqueues nothing", async () => {
+        const { file } = await createSourceFile();
+        const before = await finishWithoutNotes(file.id);
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const failures: unknown[] = [];
+        try {
+          await runAsSystem("test cutover", () => runTenantCutoverMigrations(runtime));
+          expect(await readTranscriptionJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
+
+          const taskList = {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
+            ),
+          };
+          await runOnce({ pgPool: pool, taskList });
+
+          expect(await readTranscriptionJobs()).toEqual([]);
+          const after = await readTranscript(file.id);
+          expect(after.id).toBe(before.id);
+          expect(after.properties.status).toBe("done");
+          expect(after.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+          expect(await readAutomation(after.id)).toEqual({ status: "done", error: null, attempts: 2 });
+          // The first run's notes call and the rerun's; no audio stage ran again.
+          expect(summaryClient.calls.map((call) => call.operation)).toEqual([
+            "transcript_summary",
+            "transcript_summary",
+          ]);
+          expect(gatewayClient.diarizeCalls).toHaveLength(1);
+          expect(gatewayClient.transcribeCalls).toHaveLength(1);
+
+          await runAsSystem("test cutover", () => runTenantCutoverMigrations(runtime));
+          expect(await readTranscriptionJobs()).toEqual([]);
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Backfill cutover test or cleanup failed");
+      });
+
+      it("leaves status done and writes no notification when its last attempt fails", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const before = await finishWithoutNotes(file.id);
+        const cardsBefore = await readCardIds();
+        const failure = new Error("simulated summary outage");
+        summaryClient.failure = failure;
+
+        await expect(
+          createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            summaryClient,
+          )({ fileItemId: file.id }, FINAL_ATTEMPT),
+        ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
+
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(after.properties).toEqual(before.properties);
+        expect(after.computed).toEqual(before.computed);
+        expect(await readFailure(after.id)).toEqual([
+          { status: "error", error: failure.message, error_code: "unknown", attempts: 2 },
+        ]);
+        expect(await countNotifications()).toBe(0);
+        expect(await readCardIds()).toEqual(cardsBefore);
+      });
+
+      it("leaves status done and writes no notification when the gateway budget rejects it", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const before = await finishWithoutNotes(file.id);
+        summaryClient.failure = new AiGatewayFailedError("budget_exceeded");
+
+        await expect(
+          createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            summaryClient,
+          )({ fileItemId: file.id }, FIRST_ATTEMPT),
+        ).resolves.toBeUndefined();
+
+        const after = await readTranscript(file.id);
+        expect(after.properties).toEqual(before.properties);
+        expect(after.computed).toEqual(before.computed);
+        expect(await readFailure(after.id)).toMatchObject([
+          { status: "error", error_code: "budgetExceeded", attempts: 2 },
+        ]);
+        expect(await countNotifications()).toBe(0);
+      });
+
+      it("is finished by the daily requeue sweep after such a failure, still without a notification", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const before = await finishWithoutNotes(file.id);
+        summaryClient.failure = new Error("simulated summary outage");
+        const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+        await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+        });
+        expect(await readAutomation(before.id)).toMatchObject({ status: "error", attempts: 2 });
+        summaryClient.failure = null;
+
+        const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+        if (!transcripts) throw new Error("Transcripts database was not seeded");
+        await inTenantZero(() =>
+          createTranscriptionRequeueSweepAction(pool)(
+            { transcriptsDatabaseId: transcripts.id },
+            { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+          ),
+        );
+        expect(await readTranscriptionJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
+        await runOnce({
+          pgPool: pool,
+          taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(CORE_TASK_NAMES.TRANSCRIPTION_JOB, task) },
+        });
+
+        const after = await readTranscript(file.id);
+        expect(after.properties.status).toBe("done");
+        expect(after.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
+        expect(await readAutomation(after.id)).toEqual({ status: "done", error: null, attempts: 3 });
+        expect(await countNotifications()).toBe(0);
       });
     });
   });

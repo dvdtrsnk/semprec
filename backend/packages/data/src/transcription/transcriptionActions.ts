@@ -30,10 +30,17 @@ export const TRANSCRIPTION_REQUEUE_HEARTBEAT = {
 
 const logger = createLogger("transcription");
 
-/** The heartbeat's `action_config`: the Files database this action is scoped to, plus the Emails.attachments relation property to check a candidate file against — resolved once at seed time (seed/seedSystem.ts), not re-resolved on every fire. */
+/**
+ * The heartbeat's `action_config`: the Files database this action is scoped to, plus the relation
+ * properties a candidate file is checked against, Emails.attachments and Files.events. The seed
+ * (seed/seedSystem.ts) stores their ids in the config; they are not re-resolved on every fire.
+ * `eventsRelationPropertyId` (issue #1698) is optional: a heartbeat seeded before it has no such key
+ * until `transcriptionTriggerEventsCutoverMigration.ts` sets it, and its config must still parse.
+ */
 const filesTranscriptionTriggerConfigSchema = z.object({
   filesDatabaseId: z.string().uuid(),
   attachmentsRelationPropertyId: z.string().uuid(),
+  eventsRelationPropertyId: z.string().uuid().optional(),
 });
 
 /** Shared with `transcriptionRouteHandlers.ts`'s own mime-type gate on `POST /api/transcriptions`. */
@@ -53,6 +60,9 @@ export function readBlobId(properties: Record<string, unknown>): string | undefi
  * mail attachment — is silently skipped, the same "not every create matters" shape as
  * `libraryMetadataActions.ts`'s trigger. A file filed from an Inbox attachment (an item with an
  * `inbox` origin row, issue #1703) is skipped too: transcribing it is proposed explicitly (#1978).
+ * A file attached to an Event (at least one Files.events edge, issue #1698) is skipped like an
+ * email attachment: it is a plain attachment, not a recording. A heartbeat whose config has no
+ * `eventsRelationPropertyId` yet (seeded earlier, not cut over) skips that one check.
  */
 export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -83,6 +93,17 @@ export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler
           fileItem.id,
         );
         if (attachmentEdges.length > 0) return; // an Emails attachment, not a standalone recording
+      }
+
+      if (config.eventsRelationPropertyId) {
+        const eventsDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+          client,
+          config.eventsRelationPropertyId,
+        );
+        if (eventsDefinition) {
+          const eventEdges = await relationsStore.listRelationsForItem(client, eventsDefinition.id, fileItem.id);
+          if (eventEdges.length > 0) return; // an Event attachment, not a standalone recording
+        }
       }
 
       await enqueueTranscriptionCreate(client, { fileItemId: fileItem.id });

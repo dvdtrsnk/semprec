@@ -5,6 +5,7 @@ import {
   projectRecurrenceApproval,
 } from "./tasks/taskRecurrenceOwner.js";
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
+import { inboxTypeEdgeChangedHook } from "./inbox/inboxTypeEdgeHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
@@ -35,22 +36,33 @@ import {
   registerAutomationBatchReader,
   registerItemRestoreHook,
   registerItemDeleteHook,
+  registerItemPurgeHook,
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
 import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
 import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
 import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
+import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
+import { mailItemPurgeHook } from "./mail/mailPurgeHook.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
+import {
+  eventReminderValuesItemCreateHook,
+  eventReminderValuesItemUpdateHook,
+} from "./calendar/eventReminderValuesHook.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
+import {
+  transcriptCompanyLinkReleaseEdgeChangedHook,
+  transcriptCompanyLinkReleaseItemDeleteHook,
+} from "./transcription/transcriptCompanyLinkRelease.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
   itemSearchDeleteHook,
@@ -84,6 +96,7 @@ import {
   peopleLastContactItemRestoreHook,
   peopleLastContactItemUpdateHook,
 } from "./people/lastContactHooks.js";
+import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValueHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
@@ -115,8 +128,11 @@ registerItemUpdateHook(eventValidationItemUpdateHook);
 registerItemCreateHook(blobReferenceItemCreateHook);
 registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);
+// Issue #1707: one hook for both registries, after the blob reference hooks above.
+registerItemCreateHook(recipePhotoWriteHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
+registerItemUpdateHook(recipePhotoWriteHook);
 registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
@@ -164,6 +180,8 @@ registerItemReadProjection({
 
 registerItemCreateHook(mailboxConnectionLimitCreateHook);
 registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
+// Issue gh-1691: the mail rows of a permanently deleted Emails or Mailboxes item go with it.
+registerItemPurgeHook(mailItemPurgeHook);
 
 registerItemCreateHook(areaItemCreateHook);
 registerItemUpdateHook(areaItemUpdateHook);
@@ -178,3 +196,19 @@ registerRelationEdgeChangedHook(peopleLastContactEdgeChangedHook);
 registerItemUpdateHook(peopleLastContactItemUpdateHook);
 registerItemDeleteHook(peopleLastContactItemDeleteHook);
 registerItemRestoreHook(peopleLastContactItemRestoreHook);
+
+// Issue #1697: a transcript's company link ends when its Event edge is removed or its Event is trashed; the
+// removal of the edge also detaches the Event from the transcript's project and people links.
+registerRelationEdgeChangedHook(transcriptCompanyLinkReleaseEdgeChangedHook);
+registerItemDeleteHook(transcriptCompanyLinkReleaseItemDeleteHook);
+
+// Issue #1710: a project's area or company edge change queues the announcement of the project's items.
+registerRelationEdgeChangedHook(projectDerivedValueEdgeChangedHook);
+
+// Events: a write that names `alertMinutes` or `travelMinutes` gives an allowed value or `null` (issue #1714).
+registerItemCreateHook(eventReminderValuesItemCreateHook);
+registerItemUpdateHook(eventReminderValuesItemUpdateHook);
+
+// Issue #1718: each reported `create` or `delete` of an Inbox type edge, a repeated create of an existing edge
+// included, queues the Inbox tick and the recompute of the item's Journal day.
+registerRelationEdgeChangedHook(inboxTypeEdgeChangedHook);

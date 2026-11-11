@@ -231,6 +231,18 @@ export async function pageValueLinksForSource(
   return rows.map(mapValueLinkRow);
 }
 
+/** The distinct item sources of the `on` links of one rule, in id order. */
+export async function listOnValueLinkSourceItemIds(client: PoolClient, ruleKey: string): Promise<string[]> {
+  const { rows } = await client.query<{ source_item_id: string }>(
+    `SELECT DISTINCT s.source_item_id
+     FROM value_link_sources s JOIN value_links l ON l.tenant_id = app_tenant_default() AND l.id = s.link_id
+     WHERE s.tenant_id = app_tenant_default() AND s.source_kind = 'item' AND l.rule_key = $1 AND l.state = 'on'
+     ORDER BY s.source_item_id`,
+    [ruleKey],
+  );
+  return rows.map((row) => row.source_item_id);
+}
+
 /** Adds one item source, idempotently, to a caller-locked link. */
 export async function addValueLinkItemSource(
   client: PoolClient,

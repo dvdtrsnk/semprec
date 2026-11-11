@@ -33,10 +33,15 @@ function isTemplateField(key: string): key is TemplateField {
   return TEMPLATE_FIELD_SET.has(key);
 }
 
+/**
+ * The series id of the path, in lower case. PostgreSQL prints `task_recurrence.series_id` in lower case, and that text
+ * is what the occurrences of the series hold in `seriesId`. A path may spell the same UUID with upper-case digits; the
+ * occurrence query below compares `properties->>'seriesId'` as text, and the response carries the value returned here.
+ */
 function seriesIdOf(ctx: Context): string {
   const result = z.uuid().safeParse(ctx.params.seriesId);
   if (!result.success) throw new ValidationError("Series id must be a UUID", { field: "seriesId" });
-  return result.data;
+  return result.data.toLowerCase();
 }
 
 function boolean(value: unknown, field: string): boolean {
@@ -98,22 +103,25 @@ function assertTemplateTimes(template: TaskRecurrenceTemplate): void {
 
 /**
  * The open occurrences of a series the edit reaches besides its current one: `notDone`, not trashed and dated on or
- * after the current occurrence's `date`, locked in id order. Done, wontDo and missed occurrences and earlier ones are
- * never selected.
+ * after the current occurrence's `date`, in id order. Done, wontDo and missed occurrences and earlier ones are never
+ * selected. With `lock` the rows are locked `FOR UPDATE`; without it they are only read, which is the form to use
+ * once the series row is locked (items before `task_recurrence`).
  */
-async function lockOpenOccurrences(
+async function openOccurrenceIds(
   client: PoolClient,
   databaseId: string,
   seriesId: string,
   current: ItemRow,
+  lock: boolean,
 ): Promise<string[]> {
   const date = current.properties.date;
   if (typeof date !== "string") return [];
+  // The suffix is one of two literals chosen here, never input.
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND id <> $2
        AND properties->>'seriesId' = $3 AND properties->>'status' = 'notDone' AND properties->>'date' >= $4
-     ORDER BY id FOR UPDATE`,
+     ORDER BY id${lock ? " FOR UPDATE" : ""}`,
     [databaseId, current.id, seriesId, date],
   );
   return rows.map((row) => row.id);
@@ -127,7 +135,9 @@ async function lockOpenOccurrences(
  * the template and writes the same patch to the current occurrence, when it is open, and to those occurrences through
  * the Tasks write path, which validates each of them again. An occurrence's own `date` is never written, so one moved
  * on its own keeps it. An unknown, inactive or another tenant's series is not found alike; a series that advanced to
- * another occurrence while the edit waited is a 409. Responds with the series: `seriesId`, `template`, the current
+ * another occurrence while the edit waited is a 409. So is a series whose open occurrences, read again once the series
+ * row is locked, include one the edit did not lock: the occurrence route (issue #1720) stored it, or another write
+ * made it one of them, after the edit locked the others. Responds with the series: `seriesId`, `template`, the current
  * occurrence's `recurrence` and its id.
  */
 export function createTaskSeriesPatchRouteHandler(pool: Pool) {
@@ -140,9 +150,17 @@ export function createTaskSeriesPatchRouteHandler(pool: Pool) {
       if (!tasks || !found || !found.active) throw new NotFoundError(`Series ${seriesId} not found`);
       const current = await itemsStore.lockItemById(client, tasks.id, found.itemId);
       if (!current || current.deletedAt) throw new ConflictError("The series has no current occurrence", { seriesId });
-      const others = await lockOpenOccurrences(client, tasks.id, seriesId, current);
+      const others = await openOccurrenceIds(client, tasks.id, seriesId, current, true);
       const series = await getTaskRecurrenceBySeriesId(client, seriesId, true);
       if (!series || !series.active || series.itemId !== current.id || series.template === null) {
+        throw new ConflictError("The series changed while it was being edited", { seriesId });
+      }
+      // Read again now that the series row is locked. The occurrence route (issue #1720) creates an open occurrence
+      // under that lock and leaves the row pointing where it did, so one it committed while this edit waited for the
+      // row is not locked above and does not show in the row. The advance and the nightly close create theirs under
+      // the same lock, so none is created between this read and the commit.
+      const open = await openOccurrenceIds(client, tasks.id, seriesId, current, false);
+      if (open.some((id) => !others.includes(id))) {
         throw new ConflictError("The series changed while it was being edited", { seriesId });
       }
       const template = { ...series.template, ...patch };

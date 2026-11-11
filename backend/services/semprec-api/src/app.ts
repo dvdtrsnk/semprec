@@ -42,6 +42,7 @@ import {
   isPageMarkdownPath,
 } from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
+import { createMailOauthCallbackRequestListener, MAIL_OAUTH_CALLBACK_PATH } from "./mailOauthCallbackHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { isAllowedOrigin } from "./originCheck.js";
 import { logger } from "./logger.js";
@@ -165,6 +166,7 @@ export async function createDispatcher(
   const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
+  const mailOauthCallbackListener = createMailOauthCallbackRequestListener();
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
   // Issue #167's HTTP entry point: every request mints its own trace id, carried through
@@ -262,6 +264,11 @@ export async function createDispatcher(
     }
     if (pathname === "/api/mail/graph/webhook") {
       void graphWebhookListener(req, res);
+      return;
+    }
+    // Issue gh-1686: the provider's redirect target, served without a session.
+    if (pathname === MAIL_OAUTH_CALLBACK_PATH && req.method === "GET") {
+      mailOauthCallbackListener(req, res);
       return;
     }
     void mcpAgentPageListener(req, res);

@@ -51,6 +51,26 @@ describe("link rule manifest schema", () => {
     expect(withRule({ ...validRule, source: { databaseKey: "", propertyKey: "a" } })).toBe(false);
     expect(withRule({ ...validRule, via: { databaseKey: "dbOne", relationKey: "" } })).toBe(false);
   });
+
+  it("accepts a rule with a valueFilter that names the relation whose item is left out", () => {
+    const rule = { ...validRule, valueFilter: { omit: { databaseKey: "settings", propertyKey: "selfPerson" } } };
+    const parsed = moduleManifestSchema.safeParse({ ...baseManifest, linkRules: [rule] });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.linkRules).toEqual([rule]);
+  });
+
+  it("rejects a valueFilter without omit, with an unknown field or with an empty key", () => {
+    const withFilter = (valueFilter: object) =>
+      moduleManifestSchema.safeParse({ ...baseManifest, linkRules: [{ ...validRule, valueFilter }] }).success;
+    const omit = { databaseKey: "settings", propertyKey: "selfPerson" };
+    expect(withFilter({ omit })).toBe(true);
+    expect(withFilter({})).toBe(false);
+    expect(withFilter({ omit, keep: omit })).toBe(false);
+    expect(withFilter({ omit: { ...omit, extra: 1 } })).toBe(false);
+    expect(withFilter({ omit: { databaseKey: "", propertyKey: "selfPerson" } })).toBe(false);
+    expect(withFilter({ omit: { databaseKey: "settings", propertyKey: "" } })).toBe(false);
+    expect(withFilter({ omit: { databaseKey: "settings" } })).toBe(false);
+  });
 });
 
 describe("ModuleRegistry link rules", () => {
@@ -135,6 +155,23 @@ describe("ModuleRegistry link rules", () => {
 
     active.delete("fixture-link-a");
     expect((await registry.getLinkRules()).map((rule) => rule.key)).toEqual(["fixtureLink.bToB"]);
+  });
+
+  it("accepts a valueFilter over a database no module declares and projects it only for the rule that has one", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-link-value-filter"]));
+    await load(registry, "linkRulesValueFilterModule.js");
+    expect(() => registry.validateLinkRules()).not.toThrow();
+    const [filtered, unfiltered] = await registry.getLinkRules();
+    expect(filtered).toEqual({
+      moduleId: "fixture-link-value-filter",
+      key: "fixtureLink.filtered",
+      source: { databaseKey: "linkFilterItems", propertyKey: "people" },
+      target: { databaseKey: "linkFilterItems", propertyKey: "guests" },
+      via: { databaseKey: "linkFilterItems", relationKey: "parent" },
+      valueFilter: { omit: { databaseKey: "fixtureSettings", propertyKey: "selfPerson" } },
+    });
+    expect(unfiltered?.key).toBe("fixtureLink.unfiltered");
+    expect(unfiltered && Object.hasOwn(unfiltered, "valueFilter")).toBe(false);
   });
 
   it("returns no rules for a module without linkRules", async () => {

@@ -88,6 +88,7 @@ const TENANT_TABLES = [
   "item_origins",
   "inbox_attachments",
   "notification_preferences",
+  "transcript_action_item_states",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;

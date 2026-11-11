@@ -38,5 +38,11 @@
   "status.service.backup": "Záloha",
   "status.processStale.title": "Semp není dostupný",
   "status.processStale.text": "Služba agentů potřebuje pozornost.",
-  "status.processStale.shortText": "Semp není dostupný."
+  "status.processStale.shortText": "Semp není dostupný.",
+  "status.aiBudgetMissing.title": "AI nemá nastavený limit",
+  "status.aiBudgetMissing.text": "Semp nemůže používat AI, dokud správce nenastaví tomuto účtu limit útraty.",
+  "status.aiBudgetMissing.shortText": "AI nemá nastavený limit.",
+  "status.aiBudgetExhausted.title": "Limit AI je vyčerpán",
+  "status.aiBudgetExhausted.text": "Limit útraty za AI je vyčerpán. Obnoví se {resetTime}.",
+  "status.aiBudgetExhausted.shortText": "Limit AI je vyčerpán, obnoví se {resetTime}."
 }

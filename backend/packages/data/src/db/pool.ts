@@ -31,8 +31,9 @@ interface TransactionOwner {
 /**
  * The two-key advisory lock classes of the search flush (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md):
  * a tenant's flush locks `(SEARCH_FLUSH_TENANT_LOCK_CLASS, hashtext(tenant id))`, a system one
- * `(SEARCH_FLUSH_SYSTEM_LOCK_CLASS, 0)`. `seedSystem.ts` holds the only other two-key class (2331);
- * PostgreSQL keeps two-key advisory locks apart from the single-key ones the other owners take.
+ * `(SEARCH_FLUSH_SYSTEM_LOCK_CLASS, 0)`. The other two-key classes are 2331 in `seedSystem.ts` and 2334
+ * in `auth/sessionDeviceLock.ts`; PostgreSQL keeps two-key advisory locks apart from the single-key ones
+ * the other owners take.
  */
 export const SEARCH_FLUSH_TENANT_LOCK_CLASS = 2332;
 export const SEARCH_FLUSH_SYSTEM_LOCK_CLASS = 2333;

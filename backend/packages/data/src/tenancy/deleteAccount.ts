@@ -23,9 +23,11 @@ import { transitionTenantStatus, TENANT_STATUSES } from "./tenantsStore.js";
 import { publishTenantDeactivated } from "./tenantStatusSignal.js";
 
 /**
- * Raised when the password given to confirm an account deletion does not match, or the
- * email+IP pair is locked out. Deliberately not a 401, so the web client's "401 means signed out"
- * handling is not triggered by a typo.
+ * Raised when the password given to confirm an account deletion or a password change (`changePassword`,
+ * issue #1701) does not match, or the email+IP pair is locked out. Both also raise it for a password
+ * that was replaced after it was verified, and `changePassword` raises it while a reset or another
+ * change of the same user holds one of the user's reset tokens. Deliberately not a 401, so the web
+ * client's "401 means signed out" handling is not triggered by a typo.
  */
 export class ReauthenticationFailedError extends ChokePointError {
   constructor() {

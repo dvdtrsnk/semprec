@@ -13,6 +13,7 @@ import {
   resolveModuleRuleKinds,
   startProcessHeartbeat,
   startTenantDeactivationListener,
+  verifyMailCredentials,
   type InviteMailer,
   type PasswordResetMailer,
 } from "@semprec/data";
@@ -20,12 +21,8 @@ import { createTransport, type Transporter } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
-import {
-  CustomRouteConfigurationError,
-  type CustomRouteDependencies,
-  type CustomRouteOAuthClient,
-  type MailLiveSyncControl,
-} from "./adapter/customRouteMount.js";
+import type { CustomRouteDependencies, CustomRouteOAuthClient } from "./adapter/customRouteMount.js";
+import { createMailLiveSyncControl } from "./mailLiveSyncControl.js";
 import {
   createGmailPubSubDispatcherFor,
   createImapIdleLifecycleFactory,
@@ -88,30 +85,20 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
   return "missingEnv" in client ? undefined : client;
 }
 
-// The mail live-sync root is created further down, after the dispatcher. It has no per-mailbox
-// control yet (only start, stop, reconcileOnce and stopTenant), so this proxy has nothing to forward
-// to: each call refuses with a configuration error that names it. Per-mailbox wiring is left to a
-// later issue.
-const mailLiveSyncProxy: MailLiveSyncControl = {
-  async startMailbox() {
-    throw new CustomRouteConfigurationError(
-      'custom route dependency "mailLiveSync.startMailbox" is not wired in this composition root yet',
-    );
-  },
-  async stopMailbox() {
-    throw new CustomRouteConfigurationError(
-      'custom route dependency "mailLiveSync.stopMailbox" is not wired in this composition root yet',
-    );
-  },
-};
+// The mail live-sync root is created further down, after the dispatcher, and is bound to this
+// control there. Its `restartAccount` then forwards to the root (issue gh-1742); `startMailbox` and
+// `stopMailbox` have nothing to forward to and refuse with a configuration error that names them.
+const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {
+  // The password connect route (issue gh-1736) verifies a login through this member and has no other way to.
+  mailServerClients: { verifyPassword: verifyMailCredentials },
   oauth: {
     gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
     msGraph: optionalOAuthClient("MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
     redirectBaseUrl: appBaseUrl,
   },
-  mailLiveSync: mailLiveSyncProxy,
+  mailLiveSync: mailLiveSyncControl.control,
 };
 
 /**
@@ -226,6 +213,8 @@ const mailLiveSync = createMailLiveSyncRoot(
     },
   },
 );
+// Bound before the server listens, so no request reaches the control without the root.
+mailLiveSyncControl.bind(mailLiveSync);
 await mailLiveSync.start();
 
 // Issue #1739: the one puller of the deployment's Gmail Pub/Sub subscription, started after the root

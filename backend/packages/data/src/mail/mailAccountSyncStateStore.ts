@@ -12,10 +12,10 @@ export type SyncMode = (typeof SYNC_MODES)[number];
  * its default `sync_mode` — Gmail -> its native history-based API, Outlook -> its native
  * delta-based API, iCloud/generic -> plain IMAP (issue #26: "the original plan... turned out
  * to be the worse choice specifically where it matters most" for Gmail/Outlook). This is only
- * the pure mapping the issue's design describes; the "connect a mailbox" flow that would call
- * it at account-creation time is issue #27's UI, which doesn't exist yet — `ensureMailAccountSyncState`
- * below still takes an explicit `syncMode` for that reason, same as every adapter's reconcile
- * entry point already does. `setSyncMode` remains the one path that changes an *existing*
+ * the pure mapping the issue's design describes. The OAuth connect flow of issue gh-1686
+ * (`mail/mailOauthRouteHandlers.ts`) calls it when it creates the sync state of a new mailbox;
+ * `ensureMailAccountSyncState` below takes an explicit `syncMode`, same as every adapter's
+ * reconcile entry point does. `setSyncMode` remains the one path that changes an *existing*
  * account's mode (the issue's "manually switchable" escape hatch).
  */
 export function defaultSyncModeForProvider(provider: string): SyncMode {
@@ -141,6 +141,12 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** Deletes the sync state of mailbox `itemId` (issue gh-1690); returns whether a row existed. A mailbox that never connected has none. */
+export async function deleteMailAccountSyncState(client: Queryable, itemId: string): Promise<boolean> {
+  const result = await client.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [itemId]);
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function setSyncMode(client: Queryable, itemId: string, syncMode: SyncMode): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
@@ -189,7 +195,10 @@ export interface RecordGmailWatchRegistrationInput {
  * renewal race ahead of whatever the reconcile pass (`recordGmailActivity`/`invalidateGmailHistory`,
  * issue #26 — the only other writer of this column) has actually observed, skipping any change
  * that arrived in the gap between the two. `gmail_watch_email_address` is replaced on every
- * registration: it is the routing key for the shared Pub/Sub subscription.
+ * registration: it is the routing key for the shared Pub/Sub subscription. That one column has a
+ * second writer: the OAuth connect flow stores it once, when it creates the mailbox
+ * (`recordGmailWatchEmailAddress` below), and this lifecycle owns it from then on
+ * (docs/adr/2026-11-10-mailbox-oauth-connect-consumes-its-state-before-the-provider-call.md).
  */
 export async function recordGmailWatchRegistration(
   client: Queryable,
@@ -210,7 +219,11 @@ const PROVIDER_ACCOUNT_ADDRESS_INDEX = "mail_account_sync_state_tenant_provider_
 
 /**
  * Another mailbox of the same tenant already records this provider account address (issue #1454,
- * migration 0125). The connect flows (#1686, #1736) will map it to "already connected".
+ * migration 0125). The OAuth connect flow (issue gh-1686, `mail/mailOauthRouteHandlers.ts`) answers
+ * it as 409 with that mailbox's id. The password connect flow (issue gh-1736,
+ * `mail/mailboxPasswordRouteHandlers.ts`) answers it as 409 without one, and raises it itself for an
+ * address that a mailbox's address list holds. A reauthorization (issue gh-1742) of a mailbox that
+ * records no address answers it as 400 `mail_reauth_wrong_account`.
  */
 export class ProviderAccountAlreadyConnectedError extends ChokePointError {
   constructor() {
@@ -266,6 +279,42 @@ export async function getProviderAccountAddress(client: Queryable, itemId: strin
     [itemId],
   );
   return rows[0]?.provider_account_address ?? null;
+}
+
+/**
+ * The mailbox of the caller's tenant whose sync state records `address` as its provider account
+ * address, compared after `normalizeEmailAddress`, or null when no mailbox visible in that tenant
+ * records it (issue gh-1686: the connect flow names the mailbox a refused duplicate collides with).
+ */
+export async function findMailboxByProviderAccountAddress(client: Queryable, address: string): Promise<string | null> {
+  const { rows } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_account_sync_state WHERE provider_account_address = $1`,
+    [normalizeEmailAddress(address)],
+  );
+  return rows[0]?.item_id ?? null;
+}
+
+/**
+ * Stores the Google account address a `gmail_api` mailbox was connected with (issue gh-1686),
+ * normalized with `normalizeEmailAddress`, in the column `route_gmail_address` matches a Pub/Sub
+ * notification against. The row must already exist (`ensureMailAccountSyncState`). A later watch
+ * registration (`recordGmailWatchRegistration`) replaces the value.
+ *
+ * The OAuth connect flow is the only caller, and `address` is the one the provider reported for the
+ * account whose credential the mailbox stores, never an alias or a value from a request: the router
+ * function sends that account's notifications to every mailbox that carries it
+ * (docs/adr/2026-11-10-mailbox-oauth-connect-consumes-its-state-before-the-provider-call.md).
+ */
+export async function recordGmailWatchEmailAddress(client: Queryable, itemId: string, address: string): Promise<void> {
+  const normalized = normalizeEmailAddress(address);
+  if (normalized.length === 0) {
+    throw new ValidationError("A Gmail watch address must not be empty", { field: "gmailWatchEmailAddress" });
+  }
+  const result = await client.query(
+    `UPDATE mail_account_sync_state SET gmail_watch_email_address = $2 WHERE item_id = $1`,
+    [itemId, normalized],
+  );
+  requireAffectedRows(result, `gmail watch address for item ${itemId}`);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

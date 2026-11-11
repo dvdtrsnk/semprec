@@ -117,7 +117,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 38-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 42-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -512,6 +512,44 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       blocks: [{ id: page?.blockId, type: "page", pageId: page?.pageItemId, text: "Release checklist" }],
     });
   },
+  "page.duplicate": async (fx, headers, baseUrl) => {
+    const original = (await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user")).pages[0];
+    if (!original) throw new Error("Missing page");
+    const response = await fetch(`${baseUrl}/api/items/${original.pageItemId}/page/duplicate`, {
+      method: "POST",
+      headers,
+    });
+    expect(response.status).toBe(201);
+    const copy = z
+      .object({ pageItemId: z.string(), docId: z.string(), blockId: z.string() })
+      .strict()
+      .parse(await response.json());
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(await read.json()).toMatchObject({
+      subpageCount: 2,
+      blocks: [
+        { id: original.blockId, type: "page", pageId: original.pageItemId },
+        { id: copy.blockId, type: "page", pageId: copy.pageItemId },
+      ],
+    });
+  },
+  "page.rename": async (fx, headers, baseUrl) => {
+    const page = (
+      await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id }, title: "Before" }, "user")
+    ).pages[0];
+    if (!page) throw new Error("Missing page");
+    const response = await fetch(`${baseUrl}/api/items/${page.pageItemId}/page/title`, {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "After" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ pageItemId: page.pageItemId, title: "After" });
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(await read.json()).toMatchObject({
+      blocks: [{ id: page.blockId, type: "page", pageId: page.pageItemId, text: "After" }],
+    });
+  },
   "page.insert": async (fx, headers, baseUrl) => {
     const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/insert`, {
       method: "POST",
@@ -578,6 +616,31 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { itemId: string; blockIds: string[] };
     expect(body.itemId).toBe(fx.itemA.id);
     expect(body.blockIds).toEqual(["b1"]);
+  },
+  "item.count": async (fx, headers, baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/items/count`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        items: [{ databaseId: fx.database.id, groupBy: fx.relationProperty.key }, { databaseId: fx.targetDatabase.id }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    // `itemA` is linked to the target item and `itemB` to none.
+    expect(body).toEqual({
+      counts: [
+        {
+          databaseId: fx.database.id,
+          count: 2,
+          groups: [
+            { key: fx.targetItem.id, count: 1 },
+            { key: null, count: 1 },
+          ],
+        },
+        { databaseId: fx.targetDatabase.id, count: 1 },
+      ],
+    });
   },
 };
 

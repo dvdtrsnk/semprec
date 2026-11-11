@@ -2,6 +2,7 @@ import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "./mcpModuleKeys.js";
+import { RECIPES_MODULE_ID } from "./recipesModuleKeys.js";
 
 /**
  * The agent guidance of each system project in its legacy `Purpose:` / `Allowed:` / `Not allowed:` /
@@ -37,4 +38,9 @@ export const SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS = {
     "Allowed: create a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n" +
     "Not allowed: write 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n" +
     "General instructions: use the same create-item path as the UI; there is no separate AI path.",
+  [RECIPES_MODULE_ID]:
+    "Purpose: catalog the user's recipes; the ingredients and the method are written on each recipe's page.\n" +
+    "Allowed: create or update a Recipes item (name/category/prepMinutes/servings/favorite/photo) via the generic item endpoints.\n" +
+    "Not allowed: write 'photo' with anything other than { blobId } of an image blob of this tenant, or null to clear it — every other value is rejected.\n" +
+    "General instructions: use the same item paths as the UI; there is no separate AI path.",
 } as const;

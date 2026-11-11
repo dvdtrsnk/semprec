@@ -1,10 +1,10 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { withTransaction } from "../db/pool.js";
+import { withTransaction, type Queryable } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as blobsStore from "../blobs/blobsStore.js";
-import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { EVENTS_MODULE_ID, FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
@@ -22,6 +22,9 @@ import {
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 import { labelTranscriptSpeakers, readTranscriptDetail } from "./transcriptDetail.js";
 import { listTranscriptsPage, TRANSCRIPT_PAIRINGS, type TranscriptListCursor } from "./transcriptListQuery.js";
+import { parseStoredMeetingNotes } from "./meetingNotesRendering.js";
+import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
+import { clearActionItemState, listActionItemStates, setActionItemState } from "./transcriptActionItemStates.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -195,6 +198,86 @@ export function createTranscriptDetailRouteHandler(pool: Pool) {
   };
 }
 
+/** An action item id in the path: a canonical decimal within the `integer` column `action_item_id` (0 to 2147483647). */
+const actionItemIdSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]{0,9})$/)
+  .transform(Number)
+  .refine((value) => value <= 2_147_483_647);
+
+const actionItemStateBodySchema = z.object({ state: z.literal("noted").nullable() });
+
+/**
+ * `PUT /api/transcripts/:id/action-items/:actionItemId/state` (issue #1754): the user follows one
+ * action item of a transcript's meeting notes (`{ state: "noted" }`) or makes it open again
+ * (`{ state: null }`). `actionItemId` is the item's position in the stored
+ * `computed.meetingNotes.actionItems`. Answers `{ actionItemId, state }` with the state the item has
+ * after the call.
+ *
+ * One transaction locks the transcript's item row, then reads the notes and the item's stored state
+ * and writes. `noted` stores the row with `owner_person_id` set to the live person the transcript's
+ * `speakers` edges map the item's `ownerSpeaker` to, or `null` for an item without an owner or an
+ * unmapped speaker. `null` deletes the row; for an item that has no row it writes nothing. A repeated
+ * call answers the same, and a repeated `noted` rewrites the row only when the owner it resolves
+ * differs from the stored one.
+ *
+ * A non-UUID `id`, an `actionItemId` that is not such an integer and a body whose `state` is neither
+ * `"noted"` nor `null` are `400 validation_failed` on that field. An unknown id, another tenant's id,
+ * a transcript in the Trash and an `actionItemId` the notes do not have (a transcript without notes
+ * has none) answer the same 404. An item whose state is `added` is refused for both values with
+ * `400 validation_failed` (field `state`, reason `alreadyAdded`).
+ */
+export function createTranscriptActionItemStateRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const parsedActionItemId = actionItemIdSchema.safeParse(ctx.params.actionItemId);
+    if (!parsedActionItemId.success) {
+      throw new ValidationError("'actionItemId' must be a non-negative integer", { field: "actionItemId" });
+    }
+    const parsedBody = actionItemStateBodySchema.safeParse(ctx.body);
+    if (!parsedBody.success) throw new ValidationError("'state' must be \"noted\" or null", { field: "state" });
+    const transcriptId = parsedId.data;
+    const actionItemId = parsedActionItemId.data;
+    const { state } = parsedBody.data;
+    const notFound = () =>
+      new NotFoundError("Transcript action item not found", {
+        resource: "transcriptActionItem",
+        transcriptId,
+        actionItemId,
+      });
+    return withTransaction(pool, async (client) => {
+      const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
+      const transcript = transcripts && (await itemsStore.lockItemById(client, transcripts.id, transcriptId));
+      if (!transcript || transcript.deletedAt) throw notFound();
+      const notes = parseStoredMeetingNotes(transcript.computed[TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY]);
+      const actionItem = notes?.actionItems[actionItemId];
+      if (!actionItem) throw notFound();
+
+      const states = await listActionItemStates(client, transcriptId);
+      const current = states.find((row) => row.actionItemId === actionItemId);
+      if (current?.state === "added") {
+        throw new ValidationError("The action item was added as a task", { field: "state", reason: "alreadyAdded" });
+      }
+      if (state === null) {
+        if (current) await clearActionItemState(client, transcriptId, actionItemId);
+        return { status: 200, body: { actionItemId, state: null } };
+      }
+      const ownerSpeaker = actionItem.ownerSpeaker;
+      const speakers = ownerSpeaker === null ? [] : await listTranscriptSpeakers(client, transcriptId, transcript);
+      const ownerPersonId = speakers.find((entry) => entry.speaker === ownerSpeaker)?.person?.id ?? null;
+      const stored = await setActionItemState(client, {
+        transcriptId,
+        actionItemId,
+        state,
+        taskItemId: null,
+        ownerPersonId,
+      });
+      return { status: 200, body: { actionItemId: stored.actionItemId, state: stored.state } };
+    });
+  };
+}
+
 const transcriptListCursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }).nullable(), id: z.uuid() }).strict();
 
 /** The request context of `GET /api/transcripts`: its query string is read from the request URL, the labels' locale from the user. */
@@ -264,6 +347,96 @@ export function createTranscriptListRouteHandler(pool: Pool) {
     const nextCursor =
       rows.length > limit && last ? Buffer.from(JSON.stringify(last.cursor)).toString("base64url") : null;
     return { status: 200, body: { transcripts: page.map((row) => row.transcript), nextCursor } };
+  };
+}
+
+const MAX_SUMMARY_EVENT_IDS = 100;
+
+/**
+ * Reads `eventIds` of `GET /api/transcript-summaries`: one comma-separated parameter of 1 to
+ * `MAX_SUMMARY_EVENT_IDS` distinct UUIDs, returned as the caller wrote them. A missing, repeated or
+ * empty parameter, a longer list, an entry that is not a UUID and an id given twice (compared
+ * without regard to letter case) are refused with the same `validation_failed`.
+ */
+function readSummaryEventIds(url: URL): string[] {
+  const [raw, ...repeated] = url.searchParams.getAll("eventIds");
+  const ids = raw === undefined || repeated.length > 0 ? [] : raw.split(",");
+  const uuid = z.uuid();
+  if (
+    ids.length < 1 ||
+    ids.length > MAX_SUMMARY_EVENT_IDS ||
+    !ids.every((id) => uuid.safeParse(id).success) ||
+    new Set(ids.map((id) => id.toLowerCase())).size !== ids.length
+  ) {
+    throw new ValidationError(`'eventIds' must be 1-${MAX_SUMMARY_EVENT_IDS} distinct UUIDs separated by commas`, {
+      field: "eventIds",
+    });
+  }
+  return ids;
+}
+
+interface TranscriptSummary {
+  count: number;
+  doneCount: number;
+}
+
+/**
+ * One statement: it resolves the Transcripts `event` relation from the catalog and aggregates
+ * `item_relations` joined with `items`. For each of `eventIds` that is a live Event of the tenant in
+ * scope it counts the live transcripts linked to it through that relation, and how many of those
+ * have status `done`. The map has an entry, keyed by the event id in lower case, for an event with
+ * at least one such transcript and for no other id.
+ */
+async function countTranscriptsByEvent(client: Queryable, eventIds: string[]): Promise<Map<string, TranscriptSummary>> {
+  const { rows } = await client.query<{ eventId: string; count: number; doneCount: number }>(
+    `
+WITH schema_ids AS (
+  SELECT (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = $2) AS transcripts,
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = $3) AS events
+), event_relation AS (
+  SELECT rd.id, rd.property_id_a = p.id AS transcript_is_a
+  FROM properties p JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
+  WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT transcripts FROM schema_ids) AND p.key = 'event'
+)
+SELECT event.id AS "eventId", count(*)::int AS "count",
+  (count(*) FILTER (WHERE transcript.properties->>'status' = 'done'))::int AS "doneCount"
+FROM event_relation er
+JOIN item_relations r ON r.tenant_id = app_tenant_default() AND r.relation_definition_id = er.id
+JOIN items event ON event.tenant_id = app_tenant_default() AND event.database_id = (SELECT events FROM schema_ids)
+  AND event.id = CASE WHEN er.transcript_is_a THEN r.item_b ELSE r.item_a END AND event.deleted_at IS NULL
+JOIN items transcript ON transcript.tenant_id = app_tenant_default() AND transcript.database_id = (SELECT transcripts FROM schema_ids)
+  AND transcript.id = CASE WHEN er.transcript_is_a THEN r.item_a ELSE r.item_b END AND transcript.deleted_at IS NULL
+WHERE event.id = ANY($1::uuid[])
+GROUP BY event.id
+`,
+    [eventIds, TRANSCRIPTS_MODULE_ID, EVENTS_MODULE_ID],
+  );
+  return new Map(rows.map((row) => [row.eventId, { count: row.count, doneCount: row.doneCount }]));
+}
+
+/** The request context of `GET /api/transcript-summaries`: its query string is read from the request URL. */
+interface TranscriptSummariesRouteRequestContext {
+  req: { url?: string };
+}
+
+/**
+ * `GET /api/transcript-summaries?eventIds=<uuid,...>` (issue #1693): the transcript counts of the
+ * given events in one call, for the journal's day. The body is `{ [eventId]: { count, doneCount } }`
+ * with one key per requested id, as the caller wrote it. `count` is the event's live transcripts and
+ * `doneCount` those with status `done`; a transcript in the Trash is in neither. An id that is
+ * unknown, another tenant's, in the Trash or not an Event answers `{ count: 0, doneCount: 0 }`.
+ */
+export function createTranscriptSummariesRouteHandler(pool: Pool) {
+  return async (ctx: TranscriptSummariesRouteRequestContext): Promise<CustomRouteResult> => {
+    const eventIds = readSummaryEventIds(new URL(ctx.req.url ?? "/", "http://localhost"));
+    const counted = await withTransaction(pool, (client) => countTranscriptsByEvent(client, eventIds));
+    const body = Object.fromEntries(
+      eventIds.map((id): [string, TranscriptSummary] => [
+        id,
+        counted.get(id.toLowerCase()) ?? { count: 0, doneCount: 0 },
+      ]),
+    );
+    return { status: 200, body };
   };
 }
 

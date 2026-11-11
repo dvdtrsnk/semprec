@@ -1,26 +1,28 @@
 import { expandItemRelations, type RelationExpansionOptions } from "./relationExpansion.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
-// `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, and filtered `listItems` /
-// `countItems` together with the filter-tree-to-SQL resolution they share. It does not own item
-// writes (itemWrites.ts), trash and restore (itemTrash.ts), or stored-view queries
-// (viewQueryOps.ts).
+// `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
+// `countItems` together with the filter-tree-to-SQL resolution they share, and the batched,
+// optionally grouped `countItemsBatch`. It does not own item writes (itemWrites.ts), trash and
+// restore (itemTrash.ts), or stored-view queries (viewQueryOps.ts).
 // Constrained by:
 // - docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md
 // - docs/adr/2026-09-17-generic-application-service-port.md
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
-import type { ItemRow } from "../types.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
+import type { ItemRow, PropertyRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import { withFromInbox } from "./itemOriginReads.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
-import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
+import { compileFilterNode, resolveFilterCompileContext, type FilterProperties } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
-import { parseFilterNode } from "../views/filterTree.js";
+import { parseFilterNode, type FilterNode } from "../views/filterTree.js";
+import { selectOptionKeys } from "../views/sortCompiler.js";
 
 /**
  * Turns a caller-supplied filter tree into the `buildFilterSql` push-down hook the item
@@ -56,6 +58,100 @@ export interface ListItemsInput extends itemsStore.ListItemsOptions {
 export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
   filter?: unknown;
   now?: Date;
+}
+
+/** One count of `countItemsBatch`: a database, and optionally a filter, a grouping and the collection filter. */
+export interface ItemCountEntryInput {
+  databaseId: string;
+  /** A filter tree (views/filterTree.ts), validated here. */
+  filter?: unknown;
+  /** The key of a relation or select property of the database to split the count by. */
+  groupBy?: string;
+  /** Also applies the collection filter the resolver declares for the database, when it declares one. */
+  collection?: boolean;
+}
+
+export interface CountItemsBatchOptions {
+  resolver: Pick<CollectionMetadataResolver, "collectionFilter">;
+  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  now?: Date;
+}
+
+/** The answer to one `ItemCountEntryInput`; `databaseId` repeats the entry's own value. */
+export interface ItemCountEntry extends itemsStore.GroupedItemCount {
+  databaseId: string;
+}
+
+/**
+ * Resolves `groupBy` against the database's own properties. A relation property groups by the
+ * target items its edges reach and a select property by its stored option. An unknown key, any
+ * other property type and a relation property without a resolvable definition or target database
+ * are refused on `groupBy`.
+ */
+function resolveItemCountGrouping(
+  properties: PropertyRow[],
+  filterProperties: FilterProperties,
+  groupBy: string,
+): itemsStore.ItemCountGrouping {
+  const property = properties.find((candidate) => candidate.key === groupBy);
+  if (!property) throw new ValidationError("'groupBy' names no property of the database", { field: "groupBy" });
+  const optionKeys = selectOptionKeys(property);
+  if (optionKeys) return { kind: "select", propertyKey: property.key, optionKeys };
+  if (property.type !== "relation") {
+    throw new ValidationError(`A '${property.type}' property cannot group a count`, { field: "groupBy" });
+  }
+  const relation = filterProperties.get(property.key);
+  if (!relation?.relationDefinitionId || !relation.relationSide || !relation.targetDatabaseId) {
+    throw new ValidationError("The 'groupBy' relation property has no resolvable relation definition", {
+      field: "groupBy",
+    });
+  }
+  return {
+    kind: "relation",
+    relationDefinitionId: relation.relationDefinitionId,
+    ownSide: relation.relationSide,
+    targetDatabaseId: relation.targetDatabaseId,
+  };
+}
+
+/**
+ * Counts one entry in the caller's transaction. The database is resolved first, under the caller's
+ * tenant, so an unknown id and another tenant's id fail alike with the not-found a database query gives.
+ */
+async function countItemsEntry(
+  client: PoolClient,
+  entry: ItemCountEntryInput,
+  options: CountItemsBatchOptions,
+): Promise<ItemCountEntry> {
+  const database = await databasesStore.getDatabase(client, entry.databaseId);
+  if (!database) {
+    throw new NotFoundError(`Database ${entry.databaseId} not found`, {
+      resource: "database",
+      databaseId: entry.databaseId,
+    });
+  }
+  const collectionFilter = entry.collection === true ? options.resolver.collectionFilter(database) : undefined;
+  const filterNodes = [entry.filter, collectionFilter]
+    .filter((filter) => filter !== undefined)
+    .map((filter) => parseFilterNode(filter));
+  const filterNode: FilterNode | undefined =
+    filterNodes.length > 1 ? { type: "and", nodes: filterNodes } : filterNodes[0];
+  if (filterNode === undefined && entry.groupBy === undefined) {
+    return { databaseId: entry.databaseId, ...(await itemsStore.countItemsGrouped(client, database.id)) };
+  }
+
+  const properties = await propertiesStore.listPropertiesByDatabase(client, database.id);
+  const filterProperties = await buildFilterProperties(client, properties);
+  const grouping =
+    entry.groupBy === undefined ? undefined : resolveItemCountGrouping(properties, filterProperties, entry.groupBy);
+  const context = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
+  const buildFilterSql = filterNode
+    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties, params, context)
+    : undefined;
+  return {
+    databaseId: entry.databaseId,
+    ...(await itemsStore.countItemsGrouped(client, database.id, { buildFilterSql, grouping })),
+  };
 }
 
 /**
@@ -196,6 +292,20 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           buildFilterSql: rest.buildFilterSql,
         });
         return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
+      });
+    },
+
+    /**
+     * The counts of `entries` in input order, read in one transaction (issue #1709). The first entry
+     * whose database the caller's tenant does not have fails the whole call with `NotFoundError`, and an
+     * invalid `filter` or `groupBy` fails it with `ValidationError`; `itemsStore.countItemsGrouped`
+     * documents what is counted and how the groups are ordered.
+     */
+    async countItemsBatch(entries: ItemCountEntryInput[], options: CountItemsBatchOptions): Promise<ItemCountEntry[]> {
+      return withTransaction(pool, async (client) => {
+        const counts: ItemCountEntry[] = [];
+        for (const entry of entries) counts.push(await countItemsEntry(client, entry, options));
+        return counts;
       });
     },
   };

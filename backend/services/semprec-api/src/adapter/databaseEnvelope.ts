@@ -21,6 +21,12 @@ export interface DatabaseEnvelope {
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
+  /**
+   * The view type the database's module manifest declares for its default view (issue #1707), such as
+   * `gallery` for `recipes`. `null` when the manifest declares none and for a user-created database. It is
+   * the declaration, not a read of the stored views.
+   */
+  defaultViewType: string | null;
 }
 
 export function toDatabaseEnvelope(
@@ -28,6 +34,7 @@ export function toDatabaseEnvelope(
   resolvedName: string,
   searchPlaceholder: string | null,
   metadata: CollectionMetadata,
+  defaultViewType: string | null,
 ): DatabaseEnvelope {
   return {
     id: database.id,
@@ -45,5 +52,6 @@ export function toDatabaseEnvelope(
     overviewOrder: metadata.overviewOrder,
     switcherOrder: metadata.switcherOrder,
     clientVisible: metadata.clientVisible,
+    defaultViewType,
   };
 }

@@ -1,13 +1,14 @@
 // The choke point's own registries for a domain's transaction-scoped write side effects — a
 // shared module in the sense of docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md,
-// owned by no domain. `itemWrites.ts`/`relationOps.ts` (and `itemTrash.ts` for the delete and restore
-// hooks) call `run*` inside the same transaction as the write itself; a domain module registers its
+// owned by no domain. `itemWrites.ts`/`relationOps.ts` (and `itemTrash.ts` for the delete, restore and
+// purge hooks) call `run*` inside the same transaction as the write itself; a domain module registers its
 // hook through `../domainWriteHooks.ts`, the
 // one composition point that knows every domain by name so `chokePoint/` does not have to.
 // Constrained by: docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 // and, for the pre-write transform registry, docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
 // and, for the delete and restore registries, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 // and docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
+// and, for the purge registry, docs/adr/2026-11-10-item-purge-domain-hooks.md
 import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
@@ -106,6 +107,28 @@ export interface ItemRestoreHookContext {
 
 export type ItemRestoreHook = (context: ItemRestoreHookContext) => Promise<void>;
 
+/**
+ * Context of an item purge hook: one row the permanent purge (`purgeExpiredTrashSubtree` in
+ * `itemTrash.ts`) hard-deleted in this call, after that row's built-in dependents were deleted. See
+ * docs/adr/2026-11-10-item-purge-domain-hooks.md.
+ */
+export interface ItemPurgeHookContext {
+  /** The purge transaction's client, in the tenant scope the purge itself runs in. */
+  client: PoolClient;
+  /** The database of `item`. */
+  database: DatabaseRow;
+  /**
+   * The removed row exactly as it was when the purge deleted it: read under a row lock in this
+   * transaction immediately before the delete, so a write another transaction committed earlier is in
+   * it and none could follow. A query through `client` no longer finds it.
+   */
+  item: ItemRow;
+  /** The item this purge call was started for, the root of the purged subtree; `item.id` for the root itself. */
+  rootItemId: string;
+}
+
+export type ItemPurgeHook = (context: ItemPurgeHookContext) => Promise<void>;
+
 export interface RelationEdgeWriteHookContext {
   client: PoolClient;
   edgeContext: RelationEdgeContext;
@@ -189,6 +212,7 @@ const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
 const itemDeleteHooks = new Set<ItemDeleteHook>();
 const itemRestoreHooks = new Set<ItemRestoreHook>();
+const itemPurgeHooks = new Set<ItemPurgeHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
 const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
 const relationEdgeChangedHooks = new Set<RelationEdgeChangedHook>();
@@ -262,6 +286,11 @@ export function registerItemDeleteHook(hook: ItemDeleteHook): void {
 /** Registering the same function twice is a no-op. See `runItemRestoreHooks` for when and how it runs. */
 export function registerItemRestoreHook(hook: ItemRestoreHook): void {
   itemRestoreHooks.add(hook);
+}
+
+/** Registering the same function twice is a no-op. See `runItemPurgeHooks` for when and how it runs. */
+export function registerItemPurgeHook(hook: ItemPurgeHook): void {
+  itemPurgeHooks.add(hook);
 }
 
 export function registerRelationEdgeWriteHook(hook: RelationEdgeWriteHook): void {
@@ -352,6 +381,17 @@ export async function runItemRestoreHooks(context: ItemRestoreHookContext): Prom
   }
 }
 
+/**
+ * Awaits every registered purge hook sequentially, in registration order, inside the permanent purge's
+ * transaction, after the row and its built-in dependents were deleted. The first rejection propagates
+ * and rolls the purge of the whole subtree back.
+ */
+export async function runItemPurgeHooks(context: ItemPurgeHookContext): Promise<void> {
+  for (const hook of itemPurgeHooks) {
+    await hook(context);
+  }
+}
+
 export async function runRelationEdgeWriteHooks(context: RelationEdgeWriteHookContext): Promise<void> {
   for (const hook of relationEdgeWriteHooks) {
     await hook(context);
@@ -404,6 +444,7 @@ export function clearHooksForTests(): void {
   itemUpdateHooks.clear();
   itemDeleteHooks.clear();
   itemRestoreHooks.clear();
+  itemPurgeHooks.clear();
   relationEdgeWriteHooks.clear();
   relationEdgeDeleteHooks.clear();
   relationEdgeChangedHooks.clear();

@@ -12,7 +12,7 @@ const catalog = await loadCatalog(root);
 const handovers = await handoverIds(root);
 
 test('the complete real plan preserves all sources and their dependency order', () => {
-  assert.deepEqual(verifyPlan(original, catalog, handovers), { sources: 669, mainBatches: 74, heldBatches: 2 });
+  assert.deepEqual(verifyPlan(original, catalog, handovers), { sources: 673, mainBatches: 74, heldBatches: 2 });
 });
 
 test('malformed manifest inputs are rejected at the file boundary', () => {
@@ -87,7 +87,7 @@ test('completed prerequisites need real handovers and security review needs a pa
 
 test('a valid-looking reversed chain still fails its actual source dependency checks', () => {
   const changed = structuredClone(catalog), input = structuredClone(original);
-  const main = input.batches.filter(batch => batch.status === 'proposed').reverse();
+  const main = input.batches.filter(batch => batch.status !== 'held').reverse();
   const held = input.batches.filter(batch => batch.status === 'held');
   input.batches = [...main, ...held];
   for (const [index, entry] of main.entries()) {
@@ -98,4 +98,30 @@ test('a valid-looking reversed chain still fails its actual source dependency ch
     entry.specSha256 = specDigest(batch);
   }
   assert.throws(() => verifyPlan(input, changed, handovers), /Future\/held dependency/);
+});
+
+test('a merged batch keeps routing, hashes and dependency order without an embedded snapshot', () => {
+  const merged = original.batches.filter(batch => batch.status === 'merged');
+  assert(merged.length > 0, 'Expected merged batches');
+  const added = merged.flatMap(batch => batch.members.map(member => ({ batch, member })))
+    .find(({ batch, member }) => !catalog.get(batch.id).body.includes(`### Requirement ${member.id}:`));
+  assert(added, 'Expected a merged member that its withdrawn aggregate does not embed');
+  const sequential = structuredClone(original);
+  sequential.batches.find(batch => batch.id === added.batch.id).status = 'proposed';
+  assert.throws(() => verifyPlan(sequential, catalog, handovers), /requirement snapshot/);
+  const drifted = structuredClone(catalog);
+  drifted.get(added.member.id).body += '\nChanged requirement.\n';
+  assert.throws(() => verifyPlan(original, drifted, handovers), /Source spec drift/);
+  const open = merged.flatMap(batch => batch.members).find(member => catalog.get(member.id).metadata.state === 'open');
+  if (open) {
+    const queued = structuredClone(catalog);
+    queued.get(open.id).metadata.labels.push('agent:ready');
+    assert.throws(() => verifyPlan(original, queued, handovers), /individually queued/);
+  }
+  const reordered = structuredClone(original);
+  const internal = reordered.batches.find(batch => batch.status === 'merged'
+    && batch.members.some((member, index) => member.dependencies.some(id => batch.members.slice(0, index).some(previous => previous.id === id))));
+  assert(internal, 'Expected a merged batch with an internal dependency');
+  internal.members.reverse();
+  assert.throws(() => verifyPlan(reordered, catalog, handovers), /Internal forward dependency/);
 });

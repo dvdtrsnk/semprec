@@ -34,6 +34,7 @@ import {
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 let pool: Pool;

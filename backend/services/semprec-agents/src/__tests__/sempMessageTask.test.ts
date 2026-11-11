@@ -152,7 +152,7 @@ type RefFixtureMessage =
       imageCount: number;
       imageMimes: string[];
       providerSerializedBytes: number;
-      querySchemas: { database: QuerySchemaObservation; view: QuerySchemaObservation };
+      querySchemas: { database: QuerySchemaObservation; view: QuerySchemaObservation; count: QuerySchemaObservation };
     };
 
 function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
@@ -287,11 +287,13 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
     typeof value.querySchemas === "object" &&
     value.querySchemas !== null &&
     !Array.isArray(value.querySchemas) &&
-    Object.keys(value.querySchemas).length === 2 &&
+    Object.keys(value.querySchemas).length === 3 &&
     "database" in value.querySchemas &&
     isQuerySchemaObservation(value.querySchemas.database) &&
     "view" in value.querySchemas &&
     isQuerySchemaObservation(value.querySchemas.view) &&
+    "count" in value.querySchemas &&
+    isQuerySchemaObservation(value.querySchemas.count) &&
     "providerSerializedBytes" in value &&
     typeof value.providerSerializedBytes === "number" &&
     Number.isInteger(value.providerSerializedBytes) &&
@@ -311,7 +313,11 @@ function parseRefFixtureMessage(value: unknown): RefFixtureMessage | null {
       imageCount: value.imageCount,
       imageMimes: value.imageMimes,
       providerSerializedBytes: value.providerSerializedBytes,
-      querySchemas: { database: value.querySchemas.database, view: value.querySchemas.view },
+      querySchemas: {
+        database: value.querySchemas.database,
+        view: value.querySchemas.view,
+        count: value.querySchemas.count,
+      },
     };
   return null;
 }
@@ -574,7 +580,8 @@ describe("queued Semp messages", () => {
           });
         owned.on("message", (value: unknown) => {
           const parsed = parseRefFixtureMessage(value);
-          if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 512) invalidOutput = true;
+          // 768: an observation carries three schema observations of about a hundred characters each.
+          if (!parsed || messages.length >= 50 || JSON.stringify(value).length > 768) invalidOutput = true;
           else messages.push(parsed);
         });
         await vi.waitFor(

@@ -26,7 +26,7 @@ export function validateManifest(value) {
   for (const batch of value.batches) {
     assert(batch && typeof batch === 'object', 'Invalid batch');
     assert(typeof batch.id === 'string' && idPattern.test(batch.id), 'Invalid batch ID');
-    assert(['proposed', 'held'].includes(batch.status), 'Invalid batch status');
+    assert(['proposed', 'merged', 'held'].includes(batch.status), 'Invalid batch status');
     assert(batch.sequence === null || Number.isSafeInteger(batch.sequence) && batch.sequence > 0, 'Invalid sequence');
     assert(typeof batch.specSha256 === 'string' && hashPattern.test(batch.specSha256), 'Invalid batch hash');
     assert(Array.isArray(batch.members) && batch.members.length > 0, 'Empty batch');
@@ -57,7 +57,7 @@ export function verifyPlan(input, catalog, handovers) {
     assert.equal(specDigest(issue), batch.specSha256, `Batch spec drift: ${batch.id}`);
     assert(issue.body.length <= 60000, 'Batch exceeds model metadata limit');
     assert(issue.metadata.labels.includes('execution:batch'), 'Missing batch routing label');
-    if (batch.status === 'proposed') {
+    if (batch.status !== 'held') {
       active++;
       assert.equal(batch.sequence, active, 'Non-contiguous main sequence');
       assert.deepEqual(blockers(issue), previous ? [previous] : [], 'Missing sequential gate');
@@ -81,8 +81,12 @@ export function verifyPlan(input, catalog, handovers) {
         assert(!source.metadata.labels.includes('agent:ready'), 'Source is individually queued');
         assert(source.metadata.labels.includes('agent:blocked'), 'Open source is not blocked');
       }
-      const expected = `### Requirement ${member.id}: ${source.metadata.title}\n\n${sourceSnapshot(source)}`;
-      assert(issue.body.includes(expected), `Missing or changed requirement snapshot: ${member.id}`);
+      // A merged batch is a routing group of the parallel program: its withdrawn aggregate no longer
+      // carries the authoritative requirement text, so only a sequential batch must embed the snapshot.
+      if (batch.status !== 'merged') {
+        const expected = `### Requirement ${member.id}: ${source.metadata.title}\n\n${sourceSnapshot(source)}`;
+        assert(issue.body.includes(expected), `Missing or changed requirement snapshot: ${member.id}`);
+      }
     }
   }
   assert.equal(active, manifest.activeBatchCount, 'Wrong main batch count');
@@ -100,8 +104,8 @@ export function verifyPlan(input, catalog, handovers) {
         assert(prerequisite?.metadata.state === 'closed' && prerequisite.metadata.stateReason === 'completed' && handovers.has(dependency), `Undelivered prerequisite: ${dependency}`);
       } else if (target.batch.id === owner.batch.id) {
         assert(target.position < owner.position, `Internal forward dependency: ${id} -> ${dependency}`);
-      } else if (owner.batch.status === 'proposed') {
-        assert(target.batch.status === 'proposed' && target.batch.sequence < owner.batch.sequence, `Future/held dependency: ${id} -> ${dependency}`);
+      } else if (owner.batch.status !== 'held') {
+        assert(target.batch.status !== 'held' && target.batch.sequence < owner.batch.sequence, `Future/held dependency: ${id} -> ${dependency}`);
       } else {
         assert(blockers(catalog.get(owner.batch.id)).includes(target.batch.id), 'Held dependency missing from batch');
       }

@@ -31,13 +31,15 @@ interface MailboxRemovalImpactRow {
 }
 
 /**
- * All four counts in one statement, so they read one snapshot. `mailbox_folders` are the non-deleted
- * Folders related to the mailbox, `mailbox_emails` the non-deleted Emails in any of them, each once.
- * An Email is a draft when one of its folders is a Drafts folder. A thread counts when it has a member
- * and no non-deleted message outside `mailbox_emails`. The relation definitions are found by the
- * property key on the module-owned database, the way migration 0053 finds them.
+ * The membership rules of a mailbox removal, as the leading CTEs of a statement whose parameters are `$1`
+ * the mailbox item id, `$2` the Folders database id and `$3` the Emails database id. `mailbox_folders`
+ * (`id`, `is_drafts`) are the non-deleted Folders related to the mailbox, and `mailbox_emails`
+ * (`email_id`, `is_draft`) the non-deleted Emails in any of them, each once. An Email is a draft when
+ * one of its folders is a Drafts folder. The relation definitions are found by the property key on the
+ * module-owned database, the way migration 0053 finds them. The impact report below and the removal
+ * job (`mailboxRemovalJob.ts`, issue gh-2029) both start from this text, so both apply one definition.
  */
-const MAILBOX_REMOVAL_IMPACT_SQL = `
+export const MAILBOX_REMOVAL_MEMBERS_CTE_SQL = `
 WITH mailbox_folders AS (
   SELECT f.id,
          COALESCE(f.properties ->> 'specialPurpose' = 'drafts', false) AS is_drafts
@@ -72,7 +74,14 @@ mailbox_emails AS (
    AND e.id = fm.email_id
    AND e.deleted_at IS NULL
   GROUP BY fm.email_id
-),
+)`;
+
+/**
+ * All four counts in one statement, so they read one snapshot, over the members of
+ * `MAILBOX_REMOVAL_MEMBERS_CTE_SQL`. A thread counts when it has a member and no non-deleted message
+ * outside `mailbox_emails`.
+ */
+const MAILBOX_REMOVAL_IMPACT_SQL = `${MAILBOX_REMOVAL_MEMBERS_CTE_SQL},
 member_threads AS (
   SELECT DISTINCT meta.thread_id
   FROM mailbox_emails me

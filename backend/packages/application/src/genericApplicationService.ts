@@ -28,7 +28,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 39-operation catalog's business logic.
+ * path into the 42-operation catalog's business logic.
  */
 
 /**
@@ -420,6 +420,11 @@ export function createGenericApplicationService(
       return { ...page, items: await withLinks(page.items, input.include) };
     },
 
+    /** The choke point resolves every entry's database in the caller's tenant, and applies the declared collection filter through `resolver`. */
+    async countItems(_actor, input) {
+      return chokePoint.countItemsBatch(input.items, { resolver });
+    },
+
     // ---- relations ----
     async setRelation(actor, input) {
       return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
@@ -528,6 +533,19 @@ export function createGenericApplicationService(
     /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
     async createSubpage(actor, input) {
       return docStore.createSubpage(input, toActor(actor).type);
+    },
+
+    /** The copies are authored like `createSubpage`'s block; the suffix of the copy's title follows the locale of the user the actor is or acts for (English when that user is not found). */
+    async duplicatePage(actor, input) {
+      return docStore.duplicatePage(input.pageItemId, {
+        origin: toActor(actor).type,
+        locale: (await chokePoint.findUserLocale(actor.userId)) ?? "en",
+      });
+    },
+
+    /** The parent's block is rewritten as the caller, with the origin split `createSubpage` makes. */
+    async renamePage(actor, input) {
+      return docStore.renamePage(input, toActor(actor).type);
     },
 
     /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */

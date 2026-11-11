@@ -72,6 +72,25 @@ describe("collection metadata resolver (issue #1407)", () => {
     expect(resolver.resolve({ key: "hidden", system: true }).clientVisible).toBe(false);
   });
 
+  it("resolves the declared collection filter of a system database only, as a copy (issue #1709)", async () => {
+    const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
+    const declared = resolver.collectionFilter({ key: "projects", system: true });
+    expect(declared).toEqual({ type: "is_empty", property: "systemActive" });
+    // A caller changing its copy does not change what the resolver answers next.
+    if (declared) declared.property = "changed";
+    expect(resolver.collectionFilter({ key: "projects", system: true })).toEqual({
+      type: "is_empty",
+      property: "systemActive",
+    });
+    // A system database without a declaration, one without a descriptor and one without a key.
+    for (const key of ["tasks", "unknownInternal", null]) {
+      expect(resolver.collectionFilter({ key, system: true })).toBeUndefined();
+    }
+    // A user-created database never takes a module's declaration, whatever its key column holds.
+    expect(resolver.collectionFilter({ key: null, system: false })).toBeUndefined();
+    expect(resolver.collectionFilter({ key: "projects", system: false })).toBeUndefined();
+  });
+
   it("orders switcher rows, then overview-only rows, then the rest by name then id", () => {
     const rows = [
       { id: "6", name: "beta", switcherOrder: null, overviewOrder: null },

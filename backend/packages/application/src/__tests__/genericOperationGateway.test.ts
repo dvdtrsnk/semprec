@@ -63,6 +63,7 @@ import { createGenericOperationGateway, replayApprovedGenericOperation } from ".
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 let pool: Pool;
@@ -3410,7 +3411,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
           client.query = new Proxy(client.query, {
             apply(target, receiver, args: unknown[]) {
               const result: unknown = Reflect.apply(target, receiver, args);
-              if (typeof args[0] !== "string" || !args[0].startsWith("UPDATE items SET deleted_at = now()"))
+              if (
+                typeof args[0] !== "string" ||
+                !args[0].startsWith("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())")
+              )
                 return result;
               return Promise.resolve(result).then(async (value: unknown) => {
                 const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;

@@ -84,6 +84,7 @@ import {
   recordingDay,
 } from "./transcriptSummary.js";
 import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
+import { linkTranscriptToUploadEvent } from "./uploadEventLink.js";
 
 function sourceName(properties: Record<string, unknown>): string {
   if (typeof properties.name === "string" && properties.name.length > 0) return properties.name;
@@ -260,12 +261,13 @@ function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) =
  * Each step checks at entry, and again before a checkpoint write or the next chunk's paid call,
  * so a lock set while a step runs stops the pipeline before its next write or paid call.
  * Then throws `TranscriptionStoppedError` when the transcript or the source Files item is in
- * Trash or gone, so no step writes to or pays for deleted data.
+ * Trash or gone, so no step writes to or pays for deleted data. Returns the transcript row it
+ * locked, for a step that decides on the transcript's `status`.
  */
 async function requireTranscriptionUnlocked(
   client: PoolClient,
   { filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContextIds,
-): Promise<void> {
+): Promise<ItemRow> {
   const source = await lockTranscriptionItem(client, filesDatabaseId, fileItemId);
   const transcript = await lockTranscriptionItem(client, await requireTranscriptsDatabaseId(client), transcriptId);
   const automation = await lockItemAutomation(client, transcriptId);
@@ -278,11 +280,18 @@ async function requireTranscriptionUnlocked(
     });
   }
   if (automation.status === "locked") throw new TranscriptionLockedError(transcriptId);
+  return transcript;
 }
 
 type TranscriptionStepContextIds = Pick<TranscriptionStepContext, "filesDatabaseId" | "fileItemId" | "transcriptId">;
 
-/** Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the checkpoint. */
+/**
+ * Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the
+ * checkpoint. When the upload named an Event (`recording_requests.event_item_id`, issue #1644), the
+ * same transaction writes the Transcripts `event` edge to it, provided the Event is still in this
+ * tenant's Events database and not in the Trash; otherwise no edge is written and step 6 matches the
+ * transcript as usual. See docs/adr/2026-11-10-transcription-create-writes-the-uploads-event.md.
+ */
 async function runCreateStep({
   pool,
   filesDatabaseId,
@@ -334,6 +343,7 @@ async function runCreateStep({
         });
       }
     }
+    if (recording?.eventId) await linkTranscriptToUploadEvent(client, transcript, recording.eventId);
     await ensureItemAutomation(client, transcript.id);
     await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_CREATE_COMPUTED_KEY, transcript.id);
     return transcript.id;
@@ -739,7 +749,11 @@ async function runSummarizeStep(
 /**
  * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose
  * `date` falls inside the recording's window, or otherwise creates the transcript's single
- * suggestion card. Re-running it converges: an existing edge or card is left as it is.
+ * suggestion card. A retry of an unfinished transcript converges: an existing edge or card is left
+ * as it is. A transcript whose `status` is already `done` is not matched at all (issue #1712), so a
+ * later run of its job neither links an Event again nor adds a card after the user removed the edge.
+ * The status is read from the row this transaction locked. See
+ * docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
  */
 async function runMatchStep({
   pool,
@@ -748,7 +762,8 @@ async function runMatchStep({
   transcriptId,
 }: TranscriptionStepContext): Promise<void> {
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    if (locked.properties.status === "done") return;
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     const { durationSeconds } = requirePrepareCheckpoint(source, fileItemId);
     await matchTranscriptToEvent(client, { transcriptId, durationSeconds });
@@ -760,14 +775,18 @@ async function runMatchStep({
  * one gateway call suggests mappings; otherwise cards need clarification without a call. The
  * gateway call runs outside the transactions, and cards and checkpoint commit together. A replay
  * after that commit makes no second call; a crash before commit can repeat the call. A user must
- * confirm a card before a mapping is written.
+ * confirm a card before a mapping is written. A transcript whose `status` is already `done` gets no
+ * call, no card and no checkpoint (issue #1712), whether or not the checkpoint exists: the status is
+ * read from the locked row before the call, and again in the transaction that would write the cards.
+ * See docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
  */
 async function runSuggestSpeakersStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
   completionClient: AiGatewayClientPort,
 ): Promise<void> {
   const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    if (locked.properties.status === "done") return null;
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return null;
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
@@ -785,7 +804,9 @@ async function runSuggestSpeakersStep(
     : [];
 
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
+    // A run that finished the transcript while the call was out leaves it as that run left it.
+    if (locked.properties.status === "done") return;
     // Locked, so a concurrent run that checkpointed first is not doubled.
     const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return;
@@ -920,6 +941,9 @@ function isBudgetRejection(err: unknown): boolean {
  * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
  * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
  * attempt's failure never adds a second one while every later permanent failure gets its own.
+ * A permanent failure of a re-run of a transcript whose `status` is already `done` (issue #1712's
+ * meeting-notes backfill, a manual rerun) is recorded in `item_automation` only: `status` stays
+ * `done` and no notification is written, because the user's finished transcript is still complete.
  * Missing or trashed targets stop without an item update or notification; an existing unlocked
  * automation is marked `error`/`deleted`. A locked automation remains unchanged.
  * Returns `"locked"` for a live target with a user lock, `"deleted"` for the stop, otherwise `"recorded"`.
@@ -954,7 +978,7 @@ async function recordTranscriptionFailure(
     errorCode,
   );
   if (!written) throw new Error(`item_automation row for item ${transcriptId} was not updated while locked`);
-  if (!permanent) return "recorded";
+  if (!permanent || transcript.properties.status === "done") return "recorded";
 
   await updateItemWithClient(
     client,

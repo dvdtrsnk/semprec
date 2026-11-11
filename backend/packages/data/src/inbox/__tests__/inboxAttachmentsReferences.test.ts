@@ -292,13 +292,16 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         );
         expect(fileItems.rows).toHaveLength(1);
         await chokePoint.softDeleteItem(emails, message.itemId);
-        await ageDeletion(message.itemId, emails);
+        // The purge of an Email removes its `mail_attachments` rows (issue gh-1691), so the mail reference
+        // survives the sweep only while the Email is not purged: its trash stays fresh in that scenario.
+        if (scenario !== "retains the surviving mail reference") await ageDeletion(message.itemId, emails);
         for (const item of fileItems.rows) {
           await chokePoint.softDeleteItem(ids.filesDatabaseId, item.id);
           await ageDeletion(item.id, ids.filesDatabaseId);
         }
         if (scenario === "deletes after fixture-only mail reference removal") {
-          // Fixture only: production email purge does not remove this reference.
+          // Fixture only: the purge of the Email removes this reference too (issue gh-1691), but a sweep
+          // that reaches the Files item first still finds it and keeps the blob.
           const released = await runInTenant(getTenantZeroId(), () =>
             withTransaction(runtime, (client) =>
               client.query(
@@ -330,7 +333,8 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           "SELECT count(*)::int AS count FROM items WHERE id = ANY($1::uuid[])",
           [[message.itemId, ...fileItems.rows.map((item) => item.id)]],
         );
-        expect(remainingItems.rows[0]?.count).toBe(0);
+        // The Files item is purged in both scenarios; the Email only where its trash was aged.
+        expect(remainingItems.rows[0]?.count).toBe(scenario === "retains the surviving mail reference" ? 1 : 0);
         const otherRefs = await pool.query<{ count: number }>(
           `SELECT ((SELECT count(*) FROM items WHERE tenant_id = $1 AND properties->'file'->>'blobId' = $2) +
                    (SELECT count(*) FROM inbox_attachments WHERE tenant_id = $1 AND blob_id = $2::uuid))::int AS count`,

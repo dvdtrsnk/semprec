@@ -188,6 +188,33 @@ export async function revokeOtherSessionsForUser(
 }
 
 /**
+ * Revokes every unrevoked session of `userId` that carries `deviceId`, except `exceptSessionId`, in one
+ * statement, and returns the ids it revoked (issue #1687: a login replaces the earlier sessions of its
+ * installation). `client` is the caller's `withTransaction` client: each revoked id's realtime
+ * session-revocation event is registered with `runAfterCommit`, so a rolled-back call announces nothing.
+ * Other users' sessions with the same `deviceId`, and sessions without one, are not matched. The statement
+ * alone does not exclude a concurrent login of the same installation; `login` takes the lock recorded in
+ * docs/adr/2026-11-10-login-replaces-the-sessions-of-its-installation.md before it creates its session.
+ */
+export async function revokeSessionsForDevice(
+  client: PoolClient,
+  userId: string,
+  deviceId: string,
+  exceptSessionId: string,
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
+    `UPDATE sessions SET revoked_at = now()
+     WHERE user_id = $1 AND device_id = $2 AND id <> $3 AND revoked_at IS NULL
+     RETURNING id`,
+    [userId, deviceId, exceptSessionId],
+  );
+  // Zero rows is a legitimate outcome: the first login of an installation has nothing to replace.
+  if ((result.rowCount ?? 0) === 0) return [];
+  for (const row of result.rows) fireSessionRevoked(client, row.id);
+  return result.rows.map((row) => row.id);
+}
+
+/**
  * Whether `id` is still an active session — neither revoked nor expired. `WS /api/sync`'s
  * heartbeat (issue #160) calls this as a fallback to the NOTIFY-driven close, for the case where
  * a socket's connection to the LISTEN channel missed the revocation event (e.g. a reconnect

@@ -1,17 +1,25 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
+import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { EMAILS_RELATION_CONTEXT } from "../../mail/emailsRelationContext.js";
-import { createFilesTranscriptionTriggerAction } from "../transcriptionActions.js";
+import { createActionRegistry } from "../../scheduler/actions.js";
+import { createCoreTaskList } from "../../worker.js";
+import {
+  createFilesTranscriptionTriggerAction,
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+} from "../transcriptionActions.js";
 import { transcriptionJobKey } from "../transcriptionJob.js";
 import { recordRecordingIntake } from "../recordingIntake.js";
 
@@ -260,5 +268,226 @@ describe("Files transcription trigger (issue #180)", () => {
     await handler(actionConfig(), { heartbeatId: "hb", projectItemId: "proj", itemId: fileItemId });
 
     expect(await jobCount(transcriptionJobKey(fileItemId))).toBe(1);
+  });
+});
+
+/**
+ * Issue #1698: an audio file attached to an Event is a plain attachment, not a recording. The trigger,
+ * its fixtures and the assertions run on a `semprec_data` pool inside the tenant, so the trigger reads
+ * the relation definition and the file's edges under row-level security.
+ */
+describe("Files transcription trigger and Event attachments (issue #1698)", () => {
+  let admin: Pool;
+  let runtime: Pool;
+  let tenant: string;
+  let ids: { files: string; events: string; attachmentsProperty: string; eventsProperty: string };
+
+  function inTenant<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    return runInTenant(tenant, () => withTransaction(runtime, fn));
+  }
+
+  beforeAll(async () => {
+    admin = getTestPool();
+    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("check transcription action role", () =>
+      runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(admin);
+    tenant = getTenantZeroId();
+    await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));
+    ids = await inTenant(async (client) => {
+      const databaseId = async (moduleId: string): Promise<string> => {
+        const database = await getDatabaseByModuleId(client, moduleId);
+        if (!database) throw new Error(`Database '${moduleId}' was not seeded`);
+        return database.id;
+      };
+      const propertyId = async (database: string, key: string): Promise<string> => {
+        const property = await propertiesStore.getPropertyByKey(client, database, key);
+        if (!property) throw new Error(`Property '${key}' was not seeded`);
+        return property.id;
+      };
+      const files = await databaseId("files");
+      return {
+        files,
+        events: await databaseId("events"),
+        attachmentsProperty: await propertyId(await databaseId("emails"), "attachments"),
+        eventsProperty: await propertyId(files, "events"),
+      };
+    });
+  });
+
+  afterAll(async () => {
+    await runtime?.end();
+    await admin?.end();
+  });
+
+  /** The `action_config` the seed gave the tenant's `Files transcription trigger` heartbeat, and the heartbeat's id. */
+  async function seededTrigger(): Promise<{ id: string; config: Record<string, unknown> }> {
+    const { rows } = await inTenant((client) =>
+      client.query<{ id: string; action_config: unknown }>(
+        "SELECT id, action_config FROM project_heartbeats WHERE action_id = $1",
+        [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    const row = z.object({ id: z.uuid(), action_config: z.record(z.string(), z.unknown()) }).parse(rows[0]);
+    return { id: row.id, config: row.action_config };
+  }
+
+  /** The config of a heartbeat seeded before issue #1698 and not cut over yet. */
+  function oldConfig(): Record<string, unknown> {
+    return { filesDatabaseId: ids.files, attachmentsRelationPropertyId: ids.attachmentsProperty };
+  }
+
+  /**
+   * An audio Files item. With `attachedToEvent`, a new Event and the file's `Files.events` edge are
+   * written in the transaction that creates the file, as the upload attach of issue #1645 does.
+   */
+  function createAudioFile(options: { attachedToEvent: boolean }): Promise<string> {
+    return inTenant(async (client) => {
+      const blob = await createBlob(client, {
+        mimeType: "audio/mpeg",
+        byteSize: 1024,
+        storageKey: `test/audio/${randomUUID()}`,
+      });
+      const file = await createItemWithClient(client, {
+        databaseId: ids.files,
+        properties: { name: "voice memo", file: { blobId: blob.id } },
+      });
+      if (options.attachedToEvent) {
+        const event = await createItemWithClient(client, {
+          databaseId: ids.events,
+          properties: { name: "Client meeting", date: "2026-10-16" },
+        });
+        await createRelationWithClient(client, {
+          relationPropertyId: ids.eventsProperty,
+          callerItemId: file.id,
+          targetItemId: event.id,
+        });
+      }
+      return file.id;
+    });
+  }
+
+  function fire(config: Record<string, unknown>, fileItemId: string): Promise<void> {
+    return runInTenant(tenant, () =>
+      createFilesTranscriptionTriggerAction(runtime)(config, {
+        heartbeatId: "hb",
+        projectItemId: "proj",
+        itemId: fileItemId,
+      }),
+    );
+  }
+
+  /**
+   * The keys of the file's two transcription jobs that are queued, in key order. The trigger writes no
+   * item itself: a Transcriptions row for the file comes from the transcribe worker running one of them.
+   */
+  async function queuedTranscriptionJobs(fileItemId: string): Promise<string[]> {
+    const { rows } = await inTenant((client) =>
+      client.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key", [
+        [`transcription-create:${fileItemId}`, transcriptionJobKey(fileItemId)],
+      ]),
+    );
+    return rows.map((row) => row.key);
+  }
+
+  function bothTranscriptionJobs(fileItemId: string): string[] {
+    return [`transcription-create:${fileItemId}`, transcriptionJobKey(fileItemId)];
+  }
+
+  /** Runs the queued `heartbeatFireCore` jobs once, with the trigger registered under its action id. */
+  async function runQueuedHeartbeatFires(): Promise<void> {
+    const registry = createActionRegistry();
+    registry.set(FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, createFilesTranscriptionTriggerAction(runtime));
+    const heartbeatTask = createCoreTaskList(runtime, registry)[CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE];
+    if (!heartbeatTask) throw new Error("Missing core heartbeat task");
+    await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: heartbeatTask } });
+  }
+
+  async function heartbeatFireOutcome(heartbeatId: string, fileItemId: string) {
+    const { rows } = await inTenant((client) =>
+      client.query<{ fire_queued: boolean; last_error: string | null }>(
+        `SELECT EXISTS (SELECT 1 FROM graphile_worker.jobs WHERE key = $2) AS fire_queued, last_error
+           FROM project_heartbeats WHERE id = $1`,
+        [heartbeatId, `heartbeat-fire:${heartbeatId}:${fileItemId}`],
+      ),
+    );
+    return rows;
+  }
+
+  it("the seeded config skips an audio file with a Files.events edge: neither transcription job is queued", async () => {
+    const fileItemId = await createAudioFile({ attachedToEvent: true });
+
+    await fire((await seededTrigger()).config, fileItemId);
+
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
+  });
+
+  it("the seeded config still enqueues a standalone audio file while another file is attached to an Event", async () => {
+    await createAudioFile({ attachedToEvent: true });
+    const fileItemId = await createAudioFile({ attachedToEvent: false });
+
+    await fire((await seededTrigger()).config, fileItemId);
+
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
+  });
+
+  it.each([
+    ["a standalone audio file", false],
+    ["an audio file with a Files.events edge", true],
+  ])(
+    "a config without eventsRelationPropertyId still runs and enqueues %s, as before",
+    async (_label, attachedToEvent) => {
+      const fileItemId = await createAudioFile({ attachedToEvent });
+
+      await fire(oldConfig(), fileItemId);
+
+      expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
+    },
+  );
+
+  it("enqueues when eventsRelationPropertyId names no relation definition", async () => {
+    const fileItemId = await createAudioFile({ attachedToEvent: true });
+
+    await fire({ ...oldConfig(), eventsRelationPropertyId: randomUUID() }, fileItemId);
+
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
+  });
+
+  it("rejects a config whose eventsRelationPropertyId is not a uuid and enqueues nothing", async () => {
+    const fileItemId = await createAudioFile({ attachedToEvent: false });
+
+    await expect(fire({ ...oldConfig(), eventsRelationPropertyId: "events" }, fileItemId)).rejects.toThrow(z.ZodError);
+
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
+  });
+
+  it("the queued fire of the seeded heartbeat skips an audio file created with a Files.events edge", async () => {
+    const trigger = await seededTrigger();
+    const fileItemId = await createAudioFile({ attachedToEvent: true });
+    expect(await heartbeatFireOutcome(trigger.id, fileItemId)).toEqual([{ fire_queued: true, last_error: null }]);
+
+    await runQueuedHeartbeatFires();
+
+    expect(await heartbeatFireOutcome(trigger.id, fileItemId)).toEqual([{ fire_queued: false, last_error: null }]);
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
+  });
+
+  it("the queued fire of the seeded heartbeat enqueues a standalone audio file", async () => {
+    const trigger = await seededTrigger();
+    const fileItemId = await createAudioFile({ attachedToEvent: false });
+    expect(await heartbeatFireOutcome(trigger.id, fileItemId)).toEqual([{ fire_queued: true, last_error: null }]);
+
+    await runQueuedHeartbeatFires();
+
+    expect(await heartbeatFireOutcome(trigger.id, fileItemId)).toEqual([{ fire_queued: false, last_error: null }]);
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
   });
 });

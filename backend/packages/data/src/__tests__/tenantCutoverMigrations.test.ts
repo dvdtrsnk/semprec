@@ -187,6 +187,11 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
       ["files", "type", { pdf: "#FF3B30", xlsx: "#34C759", docx: "#007AFF", jpg: "#FF9500" }],
       ["healthRecords", "status", { monitoring: "#FF9500", resolved: "#34C759" }],
       [
+        "healthRecords",
+        "tags",
+        { bloodTests: "#FF9500", medication: "#AF52DE", bloodPressure: "#FF2D55", prevention: "#34C759" },
+      ],
+      [
         "people",
         "relationship",
         {
@@ -240,10 +245,11 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
       for (const [optionKey, color] of Object.entries(expectedColors)) {
         expect(migrated.config.options.find((option) => option.key === optionKey)).toMatchObject({ color });
       }
-      versions.set(moduleId, migrated.version);
+      versions.set(`${moduleId}.${key}`, migrated.version);
     }
     await runCutovers(dataPool);
-    for (const [moduleId, key] of catalogs) expect((await read(b, moduleId, key)).version).toBe(versions.get(moduleId));
+    for (const [moduleId, key] of catalogs)
+      expect((await read(b, moduleId, key)).version).toBe(versions.get(`${moduleId}.${key}`));
   });
 
   it("skips missing databases and missing listed options without writes", async () => {
@@ -335,6 +341,66 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     ]);
     await runCutovers(dataPool);
     expect(await read(b)).toEqual(migrated);
+  });
+
+  it("colors four Health records tags of an older tenant, keeps colors that are already set and does not rewrite on replay (issue #1705)", async () => {
+    for (const tenant of [zero, b]) await runInTenant(tenant, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const read = (tenant: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await dataPool.query<Record<string, unknown>>(
+          `SELECT p.id, p.xmin::text AS version, p.config FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = 'healthRecords' AND p.key = 'tags'`,
+        );
+        return z
+          .object({
+            id: z.string(),
+            version: z.string(),
+            config: z.object({ options: z.array(z.record(z.string(), z.unknown())) }).passthrough(),
+          })
+          .parse(rows[0]);
+      });
+    const seeded = [
+      { key: "bloodTests", color: "#FF9500" },
+      { key: "medication", color: "#AF52DE" },
+      { key: "epilepsy" },
+      { key: "dentalHygiene" },
+      { key: "bloodPressure", color: "#FF2D55" },
+      { key: "prevention", color: "#34C759" },
+    ];
+    expect((await read(zero)).config.options).toStrictEqual(seeded);
+    const old = await read(b);
+    // The four tags of a tenant seeded before issues #1700 and #1705, two of them with a color of their own.
+    const options = [
+      { key: "bloodTests" },
+      { key: "medication", color: "#123456", extra: true },
+      { key: "epilepsy", color: "#654321" },
+      { key: "dentalHygiene" },
+    ];
+    // The schema-locked Health records catalog cannot be reverted through the production property API.
+    const updated = await adminPool.query(
+      "UPDATE properties SET config = jsonb_set(config, '{options}', $3::jsonb) WHERE tenant_id = $1 AND id = $2",
+      [b, old.id, JSON.stringify(options)],
+    );
+    expect(updated.rowCount).toBe(1);
+    const untouched = await read(zero);
+
+    await runCutovers(dataPool);
+
+    const migrated = await read(b);
+    // `bloodPressure` and `prevention` are appended by the tags cutover of #1700 and colored in the same run.
+    expect(migrated.config.options).toStrictEqual([
+      { key: "bloodTests", color: "#FF9500" },
+      { key: "medication", color: "#123456", extra: true },
+      { key: "epilepsy", color: "#654321" },
+      { key: "dentalHygiene" },
+      { key: "bloodPressure", color: "#FF2D55" },
+      { key: "prevention", color: "#34C759" },
+    ]);
+    expect(await read(zero)).toEqual(untouched);
+
+    await runCutovers(dataPool);
+
+    expect(await read(b)).toEqual(migrated);
+    expect(await read(zero)).toEqual(untouched);
   });
 
   it("upgrades every tenant in its own scope", async () => {

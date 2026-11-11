@@ -168,7 +168,7 @@ describe("mail thread list", () => {
       ).toEqual([trashId]);
       expect((await list(`/api/mail/threads?unread=true&mailboxId=${f.boxB.id}`)).body.threads).toHaveLength(0);
       expect((await list(`/api/mail/threads?unread=true&mailboxId=${f.boxA.id}`)).body.threads).toHaveLength(1);
-      await expect(list("/api/mail/threads?box=sempDrafts")).rejects.toMatchObject({
+      await expect(list("/api/mail/threads?box=unknown")).rejects.toMatchObject({
         status: 400,
         details: { field: "box" },
       });

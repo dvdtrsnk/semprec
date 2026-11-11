@@ -117,6 +117,17 @@ export async function recordConfirmedMailMessageFlag(
   requireAffectedRows(result, "mail message flag confirmation");
 }
 
+/**
+ * Deletes the flag sync state of message `messageItemId` (issue gh-1691), at most one row per flag, and
+ * returns how many there were; a message whose flags were never written or observed has none.
+ */
+export async function deleteMailMessageFlagSyncStates(client: Queryable, messageItemId: string): Promise<number> {
+  const result = await client.query("DELETE FROM mail_message_flag_sync_state WHERE message_item_id = $1", [
+    messageItemId,
+  ]);
+  return result.rowCount ?? 0;
+}
+
 /** Pending IMAP writes are resolved through every folder edge carrying the message's UID. */
 export async function listPendingImapFlagWrites(
   client: Queryable,

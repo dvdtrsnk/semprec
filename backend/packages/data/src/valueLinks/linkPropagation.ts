@@ -6,7 +6,7 @@ import { createLogger, currentTenantScope, TenantScopeMissingError } from "@semp
 import { withTransaction, runAfterCommit } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
-import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
+import { getItemById, getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
@@ -16,7 +16,7 @@ import {
   listValueLinkSourcesByLinkIds,
 } from "../chokePoint/valueLinksStore.js";
 import { VALUE_LINKS_OWNER_PROCESS } from "../chokePoint/valueLinkWrites.js";
-import { loadLinkRules, resolveLinkRule, type ResolvedLinkRule } from "./linkRuleCatalog.js";
+import { loadLinkRules, readOmittedItemIds, resolveLinkRule, type ResolvedLinkRule } from "./linkRuleCatalog.js";
 import { withPropagationHop } from "./propagationContext.js";
 
 const payloadSchema = z
@@ -97,6 +97,14 @@ export async function readTargetValues(
   return readRuleValues(client, resolved.targetDatabase.id, itemId, resolved.targetProperty, resolved.targetDefinition);
 }
 
+/**
+ * The distinct values the sources `ids` give a rule's target. Both the first copy on a via edge and
+ * every later propagation read their values here. Two kinds of value are left out:
+ * - an item of a relation source that is in the Trash. The Trash keeps an item's edges and a relation
+ *   write refuses a trashed endpoint, so copying it would fail the whole write. A target that
+ *   already holds such an item loses the edge with the next recomputation;
+ * - the items the rule's `valueFilter` names.
+ */
 export async function sourceUnion(client: PoolClient, resolved: ResolvedLinkRule, ids: string[]): Promise<unknown[]> {
   const values: unknown[] = [];
   for (const id of ids)
@@ -109,7 +117,14 @@ export async function sourceUnion(client: PoolClient, resolved: ResolvedLinkRule
         resolved.sourceDefinition,
       )),
     );
-  return distinct(values);
+  let union = distinct(values);
+  if (resolved.sourceDefinition) {
+    const live = new Set((await getItemsByIds(client, z.array(z.uuid()).parse(union))).map((item) => item.id));
+    union = union.filter((value) => typeof value === "string" && live.has(value));
+  }
+  if (!resolved.valueFilter) return union;
+  const omitted: unknown[] = await readOmittedItemIds(client, resolved.valueFilter);
+  return union.filter((value) => !omitted.includes(value));
 }
 
 export async function applyInheritedValues(

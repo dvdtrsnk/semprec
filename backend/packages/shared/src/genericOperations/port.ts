@@ -4,6 +4,7 @@ import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
 import type {
   Database,
   Item,
+  ItemCountEntry,
   ItemPage,
   ItemLink,
   Page,
@@ -15,7 +16,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 38 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 42 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -61,6 +62,10 @@ export interface OutputByOperation {
   "page.createSubpage": PageCreateSubpageOutput;
   "page.insert": { blockIds: string[] };
   "page.changes": PageChangeEntry[];
+  /** One entry per input entry, in input order. */
+  "item.count": ItemCountEntry[];
+  "page.duplicate": PageDuplicateOutput;
+  "page.rename": PageRenameOutput;
 }
 
 /** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
@@ -75,6 +80,19 @@ export interface PageChangeEntry {
 /** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
 export interface PageCreateSubpageOutput {
   pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
+}
+
+/** The root of the copy one `page.duplicate` call made: its Pages item, its document and its `page` block in the parent. */
+export interface PageDuplicateOutput {
+  pageItemId: string;
+  docId: string;
+  blockId: string;
+}
+
+/** The subpage one `page.rename` call named and its title as stored: the requested title after normalization. */
+export interface PageRenameOutput {
+  pageItemId: string;
+  title: string;
 }
 
 /** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
@@ -268,8 +286,20 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.changes"],
   ): Promise<OutputByOperation["page.changes"]>;
+  duplicatePage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.duplicate"],
+  ): Promise<OutputByOperation["page.duplicate"]>;
+  renamePage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.rename"],
+  ): Promise<OutputByOperation["page.rename"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],
   ): Promise<OutputByOperation["page.restoreVersion"]>;
+  countItems(
+    actor: AuthenticatedActor,
+    input: InputByOperation["item.count"],
+  ): Promise<OutputByOperation["item.count"]>;
 }

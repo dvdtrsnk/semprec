@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
+import {
+  currentTenantScope,
+  getTraceContext,
+  runInTenant,
+  withTraceContext,
+  type TenantScope,
+  type TraceContext,
+} from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -16,6 +23,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { provisionTenant } from "../tenancy/provisionTenant.js";
 import {
   createMailLiveSyncRoot,
   type MailAccountLifecycle,
@@ -1082,5 +1090,404 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     // The heartbeat the finished start installed was stopped with the lifecycle: nothing is left hosted.
     await root.stop();
     expect(events.filter((event) => event.startsWith("stop:"))).toHaveLength(1);
+  });
+});
+
+describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
+  let dataPool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await dataPool.end();
+  });
+
+  /** A mailbox of `tenantId`, created through the runtime role inside that tenant. */
+  function addMailbox(tenantId: string = getTenantZeroId()): Promise<string> {
+    return runInTenant(tenantId, () =>
+      withTransaction(dataPool, async (client) => {
+        const { rows } = await client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+          MAILBOXES_MODULE_ID,
+        ]);
+        const databaseId = rows[0]?.id;
+        if (!databaseId) throw new Error(`tenant ${tenantId} has no Mailboxes database`);
+        const item = await createItemWithClient(client, { databaseId, properties: { provider: "generic" } });
+        return item.id;
+      }),
+    );
+  }
+
+  /** A second tenant with its own system databases. */
+  async function addTenant(): Promise<string> {
+    const tenantId = await createTestTenant(pool);
+    await provisionTenant(dataPool, tenantId);
+    return tenantId;
+  }
+
+  function gate(): { promise: Promise<void>; release: () => void } {
+    let release: () => void = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  interface Created {
+    mailboxItemId: string;
+    /** The tenant scope and the trace context each `start()` and `stop()` ran in. */
+    starts: Array<{ scope: TenantScope | undefined; trace: TraceContext | undefined }>;
+    stops: Array<TenantScope | undefined>;
+  }
+
+  /**
+   * Lifecycles numbered in the order the factory created them. `events` holds `start:<n>`, `started:<n>`
+   * and `stop:<n>`; `behavior` may hold or fail the start or the stop of the lifecycle numbered `n`.
+   */
+  function numberedFactory(behavior: (n: number) => Partial<MailAccountLifecycle> = () => ({})): {
+    factory: MailLiveSyncLifecycleFactory;
+    created: Created[];
+    events: string[];
+  } {
+    const created: Created[] = [];
+    const events: string[] = [];
+    const factory: MailLiveSyncLifecycleFactory = (account) => {
+      const record: Created = { mailboxItemId: account.mailboxItemId, starts: [], stops: [] };
+      created.push(record);
+      const n = created.length;
+      const overrides = behavior(n);
+      return {
+        async start() {
+          record.starts.push({ scope: currentTenantScope(), trace: getTraceContext() });
+          events.push(`start:${n}`);
+          await overrides.start?.();
+          events.push(`started:${n}`);
+        },
+        async stop() {
+          record.stops.push(currentTenantScope());
+          events.push(`stop:${n}`);
+          await overrides.stop?.();
+        },
+      };
+    };
+    return { factory, created, events };
+  }
+
+  async function heartbeatStartedAt(mailboxId: string): Promise<number | undefined> {
+    const { rows } = await pool.query<{ started_at: Date }>(
+      "SELECT started_at FROM process_heartbeats WHERE process = $1",
+      [mailSyncProcessName(mailboxId)],
+    );
+    return rows[0]?.started_at.getTime();
+  }
+
+  it("stops the hosted lifecycle and hosts a new one from the root's factory, with one heartbeat", async () => {
+    const mailboxId = await addMailbox();
+    // Only intervals are faked, so each hosted heartbeat shows up as one pending fake timer.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const errors: string[] = [];
+    const { factory, created, events } = numberedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory, {
+      onLifecycleError: (_id, phase) => errors.push(phase),
+    });
+    await root.reconcileOnce();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await root.restartAccount(mailboxId);
+
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2"]);
+    expect(created.map((record) => record.mailboxItemId)).toEqual([mailboxId, mailboxId]);
+    // The old heartbeat was cleared and the new lifecycle got its own.
+    expect(vi.getTimerCount()).toBe(1);
+
+    // The replacement is the hosted one: a pass leaves it alone, and stop() stops it and nothing else.
+    await root.reconcileOnce();
+    await root.stop();
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2", "stop:2"]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it("replaces a lifecycle whose start() had failed, which a second discovery pass leaves in place", async () => {
+    const mailboxId = await addMailbox();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory, created, events } = numberedFactory((n) =>
+      n === 1
+        ? {
+            start: async () => {
+              throw new Error("boom: the first start fails");
+            },
+          }
+        : {},
+    );
+    const root = createMailLiveSyncRoot(dataPool, factory, {
+      onLifecycleError: (id, phase) => errors.push({ mailboxItemId: id, phase }),
+    });
+    await root.reconcileOnce();
+    await root.reconcileOnce();
+    expect(created).toHaveLength(1);
+    expect(errors).toEqual([{ mailboxItemId: mailboxId, phase: "start" }]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await root.restartAccount(mailboxId);
+
+    expect(events).toEqual(["start:1", "stop:1", "start:2", "started:2"]);
+    expect(errors).toEqual([{ mailboxItemId: mailboxId, phase: "start" }]);
+    expect(vi.getTimerCount()).toBe(1);
+    await root.stop();
+    expect(events.filter((event) => event.startsWith("stop:"))).toEqual(["stop:1", "stop:2"]);
+  });
+
+  it("reports the new lifecycle's failed start and keeps it hosted, so a stop still reaches it", async () => {
+    const mailboxId = await addMailbox();
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory, events } = numberedFactory((n) =>
+      n === 2
+        ? {
+            start: async () => {
+              throw new Error("boom: the replacement's start fails");
+            },
+          }
+        : {},
+    );
+    const root = createMailLiveSyncRoot(dataPool, factory, {
+      onLifecycleError: (id, phase) => errors.push({ mailboxItemId: id, phase }),
+    });
+    await root.reconcileOnce();
+
+    await expect(root.restartAccount(mailboxId)).resolves.toBeUndefined();
+
+    expect(errors).toEqual([{ mailboxItemId: mailboxId, phase: "start" }]);
+    await root.stop();
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "stop:2"]);
+  });
+
+  it("rejects when the lifecycle factory throws, and the next discovery pass hosts the account again", async () => {
+    const mailboxId = await addMailbox();
+    const inner = numberedFactory();
+    let calls = 0;
+    const factory: MailLiveSyncLifecycleFactory = (account) => {
+      calls += 1;
+      if (calls === 2) throw new Error("boom: the factory fails");
+      return inner.factory(account);
+    };
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    await expect(root.restartAccount(mailboxId)).rejects.toThrow("boom: the factory fails");
+
+    expect(inner.events).toEqual(["start:1", "started:1", "stop:1"]);
+    await root.reconcileOnce();
+    expect(inner.events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2"]);
+    await root.stop();
+  });
+
+  it("leaves an account it does not host alone: an unknown id, and a mailbox no pass has discovered yet", async () => {
+    const mailboxId = await addMailbox();
+    const { factory, created, events } = numberedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory);
+
+    await root.restartAccount("11111111-1111-4111-8111-111111111111");
+    await root.restartAccount(mailboxId);
+
+    expect(created).toEqual([]);
+    // The pass hosts it with a lifecycle created then.
+    await root.reconcileOnce();
+    expect(events).toEqual(["start:1", "started:1"]);
+    await root.stop();
+  });
+
+  it("called from the mailbox's tenant scope and a request's trace context, runs the new lifecycle in the root's own context", async () => {
+    const tenantId = await addTenant();
+    const mailboxId = await addMailbox(tenantId);
+    const errors: Array<{ phase: string; err: unknown }> = [];
+    const { factory, created } = numberedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory, {
+      onLifecycleError: (_id, phase, err) => errors.push({ phase, err }),
+    });
+    await root.reconcileOnce();
+    await vi.waitFor(async () => expect(await heartbeatStartedAt(mailboxId)).toBeDefined(), { timeout: 5000 });
+    const firstHeartbeat = await heartbeatStartedAt(mailboxId);
+    if (firstHeartbeat === undefined) throw new Error("the first heartbeat wrote no row");
+    // The new heartbeat records its own start time, which must differ from the first one's.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await withTraceContext({}, () => runInTenant(tenantId, () => root.restartAccount(mailboxId)));
+
+    const tenantScope = { kind: "tenant", tenantId };
+    expect(created).toHaveLength(2);
+    expect(created[0]?.stops).toEqual([tenantScope]);
+    // The tenant the root hosts the mailbox for, and no trace context of the calling request.
+    expect(created[1]?.starts).toEqual([{ scope: tenantScope, trace: undefined }]);
+    // The heartbeat beats in a system scope; started from inside the tenant it would be refused on every tick.
+    await vi.waitFor(async () => expect(await heartbeatStartedAt(mailboxId)).toBeGreaterThan(firstHeartbeat), {
+      timeout: 5000,
+    });
+    expect(errors).toEqual([]);
+    await root.stop();
+  });
+
+  it("treats an account hosted for another tenant than the caller's as not hosted", async () => {
+    const otherTenantId = await addTenant();
+    const foreignMailboxId = await addMailbox(otherTenantId);
+    const { factory, created, events } = numberedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+    expect(created.map((record) => record.mailboxItemId)).toEqual([foreignMailboxId]);
+
+    await runInTenant(getTenantZeroId(), () => root.restartAccount(foreignMailboxId));
+
+    expect(events).toEqual(["start:1", "started:1"]);
+    await root.stop();
+  });
+
+  it("keeps the lifecycle a discovery pass hosted while the old one was stopping, instead of hosting a second one", async () => {
+    const mailboxId = await addMailbox();
+    const oldStop = gate();
+    const { factory, created, events } = numberedFactory((n) => (n === 1 ? { stop: () => oldStop.promise } : {}));
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    const restarting = root.restartAccount(mailboxId);
+    await vi.waitFor(() => expect(events).toContain("stop:1"));
+    // The pass finds the account unhosted and hosts it while the restart still waits for the stop.
+    await root.reconcileOnce();
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2"]);
+    oldStop.release();
+    await restarting;
+
+    expect(created).toHaveLength(2);
+    await root.stop();
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2", "stop:2"]);
+  });
+
+  it("leaves exactly one lifecycle hosted when it replaces an account while a discovery pass is in flight", async () => {
+    const mailboxId = await addMailbox();
+    const lateStart = gate();
+    const heldStarts = new Set<string>();
+    const events: string[] = [];
+    const factory: MailLiveSyncLifecycleFactory = (account) => ({
+      async start() {
+        events.push(`start:${account.mailboxItemId}`);
+        if (heldStarts.has(account.mailboxItemId)) await lateStart.promise;
+      },
+      async stop() {
+        events.push(`stop:${account.mailboxItemId}`);
+      },
+    });
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    // The pass has read the active accounts, with `mailboxId` among them, and holds in the start of
+    // a newly added one. Whether it reaches `mailboxId` before or after that start, it must leave
+    // the replacement alone.
+    const lateMailboxId = await addMailbox();
+    heldStarts.add(lateMailboxId);
+    const pass = root.reconcileOnce();
+    await vi.waitFor(() => expect(events).toContain(`start:${lateMailboxId}`));
+    await root.restartAccount(mailboxId);
+    lateStart.release();
+    await pass;
+
+    const ofMailbox = (): string[] => events.filter((event) => event.endsWith(mailboxId));
+    expect(ofMailbox()).toEqual([`start:${mailboxId}`, `stop:${mailboxId}`, `start:${mailboxId}`]);
+    await root.stop();
+    expect(ofMailbox()).toEqual([`start:${mailboxId}`, `stop:${mailboxId}`, `start:${mailboxId}`, `stop:${mailboxId}`]);
+  });
+
+  it("stops a lifecycle the hosting pass is still starting only after that start, and gives it no heartbeat", async () => {
+    const mailboxId = await addMailbox();
+    const firstStart = gate();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { factory, events } = numberedFactory((n) => (n === 1 ? { start: () => firstStart.promise } : {}));
+    const root = createMailLiveSyncRoot(dataPool, factory);
+
+    const pass = root.reconcileOnce();
+    await vi.waitFor(() => expect(events).toContain("start:1"));
+    const restarting = root.restartAccount(mailboxId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events).toEqual(["start:1"]);
+
+    firstStart.release();
+    await pass;
+    await restarting;
+
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2"]);
+    // Only the replacement's heartbeat: the pass installed none for the lifecycle the restart retired.
+    expect(vi.getTimerCount()).toBe(1);
+    await root.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("hosts nothing when stop() runs while the old lifecycle is still stopping", async () => {
+    const mailboxId = await addMailbox();
+    const oldStop = gate();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { factory, created, events } = numberedFactory((n) => (n === 1 ? { stop: () => oldStop.promise } : {}));
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    const restarting = root.restartAccount(mailboxId);
+    await vi.waitFor(() => expect(events).toContain("stop:1"));
+    const stopping = root.stop();
+    oldStop.release();
+    await Promise.all([restarting, stopping]);
+
+    expect(created).toHaveLength(1);
+    expect(events).toEqual(["start:1", "started:1", "stop:1"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("is waited for by stopTenant, which then stops the lifecycle the restart hosted", async () => {
+    const tenantId = await addTenant();
+    const mailboxId = await addMailbox(tenantId);
+    const oldStop = gate();
+    const { factory, events } = numberedFactory((n) => (n === 1 ? { stop: () => oldStop.promise } : {}));
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    // The restart has retired the old lifecycle and not hosted the new one yet, so `stopTenant`
+    // finds nothing hosted for the tenant when it is called.
+    const restarting = root.restartAccount(mailboxId);
+    await vi.waitFor(() => expect(events).toContain("stop:1"));
+    let stopped = false;
+    const stopping = root.stopTenant(tenantId).then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+
+    oldStop.release();
+    await restarting;
+    await stopping;
+
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2", "stop:2"]);
+    await root.stop();
+    expect(events.filter((event) => event.startsWith("stop:"))).toEqual(["stop:1", "stop:2"]);
+  });
+
+  it("finds nothing hosted while another restart of the account is between its stop and its new lifecycle", async () => {
+    const mailboxId = await addMailbox();
+    const oldStop = gate();
+    const { factory, created, events } = numberedFactory((n) => (n === 1 ? { stop: () => oldStop.promise } : {}));
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+
+    const first = root.restartAccount(mailboxId);
+    await vi.waitFor(() => expect(events).toContain("stop:1"));
+    await root.restartAccount(mailboxId);
+    expect(created).toHaveLength(1);
+
+    oldStop.release();
+    await first;
+    // One replacement, created after both calls.
+    expect(events).toEqual(["start:1", "started:1", "stop:1", "start:2", "started:2"]);
+    await root.stop();
   });
 });

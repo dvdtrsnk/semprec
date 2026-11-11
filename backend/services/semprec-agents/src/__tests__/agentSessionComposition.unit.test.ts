@@ -10,6 +10,7 @@ import * as piSession from "../piAgentSession.js";
 
 const testMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 function fakeTool(name: string, label: string): AgentTool {

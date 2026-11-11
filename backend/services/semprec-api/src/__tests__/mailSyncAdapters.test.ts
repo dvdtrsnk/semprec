@@ -14,6 +14,7 @@ import * as data from "@semprec/data";
 import {
   createTenantZeroUser,
   ensureMailAccountSyncState,
+  getTenantZeroId,
   getTestPool,
   inTenantZero,
   resetDatabase,
@@ -25,6 +26,7 @@ import { allowLoopbackOutboundForTests } from "@semprec/data/testSupport/mcpCont
 import {
   createChokePoint,
   createItemWithClient,
+  createMailboxPasswordConnectRouteHandler,
   createPool,
   getDatabaseByModuleId,
   loadFullModuleRegistry,
@@ -37,6 +39,7 @@ import {
 } from "@semprec/data";
 import { runAsSystem } from "@semprec/shared";
 import { createMailLiveSyncRoot, type MailLiveSyncRoot } from "@semprec/data";
+import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import {
@@ -1892,6 +1895,55 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     expect(server.unsupported).toEqual([]);
     // The pass logs out when it ends, so the server sees its connection close.
     await waitFor(async () => server.accepted() > 0 && server.closed() === server.accepted());
+  });
+
+  it("a mailbox connected through the password route downloads its mail without further action (issue gh-1736)", async () => {
+    const server = await startFakeImapServer(imapCertificate);
+    reachFakeImap(server);
+    await startRuntime();
+    const { rows: users } = await pool.query<{ id: string; locale: string }>(
+      "SELECT id, locale FROM users WHERE tenant_id = $1",
+      [getTenantZeroId()],
+    );
+    const user = users[0];
+    if (!user || users.length !== 1) throw new Error("fixture: tenant zero must have exactly one user");
+    // Typed as the composition root's container, so the factory is compiled against what the mount hands it.
+    const dependencies: CustomRouteDependencies = {
+      mailServerClients: {
+        // The login is taken as verified on the endpoint the fake serves; the fake has no SMTP side.
+        verifyPassword: async () => ({
+          imap: IMAP_ENDPOINT,
+          smtp: { host: "smtp.mail.test", port: 465, security: "tls" },
+        }),
+      },
+    };
+    const connectMailbox = createMailboxPasswordConnectRouteHandler(pool, dependencies);
+
+    // Nothing but the route runs from here on: no enqueue, no settings or credential written by the test.
+    const created = await inTenantZero(() =>
+      connectMailbox({
+        identity: { user },
+        body: {
+          provider: "generic",
+          address: IMAP_USERNAME,
+          password: IMAP_PASSWORD,
+          imapHost: IMAP_HOST,
+          smtpHost: "smtp.mail.test",
+        },
+      }),
+    );
+
+    expect(created.status).toBe(201);
+    const mailboxId = created.item.id;
+    await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
+    const { rows } = await pool.query<{ message_id: string; mailbox_item_id: string }>(
+      `SELECT message_id, mailbox_item_id FROM mail_message_meta ORDER BY message_id`,
+    );
+    expect(rows).toEqual(
+      IMAP_MESSAGES.map((message) => ({ message_id: message.messageId, mailbox_item_id: mailboxId })),
+    );
+    expect(await syncErrorOf(mailboxId)).toBeNull();
+    expect(server.unsupported).toEqual([]);
   });
 
   it.each(["127.0.0.1", "10.0.0.1"])(

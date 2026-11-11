@@ -2,9 +2,10 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { getItemById } from "../chokePoint/itemsStore.js";
+import { getItemById, getItemsByIds } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { getValueLinksForItems, type ValueLinkEntry, type ValueLinkSource } from "../chokePoint/valueLinkReads.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { NotFoundError } from "../errors.js";
 import { parseStoredProposalEnvelope } from "../inbox/proposalEnvelope.js";
@@ -40,6 +41,59 @@ export async function labelTranscriptSpeakers(speakers: TranscriptSpeaker[], loc
     label: entry.person?.name ?? template.replace("{ordinal}", String(entry.ordinal)),
     personId: entry.person?.id ?? null,
   }));
+}
+
+/**
+ * The link state of one context value: the `valueKind` and `sources` of the property's value link as
+ * `getValueLinksForItems` returns them, or `own` with no source for a property without a link.
+ */
+interface TranscriptContextLinkState {
+  valueKind: "own" | ValueLinkEntry["valueKind"];
+  sources: ValueLinkSource[];
+}
+
+/** A live item a transcript's context relation points to, with its name and the property's link state. */
+interface TranscriptContextValue extends TranscriptContextLinkState {
+  id: string;
+  name: string | null;
+}
+
+const contextItemSchema = z.object({ name: z.string().nullish() });
+
+/**
+ * The transcript's project, company and people (issue #1697): the live items its `project`,
+ * `company` and `people` relations point to, each with the link state of its property. `project` and
+ * `company` are `null` without a live item; `people` is ordered by name, then by id. A relation the
+ * tenant's Transcripts database does not have reads as no value.
+ */
+async function readTranscriptContext(client: PoolClient, transcriptsDatabaseId: string, transcriptId: string) {
+  const links = (await getValueLinksForItems(client, [transcriptId])).get(transcriptId) ?? {};
+  const readValues = async (propertyKey: "project" | "company" | "people"): Promise<TranscriptContextValue[]> => {
+    const property = await getPropertyByKey(client, transcriptsDatabaseId, propertyKey);
+    const definition = property && (await getRelationDefinitionByPropertyId(client, property.id));
+    const edges = definition ? await listRelationsForItem(client, definition.id, transcriptId) : [];
+    const items = await getItemsByIds(
+      client,
+      edges.map((edge) => otherSide(edge, transcriptId)),
+    );
+    const entry = links[propertyKey];
+    const state: TranscriptContextLinkState = entry
+      ? { valueKind: entry.valueKind, sources: entry.sources }
+      : { valueKind: "own", sources: [] };
+    // U+0000 cannot occur in a stored name, so it separates the name from the id in the sort key.
+    const order = (value: TranscriptContextValue): string => `${value.name ?? ""}\u0000${value.id}`;
+    return items
+      .map((item) => ({ id: item.id, name: contextItemSchema.parse(item.properties).name ?? null, ...state }))
+      .sort((a, b) => (order(a) < order(b) ? -1 : 1));
+  };
+  const [project] = await readValues("project");
+  const [company] = await readValues("company");
+  const people = await readValues("people");
+  return {
+    project: project ?? null,
+    company: company ?? null,
+    people: people.map(({ id, ...person }) => ({ personId: id, ...person })),
+  };
 }
 
 export async function readTranscriptDetail(client: PoolClient, transcriptId: string, locale: string) {
@@ -146,6 +200,7 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
     meetingNotes,
     notes: properties.notes ?? null,
     event,
+    context: await readTranscriptContext(client, transcripts.id, transcriptId),
     playback,
     automation,
     openQuestions: { count: questions.length, first: questions[0] ?? null },

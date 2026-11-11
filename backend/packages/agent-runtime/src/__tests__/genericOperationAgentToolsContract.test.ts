@@ -39,6 +39,7 @@ import {
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 let pool: Pool;
@@ -76,6 +77,8 @@ interface Fixtures {
   relationProperty: PropertyRow;
   singleRelationProperty: PropertyRow;
   secondTarget: ItemRow;
+  /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
+  subpageItemId?: string;
 }
 
 /**
@@ -151,7 +154,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 39-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 42-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -264,6 +267,20 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
+  "page.duplicate": {
+    args: (fx) => ({ pageItemId: fx.subpageItemId }),
+    prepare: async (fx) => {
+      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+      fx.subpageItemId = created.pages[0]?.pageItemId;
+    },
+  },
+  "page.rename": {
+    args: (fx) => ({ pageItemId: fx.subpageItemId, title: "Renamed by the agent" }),
+    prepare: async (fx) => {
+      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+      fx.subpageItemId = created.pages[0]?.pageItemId;
+    },
+  },
   "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
   "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
@@ -286,6 +303,7 @@ const CASES: Record<GenericOperationName, Case> = {
       );
     },
   },
+  "item.count": { args: (fx) => ({ items: [{ databaseId: fx.database.id, groupBy: fx.relationProperty.key }] }) },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
@@ -689,6 +707,30 @@ describe("generic operation AgentTools contract (issue #220)", () => {
             [fx.itemA.id],
           );
           expect(rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
+        }
+        if (operation === "item.count") {
+          // Both fixture items are counted; only `itemA` has a target under the grouping relation.
+          const counts: unknown = JSON.parse(outcome.result);
+          expect(counts).toEqual([
+            {
+              databaseId: fx.database.id,
+              count: 2,
+              groups: [
+                { key: fx.targetItem.id, count: 1 },
+                { key: null, count: 1 },
+              ],
+            },
+          ]);
+        }
+        if (operation === "page.duplicate" || operation === "page.rename") {
+          // The agent's write to the parent's page (the copy's block, the retitled block) follows the block `prepare`
+          // wrote as the user, and is authored by the agent.
+          const { rows } = await pool.query<{ created_by: string }>(
+            `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
+             WHERE d.item_id = $1 ORDER BY u.id`,
+            [fx.itemA.id],
+          );
+          expect(rows.map((row) => row.created_by)).toEqual(["user", "ai_agent"]);
         }
         if (operation === "item.create") {
           const { rows } = await pool.query<{ id: string }>(

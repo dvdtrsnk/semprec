@@ -53,6 +53,12 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]).toBe("api");
   });
 
+  it("declares the tenant-scoped derivedValuesInvalidate task in the API set (issue #1710)", () => {
+    expect(CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE).toBe("derivedValuesInvalidate");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]).toBe("tenant");
+  });
+
   it("no longer declares the retired credentialReencryptSweep (issue #1069)", () => {
     expect(Object.values(CORE_TASK_NAMES)).not.toContain("credentialReencryptSweep");
     expect(Object.keys(CORE_TASK_AFFINITY)).not.toContain("credentialReencryptSweep");

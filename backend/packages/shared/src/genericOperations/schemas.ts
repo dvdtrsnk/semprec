@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 38-operation catalog (issues #252, #1404, #1676, #1679), extracted from #37's
+ * Strict Zod input schemas for the 42-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -299,6 +299,34 @@ export type ViewQueryInput = z.infer<typeof ViewQueryInputSchema>;
 export const DatabaseQueryInputSchema = z.object({ databaseId: z.string(), ...queryFields }).strict();
 export type DatabaseQueryInput = z.infer<typeof DatabaseQueryInputSchema>;
 
+/** Most entries one `item.count` call takes. */
+const ITEM_COUNT_MAX_ENTRIES = 20;
+
+/**
+ * Up to 20 counts in one call (issue #1709). Each entry counts the items of one database under `filter`,
+ * the filter tree `database.query` takes. `groupBy` names a relation or select property of that database
+ * to split the count by, and `collection: true` also applies the collection filter the database's module
+ * manifest declares. Whether `groupBy` names a groupable property is decided by the operation.
+ */
+export const ItemCountInputSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            databaseId: canonicalUuid,
+            filter: filterNodeSchema.optional(),
+            groupBy: z.string().min(1).optional(),
+            collection: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(ITEM_COUNT_MAX_ENTRIES),
+  })
+  .strict();
+export type ItemCountInput = z.infer<typeof ItemCountInputSchema>;
+
 /** Matches the `view_items.position` `integer` (int4) column's range. */
 const viewItemPosition = z.number().int().min(0).max(2147483647);
 
@@ -444,6 +472,20 @@ export const PageCreateSubpageInputSchema = z
   .strict();
 export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;
 
+/**
+ * Duplicates the subpage `pageItemId` with every page nested in it (issue #1722). The id names an item of the hidden
+ * Pages database; whether it does, and how large its tree is, is decided by the operation, not by this schema.
+ */
+export const PageDuplicateInputSchema = z.object({ pageItemId: canonicalUuid }).strict();
+export type PageDuplicateInput = z.infer<typeof PageDuplicateInputSchema>;
+
+/**
+ * Renames the subpage `pageItemId` (issue #1725). `title` is the raw title; the operation normalizes it and refuses
+ * one that is too long, so this schema sets no length.
+ */
+export const PageRenameInputSchema = z.object({ pageItemId: canonicalUuid, title: z.string() }).strict();
+export type PageRenameInput = z.infer<typeof PageRenameInputSchema>;
+
 /** Most blocks one insert may name by id; bounds the array the edge accepts. */
 const PAGE_INSERT_MAX_BLOCK_IDS = 10_000;
 /** Longest Markdown body one insert accepts, in UTF-16 units (the REST adapter's own body cap is tighter in bytes). */
@@ -496,7 +538,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 38 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 42 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -537,6 +579,9 @@ export interface InputByOperation {
   "page.createSubpage": PageCreateSubpageInput;
   "page.insert": PageInsertInput;
   "page.changes": PageChangesInput;
+  "item.count": ItemCountInput;
+  "page.duplicate": PageDuplicateInput;
+  "page.rename": PageRenameInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

@@ -60,6 +60,9 @@ export const CORE_TASK_NAMES = {
   // Message-ID that were split across threads.
   MAIL_THREAD_BACKFILL: "mailThreadBackfill",
   MAIL_LINK_PERSON_EMAILS: "mailLinkPersonEmails",
+  // Issue gh-2029: soft-deletes a removed mailbox's Folders and Emails in committed chunks, enqueued by the removal
+  // transaction under the job key `mailbox-removal-<mailboxItemId>`.
+  MAILBOX_REMOVAL: "mailboxRemoval",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
@@ -132,6 +135,9 @@ export const CORE_TASK_NAMES = {
   // recompute for every person whose linked source's date fell within the last 24 hours.
   PEOPLE_LAST_CONTACT_RECOMPUTE: "peopleLastContactRecompute",
   PEOPLE_LAST_CONTACT_SWEEP: "peopleLastContactSweep",
+  // Issue #1710: announces the items of one project after its area or company edge changed, since they
+  // show that area or company as a derived value.
+  DERIVED_VALUES_INVALIDATE: "derivedValuesInvalidate",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -153,6 +159,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "api",
+  [CORE_TASK_NAMES.MAILBOX_REMOVAL]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
@@ -188,6 +195,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "api",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "api",
+  [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "api",
 };
 
 /**
@@ -221,6 +229,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "tenant",
+  [CORE_TASK_NAMES.MAILBOX_REMOVAL]: "tenant",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
@@ -256,6 +265,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "system",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "system",
+  [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "tenant",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

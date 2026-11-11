@@ -3,15 +3,15 @@ schemaVersion: 1
 id: "sp-9ea90977-e3d2-48ae-bdb1-fa0c1decd6f7"
 title: "[backend-delivery 50/74] Implement application, shared/genericOperations, data/agentGrants changes"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "not_planned"
 labels: ["spec:proposed","execution:batch","execution:sequential"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:02.037Z"
-updatedAt: "2026-10-31T17:31:02.037Z"
-closedAt: null
+updatedAt: "2026-11-10T14:15:43.439Z"
+closedAt: "2026-11-10T14:15:43.439Z"
 source: null
 approval: null
 resolution: null

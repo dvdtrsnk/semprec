@@ -363,6 +363,7 @@ describe("createMcpAgentPageRequestListener", () => {
 
       const gateway = createGenericOperationGateway(pool, {
         resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+        collectionFilter: () => undefined,
       });
       const mcp = createServer(
         await createMcpRequestListener(pool, gateway, new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),

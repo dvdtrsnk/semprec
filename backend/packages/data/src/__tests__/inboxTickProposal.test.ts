@@ -4000,6 +4000,10 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         );
         if (!property) throw new Error("Missing Inbox type property");
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        // Since issue #1718 a type edge write queues the day's recompute under the key the tick's read phase
+        // enqueues too, so a tick that starts after such a writer waits for it there, before it calls the model.
+        const typeWriterFirst = writerFirst && mutation === "change type";
+        const modelTypeIds: Array<string | null> = [];
         let postModel = false;
         let tickPid: number | undefined;
         let writerPid: number | undefined;
@@ -4051,6 +4055,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
                   }
                   return async (...args: unknown[]) => {
                     const sql = typeof args[0] === "string" ? args[0] : "";
+                    if (typeWriterFirst && tickPid === undefined && sql.includes("graphile_worker.add_job")) {
+                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      tickReady();
+                    }
                     if (
                       postModel &&
                       writerFirst &&
@@ -4117,8 +4126,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         let failure: { error: unknown } | undefined;
         try {
           if (writerFirst) await owned.wait(writerAtBoundary, writer);
-          const handler = createSemprecTickAction(observed, async () => {
+          const handler = createSemprecTickAction(observed, async (input) => {
             postModel = true;
+            modelTypeIds.push(input.type?.id ?? null);
             return { properties: { name: "Old proposal" } };
           });
           tick = owned.run(() =>
@@ -4166,13 +4176,16 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             releaseWriter();
             await writer;
             await tick;
-            expect(
-              await boundedBarrier(
-                owned.run(() =>
-                  runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id)),
-                ),
-              ),
-            ).toBeNull();
+            const card = await boundedBarrier(
+              owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
+            );
+            if (typeWriterFirst) {
+              // The tick waited in its read phase, so it asked the model about the committed type and stored the answer.
+              expect(modelTypeIds).toEqual([alternate.id]);
+              expect(card?.properties.status).toBe("proposed");
+            } else {
+              expect(card).toBeNull();
+            }
           } else {
             releaseTick();
             await tick;

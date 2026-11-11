@@ -17,7 +17,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
-import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { createHeartbeat, heartbeatFireJobKey } from "../scheduler/schedulerStore.js";
 import {
   createSemprecTickAction,
   semprecTickActionConfigSchema,
@@ -333,7 +333,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
         }),
       ),
     );
-    await inTenantZero(() =>
+    const item = await inTenantZero(() =>
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
@@ -344,6 +344,14 @@ describe("Inbox item event dispatch (issue #103)", () => {
         }),
       ),
     );
+    // The capture's type edge also fires the Inbox `update` tick (issue #1718). This test follows the `create`
+    // tick through its attempts, so the other job is taken off the queue first.
+    const { rows: updateHeartbeats } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE rule ->> 'databaseId' = $1 AND rule ->> 'event' = 'update'`,
+      [inboxId],
+    );
+    expect(updateHeartbeats).toHaveLength(1);
+    await pool.query("SELECT graphile_worker.remove_job($1)", [heartbeatFireJobKey(updateHeartbeats[0]!.id, item.id)]);
 
     retryRuntimePool = await createRuntimeRolePool(pool, "semprec_data");
     const runtime = retryRuntimePool;

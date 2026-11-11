@@ -33,6 +33,7 @@ import { createGenericOperationGateway, replayApprovedGenericOperation } from ".
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 // The approved-operation executor calls these two data-layer functions by name; wrapping them

@@ -13,6 +13,8 @@ import { getValueLinksForItems, type ValueLinkEntry } from "./valueLinkReads.js"
 import { updateItemWithClient } from "./itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "./relationOps.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
+import { loadLinkRules, readOmittedItemIds, resolveValueFilter } from "../valueLinks/linkRuleCatalog.js";
+import { withPropagationHop } from "../valueLinks/propagationContext.js";
 
 export interface LinkInput {
   itemId: string;
@@ -44,9 +46,12 @@ async function sourceValues(client: PoolClient, linkId: string): Promise<{ live:
     if (property.type === "relation") {
       const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
       if (!definition) conflict();
-      next = (await relationsStore.listRelationsForItem(client, definition.id, item.id)).map((edge) =>
+      const related = (await relationsStore.listRelationsForItem(client, definition.id, item.id)).map((edge) =>
         relationsStore.otherSide(edge, item.id),
       );
+      // The Trash keeps an item's edges. A related item in the Trash is not taken over, as in the propagation.
+      const liveIds = new Set((await itemsStore.getItemsByIds(client, related)).map((entry) => entry.id));
+      next = related.filter((id) => liveIds.has(id));
     } else {
       const value = item.properties[property.key];
       next =
@@ -55,6 +60,21 @@ async function sourceValues(client: PoolClient, linkId: string): Promise<{ live:
     for (const value of next) if (!values.some((previous) => isDeepStrictEqual(previous, value))) values.push(value);
   }
   return { live, values };
+}
+
+/**
+ * The source values a relink takes over, without the items the `valueFilter` of the link's rule
+ * leaves out (issue #1697), so a relink gives the same values as that rule's propagation. A link
+ * whose rule is not loaded, or declares no filter, keeps every value. A filter that cannot be
+ * resolved in the tenant's schema is a conflict: nothing is copied unfiltered.
+ */
+async function withoutOmittedValues(client: PoolClient, ruleKey: string, values: unknown[]): Promise<unknown[]> {
+  const rule = (await loadLinkRules()).find((entry) => entry.key === ruleKey);
+  if (!rule?.valueFilter) return values;
+  const filter = await resolveValueFilter(client, rule.valueFilter.omit);
+  if (!filter) conflict();
+  const omitted: unknown[] = await readOmittedItemIds(client, filter);
+  return values.filter((value) => !omitted.includes(value));
 }
 
 function announce(
@@ -97,8 +117,9 @@ export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
       } else {
         const property = await propertiesStore.getPropertyByKey(client, item.databaseId, input.propertyKey);
         if (!property) conflict();
-        const { live, values } = await sourceValues(client, link.id);
+        const { live, values: sourced } = await sourceValues(client, link.id);
         if (live === 0) conflict();
+        const values = await withoutOmittedValues(client, link.ruleKey, sourced);
         if (property.type === "relation") {
           const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
           if (!definition) conflict();
@@ -113,18 +134,23 @@ export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
             relationsStore.otherSide(edge, item.id),
           );
           await valueLinksStore.reactivateValueLink(client, link.id);
-          for (const id of current.filter((id) => !desired.includes(id)))
-            await deleteRelationWithClient(
-              client,
-              { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
-              { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-            );
-          for (const id of desired.filter((id) => !current.includes(id)))
-            await createRelationWithClient(
-              client,
-              { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
-              { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-            );
+          // Marked as `valueLinks` writes for the link rule hook, like a propagated value: an edge removed here
+          // is a replaced inherited value, so a link that follows it through that edge moves with it. Hop 0 keeps
+          // the budget of an ordinary root write.
+          await withPropagationHop(client, 0, async () => {
+            for (const id of current.filter((id) => !desired.includes(id)))
+              await deleteRelationWithClient(
+                client,
+                { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
+                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
+              );
+            for (const id of desired.filter((id) => !current.includes(id)))
+              await createRelationWithClient(
+                client,
+                { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
+                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
+              );
+          });
         } else {
           const many = property.type === "multi_select";
           if (!many && values.length > 1) conflict();

@@ -3,15 +3,15 @@ schemaVersion: 1
 id: "sp-2f2ffdd3-af61-4d7f-b072-a54ddd4dab8a"
 title: "[backend-delivery 61/74] Implement data/mail, data/search, shared/genericOperations changes"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "not_planned"
 labels: ["spec:proposed","execution:batch","execution:sequential"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:02.067Z"
-updatedAt: "2026-10-31T17:31:02.067Z"
-closedAt: null
+updatedAt: "2026-11-10T14:15:43.439Z"
+closedAt: "2026-11-10T14:15:43.439Z"
 source: null
 approval: null
 resolution: null

@@ -223,6 +223,7 @@ export {
   createRerunTranscriptionRouteHandler,
   createTranscriptDeleteRouteHandler,
   createTranscriptListRouteHandler,
+  createTranscriptSummariesRouteHandler,
 } from "./transcription/transcriptionRouteHandlers.js";
 export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
 export {
@@ -360,6 +361,7 @@ export {
 export { resolveMergedThreadId } from "./mail/mailMessageMetaStore.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export { getMailboxRemovalImpact, type MailboxRemovalImpact } from "./mail/mailboxRemovalImpact.js";
+export { removeMailbox, type RemoveMailboxOptions } from "./mail/mailboxRemoval.js";
 export {
   refreshAndPersistAccessToken,
   type RefreshAndPersistAccessTokenInput,
@@ -476,6 +478,12 @@ export {
   createTaskRecurrenceSetRouteHandler,
 } from "./tasks/taskRecurrenceRoutes.js";
 export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
+export { createTaskOccurrenceMaterializeRouteHandler } from "./tasks/taskOccurrenceRoutes.js";
+export {
+  createTaskHostEventPutRouteHandler,
+  createTaskHostEventRemoveRouteHandler,
+  createTaskHostEventsClearRouteHandler,
+} from "./tasks/taskHostEventRouteHandlers.js";
 export { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "./tasks/tasksDayRolloverAction.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
@@ -506,6 +514,12 @@ export {
   weeksOfMonth,
   type JournalPeriodType,
 } from "./journal/journalStore.js";
+export {
+  mergeJournalDuplicates,
+  type MergeJournalDuplicatesInput,
+  type MergeJournalDuplicatesResult,
+} from "./journal/mergeJournalDuplicates.js";
+export type { RefusedRelationEdge } from "./chokePoint/relationOps.js";
 export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
 
@@ -535,11 +549,14 @@ export {
 } from "./inbox/inboxAttachmentsStore.js";
 export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
 export { manifest as calendarModuleManifest } from "./calendar/calendarModuleManifest.js";
+export { manifest as recipesModuleManifest } from "./recipes/recipesModuleManifest.js";
+export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
 export * from "./auth/types.js";
 export * from "./auth/passwordHash.js";
 export * from "./auth/token.js";
+export * from "./auth/locales.js";
 export * from "./auth/usersStore.js";
 export * from "./auth/sessionsStore.js";
 export * from "./auth/userAgentDevice.js";
@@ -564,6 +581,7 @@ export {
   type RequestPasswordResetInput,
   type ResetPasswordInput,
 } from "./auth/passwordResetActions.js";
+export * from "./auth/passwordChangeActions.js";
 
 export * from "./push/types.js";
 export * from "./push/pushSubscriptionsStore.js";
@@ -748,6 +766,12 @@ export {
   listSempThreadMessages,
   sendSempMessage,
 } from "./sempThreads/sempThreadsStore.js";
+export {
+  listSempThreads,
+  parseSempThreadListCursor,
+  SEMP_THREAD_KINDS,
+  type SempThreadKind,
+} from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext } from "./semp/sempRefReadContext.js";
@@ -773,6 +797,13 @@ export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sem
 export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";
 
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mail/mailboxRouteHandlers.js";
+export {
+  createMailOauthCompleteRouteHandler,
+  createMailOauthStartRouteHandler,
+} from "./mail/mailOauthRouteHandlers.js";
+export { createMailboxPasswordConnectRouteHandler } from "./mail/mailboxPasswordRouteHandlers.js";
+export { createMailSummaryRouteHandler } from "./mail/mailSummary.js";
+export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";
 
 export { THREADS_MODULE_ID } from "./seed/emailModuleKeys.js";
 export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutoverMigration.js";

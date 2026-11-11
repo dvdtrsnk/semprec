@@ -9,8 +9,12 @@ import {
   type ItemDeleteHookContext,
   type ItemRestoreHookContext,
 } from "../chokePoint/hooks.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { lockItemTrashEpoch } from "../chokePoint/itemsStore.js";
+import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, ValidationError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -457,6 +461,103 @@ describe("choke-point itemTrash", () => {
       expect(await snapshot(ids)).toEqual(before);
       expect(before.every((row) => row.deleted_at !== null)).toBe(true);
       expect(events).toEqual([]);
+    });
+  });
+
+  describe("joining an earlier trash epoch (issue gh-2029)", () => {
+    const EXACT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+
+    /** Each row's `deleted_at` at full precision, and whether Postgres finds it equal to the anchor's. */
+    async function epochsAgainst(anchorId: string, ids: string[]) {
+      const { rows } = await pool.query<{ id: string; deleted_at: string | null; joined: boolean | null }>(
+        `SELECT i.id::text,
+                to_char(i.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deleted_at,
+                i.deleted_at = (SELECT a.deleted_at FROM items a WHERE a.id = $1) AS joined
+           FROM items i WHERE i.id = ANY($2::uuid[])`,
+        [anchorId, ids],
+      );
+      return Object.fromEntries(rows.map((row) => [row.id, { deletedAt: row.deleted_at, joined: row.joined }]));
+    }
+
+    async function makeAnchorAndPage() {
+      const db = await chokePoint.createDatabase({ name: "Root" });
+      const anchor = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      const page = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      const inlineDb = await chokePoint.createInlineDatabase({ name: "Inline", parentItemId: page.id });
+      const child = await chokePoint.createItem({ databaseId: inlineDb.id, properties: {} });
+      const later = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      return { db, anchor, page, child, later };
+    }
+
+    it("reads a trashed item's epoch at full precision, and null for a live item and for an unknown id", async () => {
+      const { db, anchor, page } = await makeAnchorAndPage();
+      await chokePoint.softDeleteItem(db.id, anchor.id);
+
+      const read = await withTransaction(pool, async (client) => ({
+        trashed: await lockItemTrashEpoch(client, db.id, anchor.id),
+        live: await lockItemTrashEpoch(client, db.id, page.id),
+        unknown: await lockItemTrashEpoch(client, db.id, "00000000-0000-4000-8000-000000000000"),
+      }));
+
+      expect(read.trashed).toMatch(EXACT);
+      expect(read).toEqual({
+        trashed: (await epochsAgainst(anchor.id, [anchor.id]))[anchor.id]?.deletedAt,
+        live: null,
+        unknown: null,
+      });
+    });
+
+    it("stamps the given epoch on the root and its inline subtree in a later transaction, and hands it to the delete hooks", async () => {
+      const { db, anchor, page, child, later } = await makeAnchorAndPage();
+      await chokePoint.softDeleteItem(db.id, anchor.id);
+      const epoch = await withTransaction(pool, (client) => lockItemTrashEpoch(client, db.id, anchor.id));
+      if (epoch === null) throw new Error("the anchor has no trash epoch");
+      hookCalls.delete = [];
+
+      const deleted = await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, db.id, page.id, {
+          queueAffinity: createActionQueueAffinity(),
+          deletedAtExact: epoch,
+        }),
+      );
+      // Without the option a later trash keeps the transaction's own time.
+      await chokePoint.softDeleteItem(db.id, later.id);
+
+      expect(await epochsAgainst(anchor.id, [page.id, child.id, later.id])).toEqual({
+        [page.id]: { deletedAt: epoch, joined: true },
+        [child.id]: { deletedAt: epoch, joined: true },
+        [later.id]: { deletedAt: expect.stringMatching(EXACT), joined: false },
+      });
+      expect(deleted?.id).toBe(page.id);
+      const joining = hookCalls.delete.filter((call) => call.rootItemId === page.id);
+      expect(joining.map((call) => call.item.id)).toEqual([page.id, child.id]);
+      for (const call of joining) {
+        expect(call.deletedAt).toBe(deleted?.deletedAt);
+        expect(call.item.deletedAt).toBe(deleted?.deletedAt);
+      }
+    });
+
+    it("refuses an epoch that is not UTC text with six fraction digits, and trashes nothing", async () => {
+      const { db, page, child } = await makeAnchorAndPage();
+      hookCalls.delete = [];
+
+      // An ISO string from a JS Date keeps three fraction digits: it would join no epoch exactly.
+      for (const deletedAtExact of [new Date().toISOString(), "2026-11-10 12:00:00.000000+00", ""]) {
+        await expect(
+          withTransaction(pool, (client) =>
+            itemDeleteWithClient(client, db.id, page.id, {
+              queueAffinity: createActionQueueAffinity(),
+              deletedAtExact,
+            }),
+          ),
+        ).rejects.toThrow("deletedAtExact must be UTC text with six fraction digits");
+      }
+
+      expect(await epochsAgainst(page.id, [page.id, child.id])).toEqual({
+        [page.id]: { deletedAt: null, joined: null },
+        [child.id]: { deletedAt: null, joined: null },
+      });
+      expect(hookCalls.delete).toEqual([]);
     });
   });
 });

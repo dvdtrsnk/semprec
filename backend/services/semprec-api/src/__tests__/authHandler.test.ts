@@ -11,13 +11,23 @@ import {
   type InvalidationEvent,
 } from "@semprec/data";
 import { createServer, request as httpRequest, type Server } from "node:http";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createUser,
   hashPassword,
+  isSessionActive,
+  listPushSubscriptionsForUser,
   LOCKOUT_THRESHOLD,
+  setAgentRunEventHook,
+  setDocUpdateHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  setSempThreadInvalidationHook,
+  setSessionRevokedHook,
+  suspendAccount,
+  upsertApnsSubscription,
   upsertWebPushSubscription,
   type PasswordResetMailer,
   type UserRow,
@@ -1821,5 +1831,713 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     });
     expect(single.status).toBe(400);
     expect(await sessionStatus(other.token)).toBe(200);
+  });
+});
+
+describe("POST /api/auth/login replacing the sessions of its installation (issue #1687)", () => {
+  const DEVICE_ID = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
+  const OTHER_DEVICE_ID = "0b7e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b";
+
+  // The auth listener, the realtime hooks and the sync upgrade share one pool logged in as `semprec_data`,
+  // the role the API connects as. Fixtures and assertions go through the file's superuser `pool`.
+  let runtime: Pool | undefined;
+  let server: Server | undefined;
+  let syncServer: SyncServer | undefined;
+  let baseUrl: string;
+  let wsBaseUrl: string;
+
+  // The describes above end the file's pool in their afterAll; this one opens and ends its own.
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtime = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
+  beforeEach(async () => {
+    if (!runtime) throw new Error("the runtime-role pool was not created");
+    await resetDatabase(pool);
+    wireRealtimeHooks(runtime);
+    const sync = await createSyncUpgradeHandler(runtime);
+    syncServer = sync;
+    const http = createServer(
+      createAuthRequestListener(runtime, { passwordResetMailer: createFakeMailer(), appBaseUrl: APP_BASE_URL }),
+    );
+    server = http;
+    http.on("upgrade", (req, socket, head) => sync.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    wsBaseUrl = `ws://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await syncServer?.close();
+    const http = server;
+    if (http) await new Promise<void>((resolve) => http.close(() => resolve()));
+    syncServer = undefined;
+    server = undefined;
+  });
+
+  afterAll(async () => {
+    // The hooks are module-global; leave none bound to the pool that is ended here.
+    setInvalidationHook(() => {});
+    setDocUpdateHook(() => {});
+    setNotificationCreatedHook(() => {});
+    setNotificationReadStateHook(() => {});
+    setSessionRevokedHook(() => {});
+    setSempThreadInvalidationHook(() => {});
+    setAgentRunEventHook(() => {});
+    await runtime?.end();
+    await pool?.end();
+  });
+
+  const loginBody = z.object({ token: z.string() });
+  const sessionBody = z.object({ session: z.object({ id: z.string() }) });
+  const sessionsBody = z.object({ sessions: z.array(z.object({ id: z.string(), deviceName: z.string().nullable() })) });
+
+  interface SignedIn {
+    token: string;
+    sessionId: string;
+  }
+
+  function postLogin(email: string, fields: Record<string, string> = {}): Promise<Response> {
+    return fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD, platform: "ios", ...fields }),
+    });
+  }
+
+  async function signIn(email: string, fields: Record<string, string> = {}): Promise<SignedIn> {
+    const res = await postLogin(email, fields);
+    expect(res.status).toBe(200);
+    const { token } = loginBody.parse(await res.json());
+    const current = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+    return { token, sessionId: sessionBody.parse(await current.json()).session.id };
+  }
+
+  async function sessionStatus(token: string): Promise<number> {
+    return (await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }
+
+  async function listedSessions(token: string): Promise<Array<{ id: string; deviceName: string | null }>> {
+    const res = await fetch(`${baseUrl}/api/auth/sessions`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    return sessionsBody.parse(await res.json()).sessions;
+  }
+
+  async function registration(userId: string, sessionId: string): Promise<string> {
+    const row = await upsertApnsSubscription(pool, {
+      userId,
+      sessionId,
+      platform: "ios",
+      deviceToken: randomUUID(),
+      apnsEnvironment: "sandbox",
+    });
+    return row.id;
+  }
+
+  async function revokedRegistrations(userId: string): Promise<string[]> {
+    const rows = await listPushSubscriptionsForUser(pool, userId);
+    return rows.filter((row) => row.revokedAt !== null).map((row) => row.id);
+  }
+
+  interface OpenedSocket {
+    socket: WebSocket;
+    /** The close code, and whether the session still read as active the moment the close arrived. */
+    closed: Promise<{ code: number; sessionActive: boolean }>;
+  }
+
+  /** The socket's close, or a rejection when it has not arrived within `ms`; the timer is cleared either way. */
+  async function closeWithin(opened: OpenedSocket, ms: number): Promise<{ code: number; sessionActive: boolean }> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`The socket did not close within ${ms} ms`)), ms);
+    });
+    try {
+      return await Promise.race([opened.closed, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Runs `work` with an opener of sync sockets and then ends every socket it opened, whether `work` passed
+   * or threw. Throws the failure of `work`; when ending a socket failed as well, throws an `AggregateError`
+   * that holds both and names the failure of `work` as its cause.
+   */
+  async function withSockets(
+    work: (open: (session: SignedIn) => Promise<OpenedSocket>) => Promise<void>,
+  ): Promise<void> {
+    const opened: OpenedSocket[] = [];
+    async function open(session: SignedIn): Promise<OpenedSocket> {
+      const socket = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${session.token}` } });
+      const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code))).then(
+        async (code) => ({ code, sessionActive: await isSessionActive(pool, session.sessionId) }),
+      );
+      // Read by the case, or by the cleanup; observed here too, so a failed read is never an unhandled rejection.
+      closed.catch(() => undefined);
+      const entry = { socket, closed };
+      opened.push(entry);
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", () => resolve());
+        socket.once("error", reject);
+      });
+      return entry;
+    }
+
+    let primary: { error: unknown } | undefined;
+    try {
+      await work(open);
+    } catch (error) {
+      primary = { error };
+    }
+    const failures: unknown[] = [];
+    for (const entry of opened) {
+      try {
+        entry.socket.terminate();
+        await closeWithin(entry, 5_000);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (primary && failures.length > 0) {
+      throw new AggregateError([primary.error, ...failures], "The case and its socket cleanup failed", {
+        cause: primary.error,
+      });
+    }
+    if (primary) throw primary.error;
+    if (failures.length > 0) throw new AggregateError(failures, "The case's socket cleanup failed");
+  }
+
+  it("answers the replaced token with 401, revokes its push registrations and closes its socket with 4401 after the commit, while the new token works", async () => {
+    const user = await makeUser("caller@example.com");
+    const otherDevice = await signIn(user.email, { deviceId: OTHER_DEVICE_ID });
+    const previous = await signIn(user.email, { deviceId: DEVICE_ID });
+    const previousRegistration = await registration(user.id, previous.sessionId);
+    await registration(user.id, otherDevice.sessionId);
+
+    await withSockets(async (open) => {
+      const otherDeviceSocket = await open(otherDevice);
+      const previousSocket = await open(previous);
+
+      const next = await signIn(user.email, { deviceId: DEVICE_ID });
+
+      const closed = await closeWithin(previousSocket, 10_000);
+      expect(closed.code).toBe(4401);
+      // Read as the close arrives, the session is no longer active: the close follows the commit.
+      expect(closed.sessionActive).toBe(false);
+      expect(await sessionStatus(previous.token)).toBe(401);
+      expect(await sessionStatus(next.token)).toBe(200);
+      expect(await sessionStatus(otherDevice.token)).toBe(200);
+      expect(await revokedRegistrations(user.id)).toEqual([previousRegistration]);
+      expect(otherDeviceSocket.socket.readyState).toBe(WebSocket.OPEN);
+    });
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ["another deviceId", { deviceId: OTHER_DEVICE_ID }],
+    ["no deviceId", {}],
+    ["the same deviceId from a web login, whose body fields are ignored", { platform: "web", deviceId: DEVICE_ID }],
+  ])("keeps the first token working when the next login carries %s", async (_name, fields) => {
+    const user = await makeUser("caller@example.com");
+    const first = await signIn(user.email, { deviceId: DEVICE_ID });
+    await registration(user.id, first.sessionId);
+
+    const res = await postLogin(user.email, fields);
+
+    expect(res.status).toBe(200);
+    expect(await sessionStatus(first.token)).toBe(200);
+    expect(await revokedRegistrations(user.id)).toEqual([]);
+    expect(await listedSessions(first.token)).toHaveLength(2);
+  });
+
+  it("leaves another user's session with the same deviceId alone, in both directions", async () => {
+    const owner = await makeUser("owner@example.com");
+    const other = await makeUser("other@example.com");
+    const ownerSession = await signIn(owner.email, { deviceId: DEVICE_ID });
+    await registration(owner.id, ownerSession.sessionId);
+
+    const otherSession = await signIn(other.email, { deviceId: DEVICE_ID });
+
+    expect(await sessionStatus(ownerSession.token)).toBe(200);
+    expect(await revokedRegistrations(owner.id)).toEqual([]);
+
+    const ownerNext = await signIn(owner.email, { deviceId: DEVICE_ID });
+
+    expect(await sessionStatus(ownerSession.token)).toBe(401);
+    expect(await sessionStatus(ownerNext.token)).toBe(200);
+    expect(await sessionStatus(otherSession.token)).toBe(200);
+  });
+
+  // The schedule that fails without the installation lock is forced in authActions.test.ts; this case
+  // sends the logins at once through the composed route under the API's role.
+  it("ends simultaneous logins with one deviceId with exactly one active session of that installation", async () => {
+    const user = await makeUser("caller@example.com");
+    const previous = await signIn(user.email, { deviceId: DEVICE_ID });
+    const otherDevice = await signIn(user.email, { deviceId: OTHER_DEVICE_ID });
+
+    const responses = await Promise.all(
+      Array.from({ length: 4 }, () => postLogin(user.email, { deviceId: DEVICE_ID, deviceName: "Phone" })),
+    );
+
+    const tokens: string[] = [];
+    for (const res of responses) {
+      expect(res.status).toBe(200);
+      tokens.push(loginBody.parse(await res.json()).token);
+    }
+    const statuses = await Promise.all(tokens.map((token) => sessionStatus(token)));
+    expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 401)).toHaveLength(3);
+    expect(await sessionStatus(previous.token)).toBe(401);
+    const listed = await listedSessions(otherDevice.token);
+    expect(listed.filter((session) => session.deviceName === "Phone")).toHaveLength(1);
+    expect(listed).toHaveLength(2);
+  });
+
+  it("revokes nothing on a login rejected for a wrong password or by the lockout", async () => {
+    const user = await makeUser("caller@example.com");
+    const first = await signIn(user.email, { deviceId: DEVICE_ID });
+    await registration(user.id, first.sessionId);
+
+    for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+      const wrong = await postLogin(user.email, { deviceId: DEVICE_ID, password: "wrong-password" });
+      expect(wrong.status).toBe(401);
+      expect(await sessionStatus(first.token)).toBe(200);
+    }
+    const lockedOut = await postLogin(user.email, { deviceId: DEVICE_ID });
+
+    expect(lockedOut.status).toBe(401);
+    expect(await sessionStatus(first.token)).toBe(200);
+    expect(await revokedRegistrations(user.id)).toEqual([]);
+    expect(await listedSessions(first.token)).toHaveLength(1);
+  });
+
+  it("lists one entry per deviceId through GET /api/auth/sessions after repeated logins", async () => {
+    const user = await makeUser("caller@example.com");
+    for (let i = 0; i < 3; i++) await signIn(user.email, { deviceId: DEVICE_ID, deviceName: "Phone" });
+    const phone = await signIn(user.email, { deviceId: DEVICE_ID, deviceName: "Phone" });
+    await signIn(user.email, { deviceId: OTHER_DEVICE_ID, deviceName: "Tablet" });
+    const tablet = await signIn(user.email, { deviceId: OTHER_DEVICE_ID, deviceName: "Tablet" });
+
+    const listed = await listedSessions(tablet.token);
+
+    expect(listed).toHaveLength(2);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        { id: phone.sessionId, deviceName: "Phone" },
+        { id: tablet.sessionId, deviceName: "Tablet" },
+      ]),
+    );
+  });
+});
+
+describe("POST /api/auth/password-change (issue #1701)", () => {
+  const ADDRESS = "203.0.113.9";
+  const OTHER_ADDRESS = "198.51.100.4";
+  const NEW_PASSWORD = "a-brand-new-password";
+
+  // The auth listener runs on a pool logged in as `semprec_data`, the role the API connects as.
+  // Fixtures and assertions go through the file's superuser `pool`.
+  let runtime: Pool | undefined;
+  let server: Server | undefined;
+  let baseUrl: string;
+  let mailer: FakeMailer;
+
+  // The describes above end the file's pool in their afterAll; this one opens and ends its own.
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtime = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
+  beforeEach(async () => {
+    if (!runtime) throw new Error("the runtime-role pool was not created");
+    await resetDatabase(pool);
+    mailer = createFakeMailer();
+    const http = createServer(
+      createAuthRequestListener(runtime, { passwordResetMailer: mailer, appBaseUrl: APP_BASE_URL, trustProxy: true }),
+    );
+    server = http;
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    const http = server;
+    if (http) await new Promise<void>((resolve) => http.close(() => resolve()));
+    server = undefined;
+  });
+
+  afterAll(async () => {
+    await runtime?.end();
+    await pool?.end();
+  });
+
+  const loginBody = z.object({ token: z.string() });
+  const sessionBody = z.object({ session: z.object({ id: z.string() }) });
+  const errorBody = z.object({ code: z.string(), details: z.object({ field: z.string() }).optional() });
+
+  interface SignedIn {
+    token: string;
+    sessionId: string;
+  }
+
+  function postLogin(email: string, password: string, address = ADDRESS): Promise<Response> {
+    return fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-For": address },
+      body: JSON.stringify({ email, password, platform: "ios" }),
+    });
+  }
+
+  async function signIn(email: string): Promise<SignedIn> {
+    const res = await postLogin(email, PASSWORD);
+    expect(res.status).toBe(200);
+    const { token } = loginBody.parse(await res.json());
+    const current = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+    return { token, sessionId: sessionBody.parse(await current.json()).session.id };
+  }
+
+  async function sessionStatus(token: string): Promise<number> {
+    return (await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }
+
+  /** Sends `body` as JSON, or verbatim when it is already a string. */
+  function postChange(token: string | null, body: unknown, address = ADDRESS): Promise<Response> {
+    const headers: Record<string, string> = { "Content-Type": "application/json", "X-Forwarded-For": address };
+    if (token !== null) headers.Authorization = `Bearer ${token}`;
+    return fetch(`${baseUrl}/api/auth/password-change`, {
+      method: "POST",
+      headers,
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  async function passwordHashOf(userId: string): Promise<string> {
+    const { rows } = await pool.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [
+      userId,
+    ]);
+    const row = rows[0];
+    if (!row) throw new Error("user not found");
+    return row.password_hash;
+  }
+
+  async function failedAttempts(email: string): Promise<string[]> {
+    const { rows } = await pool.query<{ ip: string }>(
+      "SELECT host(ip) AS ip FROM login_attempts WHERE email = $1 AND succeeded = false ORDER BY attempted_at, id",
+      [email],
+    );
+    return rows.map((row) => row.ip);
+  }
+
+  async function registration(userId: string, sessionId: string): Promise<string> {
+    const row = await upsertApnsSubscription(pool, {
+      userId,
+      sessionId,
+      platform: "ios",
+      deviceToken: randomUUID(),
+      apnsEnvironment: "sandbox",
+    });
+    return row.id;
+  }
+
+  async function revokedRegistrations(userId: string): Promise<string[]> {
+    const rows = await listPushSubscriptionsForUser(pool, userId);
+    return rows.filter((row) => row.revokedAt !== null).map((row) => row.id);
+  }
+
+  it("answers 200, lets the new password log in and not the old one, keeps the calling token and revokes every other session with its push registrations", async () => {
+    const user = await makeUser("caller@example.com");
+    const bystander = await makeUser("bystander@example.com");
+    const bystanderSession = await signIn(bystander.email);
+    const calling = await signIn(user.email);
+    const others = [await signIn(user.email), await signIn(user.email)];
+    await registration(user.id, calling.sessionId);
+    const otherRegistrations = [
+      await registration(user.id, others[0]!.sessionId),
+      await registration(user.id, others[1]!.sessionId),
+    ];
+
+    const res = await postChange(calling.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect((await postLogin(user.email, PASSWORD)).status).toBe(401);
+    expect((await postLogin(user.email, NEW_PASSWORD)).status).toBe(200);
+    expect(await sessionStatus(calling.token)).toBe(200);
+    for (const other of others) expect(await sessionStatus(other.token)).toBe(401);
+    expect((await revokedRegistrations(user.id)).sort()).toEqual([...otherRegistrations].sort());
+    expect(await sessionStatus(bystanderSession.token)).toBe(200);
+    expect((await postLogin(bystander.email, PASSWORD)).status).toBe(200);
+  });
+
+  it("answers a wrong currentPassword with 403 reauthentication_failed, records a failed attempt for the caller's address and keeps the calling token and the password", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const second = await signIn(user.email);
+
+    const res = await postChange(calling.token, { currentPassword: "wrong-password", newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(403);
+    expect(errorBody.parse(await res.json()).code).toBe("reauthentication_failed");
+    expect(await failedAttempts(user.email)).toEqual([ADDRESS]);
+    expect(await sessionStatus(calling.token)).toBe(200);
+    expect(await sessionStatus(second.token)).toBe(200);
+    expect((await postLogin(user.email, NEW_PASSWORD, OTHER_ADDRESS)).status).toBe(401);
+    expect((await postLogin(user.email, PASSWORD, OTHER_ADDRESS)).status).toBe(200);
+  });
+
+  it("answers 403 reauthentication_failed to the correct currentPassword while failed logins lock the address out, and 200 from another address", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+      expect((await postLogin(user.email, "wrong-password")).status).toBe(401);
+    }
+    const hashBefore = await passwordHashOf(user.id);
+
+    const locked = await postChange(calling.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(locked.status).toBe(403);
+    expect(errorBody.parse(await locked.json()).code).toBe("reauthentication_failed");
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+    expect(await failedAttempts(user.email)).toEqual(Array.from({ length: LOCKOUT_THRESHOLD + 1 }, () => ADDRESS));
+    expect(await sessionStatus(calling.token)).toBe(200);
+
+    const elsewhere = await postChange(
+      calling.token,
+      { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+      OTHER_ADDRESS,
+    );
+
+    expect(elsewhere.status).toBe(200);
+    expect(await passwordHashOf(user.id)).not.toBe(hashBefore);
+  });
+
+  it("locks login out of the address after LOCKOUT_THRESHOLD wrong currentPasswords", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+      const res = await postChange(calling.token, { currentPassword: "wrong-password", newPassword: NEW_PASSWORD });
+      expect(res.status).toBe(403);
+    }
+
+    expect((await postLogin(user.email, PASSWORD)).status).toBe(401);
+    expect((await postLogin(user.email, PASSWORD, OTHER_ADDRESS)).status).toBe(200);
+    expect(await sessionStatus(calling.token)).toBe(200);
+  });
+
+  it("records the failed attempt for the socket peer, not for X-Forwarded-For, on a listener that does not trust the proxy", async () => {
+    if (!runtime) throw new Error("the runtime-role pool was not created");
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const untrusting = createServer(
+      createAuthRequestListener(runtime, { passwordResetMailer: mailer, appBaseUrl: APP_BASE_URL }),
+    );
+    await new Promise<void>((resolve) => untrusting.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = untrusting.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+
+      const res = await fetch(`http://127.0.0.1:${address.port}/api/auth/password-change`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-For": ADDRESS,
+          Authorization: `Bearer ${calling.token}`,
+        },
+        body: JSON.stringify({ currentPassword: "wrong-password", newPassword: NEW_PASSWORD }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await failedAttempts(user.email)).toEqual(["127.0.0.1"]);
+    } finally {
+      await new Promise<void>((resolve) => untrusting.close(() => resolve()));
+    }
+  });
+
+  it("answers 400 password_reset_token_consumed to a reset link that was requested before the change", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const requested = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email }),
+    });
+    expect(requested.status).toBe(200);
+    const sent = mailer.sent.at(-1);
+    if (!sent) throw new Error("expected a reset email");
+    const token = tokenFromResetUrl(sent.resetUrl);
+
+    const changed = await postChange(calling.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+    expect(changed.status).toBe(200);
+
+    const consumed = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, newPassword: "from-the-old-link" }),
+    });
+
+    expect(consumed.status).toBe(400);
+    expect(errorBody.parse(await consumed.json()).code).toBe("password_reset_token_consumed");
+    expect((await postLogin(user.email, "from-the-old-link")).status).toBe(401);
+    expect((await postLogin(user.email, NEW_PASSWORD)).status).toBe(200);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["a newPassword of 7 characters", { currentPassword: PASSWORD, newPassword: "1234567" }, "newPassword"],
+    ["an empty newPassword", { currentPassword: PASSWORD, newPassword: "" }, "newPassword"],
+    ["a missing newPassword", { currentPassword: PASSWORD }, "newPassword"],
+    ["a non-string newPassword", { currentPassword: PASSWORD, newPassword: 12345678 }, "newPassword"],
+    ["a missing currentPassword", { newPassword: NEW_PASSWORD }, "currentPassword"],
+    ["a non-string currentPassword", { currentPassword: 12345678, newPassword: NEW_PASSWORD }, "currentPassword"],
+    ["an empty currentPassword", { currentPassword: "", newPassword: NEW_PASSWORD }, "currentPassword"],
+  ])("answers %s with 400 validation_failed naming the field, and records no attempt", async (_name, body, field) => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const hashBefore = await passwordHashOf(user.id);
+
+    const res = await postChange(calling.token, body);
+
+    expect(res.status).toBe(400);
+    expect(errorBody.parse(await res.json())).toEqual({ code: "validation_failed", details: { field } });
+    expect(await failedAttempts(user.email)).toEqual([]);
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+    expect(await sessionStatus(calling.token)).toBe(200);
+  });
+
+  it.each<[string, string]>([
+    ["the JSON literal null", "null"],
+    ["a JSON array", "[]"],
+    ["malformed JSON", "{"],
+  ])("answers a body that is %s with 400 validation_failed and changes nothing", async (_name, raw) => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const hashBefore = await passwordHashOf(user.id);
+
+    const res = await postChange(calling.token, raw);
+
+    expect(res.status).toBe(400);
+    expect(errorBody.parse(await res.json()).code).toBe("validation_failed");
+    expect(await failedAttempts(user.email)).toEqual([]);
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+  });
+
+  it("answers 413 to a body over the 64 KiB cap and changes nothing", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const hashBefore = await passwordHashOf(user.id);
+
+    const res = await postChange(calling.token, {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+      padding: "x".repeat(64 * 1024),
+    });
+
+    expect(res.status).toBe(413);
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+    expect(await failedAttempts(user.email)).toEqual([]);
+  });
+
+  it("refuses an unauthenticated call with 401 before reading the body, and changes nothing", async () => {
+    const user = await makeUser("caller@example.com");
+    const session = await signIn(user.email);
+    const hashBefore = await passwordHashOf(user.id);
+
+    const res = await postChange(null, "{");
+
+    expect(res.status).toBe(401);
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+    expect(await failedAttempts(user.email)).toEqual([]);
+    expect(await sessionStatus(session.token)).toBe(200);
+  });
+
+  it("answers 404 to another method on the path", async () => {
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+
+    const res = await fetch(`${baseUrl}/api/auth/password-change`, {
+      headers: { Authorization: `Bearer ${calling.token}` },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("answers two simultaneous changes with the same currentPassword with one 200 and one 403", async () => {
+    const user = await makeUser("caller@example.com");
+    const callers = [
+      { session: await signIn(user.email), newPassword: "first-new-password" },
+      { session: await signIn(user.email), newPassword: "second-new-password" },
+    ];
+
+    const responses = await Promise.all(
+      callers.map((caller) =>
+        postChange(caller.session.token, { currentPassword: PASSWORD, newPassword: caller.newPassword }),
+      ),
+    );
+
+    const statuses = responses.map((res) => res.status);
+    expect([...statuses].sort()).toEqual([200, 403]);
+    const refused = responses.find((res) => res.status === 403);
+    if (!refused) throw new Error("expected one refused change");
+    expect(errorBody.parse(await refused.json()).code).toBe("reauthentication_failed");
+    const winner = callers.find((_caller, index) => statuses[index] === 200);
+    const loser = callers.find((_caller, index) => statuses[index] === 403);
+    if (!winner || !loser) throw new Error("expected one accepted and one refused change");
+    expect((await postLogin(user.email, winner.newPassword, OTHER_ADDRESS)).status).toBe(200);
+    expect((await postLogin(user.email, loser.newPassword, OTHER_ADDRESS)).status).toBe(401);
+    expect(await sessionStatus(winner.session.token)).toBe(200);
+    expect(await sessionStatus(loser.session.token)).toBe(401);
+  });
+
+  it("answers 401 and writes no new hash when a suspension of the caller's account commits while the request is in flight", async () => {
+    const admin = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: "admin@example.com",
+      passwordHash: await hashPassword(PASSWORD),
+      role: "admin",
+    });
+    const user = await makeUser("caller@example.com");
+    const calling = await signIn(user.email);
+    const hashBefore = await passwordHashOf(user.id);
+    let releaseSuspension!: () => void;
+    const suspensionHeld = new Promise<void>((resolve) => {
+      releaseSuspension = resolve;
+    });
+    let markSuspended!: () => void;
+    const suspendedUncommitted = new Promise<void>((resolve) => {
+      markSuspended = resolve;
+    });
+    const suspension = withTransaction(pool, async (client) => {
+      await suspendAccount(client, { actorUserId: admin.id, targetUserId: user.id });
+      markSuspended();
+      await suspensionHeld;
+    });
+    // Awaited below; observed here too, so an early failure is never an unhandled rejection.
+    suspension.catch(() => undefined);
+    await Promise.race([suspendedUncommitted, suspension]);
+
+    // The request reads the tenant as active, because the suspension is not committed, and then waits for it.
+    const responding = postChange(calling.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+    responding.catch(() => undefined);
+    try {
+      await vi.waitFor(async () => {
+        const { rows } = await pool.query<{ waiting: number }>(
+          "SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted",
+        );
+        expect(rows[0]?.waiting).toBeGreaterThan(0);
+      });
+    } finally {
+      releaseSuspension();
+    }
+    await suspension;
+
+    const res = await responding;
+    expect(res.status).toBe(401);
+    expect(errorBody.parse(await res.json()).code).toBe("unauthorized");
+    expect(await passwordHashOf(user.id)).toBe(hashBefore);
+    expect(await failedAttempts(user.email)).toEqual([]);
+    expect(await sessionStatus(calling.token)).toBe(401);
   });
 });

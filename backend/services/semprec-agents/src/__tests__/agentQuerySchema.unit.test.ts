@@ -80,6 +80,39 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
   });
 });
 
+describe("item.count agent schema", () => {
+  const schema = operationInputJsonSchema("item.count");
+  const tool = { name: "count", description: "count", parameters: Type.Unsafe(schema) };
+  const databaseId = "22222222-2222-4222-8222-222222222222";
+  const validate = (args: Record<string, unknown>): unknown =>
+    validateToolArguments(tool, { type: "toolCall", id: "test", name: "count", arguments: args });
+
+  it("validates real generated pointers through the pi validator, for one and for twenty entries", () => {
+    const entry = { databaseId, filter: nested(8), groupBy: "project", collection: true };
+    const single = { items: [entry] };
+    expect(GENERIC_OPERATION_BINDINGS["item.count"].input.safeParse(single).success).toBe(true);
+    expect(validate(single)).toEqual(single);
+    const full = { items: Array.from({ length: 20 }, () => ({ databaseId })) };
+    expect(validate(full)).toEqual(full);
+    expect(Buffer.byteLength(JSON.stringify(schema))).toBeLessThan(20_000);
+  });
+
+  it.each([
+    ["no entries", { items: [] }],
+    ["twenty-one entries", { items: Array.from({ length: 21 }, () => ({ databaseId })) }],
+    ["a too deep filter", { items: [{ databaseId, filter: nested(9) }] }],
+    ["a short relation path", { items: [{ databaseId, filter: { ...relation, path: ["project"] } }] }],
+    ["a group overflow", { items: [{ databaseId, filter: { type: "or", nodes: Array(21).fill(relation) } }] }],
+    ["an empty groupBy", { items: [{ databaseId, groupBy: "" }] }],
+    ["an extra entry key", { items: [{ databaseId, inTrash: true }] }],
+    ["an extra root key", { items: [{ databaseId }], extra: true }],
+    ["a missing database", { items: [{ groupBy: "project" }] }],
+  ])("rejects %s through both actual validators", (_name, input) => {
+    expect(GENERIC_OPERATION_BINDINGS["item.count"].input.safeParse(input).success).toBe(false);
+    expect(() => validate(input)).toThrow();
+  });
+});
+
 it("fits the actual complete catalog payload without dropping tools and retains the strict guard", () => {
   const tools = GENERIC_OPERATION_NAMES.map((operation) => ({
     name: operation,

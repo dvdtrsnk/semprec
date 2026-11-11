@@ -23,6 +23,7 @@ import { runFilesTypeOptionsCutoverMigration } from "../blobs/filesTypeOptionsCu
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
 import { runEventTranscriptCardinalityCutoverMigration } from "../transcription/eventTranscriptCardinalityCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
+import { runTranscriptionTriggerEventsCutoverMigration } from "../transcription/transcriptionTriggerEventsCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
@@ -43,8 +44,12 @@ import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrence
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
+import { runHealthRecordTagsCutoverMigration } from "../seed/healthRecordTagsCutoverMigration.js";
+import { runHealthRecordTasksCutoverMigration } from "../seed/healthRecordTasksCutoverMigration.js";
 import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
 import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
+import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutoverMigration.js";
+import { runMeetingNotesBackfillCutoverMigration } from "../transcription/meetingNotesBackfillCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -81,6 +86,8 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runProjectAgentGuidanceCutoverMigration(pool);
     await runProcessingProposalsCardStateCutoverMigration(pool);
     await runInboxMarkdownFormatCutoverMigration(pool);
+    // Issue #1698: after the Events/Files relation cutover of #1588, whose `Files.events` property it reads.
+    await runTranscriptionTriggerEventsCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);
     await runEmailsSenderPeopleCardinalityCutoverMigration(pool);
     await runMailDraftsAndSentReadBackfill(pool);
@@ -93,6 +100,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPeopleLastContactCutoverMigration(pool);
     await runPeopleRelationshipOptionsCutoverMigration(pool);
     await runSelectOptionOrderCutoverMigration(pool);
+    await runHealthRecordTagsCutoverMigration(pool);
     await runSelectOptionColorsCutoverMigration(pool);
     await runRatingFilterPresetsCutoverMigration(pool);
     await runProjectsCompletedAtCutoverMigration(pool);
@@ -103,8 +111,14 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTasksPersistentRemovalCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
     await runTaskRecurrenceSeriesCutoverMigration(pool);
+    await runHealthRecordTasksCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);
     await runJournalEventsCutoverMigration(pool);
+    // Issue #1707: the Recipes module for a tenant seeded before it. It needs no other step's result and stands
+    // after them, before the area-note cutover that stays last. The guidance cutover above has run before the
+    // Recipes project exists, so this step writes that project's guidance row itself.
+    await runRecipesModuleCutoverMigration(pool);
+    await runMeetingNotesBackfillCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

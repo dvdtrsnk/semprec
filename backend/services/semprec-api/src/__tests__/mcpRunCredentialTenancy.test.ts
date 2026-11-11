@@ -35,6 +35,7 @@ import { z } from "zod";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  collectionFilter: () => undefined,
 };
 
 const PASSWORD = "s3cret-password";

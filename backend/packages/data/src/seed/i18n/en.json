@@ -2,6 +2,7 @@
   "approval.recurrence.end": "end",
   "approval.changesSeries": "Change recurrence of {taskName} from {fromRule} to {toRule}",
   "inbox.originNote.prefix": "Created from Inbox:",
+  "semp.thread.itemTitle": "Edit: {itemName}",
   "collection.custom.searchPlaceholder": "Search collection",
   "database.areas.name": "Areas",
   "database.areas.searchPlaceholder": "Search areas",
@@ -76,6 +77,7 @@
   "property.tasks.time.name": "Time",
   "property.tasks.notifications.name": "Notifications",
   "property.tasks.project.name": "Project",
+  "property.tasks.healthRecords.name": "Health records",
 
   "database.people.name": "People",
   "database.people.searchPlaceholder": "Search people",
@@ -163,9 +165,12 @@
   "property.healthRecords.tags.option.medication": "Medication",
   "property.healthRecords.tags.option.epilepsy": "Epilepsy",
   "property.healthRecords.tags.option.dentalHygiene": "Dental hygiene",
+  "property.healthRecords.tags.option.bloodPressure": "Blood pressure",
+  "property.healthRecords.tags.option.prevention": "Prevention",
   "property.healthRecords.area.name": "Area",
   "property.healthRecords.files.name": "Files",
   "property.healthRecords.projects.name": "Projects",
+  "property.healthRecords.tasks.name": "Tasks",
 
   "database.companies.name": "Companies",
   "database.companies.searchPlaceholder": "Search companies",

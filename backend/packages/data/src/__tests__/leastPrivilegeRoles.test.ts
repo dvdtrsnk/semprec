@@ -207,7 +207,15 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
     // admin_audit_log (migration 0074) is append-only: semprec_side reads it, semprec_data only inserts.
     // invites (migration 0077) is written by the admin routes only: semprec_side reads it, semprec_data runs DML.
-    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "invites", "tenant_deletions"]);
+    // transcript_action_item_states (issue #1754) is written by the API's transcript route and the trash purge:
+    // semprec_side reads it, semprec_data runs DML.
+    const READ_ONLY_FOR_SIDE_TABLES = new Set([
+      "tenant_ai_budgets",
+      "admin_audit_log",
+      "invites",
+      "tenant_deletions",
+      "transcript_action_item_states",
+    ]);
     // tenant_deletions (migration 0079) is the purge tombstone: semprec_side reads, semprec_data only inserts.
     const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "tenant_deletions"]);
 

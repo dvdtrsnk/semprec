@@ -4,10 +4,16 @@ import type { Pool } from "pg";
 import {
   ChokePointError,
   deleteOwnAccount,
+  enqueueTenantSearchReindex,
   getDownloadableTenantExport,
+  getSelfPersonId,
+  getUserById,
+  isSupportedLocale,
   listTenantExports,
   NotFoundError,
   requestTenantExport,
+  SUPPORTED_LOCALES,
+  updateUserLocale,
   ValidationError,
   withTransaction,
   type BlobStorageWriter,
@@ -58,6 +64,33 @@ export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefin
           ip: clientIpFromRequest(ctx.req, { trustProxy: options.trustProxy ?? false }),
         });
         return { status: 202, body: { status: "deleting" } };
+      },
+    },
+    {
+      // Issue #1704: the profile language. The account is the authenticated one; the body cannot name another.
+      method: "PATCH",
+      path: "/api/account/profile",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "locale");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected profile field", { field: unexpected });
+        const locale = body.locale;
+        if (!isSupportedLocale(locale)) {
+          throw new ValidationError(`'locale' must be one of: ${SUPPORTED_LOCALES.join(", ")}`, { field: "locale" });
+        }
+        const userId = ctx.identity.user.id;
+        const { user, personId } = await withTransaction(pool, async (client) => {
+          const updated = await updateUserLocale(client, userId, locale);
+          // Search documents hold select and multi-select option labels in the user's language, so a
+          // changed locale queues the tenant's reindex in this transaction. An unchanged one queues nothing.
+          if (updated) await enqueueTenantSearchReindex(client);
+          const user = updated ?? (await getUserById(client, userId));
+          if (!user) throw new NotFoundError("Account not found", { userId });
+          return { user, personId: await getSelfPersonId(client) };
+        });
+        const { passwordHash: _passwordHash, ...publicUser } = user;
+        // The user object `GET /api/auth/session` returns.
+        return { status: 200, body: { user: { ...publicUser, role: ctx.identity.role, personId } } };
       },
     },
   ];

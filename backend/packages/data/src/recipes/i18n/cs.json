@@ -1,0 +1,16 @@
+{
+  "database.recipes.name": "Recepty",
+  "database.recipes.searchPlaceholder": "Hledat v receptech",
+  "property.recipes.name.name": "Název",
+  "property.recipes.category.name": "Kategorie",
+  "property.recipes.category.option.main": "Hlavní jídlo",
+  "property.recipes.category.option.breakfast": "Snídaně",
+  "property.recipes.category.option.dessert": "Dezert",
+  "property.recipes.prepMinutes.name": "Čas",
+  "property.recipes.prepMinutes.preset.15": "Do 15 min",
+  "property.recipes.prepMinutes.preset.30": "Do 30 min",
+  "property.recipes.prepMinutes.preset.60": "Do hodiny",
+  "property.recipes.servings.name": "Porce",
+  "property.recipes.favorite.name": "Oblíbené",
+  "property.recipes.photo.name": "Fotka"
+}

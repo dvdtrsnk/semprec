@@ -42,6 +42,7 @@ import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 import { seedCalendarsInTransaction } from "./seedCalendars.js";
+import { seedRecipesModuleInTransaction } from "./seedRecipesModule.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
@@ -304,6 +305,13 @@ export async function seedSystem(
     if (!attachmentsProperty) {
       throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
     }
+    // Issue #1698: the trigger also skips a file attached to an Event, so it needs the Files.events
+    // property id seedTenDatabasesInTransaction above created. A populated install gets it from
+    // runTranscriptionTriggerEventsCutoverMigration instead.
+    const eventsProperty = await propertiesStore.getPropertyByKey(client, tenDatabases.files.id, "events");
+    if (!eventsProperty) {
+      throw new Error("Files.events property not found after seedTenDatabasesInTransaction");
+    }
     await createHeartbeat(client, {
       projectItemId: semprecProject.id,
       name: "Files transcription trigger",
@@ -312,6 +320,7 @@ export async function seedSystem(
       actionConfig: {
         filesDatabaseId: tenDatabases.files.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
+        eventsRelationPropertyId: eventsProperty.id,
       },
     });
     // Daily transcription requeue (issue #186): puts every failed Transcriptions row back into
@@ -353,6 +362,10 @@ export async function seedSystem(
     // Calendars (issue #1600): the calendar module's first database and the `Events.calendar` relation.
     // After seedTenDatabasesInTransaction above, whose Events database this edits.
     await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
+
+    // Recipes (issue #1707): depends only on the Projects database above. A tenant seeded before it gets the
+    // module from runRecipesModuleCutoverMigration instead.
+    await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
     return "created";
   });
 
