@@ -31,7 +31,8 @@ describe("approvalConflictReason", () => {
     ["toolUnavailable", "approval.conflict.toolUnavailable"],
     ["callFailed", "approval.outcome.failed"],
     ["staleClaim", "approval.conflict.other"],
-  ])("maps MCP outcome kind %s to %s", (outcomeKind, key) => {
+    ["sourceChanged", "approval.conflict.changed"],
+  ])("maps outcome kind %s to %s", (outcomeKind, key) => {
     expect(approvalConflictReason("conflict", { text: "secret text", outcomeKind })).toEqual({ key });
   });
 

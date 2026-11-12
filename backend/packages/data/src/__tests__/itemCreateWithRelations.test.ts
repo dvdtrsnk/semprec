@@ -3,11 +3,30 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { registerItemCreateHook, type ItemCreateHookContext } from "../chokePoint/hooks.js";
 import { createItemWithRelationsWithClient, type InitialItemRelation } from "../index.js";
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyOps.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+
+/**
+ * What the create hooks were given for each item inserted into `databaseId`: the initial relations and the
+ * number of edges the item had at that point. The hook stays registered for the whole file and records
+ * nothing for any other database.
+ */
+const watched: {
+  databaseId: string | null;
+  calls: Array<{ initialRelations: ItemCreateHookContext["initialRelations"]; edges: number | undefined }>;
+} = { databaseId: null, calls: [] };
+registerItemCreateHook(async ({ client, database, item, initialRelations }) => {
+  if (database.id !== watched.databaseId) return;
+  const { rows } = await client.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1 OR item_b = $1",
+    [item.id],
+  );
+  watched.calls.push({ initialRelations, edges: rows[0]?.n });
+});
 
 describe("item.create with relations", () => {
   let admin: Pool;
@@ -29,6 +48,8 @@ describe("item.create with relations", () => {
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(pool));
+    watched.databaseId = null;
+    watched.calls = [];
   });
   afterAll(async () => {
     await pool.end();
@@ -81,6 +102,44 @@ describe("item.create with relations", () => {
       ).toEqual(item);
       expect(await cp.listItemRelations(item.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
     }));
+  it("gives the create hooks the resolved relations before any of their edges is written", async () =>
+    runInTenant(tenant, async () => {
+      const { source, property, first } = await fixture();
+      watched.databaseId = source.id;
+      const resolved = {
+        kind: "resolved",
+        relationPropertyId: property.id,
+        targetItemIds: [first.id],
+      } satisfies InitialItemRelation;
+
+      const item = await cp.createItemWithRelations({ databaseId: source.id, properties: {}, relations: [resolved] });
+      expect(watched.calls).toEqual([{ initialRelations: [resolved], edges: 0 }]);
+      expect(await cp.listItemRelations(item.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+
+      // A relation whose key was not resolved is not among them; the create is refused after the hooks ran.
+      watched.calls = [];
+      await expect(
+        cp.createItemWithRelations({
+          databaseId: source.id,
+          properties: {},
+          relations: [{ kind: "unresolved" }, resolved],
+        }),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+      expect(watched.calls).toEqual([{ initialRelations: [resolved], edges: 0 }]);
+    }));
+
+  it("gives the create hooks an empty list for no relations and nothing for a create without relations", async () =>
+    runInTenant(tenant, async () => {
+      const { source } = await fixture();
+      watched.databaseId = source.id;
+      await cp.createItemWithRelations({ databaseId: source.id, properties: {}, relations: [] });
+      await cp.createItem({ databaseId: source.id, properties: {} });
+      expect(watched.calls).toEqual([
+        { initialRelations: [], edges: 0 },
+        { initialRelations: undefined, edges: 0 },
+      ]);
+    }));
+
   it("commits, replays and rolls back the public supplied-client command", async () =>
     runInTenant(tenant, async () => {
       const { source, property, first, second } = await fixture();

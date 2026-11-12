@@ -281,12 +281,7 @@ export async function closeFailedAgentRun(
           syntheticToolResult(toolUse, `Turn ${reason} before this tool call completed.`),
         );
       }
-      const closed = await finishAgentRunWithErrorNotification(
-        c,
-        agentRunId,
-        failure instanceof Error ? failure.message : String(failure),
-        agentRunErrorCodeOf(failure),
-      );
+      const closed = await finishAgentRunWithErrorNotification(c, agentRunId, agentRunErrorCodeOf(failure));
       if (closed) await pushRunStatus(c, agentRunId, "error");
     };
     if (client instanceof Pool) await withTransaction(client, close);

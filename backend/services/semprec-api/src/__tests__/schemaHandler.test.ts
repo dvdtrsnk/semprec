@@ -1136,6 +1136,26 @@ describe("createSchemaRequestListener (issue #147)", () => {
     });
   });
 
+  it("carries sensitive on every database, true for exactly the four sensitive keys (issue #1808)", async () => {
+    const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(res.status).toBe(200);
+    const body = z
+      .object({
+        databases: z.array(z.object({ databaseId: z.string(), key: z.string().nullable(), sensitive: z.boolean() })),
+      })
+      .parse(await res.json());
+
+    expect(
+      body.databases
+        .filter((db) => db.sensitive)
+        .map((db) => db.key)
+        .sort(),
+    ).toEqual(["healthRecords", "sleepNights", "sleepPlans", "sleepSettings"]);
+    expect(body.databases.find((db) => db.databaseId === custom.id)?.sensitive).toBe(false);
+    expect(body.databases.find((db) => db.key === "tasks")?.sensitive).toBe(false);
+  });
+
   it("carries the same search placeholders as the database envelope", async () => {
     const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
     const get = async (locale: string): Promise<SchemaProjectionBody["databases"]> => {

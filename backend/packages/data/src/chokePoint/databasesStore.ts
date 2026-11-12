@@ -27,6 +27,7 @@ type DatabaseDbRow = {
   icon: string | null;
   color: string | null;
   overview_hidden: boolean;
+  sensitive: boolean;
   archived_at: Date | null;
 };
 
@@ -43,12 +44,13 @@ function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
     icon: row.icon,
     color: row.color,
     overviewHidden: row.overview_hidden,
+    sensitive: row.sensitive,
     archivedAt: row.archived_at ? row.archived_at.toISOString() : null,
   };
 }
 
 const DATABASE_COLUMNS =
-  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, archived_at";
+  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, sensitive, archived_at";
 
 export interface CreateDatabaseInput {
   /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
@@ -64,6 +66,8 @@ export interface CreateDatabaseInput {
   icon?: string;
   /** `#RRGGBB`, stored upper-case; only valid for a non-system database. */
   color?: string;
+  /** Marks the database as holding data an agent must not read or write by default (issue #1808); only valid for a system database. */
+  sensitive?: boolean;
 }
 
 /**
@@ -77,6 +81,9 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   }
   if (input.key && !input.system) {
     throw new ValidationError("key is only valid for system databases", { field: "key" });
+  }
+  if (input.sensitive && !input.system) {
+    throw new ValidationError("sensitive is only valid for system databases", { field: "sensitive" });
   }
   if (input.system && !input.name && !input.key) {
     // Without a name, key is the only source of a display label the permissionManifest
@@ -102,8 +109,8 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   let database: DatabaseRow;
   try {
     const { rows } = await client.query<DatabaseDbRow>(
-      `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, sensitive)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING ${DATABASE_COLUMNS}`,
       [
         input.name,
@@ -115,6 +122,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
         input.system ?? false,
         input.icon ?? null,
         input.color?.toUpperCase() ?? null,
+        input.sensitive ?? false,
       ],
     );
     database = mapDatabaseRow(requireSingleRow(rows, "databases row"));

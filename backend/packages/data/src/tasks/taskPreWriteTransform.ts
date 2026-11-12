@@ -13,6 +13,7 @@ import { deriveTaskTime } from "./deriveTaskTime.js";
 import { taskSinceRule } from "./taskSinceRule.js";
 import { firstOccurrenceAfter } from "./nextDueDate.js";
 import { getTaskRecurrenceBySeriesId } from "./taskRecurrenceStore.js";
+import { computeTaskHostState, loadHostEventsRelation, readLiveHostEvents } from "./taskHostEventState.js";
 
 const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -66,7 +67,36 @@ export const prepareTaskProposal: ItemPreWritePreparation = async ({ stored, pat
   return { patch: prepared, deferredKeys: enteringDone && !Object.hasOwn(patch, "completedOn") ? ["completedOn"] : [] };
 };
 
-export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
+/**
+ * The Tasks transform: the date, time, completion and since rules of `applyTaskRules`, then, for a create and for a
+ * write that names `date`, the stored `effectiveDate` of issue #1780 (`withEffectiveDate`).
+ */
+export const taskPreWriteTransform: ItemPreWriteTransform = async (context) =>
+  withEffectiveDate(context, await applyTaskRules(context));
+
+/**
+ * Issue #1780: a create and a write that names `date` store the `effectiveDate` the task's host events and its `date`
+ * give. A task with no live host event gets its `date`; a create reads no host event, because its edges come after it.
+ * A create without a `date` stores no key. Any other write leaves `effectiveDate` to the host state recomputation.
+ */
+async function withEffectiveDate(
+  context: ItemPreWriteTransformContext,
+  output: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const { stored, patch, client } = context;
+  if (stored !== null && !Object.hasOwn(patch, "date")) return output;
+  const date = Object.hasOwn(output, "date") ? output.date : stored?.properties.date;
+  const taskDate = typeof date === "string" && date !== "" ? date : null;
+  const relation = stored === null ? null : await loadHostEventsRelation(client);
+  const hostEvents = stored !== null && relation ? await readLiveHostEvents(client, relation, stored.id) : [];
+  // The zone is read only when there is an event whose end it places.
+  const timezone = hostEvents.length > 0 ? await getSystemTimezone(client) : "UTC";
+  const { effectiveDate } = computeTaskHostState({ date: taskDate, hostEvents, timezone, now: new Date() });
+  if (stored === null && effectiveDate === null) return output;
+  return { ...output, effectiveDate };
+}
+
+async function applyTaskRules(context: ItemPreWriteTransformContext): Promise<Record<string, unknown>> {
   const { stored, patch, client } = context;
   assertMissedWritable(patch, context.writer.writerKind);
   let output = await prepareTaskWrite({ stored, patch });
@@ -137,7 +167,7 @@ export const taskPreWriteTransform: ItemPreWriteTransform = async (context) => {
     }
   }
   return output;
-};
+}
 
 function assertNonBlankName(value: unknown): void {
   if (typeof value !== "string" || value.trim() === "") {

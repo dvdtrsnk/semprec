@@ -409,11 +409,20 @@ describe("default calendar create hook (issue #1761)", () => {
       runInTenant(tenant, async () => {
         const f = await setup();
         const second = await f.cp.createItem(
-          { databaseId: f.db(CALENDARS_MODULE_ID), properties: { name: "Second default", isDefault: true } },
+          { databaseId: f.db(CALENDARS_MODULE_ID), properties: { name: "Second default" } },
           undefined,
           undefined,
           USER,
         );
+        // Two live defaults are a state the choke point no longer produces (issue #1778); a tenant can hold it
+        // from before that rule, so the mark is written without the calendar row hooks.
+        const marked = await withTransaction(runtime, (client) =>
+          client.query(
+            `UPDATE items SET properties = properties || '{"isDefault": true}'::jsonb WHERE database_id = $1 AND id = $2`,
+            [f.db(CALENDARS_MODULE_ID), second.id],
+          ),
+        );
+        expect(marked.rowCount).toBe(1);
         const [lowest] = [f.calendar("Personal"), second.id].sort();
         const event = await f.create();
         expect(await f.calendarsOf(event.id)).toEqual([lowest]);
@@ -423,17 +432,13 @@ describe("default calendar create hook (issue #1761)", () => {
       runInTenant(tenant, async () => {
         const f = await setup();
         const calendarsId = f.db(CALENDARS_MODULE_ID);
+        // Marking Work clears Personal in the same transaction (issue #1778).
         const move = await heldOpen(async (client) => {
-          for (const [name, isDefault] of [
-            ["Personal", false],
-            ["Work", true],
-          ] as const) {
-            await updateItemWithClient(
-              client,
-              { databaseId: calendarsId, itemId: f.calendar(name), propertiesPatch: { isDefault } },
-              { writer: USER },
-            );
-          }
+          await updateItemWithClient(
+            client,
+            { databaseId: calendarsId, itemId: f.calendar("Work"), propertiesPatch: { isDefault: true } },
+            { writer: USER },
+          );
         });
         // Starts while the move is uncommitted: its first read finds Personal marked and waits for that row.
         const create = f.create();

@@ -83,6 +83,22 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getMigrations()).toEqual([{ moduleId: "library", migration: "0005_library_module.sql" }]);
   });
 
+  it("declares the automation retry route of Books and Movies with a handler that resolves", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(LIBRARY_PATH);
+
+    const routes = await registry.getCustomRouteDefinitions();
+    expect(routes.map(({ moduleId, name, method, path }) => ({ moduleId, name, method, path }))).toEqual([
+      {
+        moduleId: "library",
+        name: "libraryAutomationRetry",
+        method: "POST",
+        path: "/api/items/:id/automation/retry",
+      },
+    ]);
+    expect(typeof routes[0]?.handler).toBe("function");
+  });
+
   it("loads the mail sync manifest with Mailboxes/Folders/Emails, its own heartbeat actions, and the per-mailbox worker", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(MAIL_PATH);

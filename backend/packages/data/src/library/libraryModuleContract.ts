@@ -9,6 +9,12 @@ import { z } from "zod";
 export interface LibraryModuleContract {
   /** `type: 'image'`, `owner: 'system'` — `{ blobId }` over the shared `blobs` table. */
   coverKey: string;
+  /** `type: 'image'`, `owner: 'user'` — `{ blobId }` of the cover the user chose; shown instead of `coverKey` when set. */
+  coverOverrideKey?: string;
+  /** `type: 'checkbox'`, `owner: 'user'` — the user removed the cover; nothing is shown while it is true. */
+  coverRemovedKey?: string;
+  /** `type: 'select'`, `owner: 'user'`, one of `LIBRARY_COVER_SOURCES` — where the override came from. */
+  coverSourceKey?: string;
   automationFillableKeys?: string[];
   /** Shown under the title on the card: author for Books, year for Movies. */
   subtitleKey: string;
@@ -27,6 +33,9 @@ export interface LibraryModuleContract {
 
 export const libraryModuleContractSchema = z.object({
   coverKey: z.string(),
+  coverOverrideKey: z.string().optional(),
+  coverRemovedKey: z.string().optional(),
+  coverSourceKey: z.string().optional(),
   automationFillableKeys: z.array(z.string()).optional(),
   subtitleKey: z.string(),
   ratingKey: z.string(),
@@ -37,8 +46,20 @@ export const libraryModuleContractSchema = z.object({
   coverGlyph: z.string().optional(),
 });
 
+/** The keys of the user-owned cover properties (issue #1793) that both library databases seed. */
+export const COVER_OVERRIDE_KEY = "coverOverride";
+export const COVER_REMOVED_KEY = "coverRemoved";
+export const COVER_SOURCE_KEY = "coverSource";
+
+/** The option values of the `coverSource` property: a suggested cover, a photo taken by the user, an image the user picked. */
+export const LIBRARY_COVER_SOURCES = ["candidate", "userPhoto", "userImage"] as const;
+export type LibraryCoverSource = (typeof LIBRARY_COVER_SOURCES)[number];
+
 export const BOOKS_LIBRARY_CONTRACT: LibraryModuleContract = {
   coverKey: "cover",
+  coverOverrideKey: COVER_OVERRIDE_KEY,
+  coverRemovedKey: COVER_REMOVED_KEY,
+  coverSourceKey: COVER_SOURCE_KEY,
   automationFillableKeys: ["author", "year", "isbn"],
   subtitleKey: "author",
   ratingKey: "rating",
@@ -48,6 +69,9 @@ export const BOOKS_LIBRARY_CONTRACT: LibraryModuleContract = {
 
 export const MOVIES_LIBRARY_CONTRACT: LibraryModuleContract = {
   coverKey: "cover",
+  coverOverrideKey: COVER_OVERRIDE_KEY,
+  coverRemovedKey: COVER_REMOVED_KEY,
+  coverSourceKey: COVER_SOURCE_KEY,
   automationFillableKeys: ["year", "type"],
   subtitleKey: "year",
   ratingKey: "rating",

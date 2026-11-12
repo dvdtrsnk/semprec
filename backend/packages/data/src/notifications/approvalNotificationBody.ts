@@ -13,6 +13,7 @@ const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.itemDelete", "approval.itemDelete"],
   ["approval.itemPatch", "approval.itemPatch"],
   ["approval.changesSeries", "approval.changesSeries"],
+  ["approval.breaksLink", "approval.breaksLink"],
   ["approval.propertyDelete", "approval.propertyDelete"],
   ["approval.databaseArchive", "approval.databaseArchive"],
   ["approval.viewDelete", "approval.viewDelete"],
@@ -21,6 +22,7 @@ const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.relationSet", "approval.relationSet"],
   ["approval.pageRestore", "approval.pageRestore"],
   ["approval.mcpInvoke", "approval.mcpInvoke"],
+  ["approval.moduleTool", "approval.moduleTool"],
 ]);
 
 /**

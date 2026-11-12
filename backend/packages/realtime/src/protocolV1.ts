@@ -66,7 +66,8 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
  * `scope: "schema"` names only the database whose properties/views changed, and
  * `scope: "relation"` names a link to refetch: a property key identifies the displayed link;
  * a null key means refetch all incoming and outgoing links for that item.
- * `scope: "sempThread"` names only the Semp thread that changed (best effort, no replay) — so the client always
+ * `scope: "sempThread"` names only the Semp thread that changed (best effort, no replay), and
+ * `scope: "approvalRequest"` names only the approval request whose state changed — so the client always
  * refetches the durable row itself over REST rather than trusting a second, parallel copy of it
  * riding the socket. `notification` is the one deliberate exception and carries the complete row:
  * a notification's `title` is pre-rendered text with no second enforcement layer to fall back on.
@@ -94,6 +95,7 @@ export type OutboundFrame =
       op: "put" | "delete" | "metadata";
     }
   | { type: "invalidate"; scope: "sempThread"; threadId: string }
+  | { type: "invalidate"; scope: "approvalRequest"; approvalRequestId: string }
   | { type: "notification"; notification: NotificationRow }
   | { type: "agent:event"; agentRunId: string; event: AgentRunEventRow }
   | { type: "agent:delta"; agentRunId: string; delta: unknown; chunk?: AgentDeltaChunk }

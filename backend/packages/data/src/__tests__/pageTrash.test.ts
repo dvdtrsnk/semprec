@@ -761,6 +761,11 @@ describe("page trash and restore hooks (issue #1723)", () => {
       expect(purged.purgedItemIds).toEqual([host]);
     });
     expect(await inTenant((client) => getDocByItemId(client, host))).toBeNull();
+    // The host's trash took the page with it (issue #1763), and the purge of the host left the page in the Trash.
+    expect(await liveStates(page.pageItemId)).toEqual([false]);
+
+    expect(await restore(page.pageItemId)).toMatchObject({ id: page.pageItemId, deletedAt: null });
+    expect(await liveStates(page.pageItemId)).toEqual([true]);
 
     expect(await trash(page.pageItemId)).toMatchObject({ id: page.pageItemId });
     expect(await liveStates(page.pageItemId)).toEqual([false]);

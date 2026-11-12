@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createPool, withTransaction } from "../../db/pool.js";
@@ -15,16 +15,24 @@ import { createDocStore } from "../../docs/docStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
+import * as itemsStore from "../../chokePoint/itemsStore.js";
 import * as relationsStore from "../../chokePoint/relationsStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
-import { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "../inboxRouteHandlers.js";
+import {
+  createConfirmProposalRouteHandler,
+  createInboxCardsRouteHandler,
+  createInboxTypesRouteHandler,
+} from "../inboxRouteHandlers.js";
 import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
+import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
+import { createPendingApprovalRequest } from "../../mcp/approvalRequestsStore.js";
+import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "../../seed/systemDatabasesEditorSchemas.js";
 import type { ItemRow } from "../../types.js";
 
 let pool: Pool;
@@ -1196,6 +1204,218 @@ describe("inbox custom route handlers (issue #239)", () => {
           ],
         },
       });
+    });
+  });
+
+  describe("createInboxCardsRouteHandler editor schemas (issue #1825)", () => {
+    async function createCard(
+      text: string,
+      targetDatabase: "tasks" | "projects",
+      properties: Record<string, unknown>,
+    ): Promise<{ itemId: string; cardId: string }> {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: `Type of ${targetDatabase}`,
+          emoji: "📌",
+          processingMethod: "database",
+          targetDatabase,
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          date: "2026-08-28",
+          time: "09:00",
+          text,
+          type: type.id,
+        }),
+      );
+      await createSemprecTickAction(pool, async () => ({ properties }))(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+      );
+      const { rows } = await pool.query<{ id: string }>(
+        "SELECT p.id FROM items p JOIN item_relations r ON r.item_a = p.id AND r.item_b = $2 WHERE p.database_id = $1",
+        [proposalsId, item.id],
+      );
+      if (!rows[0]) throw new Error("The tick stored no card");
+      return { itemId: item.id, cardId: rows[0].id };
+    }
+
+    interface ListedCard {
+      cardId: string;
+      cardKind: string;
+      status: string;
+      editorSchema: {
+        baseKind: string;
+        groups: Array<{ key: string; fields: Array<Record<string, unknown>> }>;
+      } | null;
+    }
+
+    /** The cards the handler returns for the tenant's only user, read as the adapter would pass the caller. */
+    async function listedCards(userId: string, locale: string): Promise<ListedCard[]> {
+      const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale } } });
+      if (!("body" in answer)) throw new Error("expected a raw JSON body");
+      const body = answer.body as { cards: ListedCard[] };
+      return body.cards;
+    }
+
+    function fieldsOf(card: ListedCard): Array<Record<string, unknown>> {
+      return card.editorSchema?.groups.flatMap((group) => group.fields) ?? [];
+    }
+
+    function fieldOf(card: ListedCard, key: string): Record<string, unknown> {
+      const field = fieldsOf(card).find((candidate) => candidate.key === key);
+      if (!field) throw new Error(`The schema has no field '${key}'`);
+      return field;
+    }
+
+    it("gives a task card the localized task schema: name required and the time of the date hidden by allDay", async () => {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
+
+      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+
+      expect(listed.editorSchema?.baseKind).toBe("task");
+      expect(fieldOf(listed, "name")).toMatchObject({
+        control: "text",
+        label: "Name",
+        placeholder: "Name",
+        required: true,
+      });
+      expect(fieldOf(listed, "date")).toMatchObject({
+        control: "datetime",
+        label: "Date",
+        timeHiddenWhen: { field: "allDay", equals: true },
+      });
+      expect(fieldOf(listed, "project")).toMatchObject({ control: "select", optionsSource: "project" });
+      expect(fieldOf(listed, "followDate")).toMatchObject({
+        control: "date",
+        required: true,
+        when: { field: "followupTask", equals: true },
+      });
+    });
+
+    it.each([
+      ["cs", "Název", "Datum"],
+      ["en", "Name", "Date"],
+      ["de", "Name", "Date"],
+    ])("resolves the labels in the locale %s, English for a locale without a catalog", async (locale, name, date) => {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
+
+      const listed = (await listedCards(userId, locale)).find((candidate) => candidate.cardId === card.cardId)!;
+
+      expect(fieldOf(listed, "name")).toMatchObject({ label: name, placeholder: name });
+      expect(fieldOf(listed, "date")).toMatchObject({ label: date });
+    });
+
+    it("gives an invalid task card the schema of the task it edits, follow-up fields included", async () => {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, card.itemId));
+      await createSemprecTickAction(pool, async () => {
+        throw new Error("The tick must not compute a card whose source was deleted");
+      })(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: card.itemId },
+      );
+
+      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+
+      // The card really went through the invalid path; a card left proposed would carry the same schema.
+      expect(listed).toMatchObject({ cardKind: "invalid", status: "invalid" });
+      expect(listed.editorSchema?.baseKind).toBe("task");
+      expect(fieldsOf(listed).map((field) => field.key)).toEqual([
+        "name",
+        "date",
+        "allDay",
+        "status",
+        "project",
+        "area",
+        "followupTask",
+        "followDate",
+      ]);
+    });
+
+    it("hides the date of a project card for the status longTerm", async () => {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const card = await createCard("Kitchen renovation", "projects", { name: "Kitchen renovation" });
+
+      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+
+      expect(listed.editorSchema?.baseKind).toBe("project");
+      expect(fieldOf(listed, "date")).toMatchObject({
+        control: "date",
+        when: { field: "status", notEquals: "longTerm" },
+      });
+      expect(fieldOf(listed, "status")).toMatchObject({ control: "seg" });
+    });
+
+    it("gives an editorSchema of null to a card whose base kind no module declares", async () => {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "probe" });
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "send_email",
+        riskClass: "outbound",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      const clarification = await createCard("Unclear", "tasks", { name: "Unclear" });
+      // Raw SQL: `needsClarification` is produced only by the model's recognition, which this tick does not run.
+      await pool.query(
+        "UPDATE items SET properties = jsonb_set(properties, '{status}', '\"needsClarification\"') WHERE id = $1",
+        [clarification.cardId],
+      );
+
+      const cards = await listedCards(userId, "en");
+
+      expect(cards.map((card) => [card.cardId, card.editorSchema])).toEqual([
+        [request.id, null],
+        [clarification.cardId, null],
+      ]);
+    });
+
+    it("declares only keys that are properties of the owning database, apart from the pseudo fields", async () => {
+      const databaseOf: Record<string, string> = {
+        task: "tasks",
+        event: "events",
+        project: "projects",
+        area: "areas",
+        company: "companies",
+        person: "people",
+        file: "files",
+        health: "healthRecords",
+      };
+      // Fields without a property of their own: the all-day and step switches, the follow-up date, the Tasks
+      // `area` choice, and the page content of the two page cards (issue #1825).
+      const pseudoKeys = new Set([
+        "allDay",
+        "followupTask",
+        "followDate",
+        "area",
+        "markdown",
+        "day",
+        "page",
+        "placement",
+        "heading",
+      ]);
+      const unknown: string[] = [];
+      for (const [baseKind, moduleId] of Object.entries(databaseOf)) {
+        const properties = await withTransaction(pool, async (client) => {
+          const database = await getDatabaseByModuleId(client, moduleId);
+          return propertiesStore.listPropertiesByDatabase(client, database!.id);
+        });
+        const keys = new Set(properties.map((property) => property.key));
+        for (const group of SYSTEM_DATABASES_EDITOR_SCHEMAS[baseKind]!.groups) {
+          for (const field of group.fields) {
+            if (!keys.has(field.key) && !pseudoKeys.has(field.key)) unknown.push(`${baseKind}.${field.key}`);
+          }
+        }
+      }
+      expect(unknown).toEqual([]);
     });
   });
 });

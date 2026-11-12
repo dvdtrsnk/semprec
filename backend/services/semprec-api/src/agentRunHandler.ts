@@ -1,5 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { withTransaction, ChokePointError, ValidationError, getAgentRun, mintMcpRunCredential } from "@semprec/data";
+import {
+  withTransaction,
+  ChokePointError,
+  ValidationError,
+  agentRunErrorFields,
+  getAgentRun,
+  getAgentRunDetail,
+  getAgentRunUsage,
+  mintMcpRunCredential,
+  toManifestLocale,
+} from "@semprec/data";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
@@ -39,8 +49,13 @@ function parseMintMcpCredentialBody(body: unknown): { projectItemId: string; cap
 
 /**
  * `GET /api/agent-runs/:id` — the destination the global approval queue's (issue #132) "source
- * agent-run link" points at — a read-only view of one run's task, status, result and timestamps,
- * backed by the already-existing `getAgentRun`.
+ * agent-run link" points at — a read-only view of one run: the fields of its row (`getAgentRun`)
+ * and, beside them, its title, project and heartbeat names, duration, trigger, approval counts and
+ * `displayStatus` (`getAgentRunDetail`, issues #1805 and #1820), as `errorCode` and `errorSummary`
+ * why it failed, the summary in the session user's locale (`agentRunErrorFields`, issue #1824) and,
+ * as `usage`, its AI spend per model with the model names in that locale (`getAgentRunUsage`, issue
+ * #1822). A run whose `actorUserId` is not the session user answers the 404 of an unknown id,
+ * before anything else about the run is read.
  *
  * `POST /api/agent-runs/mcp-credentials` (issue #220, AC34/44/47) mints a restricted, single-run
  * `agent_run` plus an opaque credential for it (`mintMcpRunCredential`) — the piece that lets an
@@ -100,12 +115,21 @@ export function createAgentRunRequestListener(pool: Pool) {
         // Group 1 of the route pattern above is not optional, so a successful match always
         // captured it; a runtime check here would be unreachable code.
         const agentRunId = assertUuid(match[1]!, "id");
-        const run = await withTransaction(pool, (client) => getAgentRun(client, agentRunId));
-        if (!run) {
+        const detail = await withTransaction(pool, async (client) => {
+          const run = await getAgentRun(client, agentRunId);
+          if (!run || run.actorUserId !== identity.user.id) return null;
+          return {
+            ...run,
+            ...(await getAgentRunDetail(client, run)),
+            ...(await agentRunErrorFields(run, identity.user.locale)),
+            usage: await getAgentRunUsage(client, run.id, toManifestLocale(identity.user.locale)),
+          };
+        });
+        if (!detail) {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
-        sendJson(res, 200, run);
+        sendJson(res, 200, detail);
       });
     } catch (err) {
       if (err instanceof ChokePointError) {

@@ -79,6 +79,7 @@ it("retains native call events for a module tool without inventing generic or MC
     retryOfRunId: null,
     attempt: 1,
     threadId: null,
+    mcpClientName: null,
     triggeredBy: "user",
     unit: "invocation",
     task: "run",
@@ -150,6 +151,7 @@ it("keeps the earlier generic tool when a module name collides in a composed ses
     retryOfRunId: null,
     attempt: 1,
     threadId: null,
+    mcpClientName: null,
     triggeredBy: "user",
     unit: "invocation",
     task: "run",
@@ -187,6 +189,181 @@ it("keeps the earlier generic tool when a module name collides in a composed ses
   }
 });
 
+describe("approval-gated module tools in a composed session (issue #1791)", () => {
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    heartbeatOccurrenceId: null,
+    retryOfRunId: null,
+    attempt: 1,
+    threadId: null,
+    mcpClientName: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    errorCode: null,
+    errorDetail: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+
+  /** Composes a session whose registry offers `gated` (a tool with `requiresApproval`) and `plain`, and returns its tools. */
+  async function composeTools(handler: () => Promise<{ error: boolean; result: string }>): Promise<AgentTool[]> {
+    const pool = new Pool();
+    const faux = fauxProvider();
+    const registry = new ModuleRegistry(() => new Set());
+    const base = {
+      moduleId: "fixture",
+      argumentSchema: { type: "object", properties: {} },
+      handler: () => handler,
+      parseArguments: (value: unknown) => ({ success: true as const, data: value }),
+    };
+    vi.spyOn(registry, "getAgentToolDefinitions").mockResolvedValue([
+      { ...base, name: "fixture.gated", requiresApproval: true, riskClass: "write" },
+      { ...base, name: "fixture.plain" },
+    ]);
+    let tools: AgentTool[] = [];
+    vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((options) => {
+      tools = options.tools;
+      return () => ({ async *messages() {} });
+    });
+    fixtures.operations = [];
+    fixtures.grants = [];
+    try {
+      await createAgentSessionFactoryForRun(
+        pool,
+        registry,
+        {
+          model: faux.getModel(),
+          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+          isBudgetRefusal: () => false,
+        },
+        run,
+      );
+    } finally {
+      fixtures.operations = ["item.patch"];
+      await pool.end();
+    }
+    return tools;
+  }
+
+  function toolNamed(tools: AgentTool[], name: string): AgentTool {
+    const tool = tools.find((candidate) => candidate.name === name);
+    if (!tool) throw new Error(`Tool ${name} missing`);
+    return tool;
+  }
+
+  afterEach(() => {
+    fixtures.resolveOptions = [];
+    fixtures.approvalInputs = [];
+    fixtures.approvalFailure = null;
+    fixtures.snapshot = async () => "snapshot-hash";
+  });
+
+  it("asks for the approval-gated tools of the run", async () => {
+    fixtures.resolveOptions = [];
+    await composeTools(async () => ({ error: false, result: "ran" }));
+    expect(fixtures.resolveOptions).toEqual([{ includeApprovalGated: true }]);
+  });
+
+  it("creates an approval request instead of running the handler, and tells the model the call awaits approval", async () => {
+    let handlerCalls = 0;
+    const tools = await composeTools(async () => {
+      handlerCalls += 1;
+      return { error: false, result: "ran" };
+    });
+
+    const result = await toolNamed(tools, "fixture_gated").execute("call-7", { value: "x" });
+
+    expect(handlerCalls).toBe(0);
+    expect(fixtures.approvalInputs).toEqual([
+      {
+        agentRunId: "run-1",
+        toolName: "fixture.gated",
+        riskClass: "write",
+        args: { value: "x" },
+        snapshotSha256: "snapshot-hash",
+        toolCallId: "call-7",
+      },
+    ]);
+    expect(result.details).toEqual({ error: false, approvalRequestId: "request-1" });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: "Tool 'fixture.gated' requires human approval before it can run. Approval request request-1 has been created and is awaiting a decision; this call has not been executed.",
+      },
+    ]);
+  });
+
+  it("still runs a tool that does not require approval at once", async () => {
+    let handlerCalls = 0;
+    const tools = await composeTools(async () => {
+      handlerCalls += 1;
+      return { error: false, result: "ran" };
+    });
+
+    const result = await toolNamed(tools, "fixture_plain").execute("call-8", { value: "x" });
+
+    expect(handlerCalls).toBe(1);
+    expect(fixtures.approvalInputs).toEqual([]);
+    expect(result.content).toEqual([{ type: "text", text: "ran" }]);
+    expect(result.details).toEqual({ error: false });
+  });
+
+  it("refuses arguments that are not a JSON object without creating a request", async () => {
+    const tools = await composeTools(async () => ({ error: false, result: "ran" }));
+
+    const result = await toolNamed(tools, "fixture_gated").execute("call-9", ["x"]);
+
+    expect(fixtures.approvalInputs).toEqual([]);
+    expect(result.details).toEqual({ error: true });
+    expect(result.content).toEqual([{ type: "text", text: "Tool arguments must be a JSON object." }]);
+  });
+
+  it("reports a failure and runs nothing when the request cannot be created, logging its class and code but no content", async () => {
+    let handlerCalls = 0;
+    const tools = await composeTools(async () => {
+      handlerCalls += 1;
+      return { error: false, result: "ran" };
+    });
+    const cause = Object.assign(new Error("insert failed for secret customer title"), {
+      code: "23505",
+      detail: "Key (title)=(secret customer title) already exists.",
+    });
+    fixtures.approvalFailure = cause;
+    const warn = vi.spyOn(logger, "warn");
+
+    const result = await toolNamed(tools, "fixture_gated").execute("call-10", { value: "x" });
+
+    expect(handlerCalls).toBe(0);
+    expect(result.details).toEqual({ error: true });
+    expect(result.content).toEqual([{ type: "text", text: "Module tool failed." }]);
+    expect(warn).toHaveBeenCalledWith(
+      { errorName: "Error", errorCode: "23505", toolName: "fixture.gated", runId: "run-1" },
+      "Module tool execution failed",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret customer title");
+  });
+
+  it("reports a failure and creates no request when the snapshot cannot be read", async () => {
+    const tools = await composeTools(async () => ({ error: false, result: "ran" }));
+    fixtures.snapshot = async () => {
+      throw new Error("snapshot failed");
+    };
+
+    const result = await toolNamed(tools, "fixture_gated").execute("call-11", { value: "x" });
+
+    expect(fixtures.approvalInputs).toEqual([]);
+    expect(result.details).toEqual({ error: true });
+    expect(result.content).toEqual([{ type: "text", text: "Module tool failed." }]);
+  });
+});
+
 const fixtures = vi.hoisted(() => ({
   grants: [] as McpToolGrantForProject[],
   operations: ["item.patch"] as string[],
@@ -196,19 +373,42 @@ const fixtures = vi.hoisted(() => ({
   guidance: null as string | null,
   mcpResult: null as (McpInvokeResult & { approvalRequestId?: string }) | null,
   structured: {},
+  /** The options each `resolveModuleAgentToolsForRun` call received. */
+  resolveOptions: [] as unknown[],
+  /** What the mocked `snapshotOf` of every module tool returns or throws. */
+  snapshot: async (_args: unknown): Promise<string | null> => "snapshot-hash",
+  /** The inputs `createModuleToolApprovalRequest` received. */
+  approvalInputs: [] as unknown[],
+  approvalFailure: null as Error | null,
 }));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
   createCollectionMetadataResolver: async () => testMetadataResolver,
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
   withTransaction: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
-  resolveModuleAgentToolsForRun: async (pool: Pool, registry: ModuleRegistry, runId: string) => {
+  createModuleToolApprovalRequest: async (_pool: Pool, input: unknown) => {
+    fixtures.approvalInputs.push(input);
+    if (fixtures.approvalFailure) throw fixtures.approvalFailure;
+    return { id: "request-1" };
+  },
+  resolveModuleAgentToolsForRun: async (
+    pool: Pool,
+    registry: ModuleRegistry,
+    runId: string,
+    _projectItemId: string,
+    _effectiveCapabilities?: ReadonlySet<string>,
+    options?: unknown,
+  ) => {
+    fixtures.resolveOptions.push(options);
     const isCallable = (value: unknown): value is (...args: unknown[]) => unknown => typeof value === "function";
     const definitions = await registry.getAgentToolDefinitions(new Set());
     return definitions.map((definition) => ({
       name: definition.name,
       argumentSchema: definition.argumentSchema,
       acceptsArguments: (args: unknown) => definition.parseArguments(args).success,
+      requiresApproval: definition.requiresApproval === true,
+      riskClass: definition.riskClass ?? "unclassified",
+      snapshotOf: (args: unknown) => fixtures.snapshot(args),
       invoke: async (args: unknown) => {
         const parsed = definition.parseArguments(args);
         if (!parsed.success || !isCallable(definition.handler)) throw new Error("Invalid fixture");
@@ -281,6 +481,7 @@ it.each([true, false])(
       retryOfRunId: null,
       attempt: 1,
       threadId: null,
+      mcpClientName: null,
       triggeredBy: "user",
       unit: "invocation",
       task: "run",
@@ -477,6 +678,7 @@ describe("MCP tool catalog of inactive servers (issue #1447)", () => {
           retryOfRunId: null,
           attempt: 1,
           threadId: null,
+          mcpClientName: null,
           triggeredBy: "user",
           unit: "invocation",
           task: "run",
@@ -525,6 +727,7 @@ describe("agent-only approval reason (issue #1420)", () => {
     retryOfRunId: null,
     attempt: 1,
     threadId: null,
+    mcpClientName: null,
     triggeredBy: "user",
     unit: "invocation",
     task: "run",
@@ -693,6 +896,7 @@ describe("agent language instruction (issue #1388)", () => {
       retryOfRunId: null,
       attempt: 1,
       threadId: null,
+      mcpClientName: null,
       triggeredBy: "user",
       unit: "invocation",
       task: "run",
@@ -771,6 +975,7 @@ describe("MCP failure classification in the tool result (issue #1444)", () => {
     retryOfRunId: null,
     attempt: 1,
     threadId: null,
+    mcpClientName: null,
     triggeredBy: "user",
     unit: "invocation",
     task: "run",

@@ -64,7 +64,7 @@ async function requireRelationDefinitionId(client: PoolClient, databaseId: strin
 }
 
 /** The idempotency key of the one card proposing a mapping for `speaker`: a re-run never proposes the same key twice. */
-function speakerSuggestionIdempotencyKey(transcriptId: string, speaker: string): string {
+export function speakerSuggestionIdempotencyKey(transcriptId: string, speaker: string): string {
   return `transcript-speaker-suggestion:${transcriptId}:${speaker}`;
 }
 

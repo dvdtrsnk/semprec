@@ -92,14 +92,17 @@ function key(supervisorRunId: string, targetProjectItemId: string): string {
  * two never leaves one without the other.
  */
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
+  const errorCode = agentRunErrorCodeOf(err);
   try {
-    const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) =>
-      finishAgentRunWithErrorNotification(client, agentRunId, message, agentRunErrorCodeOf(err)),
-    );
+    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, errorCode));
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
-    logger.error({ err: closeErr, agentRunId }, "DelegationRegistry: failed to close errored run");
+    // The run's code and the close error's name only: a Postgres error's detail can carry the failing
+    // row, whose `task` is the user's prompt, and logs are not tenant-scoped.
+    logger.error(
+      { errorName: closeErr instanceof Error ? closeErr.name : typeof closeErr, errorCode, agentRunId },
+      "DelegationRegistry: failed to close errored run",
+    );
   }
 }
 

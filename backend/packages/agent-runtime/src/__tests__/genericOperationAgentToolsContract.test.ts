@@ -8,6 +8,7 @@ import {
   createTenantZeroUser,
   createTestTenant,
   getTestPool,
+  inTenantZero,
   resetDatabase,
 } from "@semprec/data/testSupport";
 import {
@@ -173,7 +174,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 44-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 46-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -306,6 +307,10 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
+  // REST-only (issue #1765): valid arguments, so only the gateway's refusal can keep it from running.
+  "page.replace": {
+    args: (fx) => ({ itemId: fx.itemA.id, markdown: "Agent replacement", expectedEtag: "A".repeat(43) }),
+  },
   "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
   "page.restoreVersion": {
@@ -328,6 +333,9 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "item.count": { args: (fx) => ({ items: [{ databaseId: fx.database.id, groupBy: fx.relationProperty.key }] }) },
+  "database.facets": {
+    args: (fx) => ({ databaseId: fx.database.id, facets: [fx.relationProperty.key, fx.optionProperty.key] }),
+  },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
@@ -682,7 +690,9 @@ describe("generic operation AgentTools contract (issue #220)", () => {
   });
 
   for (const operation of GENERIC_OPERATION_NAMES) {
-    const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation);
+    // `link.unlink` of the fixture's active value link is flagged by the write itself: an agent under a run asks
+    // for approval (issue #1758), so it queues a request like a destructive operation.
+    const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation) || operation === "link.unlink";
     it(`${isDestructive ? "queues an approval request for" : "dispatches"} ${operation} through the AgentTool adapter`, async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, {
@@ -696,7 +706,11 @@ describe("generic operation AgentTools contract (issue #220)", () => {
       const testCase = CASES[operation];
       await testCase.prepare?.(fx);
 
-      const outcome = await tools[operation](run.id, testCase.args(fx));
+      // The approval projection reserves rows of the run's tenant, so a link-ending write runs inside that scope.
+      const outcome =
+        operation === "link.unlink"
+          ? await inTenantZero(() => tools[operation](run.id, testCase.args(fx)))
+          : await tools[operation](run.id, testCase.args(fx));
 
       if (
         operation === "page.get" ||
@@ -747,6 +761,21 @@ describe("generic operation AgentTools contract (issue #220)", () => {
                 { key: null, count: 1 },
               ],
             },
+          ]);
+        }
+        if (operation === "database.facets") {
+          // Only `itemA` has a target under the relation, and neither fixture item holds a tag.
+          const facets: unknown = JSON.parse(outcome.result);
+          expect(facets).toEqual([
+            {
+              property: fx.relationProperty.key,
+              all: 2,
+              values: [
+                { value: fx.targetItem.id, label: "", count: 1 },
+                { value: null, count: 1 },
+              ],
+            },
+            { property: fx.optionProperty.key, all: 2, values: [{ value: null, count: 2 }] },
           ]);
         }
         if (operation === "page.duplicate" || operation === "page.rename") {

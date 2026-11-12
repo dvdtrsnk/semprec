@@ -123,12 +123,15 @@ export interface SempThreadSystemPreview {
   params: unknown;
 }
 
+/** What can raise an approval request, as the thread list reports it (`SempThreadPendingApproval.sourceKind`). */
+const PENDING_APPROVAL_SOURCE_KINDS = ["genericOperation", "mcpInvoke", "moduleTool"] as const;
+
 /** The newest pending approval request raised by a run of the thread. */
 export interface SempThreadPendingApproval {
   /** The localisable description snapshotted on the request; null for a request stored without one. */
   description: ApprovalDescription | null;
-  /** What raised the request: a generic operation of this system, or a call of an outside MCP tool. */
-  sourceKind: "genericOperation" | "mcpInvoke";
+  /** What raised the request: a generic operation of this system, a call of an outside MCP tool, or a module agent tool (issue #1791). */
+  sourceKind: (typeof PENDING_APPROVAL_SOURCE_KINDS)[number];
 }
 
 /** The heartbeat of a tick thread. `projectName` is null when the project item has no name, is in the trash or is gone. */
@@ -189,7 +192,7 @@ interface ThreadListDbRow {
   preview_system_params: unknown;
   approval_id: string | null;
   approval_description: unknown;
-  approval_generic_operation: boolean | null;
+  approval_source_kind: string | null;
 }
 
 /**
@@ -258,7 +261,9 @@ export async function listSempThreads(
   const { rows } = await client.query<ThreadListDbRow>(
     `WITH pending AS (
        SELECT DISTINCT ON (r.thread_id) r.tenant_id, r.thread_id, a.id, a.description,
-              a.payload ? 'operationName' AS generic_operation
+              CASE WHEN a.payload ? 'operationName' THEN 'genericOperation'
+                   WHEN a.payload ? 'moduleToolName' THEN 'moduleTool'
+                   ELSE 'mcpInvoke' END AS source_kind
          FROM approval_requests a
          JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id
         WHERE a.status = 'pending' AND r.thread_id IS NOT NULL
@@ -278,7 +283,7 @@ export async function listSempThreads(
             last_message.text AS preview_text, last_message.cut AS preview_cut,
             last_message.system_key AS preview_system_key, last_message.system_params AS preview_system_params,
             pending.id AS approval_id, pending.description AS approval_description,
-            pending.generic_operation AS approval_generic_operation
+            pending.source_kind AS approval_source_kind
        FROM semp_threads t
        CROSS JOIN needle
        LEFT JOIN project_heartbeats h ON h.tenant_id = t.tenant_id AND h.id = t.heartbeat_id
@@ -338,11 +343,15 @@ export async function listSempThreads(
         lastActivityAt: row.last_activity_at.toISOString(),
         hasPendingApproval: row.approval_id !== null,
         pendingApproval:
-          row.approval_id === null
+          row.approval_source_kind === null
             ? null
             : {
                 description: assertDescriptionShape(row.approval_description),
-                sourceKind: row.approval_generic_operation === true ? "genericOperation" : "mcpInvoke",
+                sourceKind: assertKnownValue(
+                  PENDING_APPROVAL_SOURCE_KINDS,
+                  row.approval_source_kind,
+                  "pending approval source kind",
+                ),
               },
         heartbeat: heartbeatOf(row, projectNames),
         subject:

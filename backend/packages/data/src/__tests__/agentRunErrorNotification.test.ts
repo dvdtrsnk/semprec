@@ -45,7 +45,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
 
     await expect(
-      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom", "internal")),
+      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "internal")),
     ).resolves.toBe(true);
     const stored = await pool.query<{ error_code: string | null }>("SELECT error_code FROM agent_runs WHERE id = $1", [
       run.id,
@@ -69,7 +69,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
     // Replaying the same close (e.g. a retried caller after a crash) must not duplicate it.
     await expect(
-      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom", "internal")),
+      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "internal")),
     ).resolves.toBe(false);
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
     expect(afterReplay).toHaveLength(1);
@@ -81,7 +81,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
     await expect(
       withTransaction(pool, async (client) => {
-        await finishAgentRunWithErrorNotification(client, run.id, "boom", "internal");
+        await finishAgentRunWithErrorNotification(client, run.id, "internal");
         throw new Error("later step in the same transaction fails");
       }),
     ).rejects.toThrow("later step in the same transaction fails");
@@ -96,7 +96,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     const user = await createTestUser();
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
 
-    await finishAgentRunWithErrorNotification(pool, run.id, "boom", "internal");
+    await finishAgentRunWithErrorNotification(pool, run.id, "internal");
 
     const finished = await getAgentRun(pool, run.id);
     expect(finished!.status).toBe("error");
@@ -113,7 +113,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
     await finishAgentRun(pool, run.id, "done", "all good");
 
-    await expect(finishAgentRunWithErrorNotification(pool, run.id, "boom", "internal")).resolves.toBe(false);
+    await expect(finishAgentRunWithErrorNotification(pool, run.id, "internal")).resolves.toBe(false);
 
     const finished = await getAgentRun(pool, run.id);
     expect(finished!.status).toBe("done");
@@ -199,7 +199,7 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
     const run = await runInTenant(tenantB, () => createAgentRun(runtimePool, { triggeredBy: "user", task: "t" }));
 
     await expect(
-      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "boom", "internal")),
+      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "internal")),
     ).resolves.toBe(true);
 
     const { rows } = await adminPool.query<{ user_id: string; kind: string; tenant_id: string }>(
@@ -220,10 +220,10 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
     });
 
     await expect(
-      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "boom", "internal")),
+      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "internal")),
     ).resolves.toBe(true);
 
-    expect(await getAgentRun(adminPool, run.id)).toMatchObject({ status: "error", result: "boom" });
+    expect(await getAgentRun(adminPool, run.id)).toMatchObject({ status: "error", result: "internal" });
     const { rows } = await adminPool.query<{ id: string }>(`SELECT id FROM notifications WHERE source_id = $1`, [
       run.id,
     ]);

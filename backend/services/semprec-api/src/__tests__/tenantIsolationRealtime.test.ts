@@ -10,6 +10,8 @@ import * as Y from "yjs";
 import {
   createAgentRun,
   createPendingApprovalRequest,
+  createPendingApprovalRequestAndPublish,
+  createSempChatThread,
   decideAndEnqueueApprovalRequest,
   getNotificationById,
   createChokePoint,
@@ -700,9 +702,85 @@ async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
   return ["binary:own-doc", ...rest.map((frame) => frame.kind)];
 }
 
+/** One run of `fixture`'s user in its tenant, on a fresh Semp chat thread. */
+async function createRunOnThread(fixture: TenantFixture): Promise<{ runId: string; threadId: string }> {
+  return runInTenant(fixture.tenantId, async () => {
+    const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
+    const run = await createAgentRun(pool, {
+      triggeredBy: "user",
+      task: "approval announcement",
+      userId: fixture.userId,
+      threadId,
+    });
+    return { runId: run.id, threadId };
+  });
+}
+
+function pendingApprovalInput(agentRunId: string) {
+  return {
+    agentRunId,
+    toolName: "search",
+    riskClass: "write",
+    payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+    resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+  } as const;
+}
+
+/**
+ * Every socket in `sockets` receives the approval request invalidation and the Semp thread invalidation paired with
+ * it. The two are published over separate connections, so they may arrive in either order.
+ */
+async function expectRequestAndThreadInvalidations(
+  sockets: readonly TestSocket[],
+  approvalRequestId: string,
+  threadId: string,
+): Promise<void> {
+  await Promise.all(
+    sockets.map(async (socket) => {
+      const pending = new Set(["approvalRequest", "sempThread"]);
+      while (pending.size > 0) {
+        const frame = await socket.next();
+        if (frame.kind !== "text" || frame.type !== "invalidate") continue;
+        if (matches(frame.body, { scope: "approvalRequest", approvalRequestId })) pending.delete("approvalRequest");
+        if (matches(frame.body, { scope: "sempThread", threadId })) pending.delete("sempThread");
+      }
+    }),
+  );
+}
+
 const notifyCases = {
   invalidation: {
     scenarios: {
+      "approvalRequest scope, from the creation of a request on A's run with a thread": async () => {
+        const { runId, threadId } = await createRunOnThread(tenantA);
+        const request = await runInTenant(tenantA.tenantId, () =>
+          withTransaction(pool, (client) =>
+            createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
+          ),
+        );
+        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId);
+        await expectNothingReceived(b1, tenantB.tenantId);
+        return ["invalidate"];
+      },
+      "approvalRequest scope, from the decision of A's user on a request": async () => {
+        const { runId, threadId } = await createRunOnThread(tenantA);
+        const request = await runInTenant(tenantA.tenantId, () =>
+          createPendingApprovalRequest(pool, pendingApprovalInput(runId)),
+        );
+        const decided = await runInTenant(tenantA.tenantId, () =>
+          withTransaction(pool, (client) =>
+            decideAndEnqueueApprovalRequest(client, {
+              approvalRequestId: request.id,
+              decision: "rejected",
+              decidedByUserId: tenantA.userId,
+            }),
+          ),
+        );
+        expect(decided?.outcome).toBe("decided");
+        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId);
+        await expectNothingReceived(b1, tenantB.tenantId);
+        return ["invalidate"];
+      },
       "item scope, from a REST write by A's user": async () => {
         const response = await restPost(a1Cookie, `/api/databases/${tenantA.databaseId}/items`, {
           properties: { title: "Arrival" },
@@ -1155,6 +1233,37 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         frame.type === "invalidate" &&
         matches(frame.body, { scope: "sempThread", threadId: threadB }),
     );
+    const foreignSentinel = await publishSentinel(tenantA.tenantId);
+    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
+      [],
+      [],
+    ]);
+  });
+
+  it("publishes committed approval request invalidations only to the owner's tenant and suppresses rolled-back ones", async () => {
+    const runA = await createRunOnThread(tenantA);
+    await expect(
+      runInTenant(tenantA.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          await createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runA.runId));
+          throw new Error("rollback approval request announcement");
+        }),
+      ),
+    ).rejects.toThrow("rollback approval request announcement");
+    const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(rollbackSentinel))))).toEqual([
+      [],
+      [],
+    ]);
+    await expectNothingReceived(b1, tenantB.tenantId);
+
+    const runB = await createRunOnThread(tenantB);
+    const requestB = await runInTenant(tenantB.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runB.runId)),
+      ),
+    );
+    await expectRequestAndThreadInvalidations([b1], requestB.id, runB.threadId);
     const foreignSentinel = await publishSentinel(tenantA.tenantId);
     expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
       [],

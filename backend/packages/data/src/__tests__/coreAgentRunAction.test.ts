@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -11,7 +11,9 @@ import {
   type ActionContext,
 } from "../scheduler/actions.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
+import { AgentRunError } from "../agentRuns/agentRunErrorCodes.js";
 import { createAgentRun, getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { logger } from "../scheduler/logger.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
@@ -128,7 +130,7 @@ describe("coreAgentRunAction", () => {
     for (const run of runs) {
       expect(run.status).toBe("error");
       expect(run.errorCode).toBe("internal");
-      expect(run.result).toBe("model failed");
+      expect(run.result).toBe("internal");
     }
 
     const notifications = await getNotifications("agent_run_error");
@@ -174,6 +176,75 @@ describe("coreAgentRunAction", () => {
 
     const notifications = await getNotifications("agent_run_error");
     expect(notifications).toHaveLength(0);
+  });
+
+  /** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+  function loggedText(...spies: MockInstance[]): string {
+    return JSON.stringify(
+      spies.map((spy) => spy.mock.calls),
+      (_key, value: unknown) =>
+        value instanceof Error
+          ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+          : value,
+    );
+  }
+
+  it.each([
+    ["a final attempt", true],
+    ["a non-final attempt", false],
+  ])(
+    "stores the code of a model error as the result of %s, and keeps the exception message and the task out of the row and the logs",
+    async (_label, isFinalAttempt) => {
+      const sentinel = "sentinel-3fa9";
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const handler = coreAgentRunAction(pool, async () => {
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      });
+      const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+      try {
+        await expect(
+          handler({ task: `plan ${sentinel}` }, { heartbeatId, projectItemId, isFinalAttempt }),
+        ).rejects.toThrow(sentinel);
+
+        const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]).toMatchObject({ status: "error", errorCode: "modelError", result: "modelError" });
+        const messages = await pool.query<{ text: string | null }>(
+          "SELECT text FROM semp_messages WHERE agent_run_id = $1",
+          [runs[0]!.id],
+        );
+        expect(messages.rows.every((row) => row.text === null)).toBe(true);
+        expect(loggedText(...spies)).not.toContain(sentinel);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    },
+  );
+
+  it("logs the run's code and the name of the close error, never the close error itself, when recording the failure fails", async () => {
+    const sentinel = "sentinel-77b2";
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const failingPool = poolWithFailingConnects([null, new Error(`could not write the row of ${sentinel}`)]);
+    const handler = coreAgentRunAction(failingPool, async () => {
+      throw new AgentRunError("modelError", `provider said ${sentinel}`);
+    });
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      await expect(
+        handler({ task: `plan ${sentinel}` }, { heartbeatId, projectItemId, isFinalAttempt: true }),
+      ).rejects.toThrow(sentinel);
+
+      const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+      expect(errorSpy.mock.calls).toEqual([
+        [
+          { errorName: "Error", errorCode: "modelError", agentRunId: runs[0]!.id, heartbeatId },
+          "core.agentRun: failed to record failed agent run lifecycle",
+        ],
+      ]);
+      expect(loggedText(errorSpy)).not.toContain(sentinel);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("through the fire task: a core.agentRun heartbeat failing on the final attempt notifies once", async () => {

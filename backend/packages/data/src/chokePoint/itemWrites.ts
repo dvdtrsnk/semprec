@@ -49,9 +49,12 @@ import {
   runItemCreateHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
+  runItemUpdatePreLockHooks,
+  type ItemCreateInitialRelation,
   type ItemPreWriteTransformContext,
 } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { requireApprovalForChangedItemLinks } from "./valueLinkApproval.js";
 import { assertValueLinkHandoff, breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 import { isDeepStrictEqual } from "node:util";
 
@@ -178,6 +181,53 @@ function assertTitlePresent(
   const value = values[title.key];
   if (typeof value !== "string" || value.trim() === "") {
     throw new ValidationError(`Property '${title.key}' must be a non-empty title`, { field: title.key });
+  }
+}
+
+const selectOptionsConfigSchema = z.object({ options: z.array(z.object({ key: z.string() })).optional() });
+
+/**
+ * A user or agent write must name only catalog options in a `select` or `multi_select` property: a `select`
+ * value is `null` or one `config.options[].key`; a `multi_select` value is `null` or an array of such keys,
+ * and `[]` clears it. Internal writers are not checked, since mail, transcription and similar ingest paths write
+ * their own values. Only the keys of `patch` are inspected. A value that deep-equals the one in `stored` (the
+ * item's properties on an update, `null` on a create) is accepted, so a client that sends a whole record back
+ * does not fail on an old value that left the catalog. A violation is a `ValidationError` whose `field` is the
+ * property key: a value that is not in the catalog is named in the message, a value of the wrong shape is
+ * described by the shape expected. The caller passes only values the caller or a transform supplied, never
+ * one a create filled in from `config.default`.
+ */
+function assertSelectValuesKnown(
+  properties: PropertyRow[],
+  patch: Record<string, unknown>,
+  stored: Record<string, unknown> | null,
+  writer: WriterIdentity,
+): void {
+  if (writer.writerKind === "system") return;
+  const byKey = new Map(properties.map((p) => [p.key, p]));
+  for (const [key, value] of Object.entries(patch)) {
+    const property = byKey.get(key);
+    if (!property || (property.type !== "select" && property.type !== "multi_select") || value === null) continue;
+    if (stored !== null && isDeepStrictEqual(stored[key], value)) continue;
+    const config = selectOptionsConfigSchema.safeParse(property.config);
+    if (!config.success) throw new Error("Malformed property config");
+    const known = new Set((config.data.options ?? []).map((option) => option.key));
+    const many = property.type === "multi_select";
+    if (many && !Array.isArray(value)) {
+      throw new ValidationError(`Property '${key}' must be an array of option keys or null`, { field: key });
+    }
+    const candidates: unknown[] = many && Array.isArray(value) ? value : [value];
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string") {
+        throw new ValidationError(
+          `Property '${key}' must be ${many ? "an array of option keys" : "an option key"} or null`,
+          { field: key },
+        );
+      }
+      if (!known.has(candidate)) {
+        throw new ValidationError(`Property '${key}' has the unknown option '${candidate}'`, { field: key });
+      }
+    }
   }
 }
 
@@ -372,10 +422,17 @@ export async function createItemWithClient(
   return (await createItemReportingReplay(client, input, options)).item;
 }
 
+/**
+ * `createItemWithClient` that also reports whether this call inserted the item (`created: true`) or
+ * returned the row of an idempotency-key replay. `createItemWithRelationsWithClient`
+ * (itemCreateWithRelations.ts) passes as `initialRelations` the relations it writes after this function
+ * returned; they reach the create hooks as `ItemCreateHookContext.initialRelations`.
+ */
 export async function createItemReportingReplay(
   client: PoolClient,
   input: CreateItemInput,
   options: CreateItemWithClientOptions,
+  initialRelations?: readonly ItemCreateInitialRelation[],
 ): Promise<{ item: ItemRow; created: boolean }> {
   const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
   if (replay) return { item: replay, created: false };
@@ -409,11 +466,13 @@ export async function createItemReportingReplay(
         );
       }
       itemProperties = { ...itemProperties };
+      const defaultedKeys = new Set<string>();
       let today: string | undefined;
       for (const property of properties) {
         // A key already set by the caller or by a transform keeps its value; only an absent key takes its default.
         if (Object.hasOwn(itemProperties, property.key) || !Object.hasOwn(property.config, "default")) continue;
         const value = property.config.default;
+        defaultedKeys.add(property.key);
         if (property.type === "date" && value === "today") {
           if (today === undefined) {
             const timezone = await getSystemTimezone(client);
@@ -428,6 +487,14 @@ export async function createItemReportingReplay(
       assertColorValues(properties, itemProperties);
       assertMarkdownValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
+      // A value the create filled in from `config.default` is not a caller value: its option key was checked when
+      // the default was written, and a multi_select default is stored as that bare key, not as an array.
+      assertSelectValuesKnown(
+        properties,
+        Object.fromEntries(Object.entries(itemProperties).filter(([key]) => !defaultedKeys.has(key))),
+        null,
+        writer,
+      );
       return itemProperties;
     },
   );
@@ -442,6 +509,7 @@ export async function createItemReportingReplay(
     properties: itemProperties,
     humanWriterUserId: options.humanWriterUserId,
     writer,
+    initialRelations,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
@@ -543,10 +611,27 @@ export async function updateItemWithClient(
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
   const moduleId = database.ownerModuleId;
+  // The module's own locks come before the first lock on the written row, which the transform lock below and
+  // the row update take: see docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md.
+  if (moduleId !== null) {
+    await runItemUpdatePreLockHooks(moduleId, {
+      client,
+      database,
+      itemId: input.itemId,
+      patch: input.propertiesPatch,
+    });
+  }
   const valueLinksHandoff = options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS;
   const needsTransform = moduleId !== null && hasItemPreWriteTransform(moduleId);
   let stored: Awaited<ReturnType<typeof itemsStore.lockItemById>> = null;
-  if (valueLinksHandoff || needsTransform || hasCommand) {
+  // The select check below accepts a value equal to the stored one, so it reads the locked row.
+  const needsSelectCheck =
+    writer.writerKind !== "system" &&
+    patchKeys.some((key) => {
+      const type = properties.find((property) => property.key === key)?.type;
+      return type === "select" || type === "multi_select";
+    });
+  if (valueLinksHandoff || needsTransform || hasCommand || needsSelectCheck) {
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
   }
@@ -571,6 +656,7 @@ export async function updateItemWithClient(
     assertMarkdownValues(properties, propertiesPatch);
     assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
+  assertSelectValuesKnown(properties, propertiesPatch, stored?.properties ?? null, writer);
   if (hasCommand && command && moduleId && stored) {
     command.validate(input.propertiesPatch[command.key]);
     const generated = await command.consume(
@@ -602,12 +688,11 @@ export async function updateItemWithClient(
     propertiesPatch,
     ifVersion: input.ifVersion,
   });
-  // A user or agent write that changes a linked value ends its link, in this transaction.
-  await breakValueLinks(client, {
-    itemId: item.id,
-    propertyKeys: writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key])),
-    writerKind: writer.writerKind,
-  });
+  // A user or agent write that changes a linked value ends its link, in this transaction. An agent under
+  // a run asks for approval first (issue #1758), which rolls this transaction back.
+  const changedKeys = writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key]));
+  await requireApprovalForChangedItemLinks(client, writer, { itemId: item.id, changedKeys });
+  await breakValueLinks(client, { itemId: item.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
   // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
   // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,
   // through the per-process registry — see docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.

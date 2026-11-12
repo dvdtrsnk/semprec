@@ -179,11 +179,37 @@ function postApnsRequest(
   });
 }
 
+/** The sources a notification can name that outlive the notification, so repeated pushes about one of them belong together (issue #1829). */
+const DURABLE_SOURCE_TABLES: ReadonlySet<string> = new Set(["semp_problems", "approval_requests", "invites"]);
+
+/** `apns-collapse-id` may not exceed 64 bytes. */
+const APNS_COLLAPSE_ID_MAX_BYTES = 64;
+
+/**
+ * The key under which APNs collapses pushes about one thing and the device groups them (issue #1829): the
+ * notification's source id when its source table has a durable identity (a Semp problem, an approval request
+ * or an invitation), `null` for any other source and for an empty source id. A key longer than 64 bytes (the
+ * limit of `apns-collapse-id`) is replaced by the first 64 hex characters of its SHA-256, which is the same for
+ * the same source id every time.
+ */
+export function apnsCollapseKey(payload: Pick<NotificationPushPayload, "sourceTable" | "sourceId">): string | null {
+  if (!DURABLE_SOURCE_TABLES.has(payload.sourceTable) || payload.sourceId === "") return null;
+  if (Buffer.byteLength(payload.sourceId) <= APNS_COLLAPSE_ID_MAX_BYTES) return payload.sourceId;
+  return crypto.createHash("sha256").update(payload.sourceId).digest("hex").slice(0, APNS_COLLAPSE_ID_MAX_BYTES);
+}
+
+/** A visible push that cannot be delivered within a day is not worth showing any more (issue #1829). */
+const APNS_ALERT_TTL_SECONDS = 24 * 60 * 60;
+
 /**
  * The `apns` half of issue #151's fanout adapters: HTTP/2 to production or sandbox depending on
  * this exact registration's `apns_environment`, an alert title (with `aps.alert.body` when the
  * notification has a body, issue #1773) plus `link_href` and `notification_id` in the payload (and
  * `aps["interruption-level"]` when the payload names one), and the shared, cached provider JWT above.
+ * Every alert carries `apns-push-type: alert`, `apns-priority: 10` and an `apns-expiration` 24 hours after
+ * the send; when the source has a durable identity (`apnsCollapseKey`) it also carries the same key as
+ * `apns-collapse-id` and as `aps["thread-id"]` (issue #1829). `aps.category` and the top-level
+ * `approvalRequestId` are sent only when the payload's `apns` fields carry them (issue #1831).
  * A 410 or `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Everything else (network failure, other 4xx/5xx)
  * is transient and left for the job's own retry. Missing `APNS_*` env vars or an unreadable key
@@ -195,6 +221,7 @@ export async function sendApnsNotification(
   payload: NotificationPushPayload,
   config?: ApnsConfig,
 ): Promise<PushSendResult> {
+  const collapseKey = apnsCollapseKey(payload);
   const body = JSON.stringify({
     // `alert.body` is sent only when the notification has one (issue #1773), so a notification of
     // another kind keeps the title-only alert it always had. `interruption-level` is sent only when
@@ -202,12 +229,25 @@ export async function sendApnsNotification(
     aps: {
       alert: { title: payload.title, ...(payload.body === null ? {} : { body: payload.body }) },
       ...(payload.interruptionLevel === undefined ? {} : { "interruption-level": payload.interruptionLevel }),
+      ...(collapseKey === null ? {} : { "thread-id": collapseKey }),
+      ...(payload.apns?.category === undefined ? {} : { category: payload.apns.category }),
     },
     link_href: payload.linkHref,
     notification_id: payload.notificationId,
+    ...(payload.apns?.approvalRequestId === undefined ? {} : { approvalRequestId: payload.apns.approvalRequestId }),
   });
 
-  return sendApnsRequest(target, body, {}, config);
+  return sendApnsRequest(
+    target,
+    body,
+    {
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "apns-expiration": String(Math.floor(Date.now() / 1000) + APNS_ALERT_TTL_SECONDS),
+      ...(collapseKey === null ? {} : { "apns-collapse-id": collapseKey }),
+    },
+    config,
+  );
 }
 
 /**

@@ -947,7 +947,7 @@ describe("settled tick approval outcome continuation", () => {
             ),
           );
           expect(refusedRun.rows).toEqual([
-            { status: "error", error_code: "budgetExceeded", result: "AI budget exceeded" },
+            { status: "error", error_code: "budgetExceeded", result: "budgetExceeded" },
           ]);
           expect(
             (

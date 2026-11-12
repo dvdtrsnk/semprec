@@ -1,10 +1,11 @@
 import type { ApprovalRequest } from "./approvalRequestsStore.js";
 
 /**
- * Closed set of reasons the MCP outcome write records next to its text in `execution_result_jsonb`
- * (see `recordApprovalRequestOutcome` / `settleStaleApprovalRequestClaim`).
+ * Closed set of reasons the outcome write of an MCP or module-tool request records next to its text
+ * in `execution_result_jsonb` (see `recordApprovalRequestOutcome` / `settleStaleApprovalRequestClaim`).
+ * `sourceChanged` is a module-tool request whose source differed from its snapshot (issue #1791).
  */
-export const APPROVAL_OUTCOME_KINDS = ["toolUnavailable", "callFailed", "staleClaim"] as const;
+export const APPROVAL_OUTCOME_KINDS = ["toolUnavailable", "callFailed", "staleClaim", "sourceChanged"] as const;
 export type ApprovalOutcomeKind = (typeof APPROVAL_OUTCOME_KINDS)[number];
 
 /** A translation key only: the client owns the catalog, and no execution-result text ever leaves here. */
@@ -24,6 +25,7 @@ const OUTCOME_KIND_KEYS: Readonly<Record<ApprovalOutcomeKind, string>> = {
   toolUnavailable: "approval.conflict.toolUnavailable",
   callFailed: "approval.outcome.failed",
   staleClaim: "approval.conflict.other",
+  sourceChanged: "approval.conflict.changed",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {

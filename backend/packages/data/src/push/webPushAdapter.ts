@@ -30,12 +30,46 @@ function getVapidConfigFromEnv(): VapidConfig {
  * current outbound address policy's `https.Agent` (issue #1034): an endpoint whose host resolves to a
  * denied address is `permanent-failure` too, so the caller revokes it exactly as for a 404/410.
  * Missing `VAPID_*` env vars (issue #703) resolve `not-configured` instead of throwing — a
- * server-side gap, not a verdict on this subscription.
+ * server-side gap, not a verdict on this subscription. The message carries `tag: notificationId`
+ * (issue #1826), which a service worker can use to close the matching visible notification when
+ * a dismiss message names the same id.
  */
 export async function sendWebPushNotification(
   target: WebPushTarget,
   payload: NotificationPushPayload,
   config?: VapidConfig,
+): Promise<PushSendResult> {
+  return sendWebPushMessage(
+    target,
+    {
+      title: payload.title,
+      // Omitted, not null, when the notification has no body (issue #1773).
+      ...(payload.body === null ? {} : { body: payload.body }),
+      linkHref: payload.linkHref,
+      notificationId: payload.notificationId,
+      tag: payload.notificationId,
+    },
+    config,
+  );
+}
+
+/**
+ * The Web Push message `{ dismiss: [notificationId...] }` of the `pushDismiss` job (issue #1826). The
+ * request, the VAPID configuration and the result mapping are `sendWebPushNotification`'s.
+ */
+export async function sendWebPushDismiss(
+  target: WebPushTarget,
+  notificationIds: readonly string[],
+  config?: VapidConfig,
+): Promise<PushSendResult> {
+  return sendWebPushMessage(target, { dismiss: notificationIds }, config);
+}
+
+/** Sends one JSON message to one Web Push registration and maps the answer to a `PushSendResult`. */
+async function sendWebPushMessage(
+  target: WebPushTarget,
+  message: Record<string, unknown>,
+  config: VapidConfig | undefined,
 ): Promise<PushSendResult> {
   let resolvedConfig: VapidConfig;
   try {
@@ -48,13 +82,7 @@ export async function sendWebPushNotification(
   try {
     await webpush.sendNotification(
       { endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.authSecret } },
-      JSON.stringify({
-        title: payload.title,
-        // Omitted, not null, when the notification has no body (issue #1773).
-        ...(payload.body === null ? {} : { body: payload.body }),
-        linkHref: payload.linkHref,
-        notificationId: payload.notificationId,
-      }),
+      JSON.stringify(message),
       {
         vapidDetails: {
           subject: resolvedConfig.subject,

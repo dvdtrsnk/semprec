@@ -8,6 +8,8 @@ import {
   type ConfirmProposalCredentialInput,
 } from "./proposalActions.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
+import { listInboxCards } from "./inboxCardsStore.js";
+import { resolveEditorSchema, type ResolvedEditorSchema } from "./editorSchema.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import {
@@ -17,6 +19,7 @@ import {
   type CatalogResolver,
   type ManifestLocale,
 } from "../manifest/catalogResolution.js";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -105,16 +108,25 @@ interface InboxTypeEntry extends InboxTypeSummary {
   targetLabel: string | null;
 }
 
+let moduleRegistryPromise: Promise<ModuleRegistry> | undefined;
 let catalogResolverPromise: Promise<CatalogResolver> | undefined;
 
 /**
- * The catalog resolver every target label is read through, built once per process from a module
- * registry that `loadFullModuleRegistry` builds. The custom-route factory receives only the pool, so
- * the handler cannot take the composition root's registry instance. A failed load is not cached, so
- * the next request retries instead of failing until restart.
+ * The module registry the handlers of this file read through, loaded once per process by `loadFullModuleRegistry`.
+ * The custom-route factory receives only the pool, so a handler cannot take the composition root's registry
+ * instance. A failed load is not cached, so the next request retries instead of failing until restart.
  */
+function getModuleRegistry(): Promise<ModuleRegistry> {
+  moduleRegistryPromise ??= loadFullModuleRegistry().catch((error: unknown) => {
+    moduleRegistryPromise = undefined;
+    throw error;
+  });
+  return moduleRegistryPromise;
+}
+
+/** The catalog resolver every target label is read through, built once per process from `getModuleRegistry`. A failed build is not cached. */
 function getCatalogResolver(): Promise<CatalogResolver> {
-  catalogResolverPromise ??= loadFullModuleRegistry()
+  catalogResolverPromise ??= getModuleRegistry()
     .then((registry) => createCatalogResolver(registry))
     .catch((error: unknown) => {
       catalogResolverPromise = undefined;
@@ -171,5 +183,31 @@ export function createInboxTypesRouteHandler(pool: Pool) {
       return entries;
     });
     return { status: 200, body: { types } };
+  };
+}
+
+/** `GET /api/inbox/cards`'s request context: the adapter always supplies the caller, whose id scopes the approvals and whose `users.locale` the labels. */
+interface InboxCardsRouteRequestContext {
+  identity: { user: { id: string; locale: string } };
+}
+
+/**
+ * `GET /api/inbox/cards` (issue #1807) — the one read the Inbox needs, shaped for a single consumer: the
+ * stack of open cards (pending tick and MCP approvals first, then the open Processing proposals cards)
+ * with at most 200 entries and the `total` of the cards that are counted. Each card also carries the
+ * `editorSchema` of its base kind in the caller's locale (issue #1825), `null` when no module declares one.
+ * Tenant and user come only from the session. The route takes no query parameters: it neither pages nor filters.
+ */
+export function createInboxCardsRouteHandler(pool: Pool) {
+  return async (ctx: InboxCardsRouteRequestContext): Promise<CustomRouteResult> => {
+    const { id: ownerUserId, locale } = ctx.identity.user;
+    const list = await withTransaction(pool, (client) => listInboxCards(client, { ownerUserId, locale }));
+    const registry = await getModuleRegistry();
+    const schemas = new Map<string, ResolvedEditorSchema | null>();
+    for (const baseKind of new Set(list.cards.map((card) => card.baseKind))) {
+      schemas.set(baseKind, await resolveEditorSchema(registry, baseKind, locale));
+    }
+    const cards = list.cards.map((card) => ({ ...card, editorSchema: schemas.get(card.baseKind) ?? null }));
+    return { status: 200, body: { cards, total: list.total } };
   };
 }

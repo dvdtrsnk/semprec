@@ -9,6 +9,8 @@ import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
 import * as valueLinksStore from "./valueLinksStore.js";
 import { breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
+import { requireApprovalForUnlink } from "./valueLinkApproval.js";
+import type { WriterIdentity } from "./writerKind.js";
 import { getValueLinksForItems, type ValueLinkEntry } from "./valueLinkReads.js";
 import { updateItemWithClient } from "./itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "./relationOps.js";
@@ -20,7 +22,7 @@ export interface LinkInput {
   itemId: string;
   propertyKey: string;
 }
-type LinkOutput = LinkInput & ValueLinkEntry;
+export type LinkOutput = LinkInput & ValueLinkEntry;
 
 function conflict(): never {
   throw new ChokePointError(409, "value_link_conflict", "Value link cannot be changed");
@@ -94,92 +96,108 @@ function announce(
   );
 }
 
-export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
-  async function change(
-    input: LinkInput,
-    kind: "unlink" | "relink",
-    writer: "user" | "agent",
-    userId?: string,
-  ): Promise<LinkOutput> {
-    return withTransaction(pool, async (client) => {
-      const [visible] = await itemsStore.getItemsByIds(client, [input.itemId]);
-      if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
-      const item = await itemsStore.lockItemById(client, visible.databaseId, input.itemId);
-      if (!item || item.deletedAt)
-        throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
-      const link = await valueLinksStore.lockValueLink(client, item.id, input.propertyKey);
-      if (!link) conflict();
-      let changed: boolean;
-      if (kind === "unlink") {
-        changed =
-          (await breakValueLinks(client, { itemId: item.id, propertyKeys: [input.propertyKey], writerKind: writer }))
-            .length > 0;
-      } else {
-        const property = await propertiesStore.getPropertyByKey(client, item.databaseId, input.propertyKey);
-        if (!property) conflict();
-        const { live, values: sourced } = await sourceValues(client, link.id);
-        if (live === 0) conflict();
-        const values = await withoutOmittedValues(client, link.ruleKey, sourced);
-        if (property.type === "relation") {
-          const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
-          if (!definition) conflict();
-          const many =
-            definition.cardinality === "many_to_many" ||
-            (definition.cardinality === "one_to_many" && definition.propertyIdA === property.id);
-          if (!many && values.length > 1) conflict();
-          const parsed = z.array(z.uuid()).safeParse(values);
-          if (!parsed.success) conflict();
-          const desired = parsed.data;
-          const current = (await relationsStore.listRelationsForItem(client, definition.id, item.id)).map((edge) =>
-            relationsStore.otherSide(edge, item.id),
-          );
-          await valueLinksStore.reactivateValueLink(client, link.id);
-          // Marked as `valueLinks` writes for the link rule hook, like a propagated value: an edge removed here
-          // is a replaced inherited value, so a link that follows it through that edge moves with it. Hop 0 keeps
-          // the budget of an ordinary root write.
-          await withPropagationHop(client, 0, async () => {
-            for (const id of current.filter((id) => !desired.includes(id)))
-              await deleteRelationWithClient(
-                client,
-                { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
-                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-              );
-            for (const id of desired.filter((id) => !current.includes(id)))
-              await createRelationWithClient(
-                client,
-                { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
-                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-              );
-          });
-        } else {
-          const many = property.type === "multi_select";
-          if (!many && values.length > 1) conflict();
-          await valueLinksStore.reactivateValueLink(client, link.id);
-          await updateItemWithClient(
+/** Who changes a link: a bare kind, or the full identity that tells an agent under a run from one without. */
+export type ValueLinkWriter = "user" | "agent" | (WriterIdentity & { writerKind: "user" | "agent" });
+
+/**
+ * Unlinks or relinks within the caller's managed transaction. An unlink by an agent under a run that
+ * would end an active link asks for approval first (issue #1758), which rolls the transaction back; the
+ * approved replay (`approvedRequestId`) ends the link with `broken_by` agent. An unlink of a link that
+ * is already broken stays the idempotent no-op it always was.
+ */
+export async function changeValueLinkWithClient(
+  client: PoolClient,
+  input: LinkInput,
+  kind: "unlink" | "relink",
+  writer: ValueLinkWriter,
+  userId?: string,
+): Promise<LinkOutput> {
+  const identity: WriterIdentity = typeof writer === "string" ? { writerKind: writer } : writer;
+  const [visible] = await itemsStore.getItemsByIds(client, [input.itemId]);
+  if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
+  const item = await itemsStore.lockItemById(client, visible.databaseId, input.itemId);
+  if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
+  const link = await valueLinksStore.lockValueLink(client, item.id, input.propertyKey);
+  if (!link) conflict();
+  let changed: boolean;
+  if (kind === "unlink") {
+    if (link.state === "on") requireApprovalForUnlink(client, identity, input);
+    changed =
+      (
+        await breakValueLinks(client, {
+          itemId: item.id,
+          propertyKeys: [input.propertyKey],
+          writerKind: identity.writerKind,
+        })
+      ).length > 0;
+  } else {
+    const property = await propertiesStore.getPropertyByKey(client, item.databaseId, input.propertyKey);
+    if (!property) conflict();
+    const { live, values: sourced } = await sourceValues(client, link.id);
+    if (live === 0) conflict();
+    const values = await withoutOmittedValues(client, link.ruleKey, sourced);
+    if (property.type === "relation") {
+      const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+      if (!definition) conflict();
+      const many =
+        definition.cardinality === "many_to_many" ||
+        (definition.cardinality === "one_to_many" && definition.propertyIdA === property.id);
+      if (!many && values.length > 1) conflict();
+      const parsed = z.array(z.uuid()).safeParse(values);
+      if (!parsed.success) conflict();
+      const desired = parsed.data;
+      const current = (await relationsStore.listRelationsForItem(client, definition.id, item.id)).map((edge) =>
+        relationsStore.otherSide(edge, item.id),
+      );
+      await valueLinksStore.reactivateValueLink(client, link.id);
+      // Marked as `valueLinks` writes for the link rule hook, like a propagated value: an edge removed here
+      // is a replaced inherited value, so a link that follows it through that edge moves with it. Hop 0 keeps
+      // the budget of an ordinary root write.
+      await withPropagationHop(client, 0, async () => {
+        for (const id of current.filter((id) => !desired.includes(id)))
+          await deleteRelationWithClient(
             client,
-            {
-              databaseId: item.databaseId,
-              itemId: item.id,
-              propertiesPatch: { [property.key]: many ? values : (values[0] ?? null) },
-            },
-            { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS },
+            { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
+            { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
           );
-        }
-        changed = true;
-      }
-      const entry = (await getValueLinksForItems(client, [item.id])).get(item.id)?.[input.propertyKey];
-      if (!entry) conflict();
-      if (changed) {
-        const current = await itemsStore.getItemById(client, item.databaseId, item.id);
-        if (!current) throw new Error("Reserved item disappeared during link update");
-        announce(client, current, userId);
-      }
-      return { ...input, ...entry };
-    });
+        for (const id of desired.filter((id) => !current.includes(id)))
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: item.id, targetItemId: id },
+            { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
+          );
+      });
+    } else {
+      const many = property.type === "multi_select";
+      if (!many && values.length > 1) conflict();
+      await valueLinksStore.reactivateValueLink(client, link.id);
+      await updateItemWithClient(
+        client,
+        {
+          databaseId: item.databaseId,
+          itemId: item.id,
+          propertiesPatch: { [property.key]: many ? values : (values[0] ?? null) },
+        },
+        { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS },
+      );
+    }
+    changed = true;
   }
+  const entry = (await getValueLinksForItems(client, [item.id])).get(item.id)?.[input.propertyKey];
+  if (!entry) conflict();
+  if (changed) {
+    const current = await itemsStore.getItemById(client, item.databaseId, item.id);
+    if (!current) throw new Error("Reserved item disappeared during link update");
+    announce(client, current, userId);
+  }
+  return { ...input, ...entry };
+}
+
+export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
   return {
-    unlinkValue: (input: LinkInput, writer: "user" | "agent", userId?: string) =>
-      change(input, "unlink", writer, userId),
-    relinkValue: (input: LinkInput, userId?: string) => change(input, "relink", "user", userId),
+    unlinkValue: (input: LinkInput, writer: ValueLinkWriter, userId?: string) =>
+      withTransaction(pool, (client) => changeValueLinkWithClient(client, input, "unlink", writer, userId)),
+    relinkValue: (input: LinkInput, userId?: string) =>
+      withTransaction(pool, (client) => changeValueLinkWithClient(client, input, "relink", "user", userId)),
   };
 }

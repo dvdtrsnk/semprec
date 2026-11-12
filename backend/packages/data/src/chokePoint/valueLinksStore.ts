@@ -192,6 +192,47 @@ export async function lockOnValueLink(
   return rows.length > 0;
 }
 
+/**
+ * The `on` links of the given item properties, share-locked so that a concurrent unlink, source
+ * change or break waits (or, with `nowait`, fails with SQLSTATE 55P03) until the caller's
+ * transaction ends. Ordered by link id, so two callers lock in the same order.
+ */
+export async function lockOnValueLinksOfProperties(
+  client: PoolClient,
+  targets: ReadonlyArray<{ itemId: string; propertyKey: string }>,
+  lockMode: "wait" | "nowait",
+): Promise<ValueLinkRow[]> {
+  if (targets.length === 0) return [];
+  // The SQL suffix is selected only from the two fixed lock clauses for this typed mode.
+  const { rows } = await client.query<ValueLinkDbRow>(
+    `SELECT ${LINK_COLUMNS} FROM value_links
+     WHERE tenant_id = app_tenant_default() AND state = 'on'
+       AND (item_id, property_key) IN (SELECT * FROM unnest($1::uuid[], $2::text[]))
+     ORDER BY id FOR SHARE${lockMode === "nowait" ? " NOWAIT" : ""}`,
+    [targets.map((target) => target.itemId), targets.map((target) => target.propertyKey)],
+  );
+  return rows.map(mapValueLinkRow);
+}
+
+/** The `on` links that take over a value from the given property of the given item, in a stable order. */
+export async function listOnValueLinksFollowing(
+  client: PoolClient,
+  sourceItemId: string,
+  sourcePropertyKey: string,
+): Promise<ValueLinkRow[]> {
+  const { rows } = await client.query<ValueLinkDbRow>(
+    `SELECT l.id, l.item_id, l.property_key, l.rule_key, l.state, l.broken_by, l.broken_at
+     FROM value_links l
+     WHERE l.tenant_id = app_tenant_default() AND l.state = 'on'
+       AND EXISTS (SELECT 1 FROM value_link_sources s
+                    WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item'
+                      AND s.source_item_id = $1 AND s.source_property_key = $2)
+     ORDER BY l.item_id, l.property_key`,
+    [sourceItemId, sourcePropertyKey],
+  );
+  return rows.map(mapValueLinkRow);
+}
+
 /** Locks a specific link, including a broken one, for a change to its sources. */
 export async function lockValueLink(
   client: PoolClient,

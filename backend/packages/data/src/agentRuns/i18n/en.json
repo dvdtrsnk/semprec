@@ -1,0 +1,7 @@
+{
+  "agentRun.error.budgetExceeded.summary": "AI budget used up",
+  "agentRun.error.modelError.summary": "AI model error",
+  "agentRun.error.cancelled.summary": "Cancelled",
+  "agentRun.error.interrupted.summary": "Interrupted by a restart",
+  "agentRun.error.internal.summary": "Internal error"
+}

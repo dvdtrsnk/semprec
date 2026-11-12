@@ -2,8 +2,9 @@ import { expandItemRelations, type RelationExpansionOptions } from "./relationEx
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
-// `countItems` together with the filter-tree-to-SQL resolution they share, and the batched,
-// optionally grouped `countItemsBatch`. It does not own item writes (itemWrites.ts), trash and
+// `countItems` together with the filter-tree-to-SQL resolution they share, the batched,
+// optionally grouped `countItemsBatch`, and the transaction of `getDatabaseFacets` (the facets
+// themselves are views/facetQuery.ts). It does not own item writes (itemWrites.ts), trash and
 // restore (itemTrash.ts), or stored-view queries (viewQueryOps.ts).
 // Constrained by:
 // - docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md
@@ -19,6 +20,13 @@ import * as itemsStore from "./itemsStore.js";
 import { withFromInbox } from "./itemOriginReads.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
+import {
+  computeDatabaseFacets,
+  loadFacetMetadata,
+  type DatabaseFacet,
+  type DatabaseFacetsInput,
+  type DatabaseFacetsOptions,
+} from "../views/facetQuery.js";
 import { compileFilterNode, resolveFilterCompileContext, type FilterProperties } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
 import { parseFilterNode, type FilterNode } from "../views/filterTree.js";
@@ -306,6 +314,27 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
         const counts: ItemCountEntry[] = [];
         for (const entry of entries) counts.push(await countItemsEntry(client, entry, options));
         return counts;
+      });
+    },
+
+    /**
+     * The facets of one database in request order, read in one transaction (issue #1759);
+     * `computeDatabaseFacets` documents what each facet lists and counts. The database is resolved first, under
+     * the caller's tenant, so an unknown id and another tenant's id fail alike with the not-found a database
+     * query gives. The manifest metadata is obtained before the transaction opens, so the transaction never
+     * waits for the module manifests to load.
+     */
+    async getDatabaseFacets(input: DatabaseFacetsInput, options?: DatabaseFacetsOptions): Promise<DatabaseFacet[]> {
+      const metadata = await loadFacetMetadata();
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.getDatabase(client, input.databaseId);
+        if (!database) {
+          throw new NotFoundError(`Database ${input.databaseId} not found`, {
+            resource: "database",
+            databaseId: input.databaseId,
+          });
+        }
+        return computeDatabaseFacets(client, database, input, metadata, options);
       });
     },
   };

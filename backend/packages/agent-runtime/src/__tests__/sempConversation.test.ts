@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
@@ -8,7 +8,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createUser, finishAgentRun, hashPassword, type AgentRunRow } from "@semprec/data";
+import { AgentRunError, createUser, finishAgentRun, hashPassword, type AgentRunRow } from "@semprec/data";
 import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   SEMP_BUSY_ERROR_MESSAGE,
@@ -33,6 +33,17 @@ import type {
 
 let pool: Pool;
 let tenantZero: string;
+
+/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+function loggedText(...spies: MockInstance[]): string {
+  return JSON.stringify(
+    spies.map((spy) => spy.mock.calls),
+    (_key, value: unknown) =>
+      value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+        : value,
+  );
+}
 
 let chatThread: SempThread;
 
@@ -627,7 +638,7 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "internal")).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
 
@@ -781,10 +792,38 @@ describe("SempConversation", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.result).toBe("internal");
     expect(rows[0]!.error_code).toBe("internal");
 
     conversation.clear();
+  });
+
+  it("stores the code of a model error as a wake run's result, and keeps the exception message and the task out of the row and the logs", async () => {
+    const sentinel = "sentinel-52de";
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      },
+    });
+    const conversation = new SempConversation(pool, {
+      createAgentSessionForRun: async () => createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
+    const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+    try {
+      await expect(sendInTenantZero(conversation, `look up ${sentinel}`)).rejects.toThrow(sentinel);
+
+      const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+        `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
+        [SEMPREC_PROJECT_ITEM_ID],
+      );
+      expect(rows).toEqual([{ status: "error", result: "modelError", error_code: "modelError" }]);
+      expect(loggedText(...spies)).not.toContain(sentinel);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      conversation.clear();
+    }
   });
 
   it("closes a reused session's agent_runs row as error and drops the entry when a later turn throws", async () => {
@@ -818,7 +857,7 @@ describe("SempConversation", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toBe("second turn boom");
+    expect(rows[0]!.result).toBe("internal");
 
     conversation.clear();
   });
@@ -995,7 +1034,7 @@ describe("SempConversation", () => {
         `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
         [SEMPREC_PROJECT_ITEM_ID],
       );
-      expect(rows).toEqual([{ status: "error", result: "record failed" }]);
+      expect(rows).toEqual([{ status: "error", result: "internal" }]);
       conversation.clear();
     });
 
@@ -1524,9 +1563,7 @@ describe("SempConversation across tenants", () => {
 
       expect(clearSpy).toHaveBeenCalledWith(bTimer);
       expect(clearSpy).not.toHaveBeenCalledWith(ttlTimers[0]);
-      expect(await runRowsOf(tenantB)).toEqual([
-        expect.objectContaining({ status: "error", result: "account deactivated" }),
-      ]);
+      expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
       const { rows: codes } = await adminPool.query<{ error_code: string | null }>(
         `SELECT error_code FROM agent_runs WHERE tenant_id = $1`,
         [tenantB],
@@ -1558,9 +1595,7 @@ describe("SempConversation across tenants", () => {
       slow.release();
       expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
 
-      expect(await runRowsOf(tenantB)).toEqual([
-        expect.objectContaining({ status: "error", result: "account deactivated" }),
-      ]);
+      expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
       expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
       await sendAs(tenantB, conversation, "b after");
       expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
@@ -1582,9 +1617,7 @@ describe("SempConversation across tenants", () => {
       slow.release();
       expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
 
-      expect(await runRowsOf(tenantB)).toEqual([
-        expect.objectContaining({ status: "error", result: "account deactivated" }),
-      ]);
+      expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
       expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
       await sendAs(tenantB, conversation, "b after");
       expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
@@ -1673,7 +1706,13 @@ describe("SempConversation across tenants", () => {
           ([, msg]) => msg === "SempConversation: failed to close dropped run, will retry",
         );
         expect(dropLogs[0]).toEqual([
-          { errorName: "error", tenantId: tenantB, threadId: expect.any(String), agentRunId: expect.any(String) },
+          {
+            errorName: "error",
+            errorCode: "cancelled",
+            tenantId: tenantB,
+            threadId: expect.any(String),
+            agentRunId: expect.any(String),
+          },
           "SempConversation: failed to close dropped run, will retry",
         ]);
         expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
@@ -1681,9 +1720,7 @@ describe("SempConversation across tenants", () => {
 
         await healRunCloses();
         await vi.waitFor(async () =>
-          expect(await runRowsOf(tenantB)).toEqual([
-            expect.objectContaining({ status: "error", result: "account deactivated" }),
-          ]),
+          expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]),
         );
         await vi.waitFor(async () => expect((await sendAs(tenantB, conversation, "b after")).ok).toBe(true));
         expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
@@ -1707,9 +1744,7 @@ describe("SempConversation across tenants", () => {
 
         await healRunCloses();
         await vi.waitFor(async () =>
-          expect(await runRowsOf(tenantB)).toEqual([
-            expect.objectContaining({ status: "error", result: "account deactivated" }),
-          ]),
+          expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]),
         );
         conversation.clear();
       });
@@ -1730,9 +1765,7 @@ describe("SempConversation across tenants", () => {
 
         await healRunCloses();
         await vi.waitFor(async () =>
-          expect(await runRowsOf(tenantB)).toEqual([
-            expect.objectContaining({ status: "error", result: "account deactivated" }),
-          ]),
+          expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]),
         );
         conversation.clear();
       });
@@ -1746,9 +1779,7 @@ describe("SempConversation across tenants", () => {
         await conversation.dropTenant(tenantB);
         await pausing;
 
-        expect(await runRowsOf(tenantB)).toEqual([
-          expect.objectContaining({ status: "error", result: "account deactivated" }),
-        ]);
+        expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
         await sendAs(tenantB, conversation, "b after");
         expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
         conversation.clear();
@@ -1782,9 +1813,7 @@ describe("SempConversation across tenants", () => {
         }
         await pausing;
 
-        expect(await runRowsOf(tenantB)).toEqual([
-          expect.objectContaining({ status: "error", result: "account deactivated" }),
-        ]);
+        expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
         await sendAs(tenantB, conversation, "b after");
         expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
         conversation.clear();
@@ -1800,9 +1829,7 @@ describe("SempConversation across tenants", () => {
         await conversation.dropTenant(tenantB);
         await pausing;
 
-        expect(await runRowsOf(tenantB)).toEqual([
-          expect.objectContaining({ status: "error", result: "account deactivated" }),
-        ]);
+        expect(await runRowsOf(tenantB)).toEqual([expect.objectContaining({ status: "error", result: "cancelled" })]);
         await sendAs(tenantB, conversation, "b after");
         expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
         conversation.clear();

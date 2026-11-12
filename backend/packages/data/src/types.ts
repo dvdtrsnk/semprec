@@ -56,6 +56,8 @@ export interface DatabaseRow {
   color: string | null;
   /** True while the user hides the database from the client overview (issue #2002). */
   overviewHidden: boolean;
+  /** True for a system database whose data an agent must not read or write by default; set by the system only (issue #1808). */
+  sensitive: boolean;
   archivedAt: string | null;
 }
 

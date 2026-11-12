@@ -21,6 +21,8 @@ import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
 import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePageTitleMirrorTask } from "./docs/pageTitleMirrorJob.js";
+import { sweepOrphanedPages } from "./docs/pageOrphanSweep.js";
+import { handleTaskHostEventEndedTask } from "./tasks/taskHostEventState.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -53,6 +55,7 @@ import {
   type GenericOperationApprovalReplay,
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
+import { handlePushDismissTask } from "./push/pushDismissJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
@@ -115,6 +118,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
+5 4 * * * ${CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP}
 `;
 
 /**
@@ -253,6 +257,7 @@ export function createCoreTaskList(
         pool,
         { approvalRequestId: requireString(payload, "approvalRequestId") },
         genericOperationApprovalReplay,
+        moduleRegistry,
       );
     },
     [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: async (payload) => {
@@ -261,6 +266,10 @@ export function createCoreTaskList(
         { notificationId: requireString(payload, "notificationId") },
         pushSenders,
       );
+    },
+    // Issue #1826: the silent dismiss push for resolved notifications.
+    [CORE_TASK_NAMES.PUSH_DISMISS]: async (payload) => {
+      await handlePushDismissTask(pool, payload);
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
@@ -284,6 +293,14 @@ export function createCoreTaskList(
     // Issue #1710: announces the items of a project whose area or company edge changed.
     [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: async (payload) => {
       await handleDerivedValuesInvalidateTask(pool, payload);
+    },
+    // Issue #1749: sends the Pages items that no document references any more to the Trash.
+    [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: async () => {
+      await sweepOrphanedPages(pool);
+    },
+    // Issue #1782: recomputes a task's host state once the last Event it sits in has ended.
+    [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: async (payload) => {
+      await handleTaskHostEventEndedTask(pool, payload);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

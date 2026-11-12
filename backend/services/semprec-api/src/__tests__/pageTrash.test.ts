@@ -206,3 +206,30 @@ describe("trash and restore of a page with its subpages (issue #1723)", () => {
     expect(rows[0]?.created_by).toBe("ai_agent");
   });
 });
+
+describe("trash and restore of a host with its subpages (issue #1763)", () => {
+  beforeAll(() => harness.start());
+  beforeEach(() => harness.reset());
+  afterAll(() => harness.stop());
+
+  it("hides the subpage and the nested page of a deleted host, and a restore of the host returns them and the block", async () => {
+    const { host, intro, outro, checklist, nested } = await hostWithNestedSubpage();
+
+    const deleted = await call("DELETE", `/api/items/${host}`, harness.headersA);
+
+    expect(deleted.status).toBe(200);
+    expect(await readStatuses(host, checklist.pageItemId, nested.pageItemId)).toEqual([404, 404, 404]);
+
+    const restored = await call("POST", `/api/items/${host}/restore`, harness.headersA);
+
+    expect(restored.status).toBe(200);
+    expect(await readStatuses(host, checklist.pageItemId, nested.pageItemId)).toEqual([200, 200, 200]);
+    expect(await notesOf(host)).toEqual([
+      { id: intro, type: "text" },
+      { id: checklist.blockId, type: "page", pageId: checklist.pageItemId },
+      { id: outro, type: "text" },
+    ]);
+    const nestedBlocks = (await notesOf(checklist.pageItemId)).filter((block) => block.type === "page");
+    expect(nestedBlocks).toEqual([{ id: nested.blockId, type: "page", pageId: nested.pageItemId }]);
+  });
+});

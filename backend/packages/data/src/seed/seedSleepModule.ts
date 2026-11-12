@@ -10,6 +10,7 @@ import { requireAffectedRows } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { SLEEP_DATABASE_DESCRIPTORS } from "../sleep/sleepModuleManifest.js";
 import type { PropertyOwner, PropertyType } from "../types.js";
+import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 
 interface PropSpec {
   key: string;
@@ -91,6 +92,7 @@ async function createSleepDatabase(
     system: true,
     ownerModuleId: descriptor.key,
     ownerProjectItemId,
+    sensitive: SENSITIVE_DATABASE_KEYS.includes(descriptor.key),
   });
   for (const spec of properties) {
     // `name` stays null: the label of each property comes from the module catalog.

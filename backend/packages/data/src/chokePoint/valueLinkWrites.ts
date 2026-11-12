@@ -52,34 +52,54 @@ export async function assertValueLinkHandoff(
   );
 }
 
+/** One side of a relation edge, as the property of an item that a value link can be on. */
+export interface RelationEdgeLinkTarget {
+  itemId: string;
+  propertyKey: string;
+  databaseId: string;
+}
+
 /**
- * Ends the links on both sides of a relation edge that was actually added or removed: item A with
- * the key of the definition's side A property, item B with the key of side B when the definition
- * has one. Call it only when the edge changed, never for a metadata replacement. Announces every
- * item whose state changed once the transaction commits, so clients refetch `links`. Also the
- * entry point the single-valued replace operation (#1521) calls.
+ * The item properties a relation edge is the value of: item A with the key of the definition's side A
+ * property, and item B with the key of side B when the definition has one.
+ */
+export async function relationEdgeLinkTargets(
+  client: PoolClient,
+  input: { reldef: RelationDefinitionRow; itemA: string; itemB: string },
+): Promise<RelationEdgeLinkTarget[]> {
+  const sides = [{ propertyId: input.reldef.propertyIdA, itemId: input.itemA }];
+  if (input.reldef.propertyIdB) sides.push({ propertyId: input.reldef.propertyIdB, itemId: input.itemB });
+  const targets: RelationEdgeLinkTarget[] = [];
+  for (const side of sides) {
+    const property = await propertiesStore.getProperty(client, side.propertyId);
+    if (property) targets.push({ itemId: side.itemId, propertyKey: property.key, databaseId: property.databaseId });
+  }
+  return targets;
+}
+
+/**
+ * Ends the links on both sides of a relation edge that was actually added or removed (the sides are
+ * `relationEdgeLinkTargets`). Call it only when the edge changed, never for a metadata replacement.
+ * Announces every item whose state changed once the transaction commits, so clients refetch `links`.
+ * Also the entry point the single-valued replace operation (#1521) calls.
  */
 export async function breakValueLinksForRelationEdge(
   client: PoolClient,
   input: { reldef: RelationDefinitionRow; itemA: string; itemB: string; writerKind: WriterKind; actingUserId?: string },
 ): Promise<string[]> {
   if (input.writerKind === "system") return [];
-  const sides = [{ propertyId: input.reldef.propertyIdA, itemId: input.itemA }];
-  if (input.reldef.propertyIdB) sides.push({ propertyId: input.reldef.propertyIdB, itemId: input.itemB });
   const announced = new Map<string, { itemId: string; databaseId: string; updatedAt: string }>();
-  for (const side of sides) {
-    const property = await propertiesStore.getProperty(client, side.propertyId);
-    if (!property) continue;
+  for (const side of await relationEdgeLinkTargets(client, input)) {
     const changed = await breakValueLinks(client, {
       itemId: side.itemId,
-      propertyKeys: [property.key],
+      propertyKeys: [side.propertyKey],
       writerKind: input.writerKind,
     });
     for (const itemId of changed) {
-      const item = await itemsStore.getItemById(client, property.databaseId, itemId);
+      const item = await itemsStore.getItemById(client, side.databaseId, itemId);
       if (item) {
-        const key = JSON.stringify([property.databaseId, itemId]);
-        announced.set(key, { itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+        const key = JSON.stringify([side.databaseId, itemId]);
+        announced.set(key, { itemId, databaseId: side.databaseId, updatedAt: item.updatedAt });
       }
     }
   }

@@ -117,7 +117,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 44-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 46-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -607,6 +607,21 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       ],
     });
   },
+  "page.replace": async (fx, headers, baseUrl) => {
+    // The page of an item without a document has the version token of an empty document; replacing it creates the page.
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page.md`, { headers });
+    const etag = read.headers.get("etag");
+    expect(etag).not.toBeNull();
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page.md`, {
+      method: "PUT",
+      headers: { ...headers, "Content-Type": "text/markdown", "If-Match": etag ?? "" },
+      body: "Replaced line",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ trashedPages: [] });
+    const page = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    expect(await page.json()).toMatchObject({ blockCount: 1, blocks: [{ text: "Replaced line" }] });
+  },
   "page.changes": async (fx, headers, baseUrl) => {
     const since = encodeURIComponent(new Date(Date.now() - 60 * 1000).toISOString());
     const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/changes?since=${since}`, { headers });
@@ -676,6 +691,41 @@ const CASES: Record<GenericOperationName, ContractCase> = {
           ],
         },
         { databaseId: fx.targetDatabase.id, count: 1 },
+      ],
+    });
+  },
+  "database.facets": async (fx, headers, baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/facets`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        facets: [fx.relationProperty.key, fx.property.key],
+        extra: { open: { type: "equals", property: fx.property.key, value: "Dune" } },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    // `itemA` is linked to the target item and `itemB` to none; `itemB` alone is titled "Dune".
+    expect(body).toEqual({
+      facets: [
+        {
+          property: fx.relationProperty.key,
+          all: 2,
+          open: 1,
+          values: [
+            { value: fx.targetItem.id, label: "", count: 1 },
+            { value: null, count: 1 },
+          ],
+        },
+        {
+          property: fx.property.key,
+          all: 2,
+          open: 1,
+          values: [
+            { value: "Arrival", count: 1 },
+            { value: "Dune", count: 1 },
+          ],
+        },
       ],
     });
   },

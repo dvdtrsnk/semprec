@@ -2,6 +2,7 @@ import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "./systemDatabasesEditorSchemas.js";
 import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -25,6 +26,7 @@ export {
 } from "../journal/journalRouteHandlers.js";
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
+export { backfillTaskEffectiveDate } from "../tasks/backfillTaskEffectiveDate.js";
 export {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
@@ -50,12 +52,18 @@ export {
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
   createTranscriptActionItemStateRouteHandler,
+  createTranscriptActionItemTaskRouteHandler,
+  createTranscriptActionItemTaskRemoveRouteHandler,
+  createEventTranscriptActionItemsRouteHandler,
+  createTranscriptSpeakerAssignRouteHandler,
+  createTranscriptSpeakerCandidatesRouteHandler,
   createTranscriptDeleteRouteHandler,
   createTranscriptDetailRouteHandler,
   createTranscriptListRouteHandler,
   createTranscriptSummariesRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 export { createListEventPeopleRouteHandler } from "../calendar/eventParticipantsRouteHandlers.js";
+export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
 const AREA_VALUE = { areaValue: true } as const;
 
@@ -360,6 +368,14 @@ export const manifest: ModuleManifest = {
       toVersion: "1.2.0",
       converterExport: "normalizeTaskDatesAndTimes",
     },
+    // Issue #1780: a task without host events has the `effectiveDate` of its `date`. The manifest `version` above was
+    // already past 1.3.0 when this transition was added and is not lowered for it.
+    {
+      databaseKey: TASKS_MODULE_ID,
+      fromVersion: "1.2.0",
+      toVersion: "1.3.0",
+      converterExport: "backfillTaskEffectiveDate",
+    },
   ],
   linkRules: [
     // A file's companies are the union of its projects' companies (issue #1653).
@@ -599,5 +615,64 @@ export const manifest: ModuleManifest = {
       // generic item read returns together.
       justification: "single-consumer-read",
     },
+    {
+      name: "areaOverview",
+      method: "GET",
+      path: "/api/areas/:id/overview",
+      handlerExport: "createAreaOverviewRouteHandler",
+      // Shaped for exactly one consumer, the head of an area's page (issue #1760): the area's project and
+      // task counts and its upcoming tasks and events, reached through the area's projects and read in one
+      // transaction, which no generic query returns together.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "createTranscriptActionItemTask",
+      method: "POST",
+      path: "/api/transcripts/:id/action-items/:actionItemId/task",
+      handlerExport: "createTranscriptActionItemTaskRouteHandler",
+      // The check for a live task of the action item, the task with its `sourceEvents` edge and the
+      // `added` state commit together under the transcript's row lock (issue #1767).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "removeTranscriptActionItemTask",
+      method: "DELETE",
+      path: "/api/transcripts/:id/action-items/:actionItemId/task",
+      handlerExport: "createTranscriptActionItemTaskRemoveRouteHandler",
+      // The task's move to the Trash and the removal of the `added` state commit together under the
+      // transcript's row lock (issue #1767).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "listEventTranscriptActionItems",
+      method: "GET",
+      path: "/api/events/:id/transcript-action-items",
+      handlerExport: "createEventTranscriptActionItemsRouteHandler",
+      // Shaped for exactly one consumer, the task proposals of an Event (issue #1767): it joins the
+      // rendered action items of every transcript of the Event with their states and the tenant's own
+      // person, which no generic item read returns.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "assignTranscriptSpeaker",
+      method: "PUT",
+      path: "/api/transcripts/:id/speakers/:speaker",
+      handlerExport: "createTranscriptSpeakerAssignRouteHandler",
+      // The removal of the key's old edge, the new edge, the Event participant edge and the settling of
+      // the speaker's card commit together under the transcript's row lock (issue #1770).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "listTranscriptSpeakerCandidates",
+      method: "GET",
+      path: "/api/transcripts/:id/speaker-candidates",
+      handlerExport: "createTranscriptSpeakerCandidatesRouteHandler",
+      // Shaped for exactly one consumer, the speaker picker (issue #1770): it joins the participants of the
+      // transcript's Event with their invitation state, the speaker each is mapped to and the tenant's own
+      // person, which no generic item read returns.
+      justification: "single-consumer-read",
+    },
   ],
+  // The Inbox card editors of the system databases (issue #1825), declared in `systemDatabasesEditorSchemas.ts`.
+  editorSchemas: SYSTEM_DATABASES_EDITOR_SCHEMAS,
 };

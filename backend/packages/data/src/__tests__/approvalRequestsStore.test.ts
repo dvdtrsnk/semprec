@@ -24,6 +24,7 @@ import {
   createPendingApprovalRequest,
   getApprovalRequest,
   getApprovalRequestForOwner,
+  countPendingApprovalRequests,
   decideApprovalRequest,
   listPendingApprovalRequests,
   claimApprovalRequestExecution,
@@ -339,6 +340,11 @@ describe("approvalRequestsStore description (issue #1683)", () => {
     ["missing params", { key: "approval.x" }],
     ["a nested param value", { key: "approval.x", params: { a: { b: 1 } } }],
     ["a malformed endsInheritance", { key: "approval.x", params: {}, endsInheritance: [{ itemId: 1 }] }],
+    [
+      "a malformed breaksLinks entry",
+      { key: "approval.x", params: {}, breaksLinks: [{ itemId: "i", propertyKey: 1 }] },
+    ],
+    ["breaksLinks that is not a list", { key: "approval.x", params: {}, breaksLinks: {} }],
   ])("rejects a row whose description is %s", async (_label, description) => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
     const created = await insert(run.id);
@@ -820,6 +826,48 @@ describe("approvalRequestsStore (issue #130)", () => {
       const ids = (await listPendingApprovalRequests(pool, ownerId)).map((request) => request.id);
 
       expect(ids).toEqual([ownRequestId]);
+    });
+  });
+
+  describe("countPendingApprovalRequests (issue #1786)", () => {
+    it("counts the owner's pending requests and leaves out the approved and the rejected ones", async () => {
+      await createPendingRequest();
+      await createPendingRequest();
+      const approved = await createPendingRequest();
+      const rejected = await createPendingRequest();
+      await decideApprovalRequest(pool, approved, "approved", ownerId);
+      await decideApprovalRequest(pool, rejected, "rejected", ownerId);
+
+      expect(await countPendingApprovalRequests(pool, { ownerUserId: ownerId, sourceKinds: null })).toBe(2);
+      expect(await listPendingApprovalRequests(pool, ownerId)).toHaveLength(2);
+    });
+
+    it("counts zero for an owner without requests", async () => {
+      expect(await countPendingApprovalRequests(pool, { ownerUserId: ownerId, sourceKinds: null })).toBe(0);
+    });
+
+    it("leaves out the pending requests of another account", async () => {
+      await createPendingRequest();
+      // Another account's run lives in that account's own tenant (agent_runs_actor_user_id_tenant_fkey, issue #1066).
+      const foreignTenant = await createTestTenant(pool);
+      const foreignUser = await createRawUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "unused",
+        tenantId: foreignTenant,
+      });
+      await withTenantTransaction(pool, foreignTenant, async (client) => {
+        const foreignRun = await createAgentRun(client, { triggeredBy: "user", task: "other", userId: foreignUser.id });
+        await createPendingApprovalRequest(client, {
+          agentRunId: foreignRun.id,
+          toolName: "search_web",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      });
+
+      expect(await countPendingApprovalRequests(pool, { ownerUserId: ownerId, sourceKinds: null })).toBe(1);
+      expect(await countPendingApprovalRequests(pool, { ownerUserId: foreignUser.id, sourceKinds: null })).toBe(1);
     });
   });
 

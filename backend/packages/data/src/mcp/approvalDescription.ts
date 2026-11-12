@@ -8,7 +8,7 @@
 //   user-created database) so a client can choose the word and its grammatical form; the backend
 //   does not know singular forms or declension of a database name.
 // - An MCP request names its server and tool; recurrence descriptions include the old and new rules.
-// - `endsInheritance` is omitted here; the value-link work (#1713, #1791) fills it later.
+// - `breaksLinks` and `endsInheritance` are added by `approvalBreaksLink.ts` when the operation would end value links, and are otherwise omitted.
 // Templates and params:
 //   approval.itemPatch        {itemName, databaseKey, databaseName}
 //   approval.relationPut      {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
@@ -20,7 +20,9 @@
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
 //   approval.mcpInvoke        {serverName, toolName}
+//   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
 //   approval.changesSeries    {taskName, fromRule, toRule}
+//   approval.breaksLink       {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}   (issue #1758, `approvalBreaksLink.ts`)
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import type { PoolClient } from "pg";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
@@ -32,6 +34,8 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { NotFoundError } from "../errors.js";
 import { TRASH_RETENTION_DAYS } from "../trash/purgeExpiredTrash.js";
+import type { BreakingValueLinks } from "../chokePoint/valueLinkApproval.js";
+import { describeBreakingLinks, isLinkDeferralOperation } from "./approvalBreaksLink.js";
 import type { ApprovalDescription } from "./approvalRequestsStore.js";
 
 type DescriptionParams = ApprovalDescription["params"];
@@ -76,11 +80,43 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
 
 /**
  * The description of a generic operation, read on the same client (and
- * so in the same transaction) as the request insert that stores it.
+ * so in the same transaction) as the request insert that stores it. `valueLinks` are the links the
+ * operation would end (issue #1758): their lists are added to the description, and for an `item.patch`,
+ * `relation.put`, `relation.set` or `link.unlink` the description is `approval.breaksLink` instead,
+ * unless the owning module supplied its own through the projection.
  */
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
   check: DestructiveOperationCheck | PageRestoreCheck,
+  currentResource?: unknown,
+  valueLinks?: BreakingValueLinks,
+): Promise<ApprovalDescription> {
+  if (check.operation === "page.restoreVersion" || valueLinks === undefined || valueLinks.links.length === 0) {
+    if (check.operation === "link.unlink") throw new Error("A link.unlink request is described by the link it ends");
+    return buildOperationDescription(client, check, currentResource);
+  }
+  const breaks = await describeBreakingLinks(client, check, valueLinks);
+  const lists = { breaksLinks: breaks.breaksLinks, endsInheritance: breaks.endsInheritance };
+  if (check.operation === "link.unlink") return { ...breaks.description, ...lists };
+  const ownDescription =
+    !isLinkDeferralOperation(check.operation) || hasModuleDescription(currentResource)
+      ? await buildOperationDescription(client, check, currentResource)
+      : breaks.description;
+  return { ...ownDescription, ...lists };
+}
+
+function hasModuleDescription(currentResource: unknown): boolean {
+  return (
+    typeof currentResource === "object" &&
+    currentResource !== null &&
+    "approvalDescription" in currentResource &&
+    currentResource.approvalDescription !== undefined
+  );
+}
+
+async function buildOperationDescription(
+  client: PoolClient,
+  check: Exclude<DestructiveOperationCheck, { operation: "link.unlink" }> | PageRestoreCheck,
   currentResource?: unknown,
 ): Promise<ApprovalDescription> {
   if (typeof currentResource === "object" && currentResource !== null && "approvalDescription" in currentResource) {
@@ -239,4 +275,9 @@ export async function buildDestructiveApprovalDescription(
 /** The description of a deferred MCP tool call: only the server and tool names, never argument values. */
 export function buildMcpInvokeApprovalDescription(serverName: string | null, toolName: string): ApprovalDescription {
   return { key: "approval.mcpInvoke", params: { serverName, toolName } };
+}
+
+/** The description of a deferred module agent tool call: only the tool's manifest name, never argument values. */
+export function buildModuleToolApprovalDescription(toolName: string): ApprovalDescription {
+  return { key: "approval.moduleTool", params: { toolName } };
 }

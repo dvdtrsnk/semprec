@@ -125,7 +125,7 @@ async function repairCurrentTenant(pool: Pool): Promise<{ repaired: string[]; cl
         await insertAgentRunEvent(client, run.id, "tool_result", syntheticToolResult(toolUse, INTERRUPTION_TEXT));
       }
 
-      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON, "interrupted");
+      await finishAgentRunWithErrorNotification(client, run.id, "interrupted");
       repaired.push(run.id);
     }
 

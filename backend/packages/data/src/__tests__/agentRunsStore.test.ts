@@ -17,6 +17,7 @@ import {
   finishAgentRun,
   getAgentRun,
   getRetrySuccessorId,
+  setAgentRunMcpClientName,
 } from "../agentRuns/agentRunsStore.js";
 import { NotFoundError } from "../errors.js";
 import { withTransaction } from "../db/pool.js";
@@ -51,26 +52,58 @@ describe("finishAgentRun", () => {
   });
 
   it.each([
-    ["done", "error"],
-    ["error", "done"],
-  ] as const)("keeps the first close (%s) when a second one (%s) arrives and returns false", async (first, second) => {
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
-    const close = (status: "done" | "error", result: string) =>
-      status === "done"
-        ? finishAgentRun(pool, run.id, "done", result)
-        : finishAgentRun(pool, run.id, "error", result, "internal");
-    await expect(close(first, "first")).resolves.toBe(true);
-    const afterFirst = await getAgentRun(pool, run.id);
+    ["done", "error", "first"],
+    ["error", "done", "modelError"],
+  ] as const)(
+    "keeps the first close (%s) when a second one (%s) arrives and returns false",
+    async (first, second, firstResult) => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
+      // A `done` close stores its snapshot; an `error` close stores its code, which is also its result.
+      const close = (status: "done" | "error", position: "first" | "second") =>
+        status === "done"
+          ? finishAgentRun(pool, run.id, "done", position)
+          : finishAgentRun(pool, run.id, "error", position === "first" ? "modelError" : "internal");
+      await expect(close(first, "first")).resolves.toBe(true);
+      const afterFirst = await getAgentRun(pool, run.id);
 
-    await expect(close(second, "second")).resolves.toBe(false);
+      await expect(close(second, "second")).resolves.toBe(false);
 
-    const afterSecond = await getAgentRun(pool, run.id);
-    expect(afterSecond).toMatchObject({ status: first, result: "first", finishedAt: afterFirst!.finishedAt });
+      const afterSecond = await getAgentRun(pool, run.id);
+      expect(afterSecond).toMatchObject({ status: first, result: firstResult, finishedAt: afterFirst!.finishedAt });
+    },
+  );
+
+  it("stores the canonical code as the result of an error close, and the snapshot as the result of a done close", async () => {
+    const failed = await createAgentRun(pool, { triggeredBy: "user", task: "fails" });
+    const succeeded = await createAgentRun(pool, { triggeredBy: "user", task: "works" });
+
+    await finishAgentRun(pool, failed.id, "error", "modelError");
+    await finishAgentRun(pool, succeeded.id, "done", "snapshot text");
+
+    expect(await getAgentRun(pool, failed.id)).toMatchObject({
+      status: "error",
+      errorCode: "modelError",
+      result: "modelError",
+    });
+    expect(await getAgentRun(pool, succeeded.id)).toMatchObject({
+      status: "done",
+      errorCode: null,
+      result: "snapshot text",
+    });
+  });
+
+  it("refuses an error close with a value outside the code set and leaves the run running", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "fails" });
+
+    // @ts-expect-error The overload takes a code; this is a caller that bypasses the types.
+    await expect(finishAgentRun(pool, run.id, "error", "free text")).rejects.toThrow("Unknown error code");
+
+    expect(await getAgentRun(pool, run.id)).toMatchObject({ status: "running", result: null, errorCode: null });
   });
 
   it("stores the error code and detail in the same update as the status, and reads null for a done run", async () => {
     const failed = await createAgentRun(pool, { triggeredBy: "user", task: "fails" });
-    await finishAgentRun(pool, failed.id, "error", "boom", "modelError", { attempt: 2 });
+    await finishAgentRun(pool, failed.id, "error", "modelError", { attempt: 2 });
     expect(await getAgentRun(pool, failed.id)).toMatchObject({
       status: "error",
       errorCode: "modelError",
@@ -352,5 +385,169 @@ describe("agent run retry chain (issue #1448)", () => {
       attempt: 2,
     });
     await expect(getRetrySuccessorId(chainPool, first.id)).resolves.toBe(retry!.id);
+  });
+});
+
+describe("setAgentRunMcpClientName (issue #1788)", () => {
+  let namePool: Pool;
+
+  beforeEach(async () => {
+    namePool ??= getTestPool();
+    await resetDatabase(namePool);
+    await createTenantZeroUser(namePool);
+  });
+
+  afterAll(async () => {
+    await namePool?.end();
+  });
+
+  async function createMcpRun(): Promise<string> {
+    return (await createAgentRun(namePool, { triggeredBy: "mcp", task: "t" })).id;
+  }
+
+  async function storedName(runId: string): Promise<string | null> {
+    const run = await getAgentRun(namePool, runId);
+    if (!run) throw new Error("The run is missing");
+    return run.mcpClientName;
+  }
+
+  it("reads null for a run no client named and the stored name after a write", async () => {
+    const runId = await createMcpRun();
+    expect(await storedName(runId)).toBeNull();
+
+    await setAgentRunMcpClientName(namePool, runId, "Claude Desktop");
+
+    expect(await storedName(runId)).toBe("Claude Desktop");
+  });
+
+  it("replaces a name stored before and leaves another run's name alone", async () => {
+    const runId = await createMcpRun();
+    const otherRunId = await createMcpRun();
+    await setAgentRunMcpClientName(namePool, runId, "Claude Desktop");
+    await setAgentRunMcpClientName(namePool, otherRunId, "Other Client");
+
+    await setAgentRunMcpClientName(namePool, runId, "Cursor");
+
+    expect(await storedName(runId)).toBe("Cursor");
+    expect(await storedName(otherRunId)).toBe("Other Client");
+  });
+
+  it("removes control characters and surrounding whitespace", async () => {
+    const runId = await createMcpRun();
+
+    await setAgentRunMcpClientName(namePool, runId, " \tCla\u0000ude\u001b Desk\u007ftop\u0085 \n");
+
+    expect(await storedName(runId)).toBe("Claude Desktop");
+  });
+
+  it("keeps a name of 64 characters whole and cuts a longer one to its first 64", async () => {
+    const exact = await createMcpRun();
+    const longer = await createMcpRun();
+
+    await setAgentRunMcpClientName(namePool, exact, "x".repeat(64));
+    await setAgentRunMcpClientName(namePool, longer, `${"x".repeat(64)}yz`);
+
+    expect(await storedName(exact)).toBe("x".repeat(64));
+    expect(await storedName(longer)).toBe("x".repeat(64));
+  });
+
+  it("counts characters as the column's check does, so 64 characters outside the basic plane fit", async () => {
+    const runId = await createMcpRun();
+
+    await setAgentRunMcpClientName(namePool, runId, "\u{1F600}".repeat(70));
+
+    expect(await storedName(runId)).toBe("\u{1F600}".repeat(64));
+  });
+
+  it("removes whitespace that the cut leaves at the end", async () => {
+    const runId = await createMcpRun();
+
+    await setAgentRunMcpClientName(namePool, runId, `${"a".repeat(63)} ${"b".repeat(10)}`);
+
+    expect(await storedName(runId)).toBe("a".repeat(63));
+  });
+
+  it.each([
+    ["an empty name", ""],
+    ["whitespace", " \u00a0 "],
+    ["control characters", "\u0000\u0007\u009f"],
+    ["control characters and whitespace", " \t\u0000\n "],
+  ])("clears a name stored before for %s", async (_label, name) => {
+    const runId = await createMcpRun();
+    await setAgentRunMcpClientName(namePool, runId, "Claude Desktop");
+
+    await setAgentRunMcpClientName(namePool, runId, name);
+
+    expect(await storedName(runId)).toBeNull();
+  });
+
+  it("throws NotFoundError for an unknown run id and names no run", async () => {
+    const runId = await createMcpRun();
+
+    await expect(setAgentRunMcpClientName(namePool, randomUUID(), "Claude Desktop")).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+
+    expect(await storedName(runId)).toBeNull();
+  });
+});
+
+describe("setAgentRunMcpClientName in a tenant (issue #1788)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let tenantA: string;
+  let tenantB: string;
+  let runA: string;
+  let otherRunA: string;
+  let runB: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
+    tenantA = getTenantZeroId();
+    tenantB = await runInTenant(tenantA, () => createTestTenant(adminPool));
+    for (const tenantId of [tenantA, tenantB]) {
+      await runInTenant(tenantId, () =>
+        createUser(adminPool, { email: `${randomUUID()}@example.test`, passwordHash: "x", tenantId }),
+      );
+    }
+    const createRun = (tenantId: string) =>
+      runInTenant(tenantId, async () => (await createAgentRun(runtimePool, { triggeredBy: "mcp", task: "t" })).id);
+    runA = await createRun(tenantA);
+    otherRunA = await createRun(tenantA);
+    runB = await createRun(tenantB);
+    await runInTenant(tenantB, () => setAgentRunMcpClientName(runtimePool, runB, "Tenant B Client"));
+  });
+
+  afterAll(async () => {
+    await Promise.all([runtimePool?.end(), adminPool?.end()]);
+  });
+
+  async function storedName(tenantId: string, runId: string): Promise<string | null> {
+    const run = await runInTenant(tenantId, () => getAgentRun(runtimePool, runId));
+    if (!run) throw new Error("The run is missing in its own tenant");
+    return run.mcpClientName;
+  }
+
+  it("names a run of the current tenant and no other run", async () => {
+    await runInTenant(tenantA, () => setAgentRunMcpClientName(runtimePool, runA, "Claude Desktop"));
+
+    expect(await storedName(tenantA, runA)).toBe("Claude Desktop");
+    expect(await storedName(tenantA, otherRunA)).toBeNull();
+    expect(await storedName(tenantB, runB)).toBe("Tenant B Client");
+  });
+
+  it("answers another tenant's run like an unknown run and leaves its name as it was", async () => {
+    const foreign = runInTenant(tenantA, () => setAgentRunMcpClientName(runtimePool, runB, "Claude Desktop"));
+    await expect(foreign).rejects.toBeInstanceOf(NotFoundError);
+    const unknown = runInTenant(tenantA, () => setAgentRunMcpClientName(runtimePool, randomUUID(), "Claude Desktop"));
+    await expect(unknown).rejects.toBeInstanceOf(NotFoundError);
+
+    expect(await storedName(tenantB, runB)).toBe("Tenant B Client");
+    expect(await storedName(tenantA, runA)).toBeNull();
   });
 });

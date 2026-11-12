@@ -2,8 +2,9 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { runAfterCommit } from "../db/pool.js";
+import { enqueuePushDismiss } from "../push/pushDismissJob.js";
 import { notifyNotificationReadState } from "../realtimeHook.js";
-import { NOTIFICATION_KINDS, type NotificationKind } from "./notificationKinds.js";
+import { NOTIFICATION_KINDS, policyForKind, type NotificationKind } from "./notificationKinds.js";
 
 export interface NotificationRow {
   id: string;
@@ -208,6 +209,11 @@ export async function markAllNotificationsRead(client: PoolClient, userId: strin
  * Publishes `notification_read_state` after commit, one event per user, for the rows whose
  * `read_at` this call set; a row that was already read converged on its read earlier. Returns
  * every row this call resolved.
+ *
+ * For the rows whose kind is pushed (`push: true` in its kind policy), whether read or not, it also
+ * enqueues the `pushDismiss` job (issue #1826) on `client`, one per user, so the devices that
+ * received the visible push remove it. The job commits or rolls back with this transaction. A kind
+ * that is never pushed enqueues nothing.
  */
 export async function resolveNotificationsBySource(
   client: PoolClient,
@@ -228,6 +234,17 @@ export async function resolveNotificationsBySource(
        .join(", ")}, (previous.read_at IS NULL) AS newly_read`,
     [input.sourceTable, input.sourceId],
   );
+
+  const dismissIdsByUser = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!policyForKind(assertKnownValue(NOTIFICATION_KINDS, row.kind, "kind")).push) continue;
+    const ids = dismissIdsByUser.get(row.user_id) ?? [];
+    ids.push(row.id);
+    dismissIdsByUser.set(row.user_id, ids);
+  }
+  for (const [userId, notificationIds] of dismissIdsByUser) {
+    await enqueuePushDismiss(client, { userId, notificationIds });
+  }
 
   const idsByUser = new Map<string, string[]>();
   for (const row of rows) {

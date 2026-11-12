@@ -3,8 +3,9 @@ import { EXAMPLE_ID } from "./exampleId.js";
 
 /**
  * `ROUTE_MATRIX` slice for the `/api/items` path family, together with item creation under
- * `/api/databases/:id/items` and the two query entries the matrix order places among them
- * (`/api/databases/:id/query` and `/api/views/:id/query`).
+ * `/api/databases/:id/items`, the two query entries the matrix order places among them
+ * (`/api/databases/:id/query` and `/api/views/:id/query`) and the facets of a database's items
+ * (`/api/databases/:id/facets`).
  */
 export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   {
@@ -110,6 +111,8 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "read page markdown", method: "GET", path: `/api/items/${EXAMPLE_ID}/page.md`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
+  { name: "replace page markdown", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page.md`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
   { name: "insert page markdown", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/insert`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "list page changes", method: "GET", path: `/api/items/${EXAMPLE_ID}/page/changes`, surface: "api", public: false, tenancy: "tenant" },
@@ -122,4 +125,6 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   { name: "duplicate page", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/duplicate`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "rename page", method: "PATCH", path: `/api/items/${EXAMPLE_ID}/page/title`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "database facets", method: "POST", path: `/api/databases/${EXAMPLE_ID}/facets`, surface: "api", public: false, tenancy: "tenant" },
 ];

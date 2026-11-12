@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ApprovalRequiredError,
   ConflictError,
+  DuplicateItemError,
   ForbiddenError,
   HeartbeatDisabledError,
   HeartbeatEventTriggeredError,
@@ -90,6 +91,11 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     status: 409,
     error: new OptionLabelExistsError("the property already has an option with this label", { key: "medication" }),
   },
+  {
+    code: "duplicate_item",
+    status: 409,
+    error: new DuplicateItemError("A night exception for 2026-10-16 already exists", { field: "night" }),
+  },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
@@ -155,6 +161,11 @@ describe("error contract (issue #238)", () => {
   it("carries option_label_exists's key of the existing option", () => {
     const body = toErrorResponseBody(new OptionLabelExistsError("label exists", { key: "medication" }));
     expect(body.error).toEqual({ code: "option_label_exists", details: { key: "medication" } });
+  });
+
+  it("carries duplicate_item's field of the key that is already taken", () => {
+    const body = toErrorResponseBody(new DuplicateItemError("night taken", { field: "night" }));
+    expect(body.error).toEqual({ code: "duplicate_item", details: { field: "night" } });
   });
 
   it("falls back to the error's own status for a code outside the closed nine (forward-compatible)", () => {

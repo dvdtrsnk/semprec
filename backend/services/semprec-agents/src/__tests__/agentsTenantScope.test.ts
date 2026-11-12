@@ -226,7 +226,7 @@ describe("agents process runs each job inside its tenant under strict enforcemen
     await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id }));
 
     await waitFor(async () => (await runRow(run.id)).status !== "running");
-    expect(await runRow(run.id)).toEqual({ status: "error", result: "gateway refused: budget" });
+    expect(await runRow(run.id)).toEqual({ status: "error", result: "modelError" });
     expect(await errorNotificationCount(run.id)).toBe(1);
     expect(streamScopes).toEqual([{ kind: "tenant", tenantId: tenantZero }]);
   });

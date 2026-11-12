@@ -42,6 +42,7 @@ export type RealtimeMessage =
       userId?: string;
     }
   | { type: "invalidation"; scope: "sempThread"; threadId: string }
+  | { type: "invalidation"; scope: "approvalRequest"; approvalRequestId: string; userId?: string }
   | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
   | { type: "agent_run_event"; agentRunId: string; eventId: string }
   | { type: "notification_created"; userId: string; notificationId: string }
@@ -225,6 +226,15 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       }
       if (value.scope === "sempThread") {
         return isUuid(value.threadId) ? { type: "invalidation", scope: "sempThread", threadId: value.threadId } : null;
+      }
+      if (value.scope === "approvalRequest") {
+        if (!isUuid(value.approvalRequestId) || !(value.userId === undefined || isUuid(value.userId))) return null;
+        return {
+          type: "invalidation",
+          scope: "approvalRequest",
+          approvalRequestId: value.approvalRequestId,
+          userId: value.userId,
+        };
       }
       return null;
     }

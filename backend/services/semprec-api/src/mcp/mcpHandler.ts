@@ -8,6 +8,8 @@ import {
   UnauthorizedError,
   ValidationError,
   resolveModuleAgentToolsForRun,
+  setAgentRunMcpClientName,
+  withTransaction,
 } from "@semprec/data";
 import {
   GENERIC_OPERATION_NAMES,
@@ -66,6 +68,13 @@ interface JsonRpcRequestBody {
   id?: unknown;
   method?: unknown;
   params?: unknown;
+}
+
+/** The `name` of an `initialize` request's `clientInfo` when it is a string, otherwise `null`. */
+function readClientName(clientInfo: unknown): string | null {
+  if (typeof clientInfo !== "object" || clientInfo === null) return null;
+  const name: unknown = "name" in clientInfo ? clientInfo.name : undefined;
+  return typeof name === "string" ? name : null;
 }
 
 /**
@@ -159,10 +168,16 @@ export async function createMcpRequestListener(
         }
 
         if (rpc.method === "initialize") {
-          const params = rpc.params as { protocolVersion?: unknown } | null | undefined;
+          const params = rpc.params as { protocolVersion?: unknown; clientInfo?: unknown } | null | undefined;
           if (typeof params !== "object" || params === null || typeof params.protocolVersion !== "string") {
             sendJson(res, 200, rpcError(rpcId, -32602, "initialize requires params.protocolVersion"));
             return;
+          }
+          // A run credential's client names itself on its own run (issue #1788); a session names nothing.
+          const runId = actor.runId;
+          const clientName = readClientName(params.clientInfo);
+          if (runId !== undefined && clientName !== null) {
+            await withTransaction(pool, (client) => setAgentRunMcpClientName(client, runId, clientName));
           }
           const requested = params.protocolVersion;
           const protocolVersion =

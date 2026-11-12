@@ -19,4 +19,20 @@ export const APPROVAL_REQUESTS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "approval request detail",
+    method: "GET",
+    path: `/api/approval-requests/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "approval request count",
+    method: "GET",
+    path: "/api/approval-requests/count",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

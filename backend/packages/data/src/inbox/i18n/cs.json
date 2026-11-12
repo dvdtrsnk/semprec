@@ -59,6 +59,7 @@
   "invalidReason.sourceDeleted": "Zdrojová položka Inboxu „{label}“ byla smazána, takže tento návrh už nelze dokončit.",
   "invalidReason.targetArchived": "Cíl „{label}“ byl archivován, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
   "invalidReason.targetDeleted": "Cíl „{label}“ byl smazán, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
+  "invalidReason.unknown": "Tento návrh už nelze použít.",
   "viewType.journal-inbox.name": "Inbox deníku",
   "editor.mcp.name.label": "Název",
   "editor.mcp.name.placeholder": "Název serveru",
@@ -73,5 +74,16 @@
   "agentTool.inbox.proposal.get.label": "Zobrazit návrh Inboxu",
   "inbox.recognition.chooseType": "Vyberte typ položky.",
   "inbox.recognition.typeShortage": "Jsou dostupné méně než dva platné aktivní typy.",
-  "inbox.recognition.changed": "Vybraný typ nebo cíl není dostupný nebo se změnil. Prosím upřesněte zadání."
+  "inbox.recognition.changed": "Vybraný typ nebo cíl není dostupný nebo se změnil. Prosím upřesněte zadání.",
+  "card.target.task": "Úkol",
+  "card.target.event": "Událost",
+  "card.target.page": "Stránka",
+  "card.target.journal": "Deník",
+  "card.target.project": "Projekt",
+  "card.target.area": "Oblast",
+  "card.target.company": "Firma",
+  "card.target.person": "Osoba",
+  "card.target.health": "Zdravotní záznam",
+  "card.target.file": "Soubor",
+  "card.target.speaker": "Mluvčí"
 }

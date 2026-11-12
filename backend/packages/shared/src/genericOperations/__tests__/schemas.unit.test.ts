@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DatabaseArchiveInputSchema,
   DatabaseCreateInputSchema,
+  DatabaseFacetsInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
   DatabasePatchInputSchema,
@@ -75,6 +76,7 @@ const ALL_SCHEMAS = [
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
   ItemCountInputSchema,
+  DatabaseFacetsInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -701,6 +703,93 @@ describe("ItemCountInputSchema (issue #1709)", () => {
       const forCount = ItemCountInputSchema.safeParse({ items: [{ databaseId, filter }] });
       expect(forCount.success, JSON.stringify(filter).slice(0, 80)).toBe(false);
       expect(DatabaseQueryInputSchema.safeParse({ databaseId, filter }).success).toBe(false);
+    }
+  });
+});
+
+describe("DatabaseFacetsInputSchema (issue #1759)", () => {
+  const databaseId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const relation = {
+    type: "relation_path_contains",
+    path: ["project", "area"],
+    value: "11111111-1111-4111-8111-111111111111",
+  };
+  const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
+
+  it("accepts one to twenty facets and refuses none or twenty-one, naming facets", () => {
+    for (const length of [1, 20]) {
+      const facets = Array.from({ length }, (_, index) => `property${index}`);
+      expect(DatabaseFacetsInputSchema.safeParse({ databaseId, facets }).success, String(length)).toBe(true);
+    }
+    for (const length of [0, 21]) {
+      const facets = Array.from({ length }, (_, index) => `property${index}`);
+      const parsed = DatabaseFacetsInputSchema.safeParse({ databaseId, facets });
+      expect(parsed.success, String(length)).toBe(false);
+      if (parsed.success) throw new Error("Expected the facet count to be refused");
+      expect(validationIssueField(parsed.error.issues)).toBe("facets");
+    }
+  });
+
+  it("accepts property keys and two-key paths together with a filter tree and an open filter", () => {
+    const input = {
+      databaseId: databaseId.toUpperCase(),
+      filter: { type: "and", nodes: [{ type: "equals", property: "status", value: "inProgress" }, relation] },
+      facets: ["status", { path: ["project", "area"] }],
+      extra: { open: { type: "equals", property: "status", value: "notDone" } },
+    };
+    expect(DatabaseFacetsInputSchema.parse(input)).toEqual(input);
+  });
+
+  it.each([
+    ["a missing facet list", { databaseId }, "facets"],
+    ["a facet list that is not an array", { databaseId, facets: "status" }, "facets"],
+    ["a missing database", { facets: ["status"] }, "databaseId"],
+    ["a malformed database id", { databaseId: "bad", facets: ["status"] }, "databaseId"],
+    ["an unknown top-level key", { databaseId, facets: ["status"], q: "text" }, undefined],
+    ["an empty property key", { databaseId, facets: ["status", ""] }, "facets.1"],
+    ["a path with an empty key", { databaseId, facets: [{ path: ["project", ""] }] }, "facets.0.path.1"],
+    // A facet that matches neither form fails the union as a whole, which the field mapper reports without a field.
+    ["a facet that is a number", { databaseId, facets: [1] }, undefined],
+    ["a path of one key", { databaseId, facets: [{ path: ["project"] }] }, undefined],
+    ["a path of three keys", { databaseId, facets: [{ path: ["project", "area", "name"] }] }, undefined],
+    ["a path object with another key", { databaseId, facets: [{ path: ["project", "area"], top: 5 }] }, undefined],
+    // A missing open filter fails the filter union the same way.
+    ["an extra without an open filter", { databaseId, facets: ["status"], extra: {} }, undefined],
+    [
+      "an extra with another key",
+      { databaseId, facets: ["status"], extra: { open: relation, closed: relation } },
+      "extra",
+    ],
+  ])("refuses %s", (_name, input, field) => {
+    const parsed = DatabaseFacetsInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected the input to be refused");
+    expect(validationIssueField(parsed.error.issues)).toBe(field);
+  });
+
+  it("refuses in filter and in extra.open the filter trees database.query refuses", () => {
+    expect(DatabaseFacetsInputSchema.safeParse({ databaseId, facets: ["status"], filter: nested(8) }).success).toBe(
+      true,
+    );
+    expect(
+      DatabaseFacetsInputSchema.safeParse({ databaseId, facets: ["status"], extra: { open: nested(8) } }).success,
+    ).toBe(true);
+    for (const filter of [
+      nested(9),
+      { type: "unknown", property: "name" },
+      { type: "and", nodes: [] },
+      { type: "or", nodes: Array.from({ length: 21 }, () => relation) },
+      { type: "equals", property: "name", value: "x", extra: true },
+    ]) {
+      const label = JSON.stringify(filter).slice(0, 80);
+      expect(DatabaseQueryInputSchema.safeParse({ databaseId, filter }).success, label).toBe(false);
+      expect(DatabaseFacetsInputSchema.safeParse({ databaseId, facets: ["status"], filter }).success, label).toBe(
+        false,
+      );
+      expect(
+        DatabaseFacetsInputSchema.safeParse({ databaseId, facets: ["status"], extra: { open: filter } }).success,
+        label,
+      ).toBe(false);
     }
   });
 });

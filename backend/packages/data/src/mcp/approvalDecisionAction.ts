@@ -8,6 +8,7 @@ import {
 } from "./approvalRequestsStore.js";
 import { resolveNotificationsBySource } from "../notifications/notificationsStore.js";
 import { postApprovalOutcomeMessage } from "./approvalOutcomeMessage.js";
+import { publishApprovalRequestChange } from "./approvalRequestRealtime.js";
 
 export interface DecideAndEnqueueResult {
   outcome: "decided" | "unchanged";
@@ -34,10 +35,11 @@ export interface DecideApprovalRequestInput {
  *
  * Decide and re-read run in the same transaction, so the outcome cannot race another decision:
  * - `decided`: this call made the transition (and enqueued, on approval), and resolved the
- *   request's notifications in the same transaction;
+ *   request's notifications in the same transaction, and announced the change to its owner through
+ *   `publishApprovalRequestChange` once the transaction commits;
  * - `unchanged`: the caller owns the request's run but it is no longer pending — whoever recorded
  *   that decision (the owner, or a system path such as a migration that left `decided_by` NULL) —
- *   so the update matched nothing and the current state is returned;
+ *   so the update matched nothing, the current state is returned and nothing is announced;
  * - `null`: the id is unknown, not owned by `decidedByUserId` (issue #1028), or in another tenant.
  *   The caller answers all three identically.
  */
@@ -62,6 +64,7 @@ export async function decideAndEnqueueApprovalRequest(
   if (request.status === "rejected") await postApprovalOutcomeMessage(client, request, "rejected");
 
   await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
+  await publishApprovalRequestChange(client, request);
 
   return { outcome: "decided", request };
 }

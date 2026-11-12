@@ -11,4 +11,12 @@ export const EVENTS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "event transcript action items",
+    method: "GET",
+    path: `/api/events/${EXAMPLE_ID}/transcript-action-items`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

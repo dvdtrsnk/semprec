@@ -23,6 +23,8 @@ export interface DatabaseEnvelope {
   clientVisible: boolean;
   /** True while the user hides the database from the overview (issue #2002); the two orders stay as declared. */
   overviewHidden: boolean;
+  /** True for a system database whose data an agent must not read or write by default (issue #1808). */
+  sensitive: boolean;
   /**
    * The view type the database's module manifest declares for its default view (issue #1707), such as
    * `gallery` for `recipes`. `null` when the manifest declares none and for a user-created database. It is
@@ -55,6 +57,7 @@ export function toDatabaseEnvelope(
     switcherOrder: metadata.switcherOrder,
     clientVisible: metadata.clientVisible,
     overviewHidden: metadata.overviewHidden,
+    sensitive: database.sensitive,
     defaultViewType,
   };
 }

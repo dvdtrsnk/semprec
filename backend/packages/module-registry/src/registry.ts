@@ -1,6 +1,6 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import { z } from "zod";
-import { CAPABILITY_IDS } from "@semprec/shared";
+import { CAPABILITY_IDS, type RiskClass } from "@semprec/shared";
 import {
   moduleManifestSchema,
   type AreaFilterTemplate,
@@ -57,6 +57,12 @@ export interface ModuleAgentToolDefinition {
   handler: unknown;
   argumentSchema: Record<string, unknown>;
   parseArguments: (value: unknown) => { success: true; data: unknown } | { success: false };
+  /** `true` for a tool declared with `requiresApproval`; such a tool is returned only on request. */
+  requiresApproval?: boolean;
+  /** The declared risk class; absent when the manifest declares none. */
+  riskClass?: RiskClass;
+  /** Set with `requiresApproval`: the resolved `snapshotExport`, untyped like `handler`; absent when none is declared. */
+  snapshot?: unknown;
 }
 
 export interface ModuleTaskProjection {
@@ -270,6 +276,8 @@ export class ModuleRegistry {
   private assertExportsExist(path: string, manifest: ModuleManifest, imported: Record<string, unknown>): void {
     for (const tool of manifest.agentTools) {
       this.requireFunctionExport(imported, tool.handlerExport, path, `agent tool "${tool.name}"`);
+      if (tool.snapshotExport !== undefined)
+        this.requireFunctionExport(imported, tool.snapshotExport, path, `agent tool "${tool.name}" snapshot`);
       const schema = this.requireExport(imported, tool.argumentSchemaExport, path, `agent tool "${tool.name}"`);
       if (!(schema instanceof z.ZodType))
         throw new Error(`Module at "${path}" agent tool "${tool.name}" has invalid argument schema`);
@@ -651,13 +659,22 @@ export class ModuleRegistry {
     return active.flatMap(({ manifest }) => manifest.agentTools.map((tool) => tool.name));
   }
 
-  async getAgentToolDefinitions(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolDefinition[]> {
+  /**
+   * The agent tools of the active modules whose capability is granted. A tool declared with
+   * `requiresApproval` is left out unless `options.includeApprovalGated` is set, so a caller that
+   * cannot defer a call to an approval request never receives a tool it would run directly. Every
+   * other tool is returned when its `approval` is `none`.
+   */
+  async getAgentToolDefinitions(
+    grantedCapabilities: ReadonlySet<string>,
+    options: { includeApprovalGated?: boolean } = {},
+  ): Promise<ModuleAgentToolDefinition[]> {
     const active = await this.getActiveModules();
     return active.flatMap(({ manifest, exports }) =>
       manifest.agentTools
         .filter(
           (tool) =>
-            tool.approval === "none" &&
+            (tool.requiresApproval === true ? options.includeApprovalGated === true : tool.approval === "none") &&
             (tool.capability === undefined ||
               (grantedCapabilities.has(tool.capability) &&
                 (manifest.capabilities.includes(tool.capability) ||
@@ -666,6 +683,7 @@ export class ModuleRegistry {
         .map((tool) => {
           const schema = exports[tool.argumentSchemaExport];
           const handler = exports[tool.handlerExport];
+          const snapshot = tool.snapshotExport === undefined ? undefined : exports[tool.snapshotExport];
           if (!(schema instanceof z.ZodType) || typeof handler !== "function")
             throw new Error(`Invalid agent tool exports for ${tool.name}`);
           return {
@@ -677,6 +695,10 @@ export class ModuleRegistry {
               const result = schema.safeParse(value);
               return result.success ? { success: true as const, data: result.data } : { success: false as const };
             },
+            ...(tool.riskClass === undefined ? {} : { riskClass: tool.riskClass }),
+            ...(tool.requiresApproval === true
+              ? { requiresApproval: true as const, ...(snapshot === undefined ? {} : { snapshot }) }
+              : {}),
           };
         }),
     );

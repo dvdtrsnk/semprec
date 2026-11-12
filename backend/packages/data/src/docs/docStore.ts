@@ -26,7 +26,13 @@ import {
   renamePageWithClient,
   type DuplicatePageOptions,
 } from "./pageOperations.js";
-import { insertPageMarkdown, readPageMarkdown, type InsertPageMarkdownInput } from "./pageMarkdown.js";
+import {
+  insertPageMarkdown,
+  readPageMarkdown,
+  replacePageMarkdown,
+  type InsertPageMarkdownInput,
+  type ReplacePageMarkdownInput,
+} from "./pageMarkdown.js";
 import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
@@ -104,6 +110,11 @@ export function createDocStore(pool: Pool) {
     /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
     async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput) {
       return withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+    },
+
+    /** Replaces a page's body from Markdown under the version token the caller read (issue #1765) in one transaction. */
+    async replacePageMarkdown(itemId: string, input: ReplacePageMarkdownInput) {
+      return withTransaction(pool, (client) => replacePageMarkdown(client, itemId, input));
     },
 
     /**

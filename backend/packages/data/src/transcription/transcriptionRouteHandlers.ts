@@ -25,6 +25,8 @@ import { listTranscriptsPage, TRANSCRIPT_PAIRINGS, type TranscriptListCursor } f
 import { parseStoredMeetingNotes } from "./meetingNotesRendering.js";
 import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 import { clearActionItemState, listActionItemStates, setActionItemState } from "./transcriptActionItemStates.js";
+import { createActionItemTask, listEventActionItemProposals, removeActionItemTask } from "./transcriptActionItems.js";
+import { assignTranscriptSpeaker, listSpeakerCandidates } from "./transcriptSpeakerAssignment.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -275,6 +277,172 @@ export function createTranscriptActionItemStateRouteHandler(pool: Pool) {
       });
       return { status: 200, body: { actionItemId: stored.actionItemId, state: stored.state } };
     });
+  };
+}
+
+/** The request context of the two action item task routes: the signed-in user is the writer, and the task's name is rendered in their locale. */
+interface ActionItemTaskRouteRequestContext {
+  params: Record<string, string>;
+  body: unknown;
+  identity: { user: { id: string; locale: string } };
+}
+
+/** The transcript and the action item an action item task route names; a malformed one is `validation_failed` on its field. */
+function readActionItemTaskPath(params: Record<string, string>): { transcriptId: string; actionItemId: number } {
+  const parsedId = transcriptIdSchema.safeParse(params.id);
+  if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  const parsedActionItemId = actionItemIdSchema.safeParse(params.actionItemId);
+  if (!parsedActionItemId.success) {
+    throw new ValidationError("'actionItemId' must be a non-negative integer", { field: "actionItemId" });
+  }
+  return { transcriptId: parsedId.data, actionItemId: parsedActionItemId.data };
+}
+
+const actionItemTaskBodySchema = z.object({ name: z.string().optional(), date: z.iso.date().optional() });
+
+/**
+ * `POST /api/transcripts/:id/action-items/:actionItemId/task` (issue #1767): makes a task of one action
+ * item of a transcript's meeting notes. The body is `{ name?, date? }`: the task's name instead of the
+ * item's text, and its date (`YYYY-MM-DD`) instead of the item's `due`. Answers `201 { taskId }` for a
+ * task this call created and `200 { taskId }` for one that existed: the live task of an item that is
+ * already `added`, or a task that was taken back and then restored from the Trash. A repeated call
+ * and a concurrent one therefore create no second task. `createActionItemTask` describes the
+ * transaction.
+ *
+ * A non-UUID `id`, an `actionItemId` that is not an integer from 0 to 2147483647 and a body whose
+ * `name` is not a string or whose `date` is not a calendar date are `400 validation_failed` on that
+ * field (`body` for a body that is not an object), before the transaction starts. An unknown id,
+ * another tenant's id, a transcript in the Trash and an `actionItemId` the notes do not have answer
+ * the same 404.
+ */
+export function createTranscriptActionItemTaskRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: ActionItemTaskRouteRequestContext): Promise<CustomRouteResult> => {
+    const path = readActionItemTaskPath(ctx.params);
+    const parsedBody = actionItemTaskBodySchema.safeParse(ctx.body);
+    if (!parsedBody.success) {
+      const field = parsedBody.error.issues[0]?.path[0];
+      throw new ValidationError("'name' must be a string and 'date' a calendar date YYYY-MM-DD", {
+        field: typeof field === "string" ? field : "body",
+      });
+    }
+    const { id: userId, locale } = ctx.identity.user;
+    const { taskId, created } = await withTransaction(pool, (client) =>
+      createActionItemTask(client, { ...path, ...parsedBody.data, locale, userId, queueAffinity }),
+    );
+    return { status: created ? 201 : 200, body: { taskId } };
+  };
+}
+
+/**
+ * `DELETE /api/transcripts/:id/action-items/:actionItemId/task` (issue #1767): takes back the task
+ * made of an action item. For an item that is `added` it moves the task to the Trash and makes the
+ * item open again; for any other item it changes nothing. Answers `200 { actionItemId, state }` with
+ * the state the item has after the call (`null` for an open item), so a repeated call answers the
+ * same. `removeActionItemTask` describes the transaction. The path is validated, and an unknown
+ * transcript or action item answered, as by the `POST` on the same path.
+ */
+export function createTranscriptActionItemTaskRemoveRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: ActionItemTaskRouteRequestContext): Promise<CustomRouteResult> => {
+    const path = readActionItemTaskPath(ctx.params);
+    const body = await withTransaction(pool, (client) =>
+      removeActionItemTask(client, { ...path, userId: ctx.identity.user.id, queueAffinity }),
+    );
+    return { status: 200, body };
+  };
+}
+
+/**
+ * `GET /api/events/:id/transcript-action-items` (issue #1767): the open action items the Event's
+ * transcripts offer as tasks, as a JSON array of
+ * `{ transcriptId, actionItemId, text, ownerSpeaker, ownerLabel, due, startsAt, state }` in the order
+ * `listEventActionItemProposals` gives; an Event without a transcript answers `[]`. The lookup runs
+ * in the caller's tenant scope, so another tenant's Event answers like an unknown id and like an
+ * Event in the Trash: the same `not_found` body. An `id` that is not a UUID is `validation_failed` on
+ * `id`.
+ */
+export function createEventTranscriptActionItemsRouteHandler(pool: Pool) {
+  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = z.uuid().safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const proposals = await withTransaction(pool, (client) =>
+      listEventActionItemProposals(client, parsedId.data, ctx.identity.user.locale),
+    );
+    if (proposals === null) throw new NotFoundError("Event not found");
+    return { status: 200, body: proposals };
+  };
+}
+
+/** The request context of `PUT /api/transcripts/:id/speakers/:speaker`: the signed-in user is the writer, and the label is rendered in their locale. */
+interface SpeakerAssignRouteRequestContext {
+  params: Record<string, string>;
+  body: unknown;
+  identity: { user: { id: string; locale: string } };
+}
+
+const speakerKeySchema = z.string().min(1).max(256);
+
+const speakerAssignmentBodySchema = z.object({ personId: z.uuid().nullable() });
+
+/**
+ * `PUT /api/transcripts/:id/speakers/:speaker` (issue #1770): assigns the speaker key `:speaker` of a
+ * transcript to the person `{ personId }`, replaces that person, or clears the key with
+ * `{ personId: null }`, in one transaction that also adds the person to the linked Event's participants
+ * and settles the speaker's Inbox card. Answers `200 { speaker, label, personId }` with the label
+ * `GET /api/transcripts/:id/speakers` shows for the key in the caller's locale and `personId` null
+ * for an unmapped key; assigning the person the key already has answers the same. `assignTranscriptSpeaker`
+ * describes the transaction and its refusals.
+ *
+ * A non-UUID `id`, an empty or over-long `:speaker` and a body that is not `{ personId: uuid | null }` are
+ * `400 validation_failed` on `id`, `speaker` and `personId` (`body` for a body that is not an object), before
+ * the transaction starts. An unknown or another tenant's transcript or person answers the same 404.
+ */
+export function createTranscriptSpeakerAssignRouteHandler(pool: Pool) {
+  return async (ctx: SpeakerAssignRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const parsedSpeaker = speakerKeySchema.safeParse(ctx.params.speaker);
+    if (!parsedSpeaker.success) {
+      throw new ValidationError("'speaker' must be a speaker key of 1 to 256 characters", { field: "speaker" });
+    }
+    const parsedBody = speakerAssignmentBodySchema.safeParse(ctx.body);
+    if (!parsedBody.success) {
+      const field = parsedBody.error.issues[0]?.path[0];
+      throw new ValidationError("'personId' must be a UUID string or null", {
+        field: typeof field === "string" ? field : "body",
+      });
+    }
+    const speakers = await withTransaction(pool, (client) =>
+      assignTranscriptSpeaker(client, {
+        transcriptId: parsedId.data,
+        speaker: parsedSpeaker.data,
+        personId: parsedBody.data.personId,
+        userId: ctx.identity.user.id,
+      }),
+    );
+    const labeled = (await labelTranscriptSpeakers(speakers, ctx.identity.user.locale)).find(
+      (entry) => entry.speaker === parsedSpeaker.data,
+    );
+    // The assignment refuses a key the transcript does not have, so the key is among the speakers it read back.
+    if (!labeled) throw new Error("The assigned speaker is missing from the transcript's speakers");
+    return { status: 200, body: { speaker: labeled.speaker, label: labeled.label, personId: labeled.personId } };
+  };
+}
+
+/**
+ * `GET /api/transcripts/:id/speaker-candidates` (issue #1770): the people a client can offer for a
+ * transcript's speakers as `{ participants: [{ personId, name, title, relationship, invitationStatus,
+ * mappedSpeaker }], self: { personId, name, mappedSpeaker } | null }`. `listSpeakerCandidates` describes
+ * what each part holds. A non-UUID `id` is `validation_failed` on `id`; an unknown or another tenant's
+ * transcript answers the same 404 as the assignment route.
+ */
+export function createTranscriptSpeakerCandidatesRouteHandler(pool: Pool) {
+  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const candidates = await withTransaction(pool, (client) => listSpeakerCandidates(client, parsedId.data));
+    return { status: 200, body: candidates };
   };
 }
 

@@ -226,6 +226,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
+        sourceTable: "semp_problems",
+        sourceId: "hb-fanout-dispatch",
+        kind: "semp_problem",
       },
     );
     expect(sendApns).toHaveBeenCalledTimes(1);
@@ -237,6 +240,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
+        sourceTable: "semp_problems",
+        sourceId: "hb-fanout-dispatch",
+        kind: "semp_problem",
       },
     );
 
@@ -281,6 +287,160 @@ describe("notificationFanout job (issue #151)", () => {
       body: "Smazat pohled „Open tasks“ z „Tasks“. Semp tuto akci nedokáže vrátit zpět.",
       linkHref: `?page=approvals&user=${userId}`,
       interruptionLevel: "time-sensitive",
+      sourceTable: "approval_requests",
+      sourceId: "approval-body-push",
+      kind: "approval_pending",
+      apns: { category: "APPROVAL_REQUEST", approvalRequestId: "approval-body-push" },
+    });
+  });
+
+  it("hands the source table, source id and kind of the notification to both senders (issue #1829)", async () => {
+    const userId = await createTestUser();
+    await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId: null,
+      endpoint: "https://push.example/web-source",
+      p256dh: "p256dh-key",
+      authSecret: "auth-secret",
+    });
+    await upsertApnsSubscription(pool, {
+      userId,
+      sessionId: null,
+      platform: "ios",
+      deviceToken: "device-token-source",
+      apnsEnvironment: "sandbox",
+    });
+    const approvalId = await writeTestNotification(
+      userId,
+      "approval-source",
+      "approval_pending",
+      "approval_requests",
+      {},
+    );
+    const problemId = await writeTestNotification(userId, "problem-source");
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    const sendApns = vi.fn().mockResolvedValue({ outcome: "delivered" });
+
+    await handleNotificationFanoutTask(pool, { notificationId: approvalId }, { sendWebPush, sendApns });
+    await handleNotificationFanoutTask(pool, { notificationId: problemId }, { sendWebPush, sendApns });
+
+    const approval = {
+      notificationId: approvalId,
+      sourceTable: "approval_requests",
+      sourceId: "approval-source",
+      kind: "approval_pending",
+      apns: { category: "APPROVAL_REQUEST", approvalRequestId: "approval-source" },
+    };
+    const problem = {
+      notificationId: problemId,
+      sourceTable: "semp_problems",
+      sourceId: "problem-source",
+      kind: "semp_problem",
+    };
+    expect(sendApns.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining(approval),
+      expect.objectContaining(problem),
+    ]);
+    expect(sendWebPush.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining(approval),
+      expect.objectContaining(problem),
+    ]);
+  });
+
+  describe("APNs category and request id of an approval push (issue #1831)", () => {
+    async function addRegistrations(userId: string, label: string): Promise<void> {
+      await upsertWebPushSubscription(pool, {
+        userId,
+        sessionId: null,
+        endpoint: `https://push.example/${label}`,
+        p256dh: "p256dh-key",
+        authSecret: "auth-secret",
+      });
+      await upsertApnsSubscription(pool, {
+        userId,
+        sessionId: null,
+        platform: "ios",
+        deviceToken: `device-token-${label}`,
+        apnsEnvironment: "sandbox",
+      });
+    }
+
+    function senders() {
+      return {
+        sendWebPush: vi.fn().mockResolvedValue({ outcome: "delivered" }),
+        sendApns: vi.fn().mockResolvedValue({ outcome: "delivered" }),
+      };
+    }
+
+    it("hands the category, the request id from source_id and the time-sensitive level to the APNs sender", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "approval-fields");
+      const notificationId = await writeTestNotification(
+        userId,
+        "5d2f0d6e-2f4b-4a0c-9a43-0d1d3a8d7a10",
+        "approval_pending",
+        "approval_requests",
+        {},
+      );
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).toHaveBeenCalledTimes(1);
+      expect(sent.sendApns.mock.calls[0]![1]).toMatchObject({
+        notificationId,
+        interruptionLevel: "time-sensitive",
+        apns: { category: "APPROVAL_REQUEST", approvalRequestId: "5d2f0d6e-2f4b-4a0c-9a43-0d1d3a8d7a10" },
+      });
+    });
+
+    it("sets no category and no request id on a notification of any other kind", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "problem-fields");
+      const notificationId = await writeTestNotification(userId, "problem-no-apns-fields");
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).toHaveBeenCalledTimes(1);
+      expect(sent.sendApns.mock.calls[0]![1]).not.toHaveProperty("apns");
+    });
+
+    it("sets no category and no request id on an approval notification whose source is not an approval request", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "approval-other-source");
+      const notificationId = await writeTestNotification(
+        userId,
+        "not-a-request-id",
+        "approval_pending",
+        "semp_problems",
+        {},
+      );
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).toHaveBeenCalledTimes(1);
+      expect(sent.sendApns.mock.calls[0]![1]).not.toHaveProperty("apns");
+    });
+
+    it("sends the approval to no APNs registration at all, so at no time-sensitive level, once the approvals switch is off", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "approval-switch-off");
+      await withTransaction(pool, (client) => patchNotificationPreferences(client, userId, { approvals: false }));
+      const notificationId = await writeTestNotification(
+        userId,
+        "approval-switch-off",
+        "approval_pending",
+        "approval_requests",
+        {},
+      );
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).not.toHaveBeenCalled();
+      expect(sent.sendWebPush).not.toHaveBeenCalled();
     });
   });
 
@@ -537,6 +697,10 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
+        sourceTable: "approval_requests",
+        sourceId: "approval-on",
+        kind: "approval_pending",
+        apns: { category: "APPROVAL_REQUEST", approvalRequestId: "approval-on" },
       });
     });
 
@@ -564,6 +728,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
+        sourceTable: "semp_problems",
+        sourceId: "problem-critical",
+        kind: "semp_problem",
       });
     });
 
@@ -582,6 +749,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "active",
+        sourceTable: "semp_problems",
+        sourceId: "problem-summary-off",
+        kind: "semp_problem",
       });
     });
 
@@ -633,6 +803,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
+        sourceTable: "semp_problems",
+        sourceId: "no-row-critical",
+        kind: "semp_problem",
       });
       expect(await countRows(`SELECT count(*) FROM notification_preferences WHERE user_id = $1`, [userId])).toBe(0);
     });
@@ -673,6 +846,9 @@ describe("notificationFanout job (issue #151)", () => {
         body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "passive",
+        sourceTable: "semp_problems",
+        sourceId: "payload-warning",
+        kind: "semp_problem",
       });
     });
 

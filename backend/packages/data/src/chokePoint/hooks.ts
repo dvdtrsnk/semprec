@@ -5,10 +5,13 @@
 // hook through `../domainWriteHooks.ts`, the
 // one composition point that knows every domain by name so `chokePoint/` does not have to.
 // Constrained by: docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// and, for the initial relations in the create hook context,
+// docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md
 // and, for the pre-write transform registry, docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
 // and, for the delete and restore registries, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 // and docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
 // and, for the purge registry, docs/adr/2026-11-10-item-purge-domain-hooks.md
+// and, for the update pre-lock registry, docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md
 // and, for the delete approval guard registry,
 // docs/adr/2026-11-11-a-mailboxes-item-is-trashed-only-by-the-system-writer.md
 import type { PoolClient } from "pg";
@@ -17,6 +20,12 @@ import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 import type { WriterIdentity, WriterKind } from "./writerKind.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
+
+/** One relation a create with initial relations names: a relation property and the items the new item is linked to through it. */
+export interface ItemCreateInitialRelation {
+  relationPropertyId: string;
+  targetItemIds: readonly string[];
+}
 
 export interface ItemCreateHookContext {
   client: PoolClient;
@@ -27,6 +36,15 @@ export interface ItemCreateHookContext {
   humanWriterUserId?: string;
   /** Who made the write; `system` when the caller supplied nothing. Sits next to `humanWriterUserId`, not instead of it. */
   writer: WriterIdentity;
+  /**
+   * The relations `createItemWithRelationsWithClient` (`itemCreateWithRelations.ts`) was given with this
+   * create, without those whose property key its caller could not resolve. That function checks and writes
+   * them on the same client after the create hooks returned, and throws when it cannot write one. When a
+   * hook runs they are unchecked and the create has written none of their edges. Absent for a create
+   * that function did not make. See
+   * docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md.
+   */
+  initialRelations?: readonly ItemCreateInitialRelation[];
 }
 
 export type ItemCreateHook = (context: ItemCreateHookContext) => Promise<void>;
@@ -50,6 +68,24 @@ export interface ItemUpdateHookContext {
 }
 
 export type ItemUpdateHook = (context: ItemUpdateHookContext) => Promise<void>;
+
+/**
+ * Context of an item update pre-lock hook: one update about to start, before it has locked or changed any row.
+ * `patch` is the caller's patch as it was sent.
+ */
+export interface ItemUpdatePreLockHookContext {
+  client: PoolClient;
+  database: DatabaseRow;
+  itemId: string;
+  patch: Record<string, unknown>;
+}
+
+/**
+ * Takes a lock that must be held before the update locks the written row, so every writer of a module orders
+ * its locks the same way. It changes nothing and returns nothing; a throw rolls the update back. See
+ * docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md.
+ */
+export type ItemUpdatePreLockHook = (context: ItemUpdatePreLockHookContext) => Promise<void>;
 
 /**
  * Context of an item delete hook (issue #1601): one row the trash cascade of `itemDeleteWithClient`
@@ -226,6 +262,8 @@ const relationEdgeChangedHooks = new Set<RelationEdgeChangedHook>();
 const activeChangedEdges = new WeakMap<PoolClient, Set<string>>();
 /** Keyed by owning module id; each module's transforms keep their registration order. */
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
+/** Keyed by owning module id; each module's pre-lock hooks keep their registration order. */
+const itemUpdatePreLockHooks = new Map<string, ItemUpdatePreLockHook[]>();
 const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
 
 export interface ItemUpdateCommand {
@@ -309,6 +347,16 @@ export function isItemUpdateCommandPaired(moduleId: string, command: ItemUpdateC
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {
   itemCreateHooks.add(hook);
+}
+
+/**
+ * Attaches an update pre-lock hook to one owning module. The caller runs it only for a database whose
+ * `ownerModuleId` is `moduleId`. Registering the same `(moduleId, hook)` twice is a no-op.
+ */
+export function registerItemUpdatePreLockHook(moduleId: string, hook: ItemUpdatePreLockHook): void {
+  const registered = itemUpdatePreLockHooks.get(moduleId) ?? [];
+  if (registered.includes(hook)) return;
+  itemUpdatePreLockHooks.set(moduleId, [...registered, hook]);
 }
 
 /** Registering the same function twice is a no-op — a hook module imported from more than one place still runs once. */
@@ -473,6 +521,20 @@ export async function runItemPreWriteTransforms(
   return patch;
 }
 
+/**
+ * Runs a module's update pre-lock hooks sequentially, in registration order, inside the caller's transaction.
+ * `updateItemWithClient` calls it before the first lock on the written row, and only for a module that has
+ * one. The first rejection propagates and rolls the update back.
+ */
+export async function runItemUpdatePreLockHooks(
+  moduleId: string,
+  context: ItemUpdatePreLockHookContext,
+): Promise<void> {
+  for (const hook of itemUpdatePreLockHooks.get(moduleId) ?? []) {
+    await hook(context);
+  }
+}
+
 /** Test-only reset of every registry — guarded so it cannot run against a real process's hooks. */
 export function clearHooksForTests(): void {
   if (process.env.NODE_ENV !== "test") {
@@ -488,6 +550,7 @@ export function clearHooksForTests(): void {
   relationEdgeChangedHooks.clear();
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
+  itemUpdatePreLockHooks.clear();
   itemPreWritePreparations.clear();
   itemUpdateCommands.clear();
   itemPatchApprovalContributions.clear();

@@ -69,6 +69,9 @@ const DESTRUCTIVE_OPERATIONS: readonly GenericOperationName[] = GENERIC_OPERATIO
   (operation) => OPERATION_METADATA[operation].requiresApproval,
 );
 
+/** Operations whose fixture holds an active value link they end, so an agent run credential is asked for approval (issue #1758). */
+const LINK_ENDING_OPERATIONS: readonly GenericOperationName[] = ["link.unlink"];
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 let gateway: GenericOperationGateway;
@@ -263,14 +266,14 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 44-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 46-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
  * human-session actor (never approval-gated, matching `mcpHandler.test.ts`'s existing "no approval
  * gate for MCP actors" case) and by a restricted run-credential actor scoped to exactly the
- * operation's own capability (approval-gated for the 5 destructive operations). The two REST-only
- * operations (issue #1699) carry valid arguments and are expected to be refused as unknown tools by both actors.
+ * operation's own capability (approval-gated for the 5 destructive operations). The REST-only
+ * operations (issues #1699 and #1765) carry valid arguments and are expected to be refused as unknown tools by both actors.
  */
 const CASES: Record<GenericOperationName, Case> = {
   "database.list": { tool: () => ({ name: "semprec.database.list", arguments: {} }) },
@@ -449,6 +452,13 @@ const CASES: Record<GenericOperationName, Case> = {
       arguments: { itemId: fx.itemA.id, placement: "end", markdown: "Contract text" },
     }),
   },
+  // REST-only (issue #1765): both actors are refused it as an unknown tool, with valid arguments.
+  "page.replace": {
+    tool: (fx) => ({
+      name: "semprec.page.replace",
+      arguments: { itemId: fx.itemA.id, markdown: "Contract replacement", expectedEtag: "A".repeat(43) },
+    }),
+  },
   "page.createSubpage": {
     tool: (fx) => ({
       name: "semprec.page.createSubpage",
@@ -513,6 +523,12 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "item.count": {
     tool: (fx) => ({ name: "semprec.item.count", arguments: { items: [{ databaseId: fx.database.id }] } }),
+  },
+  "database.facets": {
+    tool: (fx) => ({
+      name: "semprec.database.facets",
+      arguments: { databaseId: fx.database.id, facets: [fx.relationProperty.key] },
+    }),
   },
 };
 
@@ -1501,6 +1517,59 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(ungroupable.error?.data).toMatchObject({ field: "groupBy" });
   });
 
+  it("reads the facets of a database through MCP database.facets and refuses an oversized list, an own-property condition under or and a key that is no facet", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const fx = await buildFixtures();
+    const headers = await authHeader();
+    const titled = (value: string) => ({ type: "equals", property: fx.property.key, value });
+
+    const answered = await rpc(baseUrl, headers, "semprec.database.facets", {
+      databaseId: fx.database.id,
+      filter: titled("Dune"),
+      facets: [fx.relationProperty.key, fx.property.key],
+      extra: { open: titled("Arrival") },
+    });
+    expect(answered.error).toBeUndefined();
+    const facets: unknown = JSON.parse(z.string().parse(answered.result?.content[0]?.text));
+    expect(facets).toEqual([
+      // Under the filter only `itemB` counts, which is linked to no target and is not titled "Arrival".
+      { property: fx.relationProperty.key, all: 1, open: 0, values: [{ value: null, count: 1 }] },
+      // The title facet leaves the title condition out: both items count, `itemA` is the open one.
+      {
+        property: fx.property.key,
+        all: 2,
+        open: 1,
+        values: [
+          { value: "Arrival", count: 1 },
+          { value: "Dune", count: 1 },
+        ],
+      },
+    ]);
+
+    const oversized = await rpc(baseUrl, headers, "semprec.database.facets", {
+      databaseId: fx.database.id,
+      facets: Array.from({ length: 21 }, () => fx.property.key),
+    });
+    expect(oversized.error?.code).toBe(-32602);
+    expect(oversized.error?.data).toMatchObject({ field: "facets" });
+
+    const underOr = await rpc(baseUrl, headers, "semprec.database.facets", {
+      databaseId: fx.database.id,
+      filter: { type: "or", nodes: [titled("Dune"), titled("Arrival")] },
+      facets: [fx.property.key],
+    });
+    expect(underOr.error?.code).toBe(-32602);
+    expect(underOr.error?.data).toMatchObject({ field: "filter" });
+
+    const noFacet = await rpc(baseUrl, headers, "semprec.database.facets", {
+      databaseId: fx.database.id,
+      facets: ["missing"],
+    });
+    expect(noFacet.error?.code).toBe(-32602);
+    expect(noFacet.error?.data).toMatchObject({ field: "facets" });
+  });
+
   it("rejects an empty database patch at the MCP operation boundary", async () => {
     const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });
     const { server, baseUrl } = await startServer();
@@ -1539,7 +1608,7 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   describe("approval gate for a restricted run-credential actor", () => {
     for (const operation of GENERIC_OPERATION_NAMES) {
-      const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation);
+      const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation) || LINK_ENDING_OPERATIONS.includes(operation);
       it(`${isDestructive ? "queues an approval request for" : "executes"} ${operation}`, async () => {
         const { server, baseUrl } = await startServer();
         servers.push(server);

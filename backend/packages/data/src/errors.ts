@@ -156,6 +156,20 @@ export class OptionLabelExistsError extends ChokePointError {
 }
 
 /**
+ * The `duplicate_item` code of the REST error contract (issue gh-1784) — a write would leave a second non-deleted
+ * item where a database allows one per key (the sleep settings, a night exception). `details.field` names the
+ * key: `sleepSettings` for the settings item, `night` for an exception.
+ */
+export class DuplicateItemError extends ChokePointError {
+  declare readonly details: { field: string };
+
+  constructor(message: string, details: { field: string }) {
+    super(409, "duplicate_item", message, details);
+    this.name = "DuplicateItemError";
+  }
+}
+
+/**
  * The `approval_required` code of the REST error contract (issue #238) — raised in place of
  * performing an agent-originated write that the module contract flags as approval-gated (see
  * `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`). `details` links the

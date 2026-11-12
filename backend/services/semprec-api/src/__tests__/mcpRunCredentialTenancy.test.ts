@@ -114,6 +114,14 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     return { token: minted.token, projectItemId };
   }
 
+  async function requestCount(tenantId: string): Promise<number> {
+    const { rows } = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM approval_requests WHERE tenant_id = $1",
+      [tenantId],
+    );
+    return Number(rows[0]?.count);
+  }
+
   async function callTool(token: string, name: string, args: unknown): Promise<{ status: number; body: unknown }> {
     const res = await fetch(`${mcpUrl}/mcp`, {
       method: "POST",
@@ -402,7 +410,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     expect((await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id)))?.properties.color ?? null).toBeNull();
   });
 
-  it("attributes a linked relation write to the minted run's user", async () => {
+  it("asks approval for a linked relation write of the minted run, in the run's tenant (issue #1758)", async () => {
     const user = await createUserIn(tenantA);
     const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
     const credential = await runInTenant(tenantA, () =>
@@ -441,16 +449,62 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
         targetItemId: fixture.target.id,
       });
       expect(result.status).toBe(200);
-      expect(result.body).not.toHaveProperty("error");
-      expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.source.id)).toEqual([
-        expect.objectContaining({ userId: user.id }),
-      ]);
+      expect(result.body).toMatchObject({ error: { code: -32001 } });
+      expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.source.id)).toEqual([]);
+      expect(await runInTenant(tenantA, () => cp.listItemRelations(fixture.source.id, fixture.property.id))).toEqual(
+        [],
+      );
+      const links = await runInTenant(tenantA, () => cp.getValueLinksForItems([fixture.source.id]));
+      expect(links.get(fixture.source.id)?.related).toMatchObject({ valueKind: "inherited", brokenBy: null });
+      expect(await requestCount(tenantA)).toBe(1);
+      expect(await requestCount(tenantB)).toBe(0);
     } finally {
       setInvalidationHook(() => {});
     }
   });
 
-  it("breaks a linked value through a minted agent-run MCP credential within its tenant", async () => {
+  it("attributes a relation write of the minted run that asks no approval to the run's user", async () => {
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.write"], userId: user.id }),
+      ),
+    );
+    const cp = createChokePoint(pool);
+    const fixture = await runInTenant(tenantA, async () => {
+      const db = await cp.createDatabase({ name: "MCP unlinked relations" });
+      const { property } = await cp.createRelationProperty({
+        sourceDatabaseId: db.id,
+        targetDatabaseId: db.id,
+        key: "related",
+        name: "Related",
+        cardinality: "many_to_many",
+      });
+      const source = await cp.createItem({ databaseId: db.id, properties: {} });
+      const target = await cp.createItem({ databaseId: db.id, properties: {} });
+      return { source, target, property };
+    });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const result = await callTool(credential.token, "semprec.relation.put", {
+        relationPropertyId: fixture.property.id,
+        callerItemId: fixture.source.id,
+        targetItemId: fixture.target.id,
+      });
+      expect(result.status).toBe(200);
+      expect(result.body).not.toHaveProperty("error");
+      expect(events.filter((event) => event.scope === "relation" && event.itemId === fixture.source.id)).toEqual([
+        expect.objectContaining({ op: "put", userId: user.id }),
+      ]);
+      expect(await requestCount(tenantA)).toBe(0);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
+
+  it("asks approval for a linked value write of the minted run and leaves the foreign tenant's link alone (issue #1758)", async () => {
     const user = await createUserIn(tenantA);
     const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
     const credential = await runInTenant(tenantA, () =>
@@ -496,7 +550,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
       ifVersion: own.updatedAt,
     });
     expect(patched.status).toBe(200);
-    expect(patched.body).not.toHaveProperty("error");
+    expect(patched.body).toMatchObject({ error: { code: -32001 } });
     const read = await callTool(credential.token, "semprec.item.get", { itemId: own.id, include: ["links"] });
     const envelope = z
       .object({ result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }) })
@@ -505,9 +559,11 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     if (text === undefined) throw new Error("Missing MCP result content");
     const result: unknown = JSON.parse(text);
     expect(result).toMatchObject({
-      properties: { note: "after" },
-      links: { note: { valueKind: "inheritedBroken", brokenBy: "agent" } },
+      properties: { note: "before" },
+      links: { note: { valueKind: "inherited", brokenBy: null } },
     });
+    expect(await requestCount(tenantA)).toBe(1);
+    expect(await requestCount(tenantB)).toBe(0);
     const foreignLinks = await runInTenant(tenantB, () => cp.getValueLinksForItems([foreign.id]));
     expect(foreignLinks.get(foreign.id)?.note).toMatchObject({ valueKind: "inherited", brokenBy: null });
     expect((await runInTenant(tenantB, () => cp.getItem(foreign.databaseId, foreign.id)))?.properties.note).toBe(

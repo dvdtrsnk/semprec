@@ -14,12 +14,24 @@ import type { WriterIdentity } from "./writerKind.js";
 export type InitialItemRelation =
   { kind: "resolved"; relationPropertyId: string; targetItemIds: string[] } | { kind: "unresolved" };
 
+/**
+ * Creates an item and the edges of `input.relations` on the caller's client. The item is inserted and its
+ * create hooks run first; the hooks are given the resolved relations as `initialRelations`
+ * (docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md). The relations are
+ * checked and written after the hooks returned, and the first one that is refused throws. An
+ * idempotency-key replay returns the stored item and writes no edge.
+ */
 export async function createItemWithRelationsWithClient(
   client: PoolClient,
   input: CreateItemInput & { relations: InitialItemRelation[] },
   options: CreateItemWithClientOptions = {},
 ): Promise<ItemRow> {
-  const { item, created } = await createItemReportingReplay(client, input, options);
+  const { item, created } = await createItemReportingReplay(
+    client,
+    input,
+    options,
+    input.relations.filter((relation) => relation.kind === "resolved"),
+  );
   if (!created) return item;
   for (const relation of input.relations) {
     if (relation.kind === "unresolved") throw new ValidationError("Unknown relation property", { field: "relations" });

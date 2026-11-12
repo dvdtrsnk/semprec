@@ -46,6 +46,8 @@ const identity = { user: { id: userId } };
 /** The server's clock in every case: 10:00 UTC on Friday 16 October 2026, which is noon of that day in the seeded zone. */
 const NOW = Date.UTC(2026, 9, 16, 10, 0, 0);
 const TODAY = "2026-10-16";
+/** The end of the all-day events of `TODAY` in Europe/Prague (UTC+2), the `hiddenUntil` of a task placed in one. */
+const END_OF_TODAY = "2026-10-16T21:59:59.999Z";
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 async function seededTenant(): Promise<SeededTenant> {
@@ -249,8 +251,14 @@ describe("PUT /api/tasks/:id/host-events/:eventId for an occurrence of a recurri
     expect(await storedEdges(otherId)).toEqual([]);
     // The series row still names the placed item as its current instance, with the same rule, anchor and template.
     expect(await seriesRow(seriesId)).toEqual(before.row);
-    // The placed occurrence and the other stored one keep their properties and their version.
-    expect(await seriesItems(seriesId)).toEqual(before.items);
+    // The placed occurrence takes the host state of the event, which has not ended; the other stored one is as it was.
+    expect(await seriesItems(seriesId)).toEqual([
+      expect.objectContaining({
+        id: currentId,
+        properties: { ...before.items[0]?.properties, hiddenUntil: END_OF_TODAY },
+      }),
+      before.items[1],
+    ]);
     expect(await projected(seriesId, TODAY, "2026-10-19")).toEqual(before.projection);
   });
 
@@ -271,7 +279,14 @@ describe("PUT /api/tasks/:id/host-events/:eventId for an occurrence of a recurri
     expect(await storedEdges(occurrenceId)).toEqual([{ eventId, metadata: { addedAt: iso(NOW) } }]);
     expect(await storedEdges(currentId)).toEqual([]);
     expect(await seriesRow(seriesId)).toEqual(before.row);
-    expect(await seriesItems(seriesId)).toEqual(before.items);
+    expect(await seriesItems(seriesId)).toEqual([
+      before.items[0],
+      expect.objectContaining({
+        id: occurrenceId,
+        // The event is today's, so the 17 October occurrence is hidden until its end and counts as today's.
+        properties: { ...before.items[1]?.properties, hiddenUntil: END_OF_TODAY, effectiveDate: TODAY },
+      }),
+    ]);
     expect(await projected(seriesId, TODAY, "2026-10-18")).toEqual([
       `2026-10-16 ${currentId}`,
       `2026-10-17 ${occurrenceId}`,
@@ -301,12 +316,18 @@ describe("PUT /api/tasks/:id/host-events/:eventId for an occurrence of a recurri
     const nextId = items[1]?.id;
     if (nextId === undefined) throw new Error("The series did not advance");
     expect(await seriesRow(seriesId)).toEqual({ ...row, itemId: nextId });
-    expect(await storedEdges(currentId)).toEqual([{ eventId, metadata: { addedAt: iso(NOW) } }]);
+    // The event of today has not ended: the completion is a completion in it (issue #1781), and the next instance is not.
+    const hostEdge = { eventId, metadata: { addedAt: iso(NOW) } };
+    const completedEdge = { eventId, metadata: {} };
+    expect(await storedEdges(currentId)).toEqual(expect.arrayContaining([hostEdge, completedEdge]));
+    expect(await storedEdges(currentId)).toHaveLength(2);
     expect(await storedEdges(nextId)).toEqual([]);
 
     // The placed occurrence is no longer the current instance: completing it again creates nothing.
     await setStatus(currentId, "notDone");
+    expect(await storedEdges(currentId)).toEqual([hostEdge]);
     await setStatus(currentId, "done");
+    expect(await storedEdges(currentId)).toHaveLength(2);
     expect((await seriesItems(seriesId)).map((item) => item.id)).toEqual([currentId, nextId]);
     expect(await seriesRow(seriesId)).toEqual({ ...row, itemId: nextId });
   });

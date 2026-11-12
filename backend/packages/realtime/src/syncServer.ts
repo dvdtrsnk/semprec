@@ -130,6 +130,8 @@ function rejectUpgrade(socket: Duplex): void {
  *   with nothing cached for it just ignores the frame.
  * - `invalidation` with `scope: "sempThread"` sends a thin frame naming the thread to every socket
  *   of the envelope's tenant, best effort and without replay.
+ * - `invalidation` with `scope: "approvalRequest"` sends a thin frame naming the request only to the
+ *   sockets of the owner it names inside the envelope's tenant; a message without an owner is dropped.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -422,6 +424,20 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           if (parsed.scope === "sempThread") {
             // Tenant-wide, best effort, no replay: the client refetches the thread.
             sendToTenant(tenantId, { type: "invalidate", scope: "sempThread", threadId: parsed.threadId });
+            return;
+          }
+          if (parsed.scope === "approvalRequest") {
+            // Owner-only: a message that names no owner has no socket it may go to, so it is
+            // dropped rather than widened to the tenant.
+            if (parsed.userId === undefined) {
+              logger.warn({ type: parsed.type, scope: parsed.scope }, "realtime_approval_request_without_owner");
+              return;
+            }
+            sendToTenant(
+              tenantId,
+              { type: "invalidate", scope: "approvalRequest", approvalRequestId: parsed.approvalRequestId },
+              parsed.userId,
+            );
             return;
           }
           if (parsed.scope === "relation") {

@@ -4,10 +4,23 @@ import path from "node:path";
 import http2 from "node:http2";
 import type { Socket } from "node:net";
 import crypto from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getApnsConfigFromEnv, sendApnsBackgroundPush, sendApnsNotification, type ApnsConfig } from "../apnsAdapter.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  apnsCollapseKey,
+  getApnsConfigFromEnv,
+  sendApnsBackgroundPush,
+  sendApnsNotification,
+  type ApnsConfig,
+} from "../apnsAdapter.js";
 import type { NotificationPushPayload } from "../pushSenders.js";
 import { ValidationError } from "../../errors.js";
+
+/** The source fields of a notification whose source has no durable identity (issue #1829), so no collapse key. */
+const NO_IDENTITY_SOURCE = {
+  sourceTable: "project_heartbeats",
+  sourceId: "heartbeat-1",
+  kind: "heartbeat_error",
+} as const;
 
 const ENV_KEYS = ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY_PATH", "APNS_TOPIC"] as const;
 const originalEnv: Record<string, string | undefined> = {};
@@ -63,7 +76,7 @@ describe("getApnsConfigFromEnv", () => {
 
 describe("sendApnsNotification (issue #703)", () => {
   const target = { deviceToken: "device-1", apnsEnvironment: "sandbox" as const };
-  const payload = { notificationId: "notif-1", title: "Title", body: null, linkHref: null };
+  const payload = { notificationId: "notif-1", ...NO_IDENTITY_SOURCE, title: "Title", body: null, linkHref: null };
 
   it("resolves not-configured naming the missing variable when APNS_* is unset, without making an HTTP/2 request", async () => {
     for (const key of ENV_KEYS) delete process.env[key];
@@ -260,6 +273,7 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
   it("sends aps interruption-level when the payload carries one", async () => {
     const { result, wire } = await sendAndReadBody({
       notificationId: "notif-1",
+      ...NO_IDENTITY_SOURCE,
       title: "Title",
       body: null,
       linkHref: null,
@@ -277,6 +291,7 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
   it("leaves interruption-level off the wire when the payload carries none, so APNs uses its default", async () => {
     const { result, wire } = await sendAndReadBody({
       notificationId: "notif-2",
+      ...NO_IDENTITY_SOURCE,
       title: "Title",
       body: null,
       linkHref: null,
@@ -309,6 +324,7 @@ describe("sendApnsNotification body (issue #1773)", () => {
   it("sends aps.alert.body beside the title when the notification has a body", async () => {
     const wire = await sendAndReadWire({
       notificationId: "notif-3",
+      ...NO_IDENTITY_SOURCE,
       title: "Semp needs approval",
       body: 'Delete the item "Tax return" in the database "Tasks". This action is irreversible.',
       linkHref: "?page=approvals&user=u1",
@@ -327,7 +343,13 @@ describe("sendApnsNotification body (issue #1773)", () => {
   });
 
   it("leaves aps.alert.body off the wire, not null, when the notification has none", async () => {
-    const wire = await sendAndReadWire({ notificationId: "notif-4", title: "Title", body: null, linkHref: null });
+    const wire = await sendAndReadWire({
+      notificationId: "notif-4",
+      ...NO_IDENTITY_SOURCE,
+      title: "Title",
+      body: null,
+      linkHref: null,
+    });
 
     expect(wire).toEqual({ aps: { alert: { title: "Title" } }, link_href: null, notification_id: "notif-4" });
   });
@@ -422,21 +444,302 @@ describe("sendApnsBackgroundPush (issue #1445)", () => {
   });
 });
 
-describe("sendApnsNotification push headers (issue #1445)", () => {
+describe("apnsCollapseKey (issue #1829)", () => {
+  const requestId = "0c7e3a52-6a41-4e0d-8f0b-2f1a5f0d9b11";
+
+  it.each(["semp_problems", "approval_requests", "invites"])("is the source id of a %s source", (sourceTable) => {
+    expect(apnsCollapseKey({ sourceTable, sourceId: requestId })).toBe(requestId);
+  });
+
+  it("is null for a source table without a durable identity", () => {
+    expect(apnsCollapseKey({ sourceTable: "project_heartbeats", sourceId: requestId })).toBeNull();
+  });
+
+  it("is null for an empty source id, whatever the source table", () => {
+    expect(apnsCollapseKey({ sourceTable: "approval_requests", sourceId: "" })).toBeNull();
+  });
+
+  it("keeps a source id of exactly 64 bytes", () => {
+    const sourceId = "a".repeat(64);
+
+    expect(apnsCollapseKey({ sourceTable: "semp_problems", sourceId })).toBe(sourceId);
+  });
+
+  it("replaces a source id longer than 64 bytes by the first 64 hex characters of its SHA-256", () => {
+    const sourceId = "a".repeat(65);
+    const expected = crypto.createHash("sha256").update(sourceId).digest("hex").slice(0, 64);
+
+    const key = apnsCollapseKey({ sourceTable: "semp_problems", sourceId });
+
+    expect(key).toBe(expected);
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    expect(apnsCollapseKey({ sourceTable: "semp_problems", sourceId })).toBe(key);
+  });
+
+  it("counts bytes, not characters, so 33 two-byte characters are shortened", () => {
+    const sourceId = "é".repeat(33);
+
+    const key = apnsCollapseKey({ sourceTable: "invites", sourceId });
+
+    expect(key).toBe(crypto.createHash("sha256").update(sourceId).digest("hex").slice(0, 64));
+  });
+
+  it("gives different long source ids different keys", () => {
+    const first = apnsCollapseKey({ sourceTable: "semp_problems", sourceId: "b".repeat(100) });
+    const second = apnsCollapseKey({ sourceTable: "semp_problems", sourceId: "c".repeat(100) });
+
+    expect(first).not.toBe(second);
+  });
+});
+
+describe("sendApnsNotification push headers and thread id (issues #1445 and #1829)", () => {
+  const SENT_AT = new Date("2026-11-12T10:00:00.000Z");
+  const EXPIRES_AT = String(Math.floor(SENT_AT.getTime() / 1000) + 24 * 60 * 60);
+
+  beforeEach(() => {
+    // Only the clock: the owned HTTP/2 peer needs the real timers.
+    vi.useFakeTimers({ toFake: ["Date"], now: SENT_AT });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** Sends one alert through the owned peer and returns the headers and the JSON body the adapter put on the wire. */
+  async function sendAndRead(payload: NotificationPushPayload) {
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(result).toEqual({ outcome: "delivered" });
+      expect(requests).toHaveLength(1);
+      const request = requests[0]!;
+      const wire: unknown = JSON.parse(request.body);
+      return { headers: request.headers, wire };
+    });
+  }
+
+  it("sends the collapse id and the thread id of an approval request, equal to the request id", async () => {
+    const requestId = "5d2f0d6e-2f4b-4a0c-9a43-0d1d3a8d7a10";
+
+    const { headers, wire } = await sendAndRead({
+      notificationId: "notif-approval",
+      title: "Semp needs approval",
+      body: "Delete the item.",
+      linkHref: "?page=approvals",
+      interruptionLevel: "time-sensitive",
+      sourceTable: "approval_requests",
+      sourceId: requestId,
+      kind: "approval_pending",
+    });
+
+    expect(headers["apns-collapse-id"]).toBe(requestId);
+    expect(headers["apns-push-type"]).toBe("alert");
+    expect(headers["apns-priority"]).toBe("10");
+    expect(headers["apns-expiration"]).toBe(EXPIRES_AT);
+    expect(wire).toEqual({
+      aps: {
+        alert: { title: "Semp needs approval", body: "Delete the item." },
+        "interruption-level": "time-sensitive",
+        "thread-id": requestId,
+      },
+      link_href: "?page=approvals",
+      notification_id: "notif-approval",
+    });
+  });
+
+  it("sends the collapse id and the thread id of a Semp problem, equal to the problem id", async () => {
+    const problemId = "9b0a6f3c-7e36-4d52-8a0f-1f5d4f9a2c21";
+
+    const { headers, wire } = await sendAndRead({
+      notificationId: "notif-problem",
+      title: "Mail sync stalled",
+      body: null,
+      linkHref: null,
+      sourceTable: "semp_problems",
+      sourceId: problemId,
+      kind: "semp_problem",
+    });
+
+    expect(headers["apns-collapse-id"]).toBe(problemId);
+    expect(wire).toEqual({
+      aps: { alert: { title: "Mail sync stalled" }, "thread-id": problemId },
+      link_href: null,
+      notification_id: "notif-problem",
+    });
+  });
+
+  it("sends the shortened key in both places when the source id is longer than 64 bytes", async () => {
+    const sourceId = "d".repeat(100);
+    const key = crypto.createHash("sha256").update(sourceId).digest("hex").slice(0, 64);
+
+    const { headers, wire } = await sendAndRead({
+      notificationId: "notif-long",
+      title: "Title",
+      body: null,
+      linkHref: null,
+      sourceTable: "invites",
+      sourceId,
+      kind: "approval_pending",
+    });
+
+    expect(headers["apns-collapse-id"]).toBe(key);
+    expect(wire).toEqual({
+      aps: { alert: { title: "Title" }, "thread-id": key },
+      link_href: null,
+      notification_id: "notif-long",
+    });
+  });
+
+  it("sends neither a collapse id nor a thread id for a kind without a durable source identity", async () => {
+    const { headers, wire } = await sendAndRead({
+      notificationId: "notif-none",
+      ...NO_IDENTITY_SOURCE,
+      title: "Title",
+      body: null,
+      linkHref: null,
+    });
+
+    expect(headers).not.toHaveProperty("apns-collapse-id");
+    expect(wire).toEqual({ aps: { alert: { title: "Title" } }, link_href: null, notification_id: "notif-none" });
+    // The rest of the alert contract holds without an identity.
+    expect(headers["apns-push-type"]).toBe("alert");
+    expect(headers["apns-priority"]).toBe("10");
+    expect(headers["apns-expiration"]).toBe(EXPIRES_AT);
+  });
+
+  it("sends neither for a durable source table with an empty source id", async () => {
+    const { headers, wire } = await sendAndRead({
+      notificationId: "notif-empty",
+      title: "Title",
+      body: null,
+      linkHref: null,
+      sourceTable: "approval_requests",
+      sourceId: "",
+      kind: "approval_pending",
+    });
+
+    expect(headers).not.toHaveProperty("apns-collapse-id");
+    expect(wire).toEqual({ aps: { alert: { title: "Title" } }, link_href: null, notification_id: "notif-empty" });
+  });
+
+  it("expires a push 24 hours after the moment it is sent", async () => {
+    vi.setSystemTime(new Date("2026-12-31T23:30:00.000Z"));
+
+    const { headers } = await sendAndRead({
+      notificationId: "notif-later",
+      ...NO_IDENTITY_SOURCE,
+      title: "Title",
+      body: null,
+      linkHref: null,
+    });
+
+    expect(headers["apns-expiration"]).toBe(String(Date.parse("2027-01-01T23:30:00.000Z") / 1000));
+  });
+});
+
+describe("sendApnsNotification approval fields (issue #1831)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("sends an alert without the background push-type or priority headers", async () => {
-    await withApnsPeer({ status: 200 }, async (requests) => {
-      await sendApnsNotification(
-        apnsTarget,
-        { notificationId: "notif-3", title: "Title", body: null, linkHref: null },
-        apnsTestConfig,
-      );
+  /** Sends one alert through the owned peer and returns the headers and the JSON body the adapter put on the wire. */
+  async function sendAndRead(payload: NotificationPushPayload) {
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(result).toEqual({ outcome: "delivered" });
       expect(requests).toHaveLength(1);
-      expect(requests[0]!.headers).not.toHaveProperty("apns-push-type");
-      expect(requests[0]!.headers).not.toHaveProperty("apns-priority");
+      const request = requests[0]!;
+      const wire: unknown = JSON.parse(request.body);
+      return { headers: request.headers, wire };
+    });
+  }
+
+  const requestId = "5d2f0d6e-2f4b-4a0c-9a43-0d1d3a8d7a10";
+  const approvalPayload: NotificationPushPayload = {
+    notificationId: "notif-approval",
+    title: "Semp needs approval",
+    body: 'Call the tool "search_web" on the MCP server "Search". This action is irreversible.',
+    linkHref: "?page=approvals",
+    interruptionLevel: "time-sensitive",
+    sourceTable: "approval_requests",
+    sourceId: requestId,
+    kind: "approval_pending",
+  };
+
+  it("sends aps.category, a time-sensitive interruption level, the body and the request id of an approval", async () => {
+    const { headers, wire } = await sendAndRead({
+      ...approvalPayload,
+      apns: { category: "APPROVAL_REQUEST", approvalRequestId: requestId },
+    });
+
+    expect(wire).toEqual({
+      aps: {
+        alert: { title: "Semp needs approval", body: approvalPayload.body },
+        "interruption-level": "time-sensitive",
+        "thread-id": requestId,
+        category: "APPROVAL_REQUEST",
+      },
+      link_href: "?page=approvals",
+      notification_id: "notif-approval",
+      approvalRequestId: requestId,
+    });
+    // The collapse id and the thread id are the ones of issue #1829 and stay the request id.
+    expect(headers["apns-collapse-id"]).toBe(requestId);
+  });
+
+  it("sends neither a category nor a request id when the payload carries no apns fields", async () => {
+    const { wire } = await sendAndRead(approvalPayload);
+
+    expect(wire).not.toHaveProperty("approvalRequestId");
+    expect(wire).not.toHaveProperty("aps.category");
+  });
+
+  it("sends neither when the apns fields are empty", async () => {
+    const { wire } = await sendAndRead({ ...approvalPayload, apns: {} });
+
+    expect(wire).not.toHaveProperty("approvalRequestId");
+    expect(wire).not.toHaveProperty("aps.category");
+  });
+
+  it("sends the category without a request id when only the category is set", async () => {
+    const { wire } = await sendAndRead({ ...approvalPayload, apns: { category: "APPROVAL_REQUEST" } });
+
+    expect(wire).toHaveProperty("aps.category", "APPROVAL_REQUEST");
+    expect(wire).not.toHaveProperty("approvalRequestId");
+  });
+
+  it("sends the request id without a category when only the request id is set", async () => {
+    const { wire } = await sendAndRead({ ...approvalPayload, apns: { approvalRequestId: requestId } });
+
+    expect(wire).toHaveProperty("approvalRequestId", requestId);
+    expect(wire).not.toHaveProperty("aps.category");
+  });
+
+  it("puts nothing of the request but its id and the rendered body on the wire", async () => {
+    const { wire } = await sendAndRead({
+      ...approvalPayload,
+      apns: { category: "APPROVAL_REQUEST", approvalRequestId: requestId },
+    });
+
+    const serialized = JSON.stringify(wire);
+    expect(Object.keys(wire as object).sort()).toEqual(["approvalRequestId", "aps", "link_href", "notification_id"]);
+    expect(serialized).not.toMatch(/args|payload|resourceSnapshot|description/i);
+  });
+});
+
+describe("sendApnsBackgroundPush headers (issue #1829)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stays a background push without a collapse id, an expiration or the alert push type", async () => {
+    await withApnsPeer({ status: 200 }, async (requests) => {
+      await sendApnsBackgroundPush(apnsTarget, { dismiss: ["n1"] }, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.headers["apns-push-type"]).toBe("background");
+      expect(requests[0]!.headers["apns-priority"]).toBe("5");
+      expect(requests[0]!.headers).not.toHaveProperty("apns-collapse-id");
+      expect(requests[0]!.headers).not.toHaveProperty("apns-expiration");
     });
   });
 });

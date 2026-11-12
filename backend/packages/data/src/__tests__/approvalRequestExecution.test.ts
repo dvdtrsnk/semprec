@@ -33,6 +33,7 @@ import { approvalConflictReason } from "../mcp/approvalConflictReason.js";
 import { handleApprovalRequestExecuteTask } from "../mcp/approvalRequestExecution.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
+import { setInvalidationHook, setSempThreadInvalidationHook } from "../realtimeHook.js";
 
 const SEARCH_TOOL: ContractServerTool = {
   name: "search_web",
@@ -44,6 +45,13 @@ let pool: Pool;
 let mcpServersId: string;
 let servers: McpContractServer[] = [];
 let soleTenantAdminId: string;
+/** What the realtime hooks were asked to publish, in order (issue #1789). */
+let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
+let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
+
+function announcementOf(request: { id: string }, userId: string) {
+  return { approvalRequestId: request.id, userId };
+}
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -104,9 +112,18 @@ describe("approval request decide+execute (issue #131)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
+    approvalAnnouncements = [];
+    threadAnnouncements = [];
+    setInvalidationHook((event) => {
+      if (event.scope === "approvalRequest")
+        approvalAnnouncements.push({ approvalRequestId: event.approvalRequestId, userId: event.userId });
+    });
+    setSempThreadInvalidationHook((event) => threadAnnouncements.push(event));
   });
 
   afterEach(async () => {
+    setInvalidationHook(() => {});
+    setSempThreadInvalidationHook(() => {});
     await Promise.all(servers.map((server) => server.stop()));
     servers = [];
   });
@@ -147,8 +164,15 @@ describe("approval request decide+execute (issue #131)", () => {
     );
     expect(decided!.request.status).toBe("approved");
     expect(contractServer.getHandshakeCount()).toBe(0);
+    // The decision is announced to the owner of the request and to the thread of its run.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
+    expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId: thread.rows[0]!.id }]);
 
     await drainQueue();
+
+    // The recorded outcome is announced once more, the same way.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId), announcementOf(request, userId)]);
+    expect(threadAnnouncements).toHaveLength(2);
 
     expect(contractServer.getLastToolCall()).toEqual({
       name: "search_web",
@@ -181,6 +205,9 @@ describe("approval request decide+execute (issue #131)", () => {
         )
       ).rows,
     ).toEqual(messages.rows);
+    // A redelivered job finds the request settled and announces nothing.
+    expect(approvalAnnouncements).toHaveLength(2);
+    expect(threadAnnouncements).toHaveLength(2);
   });
 
   it("never executes a rejected request", async () => {
@@ -212,6 +239,9 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.status).toBe("rejected");
     expect(finished!.executedAt).toBeNull();
+    // A rejection is announced once; the run has no thread, so no thread invalidation goes with it.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
+    expect(threadAnnouncements).toEqual([]);
   });
 
   it("a retried decision does not create a second decision or a second execution", async () => {
@@ -239,6 +269,7 @@ describe("approval request decide+execute (issue #131)", () => {
       ),
     );
     expect(first!.outcome).toBe("decided");
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
     const retry = await inTenantZero(() =>
       withTransaction(pool, (client) =>
         decideAndEnqueueApprovalRequest(client, {
@@ -270,6 +301,8 @@ describe("approval request decide+execute (issue #131)", () => {
       ),
     );
     expect(foreignRetry).toBeNull();
+    // Neither the repeated decision nor the foreign one announced anything.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
 
     await drainQueue();
 
@@ -277,6 +310,7 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.status).toBe("approved");
     expect(finished!.decidedBy).toBe(userId);
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId), announcementOf(request, userId)]);
   });
 
   it("settles a stale claim (older than 10 minutes) as conflict without calling the tool", async () => {
@@ -333,6 +367,12 @@ describe("approval request decide+execute (issue #131)", () => {
         system_key: "approval.outcome.conflict",
         context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
       },
+    ]);
+    // The decision and the stale-claim settlement are each announced once.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId), announcementOf(request, userId)]);
+    expect(threadAnnouncements).toEqual([
+      { tenantId: getTenantZeroId(), threadId: thread.rows[0]!.id },
+      { tenantId: getTenantZeroId(), threadId: thread.rows[0]!.id },
     ]);
   });
 
@@ -417,6 +457,12 @@ describe("approval request decide+execute (issue #131)", () => {
     }
     await contractServer.waitForChildExit();
     expect((await getApprovalRequest(pool, request.id))?.executionStatus).toBe("conflict");
+    // The decision and the concurrent stale settlement are announced; the discarded outcome is not.
+    expect(approvalAnnouncements).toEqual([
+      announcementOf(request, run.actorUserId),
+      announcementOf(request, run.actorUserId),
+    ]);
+    expect(threadAnnouncements).toHaveLength(2);
     const messages = await pool.query<{ system_key: string; context: unknown }>(
       "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
       [thread.rows[0]!.id],
@@ -461,6 +507,8 @@ describe("approval request decide+execute (issue #131)", () => {
     expect(finished!.executionStatus).toBe("queued");
     expect(finished!.executedAt).toEqual(claimed!.executedAt);
     expect(finished!.executionResult).toBeNull();
+    // Only the decision was announced; the in-flight delivery wrote nothing.
+    expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
   });
 
   it("recordApprovalRequestOutcome never overwrites a row that is no longer queued", async () => {
@@ -656,5 +704,53 @@ describe("approval request decide+execute (issue #131)", () => {
         context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
       },
     ]);
+    // The decision and the failed call's outcome.
+    expect(approvalAnnouncements).toHaveLength(2);
+    expect(approvalAnnouncements.map((announcement) => announcement.approvalRequestId)).toEqual([
+      request.id,
+      request.id,
+    ]);
+    expect(threadAnnouncements).toHaveLength(2);
+  });
+
+  it("announces the conflict recorded for a revoked grant, and nothing when the decision's transaction rolls back", async () => {
+    const { projectItemId, registration } = await approveAndSetUp();
+    expect(approvalAnnouncements).toHaveLength(1);
+    await withTransaction(pool, (client) =>
+      setProjectMcpGrantForAgentPage(client, { projectItemId, mcpToolRegistrationId: registration.id, granted: false }),
+    );
+
+    await drainQueue();
+
+    expect(approvalAnnouncements).toHaveLength(2);
+    expect(threadAnnouncements).toHaveLength(2);
+
+    // A second request whose decision transaction fails after the decision announces nothing.
+    approvalAnnouncements.length = 0;
+    threadAnnouncements.length = 0;
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "rolled back" });
+    const pending = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    await expect(
+      inTenantZero(() =>
+        withTransaction(pool, async (client) => {
+          const decided = await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: pending.id,
+            decision: "approved",
+            decidedByUserId: run.actorUserId,
+          });
+          expect(decided?.outcome).toBe("decided");
+          throw new Error("force rollback");
+        }),
+      ),
+    ).rejects.toThrow("force rollback");
+    expect(approvalAnnouncements).toEqual([]);
+    expect(threadAnnouncements).toEqual([]);
+    expect((await getApprovalRequest(pool, pending.id))!.status).toBe("pending");
   });
 });

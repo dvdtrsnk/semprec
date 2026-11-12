@@ -17,12 +17,15 @@ import {
 import { sendWebPushNotification } from "../push/webPushAdapter.js";
 import { sendApnsNotification } from "../push/apnsAdapter.js";
 import type {
+  NotificationApnsFields,
   NotificationInterruptionLevel,
   NotificationPushPayload,
   PushSendResult,
   PushSenders,
 } from "../push/pushSenders.js";
+import { apnsTarget, webPushTarget } from "../push/pushTargets.js";
 import type { PushSubscriptionRow } from "../push/types.js";
+import { findSleepMuteUntil } from "../sleep/sleepMuteWindow.js";
 import { logger } from "./logger.js";
 import { policyForKind, type NotificationKindPolicy, type NotificationSeverity } from "./notificationKinds.js";
 import {
@@ -52,27 +55,52 @@ export async function enqueueNotificationFanout(client: PoolClient, notification
   );
 }
 
+/**
+ * Enqueues the `notificationFanout` job that sends a held notification's push at `wakeAt` (issue #1794).
+ * The key ends with the wake time as a UTC ISO string. A repeated hold until the same wake time
+ * therefore collapses onto the job queued for it, which keeps its run time, and a later wake time gets
+ * a job of its own. When the job with that key is the one running, graphile-worker adds a new job
+ * with the same key instead.
+ */
+async function enqueueDeferredNotificationFanout(
+  client: PoolClient,
+  notificationId: string,
+  wakeAt: Date,
+): Promise<void> {
+  await enqueueJob(
+    client,
+    CORE_TASK_NAMES.NOTIFICATION_FANOUT,
+    { notificationId },
+    {
+      jobKey: `notification-fanout-deferred:${notificationId}:${wakeAt.toISOString()}`,
+      jobKeyMode: "preserve_run_at",
+      maxAttempts: 10,
+      runAt: wakeAt,
+    },
+  );
+}
+
+/**
+ * The wake time until which the push of this notification is held, or `null` to send it now
+ * (issue #1794). A failure to read or resolve the tenant's sleep data also answers `null`, so it
+ * cannot keep a push back; it is logged with the notification id and the error's name.
+ */
+async function sleepMuteUntilOrNull(pool: Pool, notificationId: string, now: Date): Promise<Date | null> {
+  try {
+    return await withTransaction(pool, (client) => findSleepMuteUntil(client, now));
+  } catch (error) {
+    logger.error(
+      { notificationId, errorName: error instanceof Error ? error.name : typeof error },
+      "Sleep window check failed; the push is sent without it",
+    );
+    return null;
+  }
+}
+
 const defaultPushSenders: PushSenders = {
   sendWebPush: sendWebPushNotification,
   sendApns: sendApnsNotification,
 };
-
-function webPushTarget(registration: PushSubscriptionRow): { endpoint: string; p256dh: string; authSecret: string } {
-  if (registration.endpoint === null || registration.p256dh === null || registration.authSecret === null) {
-    throw new Error(`push_subscriptions row ${registration.id} is channel 'web_push' but missing web push fields`);
-  }
-  return { endpoint: registration.endpoint, p256dh: registration.p256dh, authSecret: registration.authSecret };
-}
-
-function apnsTarget(registration: PushSubscriptionRow): {
-  deviceToken: string;
-  apnsEnvironment: "sandbox" | "production";
-} {
-  if (registration.deviceToken === null || registration.apnsEnvironment === null) {
-    throw new Error(`push_subscriptions row ${registration.id} is channel 'apns' but missing APNs fields`);
-  }
-  return { deviceToken: registration.deviceToken, apnsEnvironment: registration.apnsEnvironment };
-}
 
 /**
  * Whether a notification of this policy is pushed to its user under these preferences, and at which
@@ -137,8 +165,28 @@ function policyForNotification(notification: NotificationRow): NotificationKindP
   };
 }
 
+/** The APNs category the app registers the Approve, Reject and Open actions of an approval push against. */
+const APPROVAL_PUSH_CATEGORY = "APPROVAL_REQUEST";
+
+/**
+ * The APNs-only fields of this notification's push (issue #1831): for an approval notification the action
+ * category and the id of the request, which is the notification's `source_id`. Any other notification, and an
+ * `approval_pending` one whose source is not an approval request, gets none. Only ids go on the wire: the body
+ * of the push is the one rendered at write time (issue #1773).
+ */
+function apnsFieldsFor(notification: NotificationRow): NotificationApnsFields | undefined {
+  if (notification.kind !== "approval_pending" || notification.sourceTable !== "approval_requests") return undefined;
+  return { category: APPROVAL_PUSH_CATEGORY, approvalRequestId: notification.sourceId };
+}
+
 export interface HandleNotificationFanoutInput {
   notificationId: string;
+}
+
+/** What the handler takes from outside: the push senders and, for tests, a clock. */
+export interface NotificationFanoutDependencies extends PushSenders {
+  /** The clock of the sleep-window check (issue #1794). Production passes none and gets the real time. */
+  now?: () => Date;
 }
 
 /**
@@ -148,9 +196,20 @@ export interface HandleNotificationFanoutInput {
  * decide whether this notification is pushed at all (issue #1443, `pushInterruptionLevelFor`). When
  * it is not, the job returns without claiming delivery rows; the notification row itself stays, so
  * the in-app list still shows it. Preferences are read when the job runs, so a change made after the
- * notification was enqueued is honored. `push_deliveries`
- * (migration 0032) is the durable per-(notification, registration) dedup key the issue's Task
- * requires: `claimPushDeliveryTargets` claims a row per active registration exactly once (`ON
+ * notification was enqueued is honored.
+ *
+ * A notification that passes the preference filter and is not of category `approvals` is then
+ * checked against the user's sleep window (issue #1794, `findSleepMuteUntil`). Inside the window
+ * the job enqueues the same task for the wake time and returns without loading registrations,
+ * claiming delivery rows or sending; the notification row is untouched. The job that runs at the
+ * wake time makes the same check, so a wake time moved later in the meantime holds the push once
+ * more, and a wake time moved earlier does not send it earlier. A failed check does not hold.
+ * That job is a second job for the same notification; the decision record
+ * `2026-11-12-a-push-inside-the-sleep-window-is-held-by-a-deferred-fan-out-job` names the case in
+ * which it can run at the same time as the first one.
+ *
+ * `push_deliveries` (migration 0032) is the durable per-(notification, registration) dedup key the issue's
+ * Task requires: `claimPushDeliveryTargets` claims a row per active registration exactly once (`ON
  * CONFLICT DO NOTHING` on every retry), and only a delivery that is still neither delivered nor
  * permanently failed is ever dispatched — so a redelivered/retried queue job can never send the
  * same (notification, registration) pair twice.
@@ -167,14 +226,24 @@ export interface HandleNotificationFanoutInput {
 export async function handleNotificationFanoutTask(
   pool: Pool,
   input: HandleNotificationFanoutInput,
-  senders: PushSenders = defaultPushSenders,
+  dependencies: NotificationFanoutDependencies = defaultPushSenders,
 ): Promise<void> {
   const notification = await withTransaction(pool, (client) => getNotificationById(client, input.notificationId));
   if (!notification) return;
 
   const preferences = await withTransaction(pool, (client) => getNotificationPreferences(client, notification.userId));
-  const interruptionLevel = pushInterruptionLevelFor(policyForNotification(notification), preferences);
+  const policy = policyForNotification(notification);
+  const interruptionLevel = pushInterruptionLevelFor(policy, preferences);
   if (interruptionLevel === null) return;
+
+  if (policy.category !== "approvals") {
+    const now = dependencies.now ?? (() => new Date());
+    const muteUntil = await sleepMuteUntilOrNull(pool, notification.id, now());
+    if (muteUntil !== null) {
+      await withTransaction(pool, (client) => enqueueDeferredNotificationFanout(client, notification.id, muteUntil));
+      return;
+    }
+  }
 
   const registrations = await withTransaction(pool, (client) =>
     listPushSubscriptionsForUser(client, notification.userId),
@@ -192,12 +261,17 @@ export async function handleNotificationFanoutTask(
   const statuses = await withTransaction(pool, (client) => getPushDeliveryStatuses(client, notification.id));
   const statusByRegistrationId = new Map(statuses.map((status) => [status.pushSubscriptionId, status]));
 
+  const apns = apnsFieldsFor(notification);
   const payload: NotificationPushPayload = {
     notificationId: notification.id,
     title: notification.title,
     body: notification.body,
     linkHref: notification.linkHref,
     interruptionLevel,
+    sourceTable: notification.sourceTable,
+    sourceId: notification.sourceId,
+    kind: notification.kind,
+    ...(apns === undefined ? {} : { apns }),
   };
   const transientFailures: unknown[] = [];
   const loggedNotConfiguredChannels = new Set<PushSubscriptionRow["channel"]>();
@@ -209,10 +283,10 @@ export async function handleNotificationFanoutTask(
     let result: PushSendResult;
     switch (registration.channel) {
       case "web_push":
-        result = await senders.sendWebPush(webPushTarget(registration), payload);
+        result = await dependencies.sendWebPush(webPushTarget(registration), payload);
         break;
       case "apns":
-        result = await senders.sendApns(apnsTarget(registration), payload);
+        result = await dependencies.sendApns(apnsTarget(registration), payload);
         break;
       default: {
         const _exhaustive: never = registration.channel;

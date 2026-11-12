@@ -3,6 +3,7 @@ import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
 import type {
   Database,
+  DatabaseFacet,
   Item,
   ItemCountEntry,
   ItemPage,
@@ -16,7 +17,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 44 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 46 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -63,11 +64,14 @@ export interface OutputByOperation {
   "page.ensure": { docId: string };
   "page.createSubpage": PageCreateSubpageOutput;
   "page.insert": { blockIds: string[] };
+  "page.replace": PageReplaceOutput;
   "page.changes": PageChangeEntry[];
   /** One entry per input entry, in input order. */
   "item.count": ItemCountEntry[];
   "page.duplicate": PageDuplicateOutput;
   "page.rename": PageRenameOutput;
+  /** One entry per requested facet, in request order. */
+  "database.facets": DatabaseFacet[];
 }
 
 /**
@@ -107,6 +111,16 @@ export interface PageDuplicateOutput {
 export interface PageRenameOutput {
   pageItemId: string;
   title: string;
+}
+
+/**
+ * The page after one `page.replace` call (issue #1765): its new version token, and the subpages the call sent to the
+ * trash because the new Markdown no longer links them, each with the title its link carried, so a client can offer to
+ * restore them.
+ */
+export interface PageReplaceOutput {
+  etag: string;
+  trashedPages: Array<{ pageItemId: string; title: string }>;
 }
 
 /** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
@@ -201,7 +215,7 @@ export interface GenericApplicationPort {
    * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 44 catalog operations — `OutputByOperation["property.patch"]` (the
+   * the patch. Not one of the 46 catalog operations — `OutputByOperation["property.patch"]` (the
    * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
    * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
    * AgentTool composition root never call a catalog-external port method. See
@@ -304,6 +318,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.insert"],
   ): Promise<OutputByOperation["page.insert"]>;
+  replacePage(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.replace"],
+  ): Promise<OutputByOperation["page.replace"]>;
   listPageChanges(
     actor: AuthenticatedActor,
     input: InputByOperation["page.changes"],
@@ -324,4 +342,8 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["item.count"],
   ): Promise<OutputByOperation["item.count"]>;
+  getDatabaseFacets(
+    actor: AuthenticatedActor,
+    input: InputByOperation["database.facets"],
+  ): Promise<OutputByOperation["database.facets"]>;
 }

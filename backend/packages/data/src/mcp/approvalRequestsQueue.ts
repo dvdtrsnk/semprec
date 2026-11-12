@@ -1,17 +1,20 @@
 import type { PoolClient } from "pg";
 import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
-import { getAgentRunsByIds, getRootAgentRuns, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
+import { getAgentRun, getAgentRunsByIds, getRootAgentRuns, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import { loadSempThreadTitleResolver, SEMP_THREAD_KINDS } from "../semp/sempThreadsListStore.js";
+import { loadSempThreadTitleResolver, SEMP_THREAD_KINDS, type SempThreadKind } from "../semp/sempThreadsListStore.js";
 import { approvalConflictReason, type ApprovalConflictReason } from "./approvalConflictReason.js";
 import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
+  isMcpInvokeApprovalRequestPayload,
   listApprovalRequestsPage,
   listPendingApprovalRequests,
   type ApprovalDescription,
+  type BreaksLinkEntry,
+  type EndsInheritanceEntry,
   type ApprovalRequest,
   type ApprovalRequestSourceKind,
   type ListApprovalRequestsPageInput,
@@ -26,9 +29,10 @@ import {
  *
  * A discriminated union, not all-optional fields: `mcpToolRegistrationId`/`mcpServerItemId` are
  * only ever present together (an MCP-invoke-originated request), `operationName` only for a
- * generic-operation-originated request (issue #220) — the two payload shapes never mix on the
- * same entry, and the `kind` tag lets a client narrow to the right one instead of every field
- * reading `string | undefined` regardless of the entry's actual origin.
+ * generic-operation-originated request (issue #220), `toolName` only for a module-agent-tool
+ * request (issue #1791) — the three payload shapes never mix on the same entry, and the `kind` tag
+ * lets a client narrow to the right one instead of every field reading `string | undefined`
+ * regardless of the entry's actual origin.
  */
 export type ApprovalRequestSafeSummary =
   | {
@@ -41,7 +45,8 @@ export type ApprovalRequestSafeSummary =
       mcpToolName: string | null;
       argKeys: string[];
     }
-  | { kind: "genericOperation"; operationName: string; argKeys: string[] };
+  | { kind: "genericOperation"; operationName: string; argKeys: string[] }
+  | { kind: "moduleTool"; toolName: string; argKeys: string[] };
 
 /**
  * Where an approval request came from (issue #1766), derived when it is read from the run that
@@ -64,7 +69,7 @@ export interface ApprovalRequestSource {
   heartbeatId: string | null;
   /** The current `project_heartbeats.name` of `heartbeatId`; `null` with it. */
   heartbeatName: string | null;
-  /** The name of the MCP client of a `mcp` source. Nothing records it yet (issue #1788), so it is `null`. */
+  /** The name of the MCP client of a `mcp` source. The source does not read the name a run stores (issue #1788), so it is `null`. */
   mcpClientName: string | null;
 }
 
@@ -85,6 +90,10 @@ export interface ApprovalRequestQueueEntry {
   reason: string | null;
   /** The snapshotted template key and parameters clients render; `null` for requests created before issue #1683. */
   description: ApprovalDescription | null;
+  /** The active value links the request would end (issue #1758); empty for a request that ends none. */
+  breaksLinks: BreaksLinkEntry[];
+  /** The links that follow a broken link's property and so lose its value; empty when there are none. */
+  endsInheritance: EndsInheritanceEntry[];
   source: ApprovalRequestSource;
 }
 
@@ -98,7 +107,7 @@ async function resolveMcpNames(client: Queryable, requests: ApprovalRequest[]): 
   const registrationIds = new Set<string>();
   const serverItemIds = new Set<string>();
   for (const { payload } of requests) {
-    if (isGenericOperationApprovalRequestPayload(payload)) continue;
+    if (!isMcpInvokeApprovalRequestPayload(payload)) continue;
     registrationIds.add(payload.mcpToolRegistrationId);
     serverItemIds.add(payload.mcpServerItemId);
   }
@@ -122,6 +131,9 @@ function safeSummaryOf(payload: ApprovalRequest["payload"], names: ResolvedMcpNa
       operationName: payload.operationName,
       argKeys: canonicalInput && typeof canonicalInput === "object" ? Object.keys(canonicalInput) : [],
     };
+  }
+  if (!isMcpInvokeApprovalRequestPayload(payload)) {
+    return { kind: "moduleTool", toolName: payload.moduleToolName, argKeys: Object.keys(payload.args) };
   }
   return {
     kind: "mcpInvoke",
@@ -165,6 +177,9 @@ export interface ApprovalRequestDecisionView {
   safeSummary: ApprovalRequestSafeSummary;
   reason: string | null;
   description: ApprovalDescription | null;
+  /** As on `ApprovalRequestQueueEntry`, so the single-request read carries the same lists as the list. */
+  breaksLinks: BreaksLinkEntry[];
+  endsInheritance: EndsInheritanceEntry[];
   source: ApprovalRequestSource;
 }
 
@@ -208,6 +223,20 @@ const NO_SOURCE_DETAIL = {
   heartbeatName: null,
   mcpClientName: null,
 };
+
+/** The kind of the source of a run that has a thread: a tick thread is `tick`, a chat or item thread `chat`. */
+function threadSourceKind(threadKind: SempThreadKind): ApprovalRequestSourceKind {
+  return threadKind === "tick" ? "tick" : "chat";
+}
+
+/**
+ * The kind of the source of a run without a thread, from the `triggered_by` of its root run: `mcp`
+ * is `mcp`, `heartbeat` is `tick`, and anything else, a root run that was not read included, is `chat`.
+ */
+function rootSourceKind(root: AgentRunRow | undefined): ApprovalRequestSourceKind {
+  if (root?.triggeredBy === "mcp") return "mcp";
+  return root?.triggeredBy === "heartbeat" ? "tick" : "chat";
+}
 
 /**
  * Reads what the sources of the requests of `runs` are derived from and returns the derivation by
@@ -253,7 +282,7 @@ async function loadApprovalSources(
       const kind = assertKnownValue(SEMP_THREAD_KINDS, thread.kind, "thread kind");
       const heartbeatName = lookup(heartbeatNameById, thread.heartbeat_id);
       return {
-        kind: kind === "tick" ? "tick" : "chat",
+        kind: threadSourceKind(kind),
         threadId: thread.id,
         threadTitle: resolveTitle({
           kind,
@@ -268,17 +297,36 @@ async function loadApprovalSources(
       };
     }
     const root = rootByRunId.get(agentRunId);
-    if (root?.triggeredBy === "mcp") return { ...NO_SOURCE_DETAIL, kind: "mcp" };
+    const kind = rootSourceKind(root);
     if (root?.triggeredBy === "heartbeat") {
       return {
         ...NO_SOURCE_DETAIL,
-        kind: "tick",
+        kind,
         heartbeatId: root.heartbeatId,
         heartbeatName: lookup(heartbeatNameById, root.heartbeatId),
       };
     }
-    return { ...NO_SOURCE_DETAIL, kind: "chat" };
+    return { ...NO_SOURCE_DETAIL, kind };
   };
+}
+
+/**
+ * The kind of the source of a request raised by run `agentRunId` (issue #1787), for a caller that
+ * needs it when it creates the request. It applies the rules the queue derives `source.kind` by
+ * (`threadSourceKind`, `rootSourceKind`): the kind of the run's thread, and for a run without a
+ * visible thread the root run that `getRootAgentRuns` reaches. `null` when the run is not visible
+ * to `client`.
+ */
+export async function getApprovalRequestSourceKind(
+  client: Queryable,
+  agentRunId: string,
+): Promise<ApprovalRequestSourceKind | null> {
+  const run = await getAgentRun(client, agentRunId);
+  if (!run) return null;
+  const threads = await getSourceThreads(client, run.threadId === null ? [] : [run.threadId]);
+  const thread = lookup(threads, run.threadId);
+  if (thread) return threadSourceKind(assertKnownValue(SEMP_THREAD_KINDS, thread.kind, "thread kind"));
+  return rootSourceKind((await getRootAgentRuns(client, [run])).get(run.id));
 }
 
 /** `locale` is the caller's `users.locale`; the title of an item thread in `source` is written in it. */
@@ -304,6 +352,8 @@ export async function toApprovalRequestDecisionView(
     safeSummary: safeSummaryOf(request.payload, names),
     reason: request.reason,
     description: request.description,
+    breaksLinks: request.description?.breaksLinks ?? [],
+    endsInheritance: request.description?.endsInheritance ?? [],
     source: sourceOf(request.agentRunId),
   };
 }
@@ -350,6 +400,8 @@ async function loadQueueEntries(
       projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
       reason: request.reason,
       description: request.description,
+      breaksLinks: request.description?.breaksLinks ?? [],
+      endsInheritance: request.description?.endsInheritance ?? [],
       source: sourceOf(request.agentRunId),
     };
   };

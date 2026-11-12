@@ -11,14 +11,18 @@ import {
   computeDestructiveResourceProjection,
   computePageRestoreProjection,
   createActionQueueAffinity,
-  createPendingApprovalRequest,
+  createPendingApprovalRequestAndPublish,
+  publishApprovalRequestChange,
   approvalNotificationBody,
+  approvalNotificationLinkHref,
   buildDestructiveApprovalDescription,
+  changeValueLinkWithClient,
   databaseArchiveWithClient,
   createRelationWithClient,
   deleteRelationWithClient,
   getAgentRun,
   getApprovalRequest,
+  getApprovalRequestSourceKind,
   getTenantUserId,
   isGenericOperationApprovalRequestPayload,
   itemDeleteWithClient,
@@ -66,7 +70,16 @@ type DestructiveOperationName =
   | "page.restoreVersion"
   | "item.patch"
   | "relation.put"
-  | "relation.set";
+  | "relation.set"
+  | "link.unlink";
+
+/** The operations whose request, when it ends value links, is a `breaksLink` request (issue #1758). */
+const LINK_DEFERRAL_OPERATIONS: readonly GenericOperationName[] = [
+  "item.patch",
+  "relation.put",
+  "relation.set",
+  "link.unlink",
+];
 
 function isDestructiveOperationName(operation: GenericOperationName): operation is DestructiveOperationName {
   return (
@@ -78,7 +91,8 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "page.restoreVersion" ||
     operation === "item.patch" ||
     operation === "relation.put" ||
-    operation === "relation.set"
+    operation === "relation.set" ||
+    operation === "link.unlink"
   );
 }
 
@@ -119,6 +133,8 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
         operation,
         input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string },
       };
+    case "link.unlink":
+      return { operation, input: input as InputByOperation["link.unlink"] };
   }
 }
 
@@ -146,7 +162,7 @@ async function executeDestructiveWithClient(
           propertiesPatch: patch.properties,
           ...(commandSnapshot ? { ifVersion: patch.ifVersion } : {}),
         },
-        { writer, queueAffinity: createActionQueueAffinity() },
+        { writer, queueAffinity: createActionQueueAffinity(), actingUserId },
       );
     }
     case "relation.put":
@@ -186,6 +202,17 @@ async function executeDestructiveWithClient(
         writer,
         actingUserId,
       );
+    case "link.unlink": {
+      // An approved request is only ever replayed as the agent that asked.
+      if (writer.writerKind === "system") throw new Error("link.unlink is not replayed as a system write");
+      return changeValueLinkWithClient(
+        client,
+        input as InputByOperation["link.unlink"],
+        "unlink",
+        { ...writer, writerKind: writer.writerKind },
+        actingUserId,
+      );
+    }
   }
 }
 
@@ -205,9 +232,10 @@ function currentResourceFromErrorDetails(details: unknown): unknown {
 
 /**
  * Whether this gateway serves `operation` under `grantedCapabilities`. A REST-only operation
- * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699) is served under no grant, so the
- * AgentTool and MCP transports, which reach the catalog through this gateway, neither list nor call it. The
- * assistant will propose a new option on an Inbox proposal instead (#1994).
+ * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699, and replacing a page, issue #1765) is
+ * served under no grant, so the AgentTool and MCP transports, which reach the catalog through this gateway, neither
+ * list nor call it. The assistant will propose a new option on an Inbox proposal instead (#1994), and page replacement
+ * waits for the approval of page operations (#1844).
  */
 function isGranted(operation: GenericOperationName, grantedCapabilities: ReadonlySet<CapabilityId>): boolean {
   if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) return false;
@@ -282,6 +310,9 @@ async function invokeBinding<K extends GenericOperationName>(
  * approval request plus its `approval_pending` notification, carrying the resulting
  * `resourceSnapshot`. For a flagged non-destructive write the original transaction has already
  * reached the flag after its preceding write guards; replay also runs the actual writer's guards.
+ * The notification's link depends on the source of the request and names the request
+ * (`approvalNotificationLinkHref`, issue #1787). The new request is announced to its owner after
+ * the commit (`createPendingApprovalRequestAndPublish`); a replayed tool call announces nothing.
  */
 async function preflightDestructiveApproval(
   pool: Pool,
@@ -303,7 +334,7 @@ async function preflightDestructiveApproval(
     }
 
     const check = buildDestructiveCheck(operation, input, toActor(actor));
-    const { snapshot, currentResource } = await projectCheck(client, check);
+    const { snapshot, currentResource, valueLinks } = await projectCheck(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
@@ -311,11 +342,14 @@ async function preflightDestructiveApproval(
       actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
       resourceSnapshot: snapshot,
     };
-    const description = await buildDestructiveApprovalDescription(client, check, currentResource);
-    const created = await createPendingApprovalRequest(client, {
+    const description = await buildDestructiveApprovalDescription(client, check, currentResource, valueLinks);
+    // A write that would end a value link is a `breaksLink` request; a `relation.delete` that ends one stays
+    // `destructive` and only carries the link lists in its description.
+    const endsLinks = valueLinks !== undefined && LINK_DEFERRAL_OPERATIONS.includes(operation);
+    const created = await createPendingApprovalRequestAndPublish(client, {
       agentRunId: actor.runId!,
       toolName: operation,
-      riskClass: metadata.riskClass,
+      riskClass: endsLinks ? "breaksLink" : metadata.riskClass,
       payload,
       resourceSnapshot: snapshot,
       reason,
@@ -329,7 +363,10 @@ async function preflightDestructiveApproval(
         userId,
         kind: "approval_pending",
         ...approvalNotificationBody(created),
-        linkHref: `?page=approvals&user=${userId}`,
+        linkHref: approvalNotificationLinkHref(
+          await getApprovalRequestSourceKind(client, created.agentRunId),
+          created.id,
+        ),
         sourceTable: "approval_requests",
         sourceId: created.id,
         transitionInstance: created.id,
@@ -416,12 +453,16 @@ export function createGenericOperationGateway(
         return await invokeBinding(service, operation, actor, input);
       } catch (err) {
         if (!(err instanceof ApprovalRequiredForWrite)) throw err;
-        if (
-          !isDestructiveOperationName(operation) ||
-          actor.runId === undefined ||
-          actor.agentProjectItemId === undefined
-        )
-          throw err;
+        // An operation outside the deferrable set (`item.create` with initial relations) has no snapshot to
+        // revalidate and no replay, so its flagged write is refused with a defined error instead of leaking the
+        // internal one. The transaction has rolled back; nothing was written and no request exists (issue #1758).
+        if (!isDestructiveOperationName(operation)) {
+          throw new ValidationError(
+            `Operation '${operation}' cannot ask for the approval this write requires; write the parts that need approval with their own operations`,
+            { reasons: err.reasons },
+          );
+        }
+        if (actor.runId === undefined || actor.agentProjectItemId === undefined) throw err;
         const request = await preflightDestructiveApproval(
           pool,
           operation,
@@ -467,6 +508,9 @@ export function createGenericOperationGateway(
  *   API delegates to, on this same transaction and client, then marks `succeeded` and commits — the
  *   mutation and its terminal-state write land in the same commit, so a crash before commit rolls
  *   both back together (staying `queued`) and a crash after commit is safe (nothing left to redo).
+ * - each terminal write (`conflict` or `succeeded`) is announced to the request's owner after the
+ *   commit (`publishApprovalRequestChange`); a request found already terminal writes and announces
+ *   nothing.
  */
 export async function replayApprovedGenericOperation(
   pool: Pool,
@@ -542,6 +586,7 @@ export async function replayApprovedGenericOperation(
     if (checked.kind === "conflict") {
       const outcome = await terminalizeApprovalRequestAsConflict(client, locked.id, checked.details);
       await postApprovalOutcomeMessage(client, locked, "conflict");
+      await publishApprovalRequestChange(client, locked);
       return outcome;
     }
     const { operation, input, actor, dataActor, currentResource } = checked;
@@ -557,13 +602,12 @@ export async function replayApprovedGenericOperation(
         agentRunId: locked.agentRunId,
         agentProjectItemId: actor.agentProjectItemId,
         onBehalfOfUserId: actor.userId,
-        ...(operation === "item.patch" || operation === "relation.put" || operation === "relation.set"
-          ? { approvedRequestId: locked.id }
-          : {}),
+        ...(LINK_DEFERRAL_OPERATIONS.includes(operation) ? { approvedRequestId: locked.id } : {}),
       },
     );
     const outcome = await markApprovalRequestExecutionSucceeded(client, locked.id, result);
     await postApprovalOutcomeMessage(client, locked, "executed");
+    await publishApprovalRequestChange(client, locked);
     return outcome;
   });
 }

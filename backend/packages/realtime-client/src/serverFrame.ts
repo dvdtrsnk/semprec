@@ -106,6 +106,12 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
         const { threadId } = parsed;
         return typeof threadId === "string" ? { type: "invalidate", scope: "sempThread", threadId } : null;
       }
+      if (parsed.scope === "approvalRequest") {
+        const { approvalRequestId } = parsed;
+        return typeof approvalRequestId === "string" && UUID_PATTERN.test(approvalRequestId)
+          ? { type: "invalidate", scope: "approvalRequest", approvalRequestId }
+          : null;
+      }
       return null;
     }
     case "notification": {

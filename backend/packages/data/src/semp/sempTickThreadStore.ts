@@ -29,7 +29,7 @@ export async function getOrCreateTickThread(client: PoolClient, heartbeatId: str
 }
 
 export type TickRunOutcome =
-  { status: "done"; result: string | null } | { status: "error"; result: string; errorCode: AgentRunErrorCode };
+  { status: "done"; result: string | null } | { status: "error"; errorCode: AgentRunErrorCode };
 
 /**
  * Closes a heartbeat run and writes its assistant message into the tick thread, in the caller's
@@ -46,7 +46,7 @@ export async function finishTickRunWithMessage(
   const closed =
     outcome.status === "done"
       ? await finishAgentRun(client, agentRunId, "done", outcome.result)
-      : await finishAgentRunWithErrorNotification(client, agentRunId, outcome.result, outcome.errorCode);
+      : await finishAgentRunWithErrorNotification(client, agentRunId, outcome.errorCode);
   if (!closed) return false;
   const createdAt = await allocateSempMessageTimestamp(client, thread.id);
   await client.query(

@@ -55,12 +55,14 @@ const EXPECTED_ROWS: Record<
   "page.duplicate": { schema: schemas.PageDuplicateInputSchema, method: "duplicatePage" },
   "page.rename": { schema: schemas.PageRenameInputSchema, method: "renamePage" },
   "page.insert": { schema: schemas.PageInsertInputSchema, method: "insertPage" },
+  "page.replace": { schema: schemas.PageReplaceInputSchema, method: "replacePage" },
   "page.get": { schema: schemas.PageGetInputSchema, method: "getPage" },
   "page.changes": { schema: schemas.PageChangesInputSchema, method: "listPageChanges" },
   "link.unlink": { schema: schemas.ValueLinkInputSchema, method: "unlinkValue" },
   "link.relink": { schema: schemas.ValueLinkInputSchema, method: "relinkValue" },
   "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
   "item.count": { schema: schemas.ItemCountInputSchema, method: "countItems" },
+  "database.facets": { schema: schemas.DatabaseFacetsInputSchema, method: "getDatabaseFacets" },
 };
 
 const EXPECTED_METADATA: Record<
@@ -276,6 +278,12 @@ const EXPECTED_METADATA: Record<
     riskClass: "write",
     reversible: true,
   },
+  "page.replace": {
+    requiresCapability: "core.page.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: true,
+  },
   "page.createSubpage": {
     requiresCapability: "core.item.write",
     requiresApproval: false,
@@ -301,18 +309,24 @@ const EXPECTED_METADATA: Record<
     reversible: true,
   },
   "item.count": { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "database.facets": {
+    requiresCapability: "core.item.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 44 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(44);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(44);
+  it("has exactly 46 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(46);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(46);
   });
 });
 
 describe("REST_ONLY_OPERATION_NAMES", () => {
-  it("names exactly the two select-option operations", () => {
-    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update"]);
+  it("names exactly the two select-option operations and the page replace", () => {
+    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update", "page.replace"]);
   });
 });
 
@@ -395,7 +409,7 @@ describe("select-option input schemas (issue #1699)", () => {
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 44 catalog rows and no others", () => {
+  it("has exactly the 46 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
@@ -462,6 +476,7 @@ describe("deriveApprovalRiskLevel", () => {
     ["view.delete", { riskClass: "destructive", operationName: "view.delete" }, "irreversible"],
     ["relation.delete", { riskClass: "destructive", operationName: "relation.delete" }, "irreversible"],
     ["page.restoreVersion", { riskClass: "destructive", operationName: "page.restoreVersion" }, "write"],
+    ["page.replace", { riskClass: "destructive", operationName: "page.replace" }, "write"],
     ["MCP destructive tool", { riskClass: "destructive" }, "irreversible"],
     ["destructive unknown operation name", { riskClass: "destructive", operationName: "toString" }, "irreversible"],
     ["outbound tool", { riskClass: "outbound" }, "outbound"],

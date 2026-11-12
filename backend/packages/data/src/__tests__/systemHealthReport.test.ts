@@ -211,7 +211,7 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     if (!databaseIdA) throw new Error("fixture item has no database");
     await runInTenant(a.tenantId, async () => {
       const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
-      await finishAgentRun(runtimePool, run.id, "error", "boom", "internal");
+      await finishAgentRun(runtimePool, run.id, "error", "internal");
     });
     // Raw insert: alerting rows are written by the observability system task, not a choke-point API.
     await pool.query(
@@ -238,7 +238,7 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
       await ensureMailAccountSyncState(runtimePool, { itemId: mailboxA, syncMode: "imap" });
       await recordSyncError(runtimePool, mailboxA, "connection refused", "other");
       const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
-      await finishAgentRun(runtimePool, run.id, "error", "boom", "internal");
+      await finishAgentRun(runtimePool, run.id, "error", "internal");
     });
 
     const reportA = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
@@ -260,10 +260,10 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
         task: "recent",
         unit: "invocation",
       });
-      await finishAgentRun(runtimePool, recentErrorRun.id, "error", "boom", "internal");
+      await finishAgentRun(runtimePool, recentErrorRun.id, "error", "internal");
 
       const oldErrorRun = await createAgentRun(runtimePool, { triggeredBy: "user", task: "old", unit: "invocation" });
-      await finishAgentRun(runtimePool, oldErrorRun.id, "error", "boom", "internal");
+      await finishAgentRun(runtimePool, oldErrorRun.id, "error", "internal");
       await pool.query(`UPDATE agent_runs SET started_at = now() - interval '8 days' WHERE id = $1`, [oldErrorRun.id]);
 
       const doneRun = await createAgentRun(runtimePool, { triggeredBy: "user", task: "fine", unit: "invocation" });

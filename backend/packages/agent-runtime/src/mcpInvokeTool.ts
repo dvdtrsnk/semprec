@@ -3,12 +3,14 @@ import { isRiskClass } from "@semprec/shared";
 import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
-  createPendingApprovalRequest,
+  createPendingApprovalRequestAndPublish,
   approvalNotificationBody,
+  approvalNotificationLinkHref,
   buildMcpInvokeApprovalDescription,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   withTransaction,
   executeMcpInvocation,
+  getApprovalRequestSourceKind,
   getTenantUserId,
   writeNotification,
   type McpToolInvocationTarget,
@@ -228,7 +230,11 @@ function pendingApprovalResult(requestId: string, toolName: string): McpInvokeTo
  * is the new request's own freshly generated id — a create is a one-shot event with no retry of
  * "the same" transition to dedupe against, so the id doubling as both `sourceId` and
  * `transitionInstance` is exactly as unique as the row it names. Silently skips the notification
- * before any account exists, matching `notifyHeartbeatError`.
+ * before any account exists, matching `notifyHeartbeatError`. The notification's link depends on
+ * the source of the request and names the request (`approvalNotificationLinkHref`, issue #1787).
+ * The new request is announced to its owner after the commit (`createPendingApprovalRequestAndPublish`),
+ * through whatever realtime publisher the process wired (`semprec-agents` wires it at startup); a
+ * replayed tool call, which returns the existing request, announces nothing.
  */
 export function createApprovalGatedMcpInvokeTool(
   pool: Pool,
@@ -265,7 +271,7 @@ export function createApprovalGatedMcpInvokeTool(
     const { target } = resolution;
     if (target.requiresApproval) {
       const request = await withTransaction(pool, async (client) => {
-        const created = await createPendingApprovalRequest(client, {
+        const created = await createPendingApprovalRequestAndPublish(client, {
           agentRunId,
           toolName: target.toolName,
           riskClass: isRiskClass(target.riskClass) ? target.riskClass : "unclassified",
@@ -291,7 +297,10 @@ export function createApprovalGatedMcpInvokeTool(
             userId,
             kind: "approval_pending",
             ...approvalNotificationBody(created),
-            linkHref: `?page=approvals&user=${userId}`,
+            linkHref: approvalNotificationLinkHref(
+              await getApprovalRequestSourceKind(client, created.agentRunId),
+              created.id,
+            ),
             sourceTable: "approval_requests",
             sourceId: created.id,
             transitionInstance: created.id,

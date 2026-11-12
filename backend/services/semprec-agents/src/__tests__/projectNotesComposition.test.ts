@@ -133,7 +133,7 @@ describe("project notes session composition", () => {
         primary = { error };
       }
       try {
-        await withTransaction(runtime, (client) => finishAgentRun(client, run.id, "error", null, "internal"));
+        await withTransaction(runtime, (client) => finishAgentRun(client, run.id, "error", "internal"));
       } catch (error) {
         if (primary)
           throw new AggregateError([primary.error, error], "Notes composition and run cleanup failed", {

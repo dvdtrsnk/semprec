@@ -1,9 +1,10 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 import { Readable } from "node:stream";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
@@ -26,7 +27,9 @@ import {
   stubDnsLookup,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { getDatabase } from "../chokePoint/databasesStore.js";
+import { purgeExpiredTrash } from "../trash/purgeExpiredTrash.js";
 import { createBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -220,10 +223,26 @@ describe("library module (issue #25)", () => {
     const books = await chokePoint.listProperties(booksId);
     const movies = await chokePoint.listProperties(moviesId);
 
-    expect(books.map((p) => p.key).sort()).toEqual(["author", "cover", "isbn", "name", "rating", "status", "year"]);
+    expect(books.map((p) => p.key).sort()).toEqual(
+      [
+        "author",
+        "cover",
+        "coverOverride",
+        "coverRemoved",
+        "coverSource",
+        "isbn",
+        "name",
+        "rating",
+        "status",
+        "year",
+      ].sort(),
+    );
     expect(movies.map((p) => p.key).sort()).toEqual(
       [
         "cover",
+        "coverOverride",
+        "coverRemoved",
+        "coverSource",
         "name",
         "notes",
         "rating",
@@ -239,6 +258,15 @@ describe("library module (issue #25)", () => {
     expect(books.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user", name: null });
     expect(books.find((p) => p.key === "isbn")).toMatchObject({ type: "text", owner: "user", name: null });
     expect(books.find((p) => p.key === "cover")).toMatchObject({ type: "image", owner: "system" });
+    for (const properties of [books, movies]) {
+      expect(properties.find((p) => p.key === "coverOverride")).toMatchObject({ type: "image", owner: "user" });
+      expect(properties.find((p) => p.key === "coverRemoved")).toMatchObject({ type: "checkbox", owner: "user" });
+      expect(properties.find((p) => p.key === "coverSource")).toMatchObject({
+        type: "select",
+        owner: "user",
+        config: { options: [{ key: "candidate" }, { key: "userPhoto" }, { key: "userImage" }] },
+      });
+    }
     expect(movies.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user" });
     expect(movies.find((p) => p.key === "secondaryRating")).toMatchObject({ type: "number", owner: "system" });
     expect(movies.find((p) => p.key === "sourceUrl")).toMatchObject({ type: "url", owner: "system" });
@@ -246,12 +274,22 @@ describe("library module (issue #25)", () => {
     const booksViews = await chokePoint.listViewsByDatabase(booksId);
     expect(booksViews).toHaveLength(1);
     expect(booksViews[0]!.type).toBe("library-grid");
-    expect(booksViews[0]!.config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
+    expect(booksViews[0]!.config).toMatchObject({
+      coverKey: "cover",
+      coverOverrideKey: "coverOverride",
+      coverRemovedKey: "coverRemoved",
+      coverSourceKey: "coverSource",
+      subtitleKey: "author",
+      statusKey: "status",
+    });
     expect(booksViews[0]!.config).not.toHaveProperty("secondaryRatingLabel");
 
     const moviesViews = await chokePoint.listViewsByDatabase(moviesId);
     expect(moviesViews[0]!.config).toMatchObject({
       coverKey: "cover",
+      coverOverrideKey: "coverOverride",
+      coverRemovedKey: "coverRemoved",
+      coverSourceKey: "coverSource",
       subtitleKey: "year",
       ratingKey: "rating",
       secondaryRatingKey: "secondaryRating",
@@ -562,6 +600,18 @@ describe("library module (issue #25)", () => {
       }).success,
     ).toBe(true);
     expect(schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating" }).success).toBe(false);
+    const base = { coverKey: "cover", subtitleKey: "year", ratingKey: "rating", statusKey: "status" };
+    expect(
+      schema?.safeParse({
+        ...base,
+        coverOverrideKey: "coverOverride",
+        coverRemovedKey: "coverRemoved",
+        coverSourceKey: "coverSource",
+      }).success,
+    ).toBe(true);
+    for (const key of ["coverOverrideKey", "coverRemovedKey", "coverSourceKey"]) {
+      expect(schema?.safeParse({ ...base, [key]: 1 }).success, key).toBe(false);
+    }
     expect(
       schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating", statusKey: 1 }).success,
     ).toBe(false);
@@ -2012,5 +2062,385 @@ describe("Books year and ISBN tenant cutover", () => {
     await runInTenant(tenantId, async () => {
       expect((await snapshot()).map((p) => p.key)).not.toContain("year");
     });
+  });
+});
+
+describe("library cover override (issue gh-1793)", () => {
+  const STORAGE_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
+  /** One case per library database: the source its job reads, a field the job may fill, and the job config. */
+  const LIBRARY_CASES = [
+    {
+      moduleId: "books",
+      source: "openLibrary",
+      fill: { author: "Frank Herbert" },
+      config: { source: "openLibrary", coverKey: "cover", authorKey: "author" },
+    },
+    {
+      moduleId: "movies",
+      source: "tmdb",
+      fill: { year: 2021 },
+      config: { source: "tmdb", coverKey: "cover", yearKey: "year" },
+    },
+  ] as const;
+  type LibraryCase = (typeof LIBRARY_CASES)[number];
+  let storageRoot: string;
+  let storage: BlobStorageWriter;
+
+  beforeAll(() => {
+    pool = getTestPool();
+    chokePoint = createChokePoint(pool);
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    storageRoot = await mkdtemp(join(tmpdir(), "semprec-library-cover-override-"));
+    storage = new LocalFsBlobStorageWriter(storageRoot);
+  });
+
+  afterEach(async () => {
+    await rm(storageRoot, { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  async function newItem(moduleId: string, properties: Record<string, unknown> = {}) {
+    const databaseId = await getDatabaseIdByModule(moduleId);
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId, properties: { name: "Cover probe", ...properties } }),
+    );
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    return { databaseId, itemId: item.id };
+  }
+
+  async function propertiesOf(databaseId: string, itemId: string): Promise<Record<string, unknown>> {
+    const item = await chokePoint.getItem(databaseId, itemId);
+    if (!item) throw new Error(`item ${itemId} is missing`);
+    return item.properties;
+  }
+
+  async function newBlobId(): Promise<string> {
+    const blob = await inTenantZero(() =>
+      withTransaction(pool, async (client) =>
+        createBlob(client, {
+          mimeType: "image/png",
+          byteSize: 4,
+          storageKey: await tenantBlobStorageKey(client, `blobs/${randomUUID()}`),
+        }),
+      ),
+    );
+    return blob.id;
+  }
+
+  const patch = (databaseId: string, itemId: string, propertiesPatch: Record<string, unknown>) =>
+    chokePoint.updateItem({ databaseId, itemId, propertiesPatch });
+
+  function runJob(c: LibraryCase, databaseId: string, itemId: string) {
+    const fetcher: LibraryMetadataFetcher = async () => ({
+      status: "found",
+      source: c.source,
+      ...c.fill,
+      cover: { mimeType: "image/jpeg", bytes: STORAGE_BYTES },
+    });
+    return inTenantZero(() =>
+      handleProcessLibraryMetadataTask(pool, { itemId, databaseId, config: c.config }, fetcher, undefined, storage),
+    );
+  }
+
+  const automationOf = (itemId: string) => withTransaction(pool, (client) => getItemAutomation(client, itemId));
+
+  describe.each(LIBRARY_CASES)("$moduleId", (c) => {
+    it("keeps a chosen cover through a job run that still fills an empty field and writes the system cover", async () => {
+      const { databaseId, itemId } = await newItem(c.moduleId);
+      const blobId = await newBlobId();
+      const filesItems = async () =>
+        (
+          await pool.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'files')",
+          )
+        ).rows[0]?.n;
+      const filesBefore = await filesItems();
+      await patch(databaseId, itemId, { coverOverride: { blobId }, coverSource: "userPhoto" });
+      expect(await propertiesOf(databaseId, itemId)).toMatchObject({
+        coverOverride: { blobId },
+        coverSource: "userPhoto",
+      });
+      // The photo is a blob of the item, not a file of the user: no Files item is created for it.
+      expect(await filesItems()).toBe(filesBefore);
+
+      await runJob(c, databaseId, itemId);
+
+      const after = await propertiesOf(databaseId, itemId);
+      expect(after).toMatchObject({ coverOverride: { blobId }, coverSource: "userPhoto", ...c.fill });
+      expect(z.object({ blobId: z.uuid() }).parse(after.cover).blobId).not.toBe(blobId);
+      expect(await automationOf(itemId)).toMatchObject({ status: "done", source: c.source });
+    });
+
+    it("keeps a removed cover removed through a job run and leaves the item unlocked", async () => {
+      const { databaseId, itemId } = await newItem(c.moduleId);
+      await patch(databaseId, itemId, { coverRemoved: true });
+      expect((await automationOf(itemId))?.status).toBe("pending");
+
+      await runJob(c, databaseId, itemId);
+
+      const after = await propertiesOf(databaseId, itemId);
+      expect(after).toMatchObject({ coverRemoved: true, ...c.fill });
+      expect(after.cover).toBeDefined();
+      expect((await automationOf(itemId))?.status).toBe("done");
+    });
+
+    describe("refused writes", () => {
+      it("answers a 400 naming the field and leaves the item as it was for each invalid combination", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        const blobId = await newBlobId();
+        const before = await propertiesOf(databaseId, itemId);
+        const refused: Array<{ label: string; propertiesPatch: Record<string, unknown>; field: string }> = [
+          {
+            label: "an override of a blob that does not exist",
+            propertiesPatch: { coverOverride: { blobId: randomUUID() }, coverSource: "userImage" },
+            field: "coverOverride",
+          },
+          {
+            label: "an override that is not an object",
+            propertiesPatch: { coverOverride: "cover.png", coverSource: "userImage" },
+            field: "coverOverride",
+          },
+          {
+            label: "an override without a blob id",
+            propertiesPatch: { coverOverride: {}, coverSource: "userImage" },
+            field: "coverOverride",
+          },
+          {
+            label: "an override whose blob id is not a UUID",
+            propertiesPatch: { coverOverride: { blobId: "not-a-uuid" }, coverSource: "userImage" },
+            field: "coverOverride",
+          },
+          {
+            label: "an override without a source",
+            propertiesPatch: { coverOverride: { blobId } },
+            field: "coverSource",
+          },
+          {
+            label: "an override with a null source",
+            propertiesPatch: { coverOverride: { blobId }, coverSource: null },
+            field: "coverSource",
+          },
+          { label: "a source outside the options", propertiesPatch: { coverSource: "bogus" }, field: "coverSource" },
+          {
+            label: "a removed flag that is not a boolean",
+            propertiesPatch: { coverRemoved: "yes" },
+            field: "coverRemoved",
+          },
+          {
+            label: "a removal together with an override",
+            propertiesPatch: { coverRemoved: true, coverOverride: { blobId }, coverSource: "userPhoto" },
+            field: "coverRemoved",
+          },
+        ];
+        for (const { label, propertiesPatch, field } of refused) {
+          const error = await patch(databaseId, itemId, propertiesPatch).catch((e: unknown) => e);
+          expect(error, label).toBeInstanceOf(ValidationError);
+          expect(error, label).toMatchObject({ status: 400, details: { field } });
+          expect(await propertiesOf(databaseId, itemId), label).toEqual(before);
+        }
+      });
+
+      it("refuses a removal while an override is stored and a source cleared while an override is stored", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        const blobId = await newBlobId();
+        await patch(databaseId, itemId, { coverOverride: { blobId }, coverSource: "userImage" });
+        const before = await propertiesOf(databaseId, itemId);
+
+        await expect(patch(databaseId, itemId, { coverRemoved: true })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "coverRemoved" },
+        });
+        await expect(patch(databaseId, itemId, { coverSource: null })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "coverSource" },
+        });
+        expect(await propertiesOf(databaseId, itemId)).toEqual(before);
+      });
+
+      it("refuses an invalid override on create and creates no item", async () => {
+        const databaseId = await getDatabaseIdByModule(c.moduleId);
+        const blobId = await newBlobId();
+        const countProbes = async () =>
+          (
+            await pool.query<{ n: number }>(
+              "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties->>'name' = 'Refused create'",
+              [databaseId],
+            )
+          ).rows[0]?.n;
+        for (const [properties, field] of [
+          [{ coverOverride: { blobId } }, "coverSource"],
+          [{ coverOverride: { blobId: randomUUID() }, coverSource: "userImage" }, "coverOverride"],
+          [{ coverRemoved: true, coverOverride: { blobId }, coverSource: "userImage" }, "coverRemoved"],
+        ] as const) {
+          await expect(
+            inTenantZero(() =>
+              chokePoint.createItem({ databaseId, properties: { name: "Refused create", ...properties } }),
+            ),
+          ).rejects.toMatchObject({ status: 400, details: { field } });
+        }
+        expect(await countProbes()).toBe(0);
+        const created = await inTenantZero(() =>
+          chokePoint.createItem({
+            databaseId,
+            properties: { name: "Accepted create", coverOverride: { blobId }, coverSource: "userImage" },
+          }),
+        );
+        expect(await propertiesOf(databaseId, created.id)).toMatchObject({ coverOverride: { blobId } });
+      });
+    });
+
+    describe("accepted writes", () => {
+      it("clears a stored removal when an override is set, and adds no removal flag otherwise", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        const first = await newBlobId();
+        await patch(databaseId, itemId, { coverOverride: { blobId: first }, coverSource: "userPhoto" });
+        expect(Object.hasOwn(await propertiesOf(databaseId, itemId), "coverRemoved")).toBe(false);
+
+        await patch(databaseId, itemId, { coverOverride: null });
+        await patch(databaseId, itemId, { coverRemoved: true });
+        expect((await propertiesOf(databaseId, itemId)).coverRemoved).toBe(true);
+        const second = await newBlobId();
+        await patch(databaseId, itemId, { coverOverride: { blobId: second }, coverSource: "userImage" });
+        expect(await propertiesOf(databaseId, itemId)).toMatchObject({
+          coverOverride: { blobId: second },
+          coverSource: "userImage",
+          coverRemoved: false,
+        });
+      });
+
+      it("accepts a removal that clears the override in the same write and an explicit removed flag of false", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        const blobId = await newBlobId();
+        await patch(databaseId, itemId, { coverOverride: { blobId }, coverSource: "userPhoto" });
+        await patch(databaseId, itemId, { coverRemoved: true, coverOverride: null });
+        expect(await propertiesOf(databaseId, itemId)).toMatchObject({ coverRemoved: true, coverOverride: null });
+        await patch(databaseId, itemId, { coverOverride: { blobId }, coverRemoved: false, coverSource: "userPhoto" });
+        expect(await propertiesOf(databaseId, itemId)).toMatchObject({
+          coverRemoved: false,
+          coverOverride: { blobId },
+        });
+      });
+
+      it("replaces the override and keeps the stored source when the write names no source", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        const [first, second] = [await newBlobId(), await newBlobId()];
+        await patch(databaseId, itemId, { coverOverride: { blobId: first }, coverSource: "userPhoto" });
+        await patch(databaseId, itemId, { coverOverride: { blobId: second } });
+        expect(await propertiesOf(databaseId, itemId)).toMatchObject({
+          coverOverride: { blobId: second },
+          coverSource: "userPhoto",
+        });
+      });
+
+      it("leaves the cover properties alone when a write names none of them", async () => {
+        const { databaseId, itemId } = await newItem(c.moduleId);
+        await patch(databaseId, itemId, { coverRemoved: true });
+        await patch(databaseId, itemId, { rating: 3 });
+        expect(await propertiesOf(databaseId, itemId)).toMatchObject({ coverRemoved: true, rating: 3 });
+      });
+    });
+
+    describe("a write prepared for approval", () => {
+      async function prepare(itemId: string, values: Record<string, unknown>) {
+        const databaseId = await getDatabaseIdByModule(c.moduleId);
+        const database = await withTransaction(pool, (client) => getDatabase(client, databaseId));
+        const stored = await chokePoint.getItem(databaseId, itemId);
+        if (!database || !stored) throw new Error("the database or the item is missing");
+        return prepareUserItemPatch(await chokePoint.listProperties(databaseId), values, database, stored, "UTC");
+      }
+
+      it("carries the same added value as the write and the same refusals, without a blob lookup", async () => {
+        const plain = await newItem(c.moduleId);
+        const removed = await newItem(c.moduleId);
+        await patch(removed.databaseId, removed.itemId, { coverRemoved: true });
+        const unknownBlob = randomUUID();
+
+        const prepared = await prepare(removed.itemId, {
+          coverOverride: { blobId: unknownBlob },
+          coverSource: "userImage",
+        });
+        expect(prepared.patch).toEqual({
+          coverOverride: { blobId: unknownBlob },
+          coverSource: "userImage",
+          coverRemoved: false,
+        });
+        expect(prepared.deferredKeys).toEqual([]);
+        await expect(prepare(plain.itemId, { coverOverride: { blobId: unknownBlob } })).rejects.toMatchObject({
+          details: { field: "coverSource" },
+        });
+      });
+    });
+  });
+
+  describe("reference safety of the chosen cover", () => {
+    async function trashedFilesItem(blobId: string): Promise<{ databaseId: string; itemId: string }> {
+      const databaseId = await getDatabaseIdByModule("files");
+      const file = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId, properties: { name: "Same bytes", file: { blobId } } }),
+      );
+      await chokePoint.softDeleteItem(databaseId, file.id);
+      // Fixture SQL: the only way to age a trashed row past the 30 days retention.
+      await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1 AND database_id = $2", [
+        file.id,
+        databaseId,
+      ]);
+      return { databaseId, itemId: file.id };
+    }
+
+    function fakeStorage() {
+      const deleteMock = vi.fn(async (_storageKey: string) => {});
+      const fake: BlobStorageWriter = {
+        writeStream: () => Promise.reject(new Error("not used by the purge")),
+        readStream: () => {
+          throw new Error("not used by the purge");
+        },
+        delete: deleteMock,
+      };
+      return { fake, deleteMock };
+    }
+
+    const blobRows = async (blobId: string) =>
+      (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM blobs WHERE id = $1", [blobId])).rows[0]?.n;
+
+    it.each(["coverOverride", "cover"] as const)(
+      "keeps the blob %s names when a Files item with the same bytes is purged, and deletes it once nothing names it",
+      async (propertyKey) => {
+        const { databaseId, itemId } = await newItem("books");
+        const blobId = await newBlobId();
+        const reference = { blobId };
+        const writeReference = (value: { blobId: string } | null) =>
+          propertyKey === "coverOverride"
+            ? patch(databaseId, itemId, { coverOverride: value, ...(value ? { coverSource: "userPhoto" } : {}) })
+            : inTenantZero(() =>
+                withTransaction(pool, (client) =>
+                  updateItemWithClient(
+                    client,
+                    { databaseId, itemId, propertiesPatch: { cover: value } },
+                    { allowedSystemKeys: ["cover"] },
+                  ),
+                ),
+              );
+        await writeReference(reference);
+        await trashedFilesItem(blobId);
+        const { fake, deleteMock } = fakeStorage();
+
+        expect(await inTenantZero(() => purgeExpiredTrash(pool, fake))).toBe(1);
+        expect(await blobRows(blobId)).toBe(1);
+        expect(deleteMock).not.toHaveBeenCalled();
+
+        await writeReference(null);
+        await trashedFilesItem(blobId);
+        expect(await inTenantZero(() => purgeExpiredTrash(pool, fake))).toBe(1);
+        expect(await blobRows(blobId)).toBe(0);
+        expect(deleteMock).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 });

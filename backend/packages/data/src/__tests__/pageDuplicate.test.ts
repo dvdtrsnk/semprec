@@ -798,6 +798,14 @@ describe("page.duplicate (issue #1722)", () => {
 
     const trashedParent = await projectWithChecklist();
     await trash(trashedParent.project);
+    // The project's trash took the page with it (issue #1763). Restored on its own, the page is live below the
+    // trashed project.
+    const pagesDatabaseId = await databaseIdOf(trashedParent.checklist.pageItemId);
+    await runInTenant(tenant, () =>
+      createChokePoint(runtime).restoreItem(pagesDatabaseId, trashedParent.checklist.pageItemId),
+    );
+    expect(await isInTrash(trashedParent.checklist.pageItemId)).toBe(false);
+    expect(await isInTrash(trashedParent.project)).toBe(true);
     await expectNotFoundUnchanged(trashedParent.checklist.pageItemId);
 
     const unusableParent = await projectWithChecklist();

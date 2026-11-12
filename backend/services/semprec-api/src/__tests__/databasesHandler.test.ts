@@ -1111,6 +1111,121 @@ describe("database routes (issue #240)", () => {
     });
   });
 
+  describe("sensitive (issue #1808)", () => {
+    const SENSITIVE_KEYS = ["healthRecords", "sleepNights", "sleepPlans", "sleepSettings"];
+    const sensitiveEnvelope = z.object({ id: z.string(), key: z.string().nullable(), sensitive: z.boolean() });
+    type SensitiveEnvelope = z.infer<typeof sensitiveEnvelope>;
+    const errorBody = z.object({ error: z.object({ code: z.string() }) });
+
+    async function jsonHeaders(): Promise<Record<string, string>> {
+      return { ...(await authHeader()), "Content-Type": "application/json" };
+    }
+
+    async function list(headers: Record<string, string>): Promise<SensitiveEnvelope[]> {
+      const res = await fetch(`${baseUrl}/api/databases?limit=200`, { headers });
+      expect(res.status).toBe(200);
+      return z.object({ databases: z.array(sensitiveEnvelope) }).parse(await res.json()).databases;
+    }
+
+    async function storedFlags(): Promise<Array<{ name: string | null; sensitive: boolean }>> {
+      const { rows } = await pool.query<{ name: string | null; sensitive: boolean }>(
+        "SELECT name, sensitive FROM databases WHERE NOT system ORDER BY name",
+      );
+      return rows;
+    }
+
+    it("returns sensitive true for exactly the four sensitive keys in the list and false for every other database", async () => {
+      const databases = await list(await jsonHeaders());
+
+      expect(
+        databases
+          .filter((db) => db.sensitive)
+          .map((db) => db.key)
+          .sort(),
+      ).toEqual(SENSITIVE_KEYS);
+      // The others exist, so the flag is false rather than absent.
+      expect(databases.length).toBeGreaterThan(SENSITIVE_KEYS.length);
+    });
+
+    it("returns sensitive on the detail of a sensitive database and of a database that is not", async () => {
+      const headers = await jsonHeaders();
+      const databases = await list(headers);
+      const health = databases.find((db) => db.key === "healthRecords");
+      const tasks = databases.find((db) => db.key === "tasks");
+      if (!health || !tasks) throw new Error("healthRecords and tasks are missing from GET /api/databases");
+
+      const healthDetail = await fetch(`${baseUrl}/api/databases/${health.id}`, { headers });
+      const tasksDetail = await fetch(`${baseUrl}/api/databases/${tasks.id}`, { headers });
+
+      expect(healthDetail.status).toBe(200);
+      expect(sensitiveEnvelope.parse(await healthDetail.json()).sensitive).toBe(true);
+      expect(tasksDetail.status).toBe(200);
+      expect(sensitiveEnvelope.parse(await tasksDetail.json()).sensitive).toBe(false);
+    });
+
+    it("creates a database as not sensitive", async () => {
+      const headers = await jsonHeaders();
+
+      const created = await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Wine cellar" }),
+      });
+
+      expect(created.status).toBe(201);
+      expect(sensitiveEnvelope.parse(await created.json()).sensitive).toBe(false);
+    });
+
+    it("refuses to create a database with the flag, since only the system sets it, and creates nothing", async () => {
+      const headers = await jsonHeaders();
+
+      const refused = await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Wine cellar", sensitive: true }),
+      });
+
+      expect(refused.status).toBe(400);
+      expect(errorBody.parse(await refused.json()).error.code).toBe("validation_failed");
+      expect(await storedFlags()).toEqual([]);
+    });
+
+    it("refuses to patch the flag, since only the system sets it, and changes nothing", async () => {
+      const headers = await jsonHeaders();
+      const created = await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Wine cellar" }),
+      });
+      const database = sensitiveEnvelope.parse(await created.json());
+
+      const refused = await fetch(`${baseUrl}/api/databases/${database.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ sensitive: true }),
+      });
+
+      expect(refused.status).toBe(400);
+      expect(await storedFlags()).toEqual([{ name: "Wine cellar", sensitive: false }]);
+    });
+
+    it("carries in GET /api/schema the sensitive of GET /api/databases", async () => {
+      const headers = await jsonHeaders();
+      const schemaResponse = await fetch(`${baseUrl}/api/schema`, { headers });
+      expect(schemaResponse.status).toBe(200);
+      const schema = z
+        .object({ databases: z.array(z.object({ databaseId: z.string(), sensitive: z.boolean() })) })
+        .parse(await schemaResponse.json());
+
+      const listed = await list(headers);
+
+      expect(new Map(schema.databases.map((db) => [db.databaseId, db.sensitive]))).toEqual(
+        new Map(listed.map((db) => [db.id, db.sensitive])),
+      );
+      expect(schema.databases.filter((db) => db.sensitive).length).toBe(SENSITIVE_KEYS.length);
+    });
+  });
+
   it("creates a property on a database", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const createRes = await fetch(`${baseUrl}/api/databases`, {

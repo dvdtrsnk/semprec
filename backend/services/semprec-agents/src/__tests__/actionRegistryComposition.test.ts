@@ -42,7 +42,7 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     expect([...registry.keys()]).toEqual([CORE_AGENT_RUN_ACTION_ID]);
   });
 
-  it("closes a fired core.agentRun heartbeat's run as error naming the unwired runtime", async () => {
+  it("closes a fired core.agentRun heartbeat's run as error with the code internal, and the job names the unwired runtime", async () => {
     await seedSystem(pool);
     await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
     const { rows: heartbeats } = await pool.query<{ id: string; project_item_id: string }>(
@@ -88,6 +88,6 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     );
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("error");
-    expect(runs[0]?.result).toContain("no agent session runtime wired");
+    expect(runs[0]?.result).toBe("internal");
   });
 });

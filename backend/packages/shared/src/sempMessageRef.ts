@@ -104,7 +104,7 @@ export type LabeledSempMessageRef = z.infer<typeof labeledSempMessageRefSchema>;
 export interface SempApprovalDescription {
   key: string;
   params: Record<string, string | number | null>;
-  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string }>;
+  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string | null }>;
 }
 
 export type SempRefResolution = {

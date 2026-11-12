@@ -50,7 +50,7 @@ const rowSchema = z.strictObject({
   pendingApproval: z
     .strictObject({
       description: z.strictObject({ key: z.string(), params: z.record(z.string(), z.unknown()) }).nullable(),
-      sourceKind: z.enum(["genericOperation", "mcpInvoke"]),
+      sourceKind: z.enum(["genericOperation", "mcpInvoke", "moduleTool"]),
     })
     .nullable(),
   heartbeat: z
@@ -348,6 +348,30 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       });
       return request.id;
     });
+    expect(byId((await list(session)).rows, threadId)).toMatchObject({
+      hasPendingApproval: true,
+      pendingApproval: { description: null, sourceKind: "mcpInvoke" },
+    });
+
+    // A request of a module agent tool (issue #1791), created last and so the newest.
+    const moduleToolDescription = { key: "approval.moduleTool", params: { toolName: "gated.apply" } };
+    const moduleToolId = await runInTenant(session.tenant, async () => {
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: requests.delegatedRunId,
+        toolName: "gated.apply",
+        riskClass: "write",
+        payload: { moduleToolName: "gated.apply", args: { value: "x" } },
+        resourceSnapshot: { kind: "module_tool", resourceId: "gated.apply", sha256: null },
+        description: moduleToolDescription,
+      });
+      return request.id;
+    });
+    expect(byId((await list(session)).rows, threadId)).toMatchObject({
+      hasPendingApproval: true,
+      pendingApproval: { description: moduleToolDescription, sourceKind: "moduleTool" },
+    });
+
+    await decide(session, moduleToolId, "rejected");
     expect(byId((await list(session)).rows, threadId)).toMatchObject({
       hasPendingApproval: true,
       pendingApproval: { description: null, sourceKind: "mcpInvoke" },

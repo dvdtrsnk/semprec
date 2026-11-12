@@ -1,11 +1,12 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
+  getOrCreateTickThread,
   getTenantZeroId,
   inTenantZero,
   getTestPool,
@@ -18,11 +19,13 @@ import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import {
   ApprovalRequiredError,
   ApprovalResourceBusyError,
+  CORE_AGENT_RUN_ACTION_ID,
   ValueLinkBusyError,
   VALUE_LINKS_OWNER_PROCESS,
   createRelationWithClient,
   requireApprovalForWrite,
   setInvalidationHook,
+  setSempThreadInvalidationHook,
   ConflictError,
   ForbiddenError,
   NotFoundError,
@@ -33,6 +36,8 @@ import {
   computePageRestoreProjection,
   computeDestructiveResourceProjection,
   createDocStore,
+  createHeartbeat,
+  createSempChatThread,
   createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
@@ -45,6 +50,7 @@ import {
   rebaselineDocHistory,
   seedSystem,
   withTransaction,
+  type AgentRunRow,
   type ApprovalRequest,
   type ChokePoint,
   type GenericOperationApprovalRequestPayload,
@@ -216,12 +222,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
           first.id,
         ]);
         const pending = await getApprovalRequest(pool, requestId);
-        expect(pending?.description).toEqual({
-          key: "approval.relationSet",
-          params: { fromItemName: null, fromDatabaseKey: source.key, propertyName: "Target" },
+        // The active link on the replaced relation makes this a `breaksLink` request (issue #1758).
+        expect(pending?.description).toMatchObject({
+          key: "approval.breaksLink",
+          params: { propertyName: "Target" },
+          breaksLinks: [{ itemId: caller.id, propertyKey: "target" }],
         });
         expect(JSON.stringify(pending?.description)).not.toContain(second.id);
-        expect(pending?.riskClass).toBe("write");
+        expect(pending?.riskClass).toBe("breaksLink");
         await inTenantZero(() =>
           withTransaction(pool, (client) =>
             decideAndEnqueueApprovalRequest(client, {
@@ -349,8 +357,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
           second.id,
         ]);
+        // The first call never reached the hook: the replaced link asked for approval before any edge guard ran.
         expect(seen).toEqual([
-          { writerKind: "agent", approvedRequestId: undefined },
           { writerKind: "agent", approvedRequestId: requestId },
           { writerKind: "agent", approvedRequestId: requestId },
           { writerKind: "agent", approvedRequestId: requestId },
@@ -358,7 +366,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
         await expect(
           gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: third.id }),
         ).rejects.toBeInstanceOf(ApprovalRequiredError);
-        expect(delivered).toEqual(afterSuccess);
+        // Raising the next request announces the request and changes no item or relation.
+        expect(delivered).toEqual([
+          ...afterSuccess,
+          { scope: "approvalRequest", approvalRequestId: expect.any(String), userId: run.actorUserId },
+        ]);
         expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
           second.id,
         ]);
@@ -1323,7 +1335,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
         ).toEqual(jobsBeforeConflict.rows);
-        expect(conflictInvalidations).toEqual([]);
+        // The conflict changed no data; it announces only the request that reached its terminal state.
+        expect(conflictInvalidations).toEqual([
+          { scope: "approvalRequest", approvalRequestId: seriesOnly, userId: actor.userId },
+        ]);
         await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
           created.properties.seriesId,
           JSON.stringify({ kind: "weekdays", days: ["thu"] }),
@@ -1413,7 +1428,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
         ).toEqual(jobsBeforeUserConflict.rows);
-        expect(userConflictInvalidations).toEqual([]);
+        // The conflict changed no data; it announces only the request that reached its terminal state.
+        expect(userConflictInvalidations).toEqual([
+          { scope: "approvalRequest", approvalRequestId: stale, userId: actor.userId },
+        ]);
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
@@ -2166,9 +2184,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
       expect(gateway.listOperations(schemaWrite)).toEqual(["property.create", "property.patch", "property.delete"]);
       for (const operation of REST_ONLY_OPERATION_NAMES) {
-        expect(OPERATION_METADATA[operation].requiresCapability).toBe("core.schema.write");
         expect(gateway.listOperations(ALL_CAPABILITIES)).not.toContain(operation);
+        expect(gateway.listOperations(new Set([OPERATION_METADATA[operation].requiresCapability]))).not.toContain(
+          operation,
+        );
       }
+    });
+
+    it("lists the page operations of core.page.write except page.replace, which REST alone dispatches (issue #1765)", () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const pageWrite = new Set(["core.page.write"] as const);
+
+      const listed = gateway.listOperations(pageWrite);
+      expect(listed).toContain("page.insert");
+      expect(listed).not.toContain("page.replace");
+      expect(OPERATION_METADATA["page.replace"].requiresCapability).toBe("core.page.write");
     });
   });
 
@@ -2215,6 +2245,30 @@ describe("createGenericOperationGateway (issue #220)", () => {
         }
       }
       expect((await chokePoint.getProperty(property.id))?.config).toEqual(property.config);
+      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe(0);
+    });
+
+    it("refuses page.replace for a person and for an agent run like an unknown operation, writing nothing (issue #1765)", async () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const userId = await createUser();
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page replace probe" });
+      const actors: AuthenticatedActor[] = [
+        { userId },
+        { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId },
+      ];
+
+      for (const actor of actors) {
+        // Valid arguments that the port accepts for a REST caller, so only the gateway refuses them here.
+        await expect(
+          gateway.invoke("page.replace", actor, ALL_CAPABILITIES, {
+            itemId: randomUUID(),
+            markdown: "Replacement",
+            expectedEtag: "A".repeat(43),
+          }),
+        ).rejects.toMatchObject({ name: "NotFoundError", code: "not_found", status: 404 });
+      }
       const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
       expect(rows[0]?.count).toBe(0);
     });
@@ -2966,6 +3020,93 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
   });
 
+  describe("approval notification link (issue #1787)", () => {
+    /** Raises an `item.delete` request for `run` and returns its id with the link of its one notification. */
+    async function raiseFor(run: AgentRunRow): Promise<{ requestId: string; linkHref: string | null }> {
+      if (run.projectItemId === null) throw new Error("The run names no project");
+      const database = await chokePoint.createDatabase({ name: "Tasks" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const actor: AuthenticatedActor = {
+        userId: run.actorUserId,
+        runId: run.id,
+        agentProjectItemId: run.projectItemId,
+      };
+      const requestId = await createGenericOperationGateway(pool, testMetadataResolver)
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .then(
+          () => {
+            throw new Error("Expected an approval request");
+          },
+          (error: unknown) => {
+            if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
+            throw error;
+          },
+        );
+      const { rows } = await pool.query<{ link_href: string | null }>(
+        `SELECT link_href FROM notifications
+         WHERE kind = 'approval_pending' AND source_table = 'approval_requests' AND source_id = $1`,
+        [requestId],
+      );
+      const row = rows[0];
+      if (!row || rows.length !== 1) throw new Error(`Expected one notification, found ${rows.length}`);
+      return { requestId, linkHref: row.link_href };
+    }
+
+    it("links a request raised in a Semp chat to the Semp chats page, naming the request and no user", async () => {
+      const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
+      const run = await createAgentRun(pool, {
+        projectItemId: randomUUID(),
+        triggeredBy: "user",
+        unit: "session",
+        task: "chat",
+        threadId,
+      });
+
+      const { requestId, linkHref } = await raiseFor(run);
+
+      expect(linkHref).toBe(`?page=semp-chats&tab=semp&approvalRequestId=${requestId}`);
+      expect(linkHref).not.toContain(run.actorUserId);
+    });
+
+    it("links a request raised by an automatic task tick to the Inbox, naming the request and no user", async () => {
+      const projectItemId = randomUUID();
+      const tick = await withTransaction(pool, async (client) => {
+        const heartbeat = await createHeartbeat(client, {
+          projectItemId,
+          name: "Sunday planning",
+          rule: { kind: "weekly", days: ["sun"], at: "21:00" },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "Plan the week" },
+        });
+        return { heartbeatId: heartbeat.id, threadId: (await getOrCreateTickThread(client, heartbeat.id)).id };
+      });
+      const run = await createAgentRun(pool, {
+        projectItemId,
+        triggeredBy: "heartbeat",
+        task: "Plan the week",
+        ...tick,
+      });
+
+      const { requestId, linkHref } = await raiseFor(run);
+
+      expect(linkHref).toBe(`?page=inbox&approvalRequestId=${requestId}`);
+      expect(linkHref).not.toContain(run.actorUserId);
+    });
+
+    it("links a request raised by an MCP client to the Inbox, naming the request and no user", async () => {
+      const run = await createAgentRun(pool, {
+        projectItemId: randomUUID(),
+        triggeredBy: "mcp",
+        task: "MCP run-credential session",
+      });
+
+      const { requestId, linkHref } = await raiseFor(run);
+
+      expect(linkHref).toBe(`?page=inbox&approvalRequestId=${requestId}`);
+      expect(linkHref).not.toContain(run.actorUserId);
+    });
+  });
+
   describe("replay parity for all five destructive operations (issue #89 acceptance criteria)", () => {
     async function makeAgentActor(): Promise<AuthenticatedActor> {
       const projectItemId = await createRealAgentProjectItemId();
@@ -3657,6 +3798,177 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
     });
   });
+
+  describe("approval request announcements (issue #1789)", () => {
+    interface ApprovalAnnouncement {
+      approvalRequestId: string;
+      userId: string | undefined;
+    }
+    let approvalAnnouncements: ApprovalAnnouncement[];
+    let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
+
+    beforeEach(() => {
+      approvalAnnouncements = [];
+      threadAnnouncements = [];
+      setInvalidationHook((event) => {
+        if (event.scope === "approvalRequest")
+          approvalAnnouncements.push({ approvalRequestId: event.approvalRequestId, userId: event.userId });
+      });
+      setSempThreadInvalidationHook((event) => threadAnnouncements.push(event));
+    });
+
+    afterEach(() => {
+      setInvalidationHook(() => {});
+      setSempThreadInvalidationHook(() => {});
+    });
+
+    async function deleteSetUp(withThread: boolean) {
+      const database = await chokePoint.createDatabase({ name: "Announcement DB" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      // No public writer creates a chat thread on this tip.
+      const threadId = withThread ? await withTransaction(pool, (client) => createSempChatThread(client)) : null;
+      const run = await createAgentRun(pool, {
+        projectItemId,
+        triggeredBy: "user",
+        task: "delete it",
+        ...(threadId ? { threadId } : {}),
+      });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      return { item, run, actor, threadId };
+    }
+
+    async function raise(actor: AuthenticatedActor, itemId: string, toolCallId?: string): Promise<string> {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const err: unknown = await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId }, toolCallId ? { toolCallId } : undefined)
+        .then(
+          () => null,
+          (thrown: unknown) => thrown,
+        );
+      if (!(err instanceof ApprovalRequiredError)) throw new Error("expected ApprovalRequiredError");
+      return err.details.approvalRequestId;
+    }
+
+    async function approve(requestId: string, ownerUserId: string) {
+      await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: requestId,
+            decision: "approved",
+            decidedByUserId: ownerUserId,
+          }),
+        ),
+      );
+    }
+
+    async function loadGeneric(requestId: string) {
+      return (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+    }
+
+    it("announces a created request to its owner and pairs the thread of its run", async () => {
+      const { item, run, actor, threadId } = await deleteSetUp(true);
+
+      const requestId = await raise(actor, item.id);
+
+      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+      expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
+    });
+
+    it("announces only the request when the run has no thread", async () => {
+      const { item, run, actor } = await deleteSetUp(false);
+
+      const requestId = await raise(actor, item.id);
+
+      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+      expect(threadAnnouncements).toEqual([]);
+    });
+
+    it("announces nothing when the preflight refuses the call and creates no request", async () => {
+      const { actor } = await deleteSetUp(true);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+
+      await expect(gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
+        NotFoundError,
+      );
+
+      expect(approvalAnnouncements).toEqual([]);
+      expect(threadAnnouncements).toEqual([]);
+    });
+
+    it("announces a repeated tool call once, because the repeat writes nothing", async () => {
+      const { item, actor } = await deleteSetUp(true);
+
+      const first = await raise(actor, item.id, "call_announce");
+      const second = await raise(actor, item.id, "call_announce");
+
+      expect(second).toBe(first);
+      expect(approvalAnnouncements).toHaveLength(1);
+      expect(threadAnnouncements).toHaveLength(1);
+    });
+
+    it("announces a successful replay once and a redelivered replay not at all", async () => {
+      const { item, run, actor, threadId } = await deleteSetUp(true);
+      const requestId = await raise(actor, item.id);
+      await approve(requestId, run.actorUserId);
+      approvalAnnouncements.length = 0;
+      threadAnnouncements.length = 0;
+
+      const first = await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      expect(first.error).toBe(false);
+      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+      expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
+
+      await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      expect(approvalAnnouncements).toHaveLength(1);
+      expect(threadAnnouncements).toHaveLength(1);
+    });
+
+    it("announces a replay that ends in a conflict once, and a run without a thread only as the request", async () => {
+      const { item, run, actor } = await deleteSetUp(false);
+      const requestId = await raise(actor, item.id);
+      await approve(requestId, run.actorUserId);
+      approvalAnnouncements.length = 0;
+      // The resource changed after approval, so the snapshot hash no longer matches.
+      await pool.query(`UPDATE items SET updated_at = now() WHERE id = $1`, [item.id]);
+
+      const first = await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      expect(first.error).toBe(true);
+      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+      expect(threadAnnouncements).toEqual([]);
+
+      await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      expect(approvalAnnouncements).toHaveLength(1);
+    });
+
+    it("announces the failed outcome of a worker without a replay handler once", async () => {
+      const { item, run, actor, threadId } = await deleteSetUp(true);
+      const requestId = await raise(actor, item.id);
+      await approve(requestId, run.actorUserId);
+      approvalAnnouncements.length = 0;
+      threadAnnouncements.length = 0;
+
+      await runOnce({
+        pgPool: pool,
+        taskList: createCoreTaskList(
+          pool,
+          new Map(),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+      });
+
+      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+      expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
+    });
+  });
 });
 
 describe("approval_pending recipient in a tenant (issue #1018)", () => {
@@ -3677,7 +3989,7 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
     await pool?.end();
   });
 
-  it("notifies the user of the tenant the request is created in, with a link naming that user", async () => {
+  it("notifies the user of the tenant the request is created in, with a link that names the request and no user", async () => {
     const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
     const userA = await runInTenant(getTenantZeroId(), () =>
       createBoundUser(pool, {
@@ -3721,11 +4033,13 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       {
         user_id: userB.id,
         kind: "approval_pending",
-        link_href: `?page=approvals&user=${userB.id}`,
+        // The run has no thread and a person started it, which is a chat source (issue #1787).
+        link_href: `?page=semp-chats&tab=semp&approvalRequestId=${approvalRequestId}`,
         tenant_id: tenantB,
       },
     ]);
     expect(rows[0]?.user_id).not.toBe(userA.id);
+    expect(rows[0]?.link_href).not.toContain(userB.id);
   });
 
   it("refuses a foreign destructive target like a missing target without approval side effects", async () => {

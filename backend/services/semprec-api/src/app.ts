@@ -37,6 +37,7 @@ import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
 import {
   createPageMarkdownRequestListener,
+  createPageReplaceRequestListener,
   createPageInsertRequestListener,
   isPageInsertPath,
   isPageMarkdownPath,
@@ -139,6 +140,12 @@ export async function createDispatcher(
     mcpGateway,
     mcpGrantedCapabilities,
   );
+  const pageReplaceListener = createPageReplaceRequestListener(
+    pool,
+    genericApplicationService,
+    mcpGateway,
+    mcpGrantedCapabilities,
+  );
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
@@ -202,6 +209,10 @@ export async function createDispatcher(
     }
     if (req.method === "GET" && isPageMarkdownPath(pathname)) {
       pageMarkdownListener(req, res);
+      return;
+    }
+    if (req.method === "PUT" && isPageMarkdownPath(pathname)) {
+      pageReplaceListener(req, res);
       return;
     }
     if (req.method === "POST" && isPageInsertPath(pathname)) {

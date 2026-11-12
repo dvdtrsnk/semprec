@@ -17,6 +17,7 @@
   "approval.itemDelete": "Smazat „{itemName}“ z „{databaseName}“ ({databaseKey}); propojených položek: {linkedCount}, uchování: {restorableDays} dní. {projectName}",
   "approval.itemPatch": "Upravit „{itemName}“ v „{databaseName}“ ({databaseKey}).",
   "approval.changesSeries": "Změnit opakování úkolu „{taskName}“ z {fromRule} na {toRule}.",
+  "approval.breaksLink": "Nastavit {propertyName} u „{itemName}“ ({databaseKey}) na „{newValueName}“. Tím se ukončí propojení s „{sourceItemName}“ ({sourceDatabaseKey}) a položka je přestane sledovat.",
   "approval.relationPut": "Propojit „{fromItemName}“ ({fromDatabaseKey}) s „{toItemName}“ ({toDatabaseKey}).",
   "approval.relationSet": "Změnit propojení „{propertyName}“ u „{fromItemName}“ ({fromDatabaseKey}).",
   "approval.propertyDelete": "Smazat „{propertyName}“ z „{databaseName}“ ({databaseKey}); dotčených položek: {affectedCount}.",
@@ -25,6 +26,7 @@
   "approval.relationDelete": "Odebrat propojení z „{fromItemName}“ ({fromDatabaseKey}) na „{toItemName}“ ({toDatabaseKey}).",
   "approval.pageRestore": "Obnovit „{itemName}“ v „{databaseName}“ ({databaseKey}).",
   "approval.mcpInvoke": "Zavolat „{toolName}“ na MCP serveru „{serverName}“.",
+  "approval.moduleTool": "Spustit nástroj modulu „{toolName}“.",
   "notification.body.canUndo": "Lze ji později vzít zpět.",
   "notification.body.cannotUndo": "Semp tuto akci nedokáže vrátit zpět."
 }

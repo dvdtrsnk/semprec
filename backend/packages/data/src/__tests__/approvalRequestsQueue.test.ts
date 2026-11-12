@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import {
+  createRuntimeRolePool,
   createTenantZeroUser,
   createTestProjectItem,
   createTestTenant,
   getOrCreateTickThread,
+  getTenantZeroId,
   getTestPool,
   inTenantZero,
   resetDatabase,
@@ -16,6 +19,7 @@ import { ValidationError } from "../errors.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { AGENT_RUN_ROOT_MAX_HOPS, createAgentRun, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import {
+  countPendingApprovalRequests,
   createPendingApprovalRequest,
   decideApprovalRequest,
   getApprovalRequest,
@@ -26,6 +30,7 @@ import {
   type ListApprovalRequestsPageInput,
 } from "../mcp/approvalRequestsStore.js";
 import {
+  getApprovalRequestSourceKind,
   listApprovalRequestsQueue,
   listApprovalRequestsQueuePage,
   toApprovalRequestDecisionView,
@@ -194,6 +199,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       projectName: "Renovate the kitchen",
       reason: null,
       description: null,
+      breaksLinks: [],
+      endsInheritance: [],
       source: THREADLESS_CHAT_SOURCE,
     });
     expect(await toApprovalRequestDecisionView(pool, created, LOCALE)).toEqual({
@@ -211,8 +218,40 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       safeSummary: rows[0]!.safeSummary,
       reason: null,
       description: null,
+      breaksLinks: [],
+      endsInheritance: [],
       source: THREADLESS_CHAT_SOURCE,
     });
+  });
+
+  it("carries the value links a request would end on the queue entry and on the decision view alike (issue #1758)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const breaksLinks = [
+      {
+        itemId: randomUUID(),
+        itemName: "a.pdf",
+        propertyKey: "project",
+        sourceItemId: randomUUID(),
+        sourceItemName: "Plan trip",
+        sourceDatabaseKey: "tasks",
+        newValueName: "Alpha",
+      },
+    ];
+    const endsInheritance = [{ itemId: randomUUID(), propertyKey: "project", sourceName: "a.pdf" }];
+    const created = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "relation.set",
+      riskClass: "breaksLink",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      description: { key: "approval.breaksLink", params: {}, breaksLinks, endsInheritance },
+    });
+
+    const [entry] = await listApprovalRequestsQueue(pool, ownerId, LOCALE);
+    const view = await toApprovalRequestDecisionView(pool, created, LOCALE);
+
+    expect(entry).toMatchObject({ riskLevel: "breaksLink", breaksLinks, endsInheritance });
+    expect(view).toMatchObject({ riskLevel: "breaksLink", breaksLinks, endsInheritance });
   });
 
   it("surfaces the agent-supplied reason on the queue entry and on the decision view, null when absent", async () => {
@@ -300,6 +339,44 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       operationName: "item.delete",
       argKeys: ["itemId"],
     });
+  });
+
+  it("summarizes a module-tool-originated request with its tool name and argument keys only (issue #1791)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const created = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "gated.apply",
+      riskClass: "destructive",
+      payload: { moduleToolName: "gated.apply", args: { target: "private-value", count: 2 } },
+      resourceSnapshot: { kind: "module_tool", resourceId: "gated.apply", sha256: null },
+      description: { key: "approval.moduleTool", params: { toolName: "gated.apply" } },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId, LOCALE);
+    const paged = await withTransaction(pool, (client) =>
+      listApprovalRequestsQueuePage(client, {
+        ownerUserId: ownerId,
+        status: "pending",
+        sourceKinds: null,
+        search: null,
+        order: "asc",
+        cursor: null,
+        limit: 10,
+        locale: LOCALE,
+      }),
+    );
+    const view = await toApprovalRequestDecisionView(pool, created, LOCALE);
+
+    // The payload is stored as jsonb, which keeps keys ordered by length and then by bytes.
+    const summary = { kind: "moduleTool", toolName: "gated.apply", argKeys: ["count", "target"] };
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.safeSummary).toEqual(summary);
+    expect(paged.rows.map((row) => row.safeSummary)).toEqual([summary]);
+    expect(view.safeSummary).toEqual(summary);
+    expect(rows[0]!.riskLevel).toBe("irreversible");
+    expect(view.riskLevel).toBe("irreversible");
+    expect(rows[0]!.description).toEqual({ key: "approval.moduleTool", params: { toolName: "gated.apply" } });
+    expect(JSON.stringify([rows, paged.rows, view])).not.toContain("private-value");
   });
 
   it.each([
@@ -773,6 +850,111 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     });
   });
 
+  describe("getApprovalRequestSourceKind (issue #1787)", () => {
+    /** A run of the tick thread of a new heartbeat, below `parentRunId` when one is given. */
+    async function tickRun(parentRunId?: string): Promise<AgentRunRow> {
+      const tick = await tickThread("Sunday planning");
+      return createAgentRun(pool, {
+        triggeredBy: "heartbeat",
+        task: "Plan the week",
+        projectItemId: tick.projectItemId,
+        heartbeatId: tick.heartbeatId,
+        threadId: tick.threadId,
+        parentRunId,
+      });
+    }
+
+    it("is chat for a run of a chat thread or an item thread, and for a run delegated below one", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const session = await createAgentRun(pool, {
+        triggeredBy: "user",
+        unit: "session",
+        task: "chat",
+        threadId: await chatThread(),
+      });
+      const delegated = await delegateBelow(session, 1);
+      const { threadId } = await itemThread({ text: "Buy milk" });
+      const aboutItem = await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId });
+
+      expect(await getApprovalRequestSourceKind(pool, session.id)).toBe("chat");
+      expect(await getApprovalRequestSourceKind(pool, delegated.id)).toBe("chat");
+      expect(await getApprovalRequestSourceKind(pool, aboutItem.id)).toBe("chat");
+    });
+
+    it("is tick for a run of a tick thread, also when a chat run started the heartbeat", async () => {
+      const chatRun = await createAgentRun(pool, {
+        triggeredBy: "user",
+        unit: "session",
+        task: "chat",
+        threadId: await chatThread(),
+      });
+
+      expect(await getApprovalRequestSourceKind(pool, (await tickRun()).id)).toBe("tick");
+      expect(await getApprovalRequestSourceKind(pool, (await tickRun(chatRun.id)).id)).toBe("tick");
+    });
+
+    it("takes the kind of a run without a thread from the trigger of its root run", async () => {
+      const mcpRoot = await createAgentRun(pool, { triggeredBy: "mcp", task: "MCP run-credential session" });
+      const heartbeatRoot = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "tick" });
+      const userRoot = await createAgentRun(pool, { triggeredBy: "user", task: "chat" });
+      const supervisorRoot = await createAgentRun(pool, { triggeredBy: "supervisor", task: "sweep" });
+
+      expect(await getApprovalRequestSourceKind(pool, mcpRoot.id)).toBe("mcp");
+      expect(await getApprovalRequestSourceKind(pool, (await delegateBelow(mcpRoot, 2)).id)).toBe("mcp");
+      expect(await getApprovalRequestSourceKind(pool, heartbeatRoot.id)).toBe("tick");
+      expect(await getApprovalRequestSourceKind(pool, (await delegateBelow(heartbeatRoot, 1)).id)).toBe("tick");
+      expect(await getApprovalRequestSourceKind(pool, (await delegateBelow(userRoot, 1)).id)).toBe("chat");
+      expect(await getApprovalRequestSourceKind(pool, supervisorRoot.id)).toBe("chat");
+    });
+
+    it("is null for a run that does not exist", async () => {
+      expect(await getApprovalRequestSourceKind(pool, randomUUID())).toBeNull();
+    });
+
+    it("derives the kind the queue shows for a request of the same run, for every shape of source", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const item = await itemThread({ text: "Buy milk" });
+      const runs = [
+        await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: await chatThread() }),
+        await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: item.threadId }),
+        await tickRun(),
+        await createAgentRun(pool, { triggeredBy: "heartbeat", task: "tick" }),
+        await delegateBelow(await createAgentRun(pool, { triggeredBy: "mcp", task: "mcp" }), 1),
+        await createAgentRun(pool, { triggeredBy: "user", task: "chat" }),
+      ];
+      const requestIds: string[] = [];
+      for (const run of runs) requestIds.push((await requestOf(run)).id);
+
+      const listedKindById = new Map(
+        (await listApprovalRequestsQueue(pool, ownerId, LOCALE)).map((row) => [row.id, row.source.kind]),
+      );
+      const derived: Array<ApprovalRequestSourceKind | null> = [];
+      for (const run of runs) derived.push(await getApprovalRequestSourceKind(pool, run.id));
+
+      expect(derived).toEqual(["chat", "chat", "tick", "tick", "mcp", "chat"]);
+      expect(requestIds.map((id) => listedKindById.get(id))).toEqual(derived);
+    });
+
+    it("answers a run of another tenant like a run that does not exist, under the runtime role", async () => {
+      const tenantA = getTenantZeroId();
+      const tenantB = await createTestTenant(pool);
+      // A tick run below a chat run: its kind is `tick` only when its thread is read, and `chat` by its root run.
+      const chatRun = await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: await chatThread() });
+      const runOfA = await tickRun(chatRun.id);
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const kindIn = (tenantId: string, runId: string) =>
+          runInTenant(tenantId, () => getApprovalRequestSourceKind(runtimePool, runId));
+
+        expect(await kindIn(tenantA, runOfA.id)).toBe("tick");
+        expect(await kindIn(tenantB, runOfA.id)).toBeNull();
+        expect(await kindIn(tenantB, randomUUID())).toBeNull();
+      } finally {
+        await runtimePool.end();
+      }
+    });
+  });
+
   describe("paged list (issue #1785)", () => {
     type PageInput = Omit<ListApprovalRequestsPageInput, "ownerUserId">;
 
@@ -968,6 +1150,67 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
           all.filter((row) => row.source.kind === kind).map((row) => row.id),
         );
       }
+    });
+
+    it("counts the pending requests the list returns for every combination of source kinds (issue #1786)", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const chat = await chatThread("Trip to Brno");
+      const chatRun = await createAgentRun(pool, {
+        triggeredBy: "user",
+        unit: "session",
+        task: "chat",
+        threadId: chat,
+      });
+      const item = await itemThread({ text: "Buy milk" });
+      const tick = await tickThread("Sunday planning");
+      const tickRun = {
+        triggeredBy: "heartbeat" as const,
+        task: "tick",
+        projectItemId: tick.projectItemId,
+        heartbeatId: tick.heartbeatId,
+        threadId: tick.threadId,
+      };
+      const mcpRoot = await createAgentRun(pool, { triggeredBy: "mcp", task: "mcp" });
+      const heartbeatRoot = await createAgentRun(pool, {
+        triggeredBy: "heartbeat",
+        task: "tick",
+        heartbeatId: (await tickThread("Legacy tick")).heartbeatId,
+      });
+      const atHopLimit = await delegateBelow(mcpRoot, AGENT_RUN_ROOT_MAX_HOPS);
+      await requestOf(chatRun);
+      await requestOf(await delegateBelow(chatRun, 1));
+      await requestOf(await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: item.threadId }));
+      await requestOf(await createAgentRun(pool, tickRun));
+      await requestOf(await createAgentRun(pool, { ...tickRun, parentRunId: chatRun.id }));
+      await requestOf(mcpRoot);
+      await requestOf(await delegateBelow(mcpRoot, 2));
+      await requestOf(atHopLimit);
+      // Beyond the hop limit the root run is not reached, so the request is a chat request.
+      await requestOf(await delegateBelow(atHopLimit, 1));
+      await requestOf(heartbeatRoot);
+      await requestOf(await delegateBelow(heartbeatRoot, 1));
+      await requestOf(await userRun());
+      // A decided request is in neither the list nor the count.
+      await decideApprovalRequest(pool, (await requestOf(await userRun())).id, "approved", ownerId);
+
+      const count = (sourceKinds: ApprovalRequestSourceKind[] | null) =>
+        withTransaction(pool, (client) => countPendingApprovalRequests(client, { ownerUserId: ownerId, sourceKinds }));
+      const combinations: Array<ApprovalRequestSourceKind[] | null> = [
+        null,
+        ["chat"],
+        ["tick"],
+        ["mcp"],
+        ["chat", "tick"],
+        ["chat", "mcp"],
+        ["tick", "mcp"],
+        ["chat", "tick", "mcp"],
+      ];
+      for (const sourceKinds of combinations) {
+        const listed = await drain({ sourceKinds });
+        expect(await count(sourceKinds), JSON.stringify(sourceKinds)).toBe(listed.flat().length);
+      }
+      expect(await count(null)).toBe(12);
+      expect([await count(["chat"]), await count(["tick"]), await count(["mcp"])]).toEqual([5, 4, 3]);
     });
 
     it("searches thread titles, heartbeat names, tool names and description values without regard to case or diacritics", async () => {

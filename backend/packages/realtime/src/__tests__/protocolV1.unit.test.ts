@@ -164,6 +164,21 @@ describe("parseRealtimeMessage (issue #163)", () => {
     ])
       expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
   });
+  it("validates an approvalRequest invalidation (issue #1789)", () => {
+    const valid = { type: "invalidation", scope: "approvalRequest", approvalRequestId: DOC_ID, userId: RUN_ID };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The owner is optional in the catalog; the sync server is what refuses to deliver without one.
+    const { userId: _userId, ...withoutOwner } = valid;
+    expect(parseRealtimeMessage(withoutOwner)).toEqual(withoutOwner);
+    for (const malformed of [
+      { approvalRequestId: "not-a-uuid" },
+      { approvalRequestId: undefined },
+      { approvalRequestId: 7 },
+      { userId: "not-a-uuid" },
+      { userId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
   it("rejects an agent-run reference with a malformed eventId", () => {
     expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });

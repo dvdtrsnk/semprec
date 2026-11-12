@@ -113,6 +113,46 @@ describe("item.count agent schema", () => {
   });
 });
 
+describe("database.facets agent schema", () => {
+  const schema = operationInputJsonSchema("database.facets");
+  const tool = { name: "facets", description: "facets", parameters: Type.Unsafe(schema) };
+  const databaseId = "22222222-2222-4222-8222-222222222222";
+  const validate = (args: Record<string, unknown>): unknown =>
+    validateToolArguments(tool, { type: "toolCall", id: "test", name: "facets", arguments: args });
+
+  it("validates real generated pointers through the pi validator, for the filter, the open filter and twenty facets", () => {
+    const full = {
+      databaseId,
+      filter: nested(8),
+      facets: ["status", { path: ["project", "area"] }],
+      extra: { open: nested(8) },
+    };
+    expect(GENERIC_OPERATION_BINDINGS["database.facets"].input.safeParse(full).success).toBe(true);
+    expect(validate(full)).toEqual(full);
+    const many = { databaseId, facets: Array.from({ length: 20 }, (_, index) => `property${index}`) };
+    expect(validate(many)).toEqual(many);
+    expect(Buffer.byteLength(JSON.stringify(schema))).toBeLessThan(20_000);
+  });
+
+  it.each([
+    ["no facets", { databaseId, facets: [] }],
+    ["twenty-one facets", { databaseId, facets: Array.from({ length: 21 }, (_, index) => `property${index}`) }],
+    ["a missing facet list", { databaseId }],
+    ["a missing database", { facets: ["status"] }],
+    ["an empty facet key", { databaseId, facets: [""] }],
+    ["a path of one key", { databaseId, facets: [{ path: ["project"] }] }],
+    ["a path of three keys", { databaseId, facets: [{ path: ["project", "area", "name"] }] }],
+    ["a too deep filter", { databaseId, facets: ["status"], filter: nested(9) }],
+    ["a too deep open filter", { databaseId, facets: ["status"], extra: { open: nested(9) } }],
+    ["a group overflow", { databaseId, facets: ["status"], filter: { type: "or", nodes: Array(21).fill(relation) } }],
+    ["an extra without an open filter", { databaseId, facets: ["status"], extra: {} }],
+    ["an extra root key", { databaseId, facets: ["status"], q: "text" }],
+  ])("rejects %s through both actual validators", (_name, input) => {
+    expect(GENERIC_OPERATION_BINDINGS["database.facets"].input.safeParse(input).success).toBe(false);
+    expect(() => validate(input)).toThrow();
+  });
+});
+
 it("fits the actual complete catalog payload without dropping tools and retains the strict guard", () => {
   const tools = GENERIC_OPERATION_NAMES.map((operation) => ({
     name: operation,

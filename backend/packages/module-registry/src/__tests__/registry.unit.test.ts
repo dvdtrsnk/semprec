@@ -339,6 +339,59 @@ describe("ModuleRegistry projections", () => {
     expect(valid({ ...base, approval: "unlessProjectPermitted", projectPermission: "allowed" })).toBe(true);
   });
 
+  it("accepts requiresApproval and a snapshot export only together", () => {
+    const base = { name: "sample", handlerExport: "handler", argumentSchemaExport: "schema", approval: "always" };
+    const valid = (tool: unknown) =>
+      moduleManifestSchema.safeParse({
+        id: "sample",
+        version: "1",
+        name: "Sample",
+        removable: true,
+        systemProject: false,
+        databases: [],
+        capabilities: [],
+        agentTools: [tool],
+      }).success;
+    expect(valid({ ...base, requiresApproval: true })).toBe(true);
+    expect(valid({ ...base, requiresApproval: true, snapshotExport: "snapshot" })).toBe(true);
+    expect(valid({ ...base, requiresApproval: false })).toBe(true);
+    expect(valid({ ...base, snapshotExport: "snapshot" })).toBe(false);
+    expect(valid({ ...base, requiresApproval: false, snapshotExport: "snapshot" })).toBe(false);
+    expect(valid({ ...base, requiresApproval: "yes" })).toBe(false);
+    expect(valid({ ...base, requiresApproval: true, snapshotExport: "" })).toBe(false);
+  });
+
+  it("rejects a module whose snapshot export is not a function", async () => {
+    const registry = new ModuleRegistry(() => new Set(["gatedMissingSnapshot"]));
+    await expect(registry.loadModule(fixturePath("approvalGatedMissingSnapshotModule.js"))).rejects.toThrow(
+      /missing export "doesNotExist"/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("returns an approval-gated tool only when asked, with its snapshot", async () => {
+    const registry = new ModuleRegistry(() => new Set(["gatedTools"]));
+    await registry.loadModule(fixturePath("approvalGatedToolsModule.js"));
+    const names = (definitions: Array<{ name: string }>) => definitions.map((definition) => definition.name);
+
+    // Without the option, a tool declared with requiresApproval is absent whatever its `approval` is.
+    expect(names(await registry.getAgentToolDefinitions(new Set()))).toEqual(["gated.free"]);
+    expect(names(await registry.getAgentToolDefinitions(new Set(), { includeApprovalGated: false }))).toEqual([
+      "gated.free",
+    ]);
+    // With it, the gated tools join; an `approval: "always"` tool that is not gated stays absent.
+    const all = await registry.getAgentToolDefinitions(new Set(), { includeApprovalGated: true });
+    expect(names(all)).toEqual(["gated.apply", "gated.noSnapshot", "gated.noneApproval", "gated.free"]);
+    const byName = new Map(all.map((definition) => [definition.name, definition]));
+    expect(byName.get("gated.apply")).toMatchObject({ requiresApproval: true, riskClass: "write" });
+    expect(typeof byName.get("gated.apply")?.snapshot).toBe("function");
+    expect(byName.get("gated.noSnapshot")?.requiresApproval).toBe(true);
+    expect(byName.get("gated.noSnapshot")).not.toHaveProperty("snapshot");
+    expect(byName.get("gated.noSnapshot")).not.toHaveProperty("riskClass");
+    expect(byName.get("gated.free")).not.toHaveProperty("requiresApproval");
+    expect(byName.get("gated.free")).toMatchObject({ riskClass: "read" });
+  });
+
   it("re-evaluates activation on every call instead of caching it at load time", async () => {
     let active = new Set<string>();
     const registry = await loadBoth(() => active);
