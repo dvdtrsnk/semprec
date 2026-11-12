@@ -380,13 +380,34 @@ describe("calendars system database (issue #1600)", () => {
       });
     }
 
+    /**
+     * Removes the calendar edge of each Event with the user's single-valued set. A new Event is linked to the
+     * default calendar by its create hook (issue #1761), so this is how a tenant that has calendars comes to
+     * hold an Event without one.
+     */
+    async function removeCalendar(tenantId: string, eventIds: string[]): Promise<void> {
+      const eventsId = await databaseId(tenantId, "events");
+      if (!eventsId) throw new Error("No events database");
+      const chokePoint = createChokePoint(dataPool);
+      await runInTenant(tenantId, async () => {
+        const property = (await chokePoint.listProperties(eventsId)).find((entry) => entry.key === "calendar");
+        if (!property) throw new Error("Missing Events.calendar");
+        for (const eventId of eventIds) {
+          await chokePoint.setRelation(
+            { relationPropertyId: property.id, callerItemId: eventId, targetItemId: null },
+            USER,
+          );
+        }
+      });
+    }
+
     it("creates the calendars and links every existing Event, trashed ones included, to Personal once", async () => {
       const tenantId = await tenantWithUser("cs");
       const other = await tenantWithUser("en");
       const eventIds = await createEvents(tenantId, 3);
       const eventsId = await databaseId(tenantId, "events");
       await runInTenant(tenantId, () => createChokePoint(dataPool).softDeleteItem(eventsId!, eventIds[2]!));
-      await createEvents(other, 1);
+      await removeCalendar(other, await createEvents(other, 1));
       await revertToOldShape(tenantId);
       const otherBefore = { calendars: await calendars(other), edges: await calendarEdges(other) };
 
@@ -510,6 +531,7 @@ describe("calendars system database (issue #1600)", () => {
     it("serializes concurrent edge batches on the relation definition lock, so an Event linked meanwhile keeps its calendar", async () => {
       const tenantId = await tenantWithUser("cs");
       const eventIds = await createEvents(tenantId, 3);
+      await removeCalendar(tenantId, eventIds);
       const rows = await calendars(tenantId);
       const personal = rows.find((row) => row.properties.isDefault);
       const work = rows.find((row) => !row.properties.isDefault);
@@ -620,6 +642,8 @@ describe("calendars system database (issue #1600)", () => {
           }
         }),
       );
+      // The create hook of issue #1761 linked each of them, so the cutover finds its work only in the old shape.
+      await revertToOldShape(tenantId);
       await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
       expect(await calendarEdges(tenantId)).toHaveLength(501);
     });

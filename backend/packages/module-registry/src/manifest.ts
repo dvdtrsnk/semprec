@@ -86,6 +86,8 @@ export interface ModuleDatabaseDescriptor {
   switcherOrder?: number | null;
   /** Shows a database in neither list to clients anyway; only `true` has an effect. */
   clientVisible?: boolean;
+  /** Lets the user hide this database from the client overview (issue #2002); only `true` has an effect. */
+  overviewHideable?: boolean;
   /** How this database's items are filtered by an area; absent means the database is not area-filterable. */
   areaFilter?: AreaFilterTemplate;
   /** The collection screen's quick-filter chips, in display order (issue #1647); absent means none. */
@@ -510,6 +512,7 @@ const moduleDatabaseDescriptorSchema = z
     overviewOrder: z.number().int().positive().nullable().optional(),
     switcherOrder: z.number().int().positive().nullable().optional(),
     clientVisible: z.boolean().optional(),
+    overviewHideable: z.boolean().optional(),
     areaFilter: areaFilterTemplateSchema.optional(),
     quickFilters: z.array(moduleQuickFilterDescriptorSchema).optional(),
     defaultSort: moduleSortDescriptorSchema.optional(),

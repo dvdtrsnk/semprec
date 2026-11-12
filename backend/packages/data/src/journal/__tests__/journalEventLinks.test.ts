@@ -176,15 +176,20 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const foreign = await runInTenant(other, () =>
       cp.createItem({ databaseId: otherDatabases.events!, properties: { name: "Foreign", date: "2026-10-16" } }),
     );
+    /** Every edge that ends at the foreign Event. Its create left one, to its calendar (issue #1761). */
+    const foreignEdges = async (): Promise<string[]> => {
+      const { rows } = await admin.query<{ id: string }>(
+        "SELECT id FROM item_relations WHERE item_a = $1 OR item_b = $1 ORDER BY id",
+        [foreign.id],
+      );
+      return rows.map((row) => row.id);
+    };
+    const foreignEdgesBefore = await foreignEdges();
     const own = await event("Standup");
     await writeLine(day, randomUUID(), [link(foreign.id), { insert: " / " }, link(own.id)]);
     await runPageTextJobs();
     expect((await eventEdges(day)).map((edge) => edge.target)).toEqual([own.id]);
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1 OR item_b = $1",
-      [foreign.id],
-    );
-    expect(rows[0]?.n).toBe(0);
+    expect(await foreignEdges()).toEqual(foreignEdgesBefore);
   });
 
   it("still refuses a user write of the relation through the generic relation endpoint", async () => {

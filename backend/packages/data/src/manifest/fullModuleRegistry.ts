@@ -18,6 +18,7 @@ const ALL_MODULE_IDS = [
   "inboxPipeline",
   "calendar",
   "recipes",
+  "sleep",
 ];
 
 function manifestPath(fileName: string): string {
@@ -34,6 +35,7 @@ const MANIFEST_PATHS = [
   manifestPath("inbox/inboxModuleManifest.js"),
   manifestPath("calendar/calendarModuleManifest.js"),
   manifestPath("recipes/recipesModuleManifest.js"),
+  manifestPath("sleep/sleepModuleManifest.js"),
 ];
 
 /**

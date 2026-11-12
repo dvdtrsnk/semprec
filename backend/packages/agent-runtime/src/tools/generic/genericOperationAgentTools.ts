@@ -157,10 +157,14 @@ function createTool(
  * One AgentTool per generic operation (issue #220), named verbatim after the operation
  * (`GENERIC_OPERATION_NAMES`) — MCP's own composition root (`services/semprec-api/src/mcp`)
  * prefixes the same names `semprec.` for its own catalog, both dispatching through
- * `createGenericOperationGateway(pool, resolver)` so there is exactly one path into the 30-operation
+ * `createGenericOperationGateway(pool, resolver)` so there is exactly one path into the 44-operation
  * catalog's business logic for this process, alongside REST's own separate
  * `dispatchGenericOperation` (#219) over the same neutral `GenericApplicationPort` (#219's ADR:
  * "one instance per injected Pool" — this composition root's own instance, not REST's).
+ *
+ * A REST-only operation (`REST_ONLY_OPERATION_NAMES`, issue #1699) gets a tool object here like
+ * every other name, but the gateway lists it for no run and refuses every call to it as an unknown
+ * operation; the assistant will propose a new select option on an Inbox proposal instead (#1994).
  *
  * `services/semprec-agents` (issue #91, not yet built) is the eventual composition root that
  * decides, per run, which of these to even expose to a model — `listGrantedGenericOperationAgentTools`

@@ -196,7 +196,7 @@
         "pathNot": "^packages/data/src/chokePoint/(schemaCoreModuleManifest|itemTrash)\\.ts$"
       },
       "to": {
-        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash|recipes)/"
+        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash|recipes|sleep)/"
       }
     },
     {
@@ -207,7 +207,7 @@
         "path": "^packages/data/src/chokePoint/itemTrash\\.ts$"
       },
       "to": {
-        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash|recipes)/",
+        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash|recipes|sleep)/",
         "pathNot": "^packages/data/src/(blobs/blobsStore|docs/docsStore|inbox/inboxAttachmentsStore|inbox/itemOriginsStore|library/itemAutomationStore|transcription/recordingIntake|transcription/transcriptionComputedKeys)\\.ts$"
       }
     },

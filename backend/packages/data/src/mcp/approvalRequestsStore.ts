@@ -1,6 +1,11 @@
+import type { PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { AGENT_RUN_ROOT_MAX_HOPS } from "../agentRuns/agentRunsStore.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
+import { ValidationError } from "../errors.js";
+import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
 import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
 
@@ -320,6 +325,182 @@ export async function listPendingApprovalRequests(client: Queryable, ownerUserId
     [ownerUserId],
   );
   return rows.map(rowToApprovalRequest);
+}
+
+/** The kinds of source an approval request can have (issue #1766). */
+export const APPROVAL_REQUEST_SOURCE_KINDS = ["chat", "tick", "mcp"] as const;
+export type ApprovalRequestSourceKind = (typeof APPROVAL_REQUEST_SOURCE_KINDS)[number];
+
+/** Where a page of `listApprovalRequestsPage` continues: the last row's ordering instant with microseconds, and its id. */
+export interface ApprovalRequestListCursor {
+  at: string;
+  id: string;
+}
+
+const LIST_CURSOR_SHAPE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/**
+ * Decodes a `nextCursor` of `listApprovalRequestsPage`. A value of another shape is a
+ * `ValidationError` on `cursor`, and so is an instant that is no calendar time or lies in year
+ * zero: Postgres would refuse both as a `timestamptz`.
+ */
+export function parseApprovalRequestListCursor(value: string): ApprovalRequestListCursor {
+  const match = /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    ? LIST_CURSOR_SHAPE.exec(Buffer.from(value, "base64url").toString("utf8"))
+    : null;
+  const at = match?.[1];
+  const id = match?.[2];
+  if (
+    at === undefined ||
+    id === undefined ||
+    at.startsWith("0000-") ||
+    !Number.isFinite(Date.parse(at)) ||
+    new Date(at).toISOString() !== `${at.slice(0, 23)}Z`
+  ) {
+    throw new ValidationError("Invalid 'cursor'", { field: "cursor" });
+  }
+  return { at, id };
+}
+
+export interface ListApprovalRequestsPageInput {
+  ownerUserId: string;
+  /**
+   * `pending`: the requests waiting for a decision. `decided`: the approved and the rejected ones
+   * that have a decision time (see `LIST_STATUS_SQL`).
+   */
+  status: "pending" | "decided";
+  /** Only requests whose source is of one of these kinds; `null` is every source. */
+  sourceKinds: readonly ApprovalRequestSourceKind[] | null;
+  /**
+   * Only requests that contain this text, without regard to case or diacritics (see
+   * `listApprovalRequestsPage`). `null` is no filter, and so is a text of which removing the
+   * diacritics leaves nothing.
+   */
+  search: string | null;
+  /** The direction of the ordering instant: `requested_at` of a pending request, `decided_at` of a decided one. */
+  order: "asc" | "desc";
+  cursor: ApprovalRequestListCursor | null;
+  limit: number;
+}
+
+/**
+ * The SQL of the two lists. A pending request is ordered by `requested_at`. A decided one is ordered
+ * by `decided_at`, which `decideApprovalRequest` sets in the statement that decides the request. A
+ * decided row without it has no place in the order and is in neither list. The one-time cutover of
+ * issue #89 (`approvalRequestExecutionStatusCutoverMigration.ts`) left such rows: it rejected the
+ * requests that were pending when it ran and set no decision time.
+ */
+const LIST_STATUS_SQL = {
+  pending: { predicate: "ar.status = 'pending'", orderedAt: "ar.requested_at" },
+  decided: { predicate: "ar.status <> 'pending' AND ar.decided_at IS NOT NULL", orderedAt: "ar.decided_at" },
+} as const;
+
+/** The SQL of the two directions: the sort keyword, and the comparison that selects the rows after a cursor. */
+const LIST_ORDER_SQL = {
+  asc: { direction: "ASC", after: ">" },
+  desc: { direction: "DESC", after: "<" },
+} as const;
+
+/**
+ * One page of the requests of `ownerUserId`'s runs (issue #1785), in the order of `input.status` and
+ * `input.order` with the request id as the tie-break, and `nextCursor` set while more rows follow.
+ * Owner scoping is that of `listPendingApprovalRequests`: the request's run has `ownerUserId` as its
+ * actor.
+ *
+ * `sourceKinds` and `search` are applied in the query, before the page is cut, so a page is short
+ * only when no further row matches. The query derives the source kind by the rule of
+ * `loadApprovalSources` (`approvalRequestsQueue.ts`): the kind of the run's thread, and for a run
+ * without a thread the `triggered_by` of the run that following `parent_run_id` reaches within
+ * `AGENT_RUN_ROOT_MAX_HOPS` hops.
+ *
+ * `search` keeps the requests that contain it as a substring, compared through `unaccent` and
+ * `ILIKE`, in one of: the tool or operation name (`tool_name`), a string value at any depth of
+ * `description.params`, the stored title of the run's chat thread, the current text of the Inbox
+ * item of its item thread, and the current name of the heartbeat of its tick thread or, without a
+ * thread, of its root heartbeat run. Nothing else is searched: not `payload`, and so no argument
+ * value, and of `description` neither the template key, the parameter names nor `endsInheritance`.
+ *
+ * The search text is a bound parameter and the pattern is built from it in the query: the text is
+ * folded with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after
+ * that, so each matches only itself.
+ */
+export async function listApprovalRequestsPage(
+  client: PoolClient,
+  input: ListApprovalRequestsPageInput,
+): Promise<{ requests: ApprovalRequest[]; nextCursor: string | null }> {
+  const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
+  // `status` and `order` are closed unions that select constant SQL fragments; every value is bound.
+  const { predicate, orderedAt } = LIST_STATUS_SQL[input.status];
+  const { direction, after } = LIST_ORDER_SQL[input.order];
+  const { rows } = await client.query<ApprovalRequestRow & { cursor_at: string }>(
+    `WITH needle AS MATERIALIZED (
+       SELECT CASE WHEN folded.text <> ''
+                   THEN '%' || replace(replace(replace(folded.text, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+              END AS pattern
+         FROM (SELECT unaccent($5::text) AS text) folded
+     )
+     SELECT ar.*, to_char(${orderedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+       FROM approval_requests ar
+       JOIN agent_runs r ON r.tenant_id = ar.tenant_id AND r.id = ar.agent_run_id
+       CROSS JOIN needle
+       LEFT JOIN semp_threads t ON t.tenant_id = r.tenant_id AND t.id = r.thread_id
+       LEFT JOIN LATERAL (
+         WITH RECURSIVE climb AS (
+           SELECT r.parent_run_id, r.triggered_by, r.heartbeat_id, 0 AS hops
+            WHERE t.id IS NULL
+           UNION ALL
+           SELECT parent.parent_run_id, parent.triggered_by, parent.heartbeat_id, climb.hops + 1
+             FROM climb
+             JOIN agent_runs parent ON parent.tenant_id = r.tenant_id AND parent.id = climb.parent_run_id
+            WHERE climb.hops < $8::int
+         )
+         SELECT triggered_by, heartbeat_id FROM climb ORDER BY hops DESC LIMIT 1
+       ) root ON true
+       LEFT JOIN project_heartbeats h ON h.tenant_id = r.tenant_id
+              AND h.id = COALESCE(t.heartbeat_id,
+                                  CASE WHEN root.triggered_by = 'heartbeat' THEN root.heartbeat_id END)
+       LEFT JOIN items subject ON subject.tenant_id = t.tenant_id AND subject.database_id = $6::uuid
+              AND subject.id = t.subject_inbox_item_id AND subject.deleted_at IS NULL
+      WHERE r.actor_user_id = $1
+        AND ${predicate}
+        AND ($2::text[] IS NULL
+             OR CASE WHEN t.kind = 'tick' THEN 'tick'
+                     WHEN t.id IS NOT NULL THEN 'chat'
+                     WHEN root.triggered_by = 'mcp' THEN 'mcp'
+                     WHEN root.triggered_by = 'heartbeat' THEN 'tick'
+                     ELSE 'chat' END = ANY($2::text[]))
+        AND ($3::timestamptz IS NULL OR (${orderedAt}, ar.id) ${after} ($3::timestamptz, $4::uuid))
+        AND (needle.pattern IS NULL
+             OR unaccent(ar.tool_name) ILIKE needle.pattern ESCAPE '\\'
+             OR unaccent(t.title) ILIKE needle.pattern ESCAPE '\\'
+             OR unaccent(h.name) ILIKE needle.pattern ESCAPE '\\'
+             OR unaccent(CASE WHEN jsonb_typeof(subject.properties -> 'text') = 'string'
+                              THEN subject.properties ->> 'text' END) ILIKE needle.pattern ESCAPE '\\'
+             OR EXISTS (
+                  SELECT 1
+                    FROM jsonb_path_query(ar.description -> 'params', '$.** ? (@.type() == "string")') AS param(value)
+                   WHERE unaccent(param.value #>> '{}') ILIKE needle.pattern ESCAPE '\\'))
+      ORDER BY ${orderedAt} ${direction}, ar.id ${direction}
+      LIMIT $7`,
+    [
+      input.ownerUserId,
+      input.sourceKinds === null ? null : [...input.sourceKinds],
+      input.cursor?.at ?? null,
+      input.cursor?.id ?? null,
+      input.search,
+      inbox?.id ?? null,
+      input.limit + 1,
+      AGENT_RUN_ROOT_MAX_HOPS,
+    ],
+  );
+  const page = rows.slice(0, input.limit);
+  const last = page.at(-1);
+  return {
+    requests: page.map(rowToApprovalRequest),
+    nextCursor:
+      rows.length > input.limit && last ? Buffer.from(`${last.cursor_at}|${last.id}`).toString("base64url") : null,
+  };
 }
 
 /**

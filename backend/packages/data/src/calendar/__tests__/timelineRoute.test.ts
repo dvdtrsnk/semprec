@@ -53,6 +53,7 @@ const fullBodySchema = z
           place: z.string().nullable(),
           project: z.object({ id: z.string(), name: z.string(), color: z.string().nullable() }).strict().nullable(),
           people: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
+          transcript: z.object({ id: z.string(), status: z.string().nullable() }).strict().nullable(),
           updatedAt: z.string(),
           readOnly: z.boolean(),
         })

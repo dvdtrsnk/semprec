@@ -21,6 +21,8 @@ export interface DatabaseEnvelope {
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
+  /** True while the user hides the database from the overview (issue #2002); the two orders stay as declared. */
+  overviewHidden: boolean;
   /**
    * The view type the database's module manifest declares for its default view (issue #1707), such as
    * `gallery` for `recipes`. `null` when the manifest declares none and for a user-created database. It is
@@ -52,6 +54,7 @@ export function toDatabaseEnvelope(
     overviewOrder: metadata.overviewOrder,
     switcherOrder: metadata.switcherOrder,
     clientVisible: metadata.clientVisible,
+    overviewHidden: metadata.overviewHidden,
     defaultViewType,
   };
 }

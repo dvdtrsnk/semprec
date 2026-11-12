@@ -44,6 +44,7 @@ import {
   GENERIC_OPERATION_BINDINGS,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  REST_ONLY_OPERATION_NAMES,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericApplicationPort,
@@ -202,7 +203,14 @@ function currentResourceFromErrorDetails(details: unknown): unknown {
   return null;
 }
 
+/**
+ * Whether this gateway serves `operation` under `grantedCapabilities`. A REST-only operation
+ * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699) is served under no grant, so the
+ * AgentTool and MCP transports, which reach the catalog through this gateway, neither list nor call it. The
+ * assistant will propose a new option on an Inbox proposal instead (#1994).
+ */
 function isGranted(operation: GenericOperationName, grantedCapabilities: ReadonlySet<CapabilityId>): boolean {
+  if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) return false;
   return grantedCapabilities.has(OPERATION_METADATA[operation].requiresCapability);
 }
 
@@ -332,7 +340,7 @@ async function preflightDestructiveApproval(
 }
 
 export interface GenericOperationGateway {
-  /** The operations visible given `grantedCapabilities` — an ungranted one is simply absent, never present-but-forbidden. */
+  /** The operations visible given `grantedCapabilities` — an ungranted one is simply absent, never present-but-forbidden, and so is a REST-only one under every grant. */
   listOperations(grantedCapabilities: ReadonlySet<CapabilityId>): GenericOperationName[];
   /**
    * Dispatches one operation for an agent actor (`actor.runId`/`actor.agentProjectItemId` set):

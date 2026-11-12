@@ -7,6 +7,7 @@ import type {
   VerifyMailCredentialsInput,
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
+import type { ClientIpThrottle } from "../clientIpThrottle.js";
 import { mountRoutes, type RouteDefinition } from "./routeTable.js";
 import type { AdapterHandler } from "./adapterRoute.js";
 
@@ -58,6 +59,13 @@ export interface CustomRouteDependencies {
   mailLiveSync?: MailLiveSyncControl;
   /** Replaces the global `fetch` for outbound calls to providers. */
   outboundHttp?: typeof fetch;
+  /**
+   * The in-process limiter in which the password connect route counts the login verifications of each user
+   * (issue gh-1750, action `mailboxCredentialVerification` of `clientIpThrottle.ts`). `createDispatcher`
+   * creates one for its own lifetime when the caller's container carries none. A mount without it fails
+   * each request of that route with a configuration error.
+   */
+  throttle?: ClientIpThrottle;
 }
 
 /**

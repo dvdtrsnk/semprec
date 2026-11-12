@@ -1,14 +1,20 @@
+import type { PoolClient } from "pg";
 import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
-import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
+import { getAgentRunsByIds, getRootAgentRuns, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { loadSempThreadTitleResolver, SEMP_THREAD_KINDS } from "../semp/sempThreadsListStore.js";
 import { approvalConflictReason, type ApprovalConflictReason } from "./approvalConflictReason.js";
 import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
+  listApprovalRequestsPage,
   listPendingApprovalRequests,
   type ApprovalDescription,
   type ApprovalRequest,
+  type ApprovalRequestSourceKind,
+  type ListApprovalRequestsPageInput,
 } from "./approvalRequestsStore.js";
 
 /**
@@ -37,6 +43,31 @@ export type ApprovalRequestSafeSummary =
     }
   | { kind: "genericOperation"; operationName: string; argKeys: string[] };
 
+/**
+ * Where an approval request came from (issue #1766), derived when it is read from the run that
+ * raised it and never stored on the request.
+ */
+export interface ApprovalRequestSource {
+  /**
+   * `tick`: a tick thread, or a run without a thread whose root run a heartbeat started. `mcp`: a run
+   * without a thread whose root run an external MCP client started. `chat`: a chat or item thread, and
+   * every other run. The root run is the run at which following `parent_run_id` ends
+   * (`getRootAgentRuns`); a run without a parent is its own root. For a run without a thread only the
+   * root run's `triggered_by` decides the kind.
+   */
+  kind: ApprovalRequestSourceKind;
+  /** The Semp thread of the run that raised the request; `null` when that run has no thread. */
+  threadId: string | null;
+  /** The thread's title by the rule of the thread list; `null` without a thread, and for a thread that has no title. */
+  threadTitle: string | null;
+  /** The heartbeat of a `tick` source; `null` for the other kinds, and for a tick run that names no heartbeat. */
+  heartbeatId: string | null;
+  /** The current `project_heartbeats.name` of `heartbeatId`; `null` with it. */
+  heartbeatName: string | null;
+  /** The name of the MCP client of a `mcp` source. Nothing records it yet (issue #1788), so it is `null`. */
+  mcpClientName: string | null;
+}
+
 export interface ApprovalRequestQueueEntry {
   id: string;
   toolName: string;
@@ -54,6 +85,7 @@ export interface ApprovalRequestQueueEntry {
   reason: string | null;
   /** The snapshotted template key and parameters clients render; `null` for requests created before issue #1683. */
   description: ApprovalDescription | null;
+  source: ApprovalRequestSource;
 }
 
 interface ResolvedMcpNames {
@@ -133,13 +165,130 @@ export interface ApprovalRequestDecisionView {
   safeSummary: ApprovalRequestSafeSummary;
   reason: string | null;
   description: ApprovalDescription | null;
+  source: ApprovalRequestSource;
 }
 
+/** The `semp_threads` columns a source is derived from. */
+interface SourceThreadRow {
+  id: string;
+  kind: string;
+  title: string | null;
+  heartbeat_id: string | null;
+  subject_inbox_item_id: string | null;
+}
+
+/** The value of `key` in `map`; `null` for a `null` key and for a key the map does not hold. */
+function lookup<V>(map: Map<string, V>, key: string | null): V | null {
+  return (key === null ? undefined : map.get(key)) ?? null;
+}
+
+async function getSourceThreads(client: Queryable, threadIds: string[]): Promise<Map<string, SourceThreadRow>> {
+  if (threadIds.length === 0) return new Map();
+  const { rows } = await client.query<SourceThreadRow>(
+    `SELECT id, kind, title, heartbeat_id, subject_inbox_item_id FROM semp_threads WHERE id = ANY($1::uuid[])`,
+    [threadIds],
+  );
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+async function getHeartbeatNames(client: Queryable, heartbeatIds: string[]): Promise<Map<string, string>> {
+  if (heartbeatIds.length === 0) return new Map();
+  const { rows } = await client.query<{ id: string; name: string }>(
+    `SELECT id, name FROM project_heartbeats WHERE id = ANY($1::uuid[])`,
+    [heartbeatIds],
+  );
+  return new Map(rows.map((row) => [row.id, row.name]));
+}
+
+/** The fields of a source that has neither a thread nor a heartbeat. */
+const NO_SOURCE_DETAIL = {
+  threadId: null,
+  threadTitle: null,
+  heartbeatId: null,
+  heartbeatName: null,
+  mcpClientName: null,
+};
+
+/**
+ * Reads what the sources of the requests of `runs` are derived from and returns the derivation by
+ * run id (issue #1766). It reads the threads, the parent runs level by level, the heartbeats and the
+ * Inbox items of item threads, each for all `runs` at once, so the number of queries does not grow
+ * with the number of runs.
+ *
+ * A run that has a thread takes its source from the thread: a chat or item thread is `chat`, a tick
+ * thread is `tick` with the thread's heartbeat, also when the heartbeat's run was started by a chat
+ * run. `threadTitle` is the title the thread list shows for `locale`. A run without a thread takes
+ * its kind from the `triggered_by` of its root run (`getRootAgentRuns`): `mcp` is `mcp`, `heartbeat`
+ * is `tick` with the root run's heartbeat, and anything else is `chat`.
+ */
+async function loadApprovalSources(
+  client: Queryable,
+  runs: AgentRunRow[],
+  locale: string,
+): Promise<(agentRunId: string) => ApprovalRequestSource> {
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const threadById = await getSourceThreads(client, [...new Set(runs.flatMap((run) => run.threadId ?? []))]);
+  const rootByRunId = await getRootAgentRuns(
+    client,
+    runs.filter((run) => lookup(threadById, run.threadId) === null),
+  );
+  const heartbeatIds = new Set([...threadById.values()].flatMap((thread) => thread.heartbeat_id ?? []));
+  for (const root of rootByRunId.values()) {
+    if (root.triggeredBy === "heartbeat" && root.heartbeatId !== null) heartbeatIds.add(root.heartbeatId);
+  }
+  const heartbeatNameById = await getHeartbeatNames(client, [...heartbeatIds]);
+  const subjects = await getItemsByIds(
+    client,
+    [...threadById.values()].flatMap((thread) => thread.subject_inbox_item_id ?? []),
+  );
+  const subjectTextById = new Map<string, string>();
+  for (const item of subjects) {
+    if (typeof item.properties.text === "string") subjectTextById.set(item.id, item.properties.text);
+  }
+  const resolveTitle = await loadSempThreadTitleResolver(locale);
+
+  return (agentRunId) => {
+    const thread = lookup(threadById, runById.get(agentRunId)?.threadId ?? null);
+    if (thread) {
+      const kind = assertKnownValue(SEMP_THREAD_KINDS, thread.kind, "thread kind");
+      const heartbeatName = lookup(heartbeatNameById, thread.heartbeat_id);
+      return {
+        kind: kind === "tick" ? "tick" : "chat",
+        threadId: thread.id,
+        threadTitle: resolveTitle({
+          kind,
+          title: thread.title,
+          heartbeatName,
+          subjectText: lookup(subjectTextById, thread.subject_inbox_item_id),
+        }),
+        // Only a tick thread stores a heartbeat (`semp_threads_kind_columns_check`).
+        heartbeatId: thread.heartbeat_id,
+        heartbeatName,
+        mcpClientName: null,
+      };
+    }
+    const root = rootByRunId.get(agentRunId);
+    if (root?.triggeredBy === "mcp") return { ...NO_SOURCE_DETAIL, kind: "mcp" };
+    if (root?.triggeredBy === "heartbeat") {
+      return {
+        ...NO_SOURCE_DETAIL,
+        kind: "tick",
+        heartbeatId: root.heartbeatId,
+        heartbeatName: lookup(heartbeatNameById, root.heartbeatId),
+      };
+    }
+    return { ...NO_SOURCE_DETAIL, kind: "chat" };
+  };
+}
+
+/** `locale` is the caller's `users.locale`; the title of an item thread in `source` is written in it. */
 export async function toApprovalRequestDecisionView(
   client: Queryable,
   request: ApprovalRequest,
+  locale: string,
 ): Promise<ApprovalRequestDecisionView> {
   const names = await resolveMcpNames(client, [request]);
+  const sourceOf = await loadApprovalSources(client, await getAgentRunsByIds(client, [request.agentRunId]), locale);
   return {
     id: request.id,
     status: request.status,
@@ -155,25 +304,25 @@ export async function toApprovalRequestDecisionView(
     safeSummary: safeSummaryOf(request.payload, names),
     reason: request.reason,
     description: request.description,
+    source: sourceOf(request.agentRunId),
   };
 }
 
 /**
- * The approval queue's read model (issue #132): every pending request of `ownerUserId`'s runs
- * across every project, each joined with its source project's display name and agent-run id so the UI can
- * show "where this came from" without a per-project detour. `agent_runs.project_item_id` and
- * `items.id` carry no Postgres FK to each other (see `0001_core_schema.sql`'s header note on
- * partitioned `items`), so both joins are done here as two batched follow-up reads instead of
- * one SQL join.
+ * Reads what the queue entries of `requests` are joined with and returns the projection of one of
+ * them: the source project's display name and agent-run id, so the UI can show "where this came
+ * from" without a per-project detour, the MCP names of `safeSummary` and the `source` (issue #1766,
+ * `loadApprovalSources`). `agent_runs.project_item_id` and `items.id` carry no Postgres FK to each
+ * other (see `0001_core_schema.sql`'s header note on partitioned `items`), so both joins are done
+ * here as two batched follow-up reads instead of one SQL join. `locale` is the caller's
+ * `users.locale`, in which the title of an item thread is written.
  */
-export async function listApprovalRequestsQueue(
+async function loadQueueEntries(
   client: Queryable,
-  ownerUserId: string,
-): Promise<ApprovalRequestQueueEntry[]> {
-  const pending = await listPendingApprovalRequests(client, ownerUserId);
-  if (pending.length === 0) return [];
-
-  const agentRunIds = [...new Set(pending.map((request) => request.agentRunId))];
+  requests: ApprovalRequest[],
+  locale: string,
+): Promise<(request: ApprovalRequest) => ApprovalRequestQueueEntry> {
+  const agentRunIds = [...new Set(requests.map((request) => request.agentRunId))];
   const runs = await getAgentRunsByIds(client, agentRunIds);
   const runById = new Map(runs.map((run) => [run.id, run]));
 
@@ -183,9 +332,10 @@ export async function listApprovalRequestsQueue(
     projectItems.map((item) => [item.id, typeof item.properties.name === "string" ? item.properties.name : null]),
   );
 
-  const names = await resolveMcpNames(client, pending);
+  const names = await resolveMcpNames(client, requests);
+  const sourceOf = await loadApprovalSources(client, runs, locale);
 
-  return pending.map((request) => {
+  return (request) => {
     const run = runById.get(request.agentRunId);
     const projectItemId = run?.projectItemId ?? null;
     return {
@@ -200,6 +350,56 @@ export async function listApprovalRequestsQueue(
       projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
       reason: request.reason,
       description: request.description,
+      source: sourceOf(request.agentRunId),
     };
-  });
+  };
+}
+
+/**
+ * The approval queue's read model (issue #132): every pending request of `ownerUserId`'s runs
+ * across every project, oldest first, as `loadQueueEntries` projects it. This is the answer of
+ * `GET /api/approval-requests` without parameters; `listApprovalRequestsQueuePage` is the paged one.
+ */
+export async function listApprovalRequestsQueue(
+  client: Queryable,
+  ownerUserId: string,
+  locale: string,
+): Promise<ApprovalRequestQueueEntry[]> {
+  const pending = await listPendingApprovalRequests(client, ownerUserId);
+  if (pending.length === 0) return [];
+  return pending.map(await loadQueueEntries(client, pending, locale));
+}
+
+/** A row of the decided list (issue #1785): the queue entry, the decision and what became of it. */
+export interface DecidedApprovalRequestQueueEntry extends ApprovalRequestQueueEntry {
+  status: ApprovalRequest["status"];
+  decidedAt: string | null;
+  executionStatus: ApprovalRequest["executionStatus"];
+  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  conflictReason: ApprovalConflictReason | null;
+}
+
+/**
+ * One page of the owner's requests as queue entries (issue #1785): `listApprovalRequestsPage`
+ * selects and orders the requests of the page and `loadQueueEntries` projects them. A row of the
+ * decided list also carries `status`, `decidedAt`, `executionStatus` and `conflictReason`; a row of
+ * the pending list has exactly the fields `listApprovalRequestsQueue` returns.
+ */
+export async function listApprovalRequestsQueuePage(
+  client: PoolClient,
+  input: ListApprovalRequestsPageInput & { locale: string },
+): Promise<{ rows: Array<ApprovalRequestQueueEntry | DecidedApprovalRequestQueueEntry>; nextCursor: string | null }> {
+  const { requests, nextCursor } = await listApprovalRequestsPage(client, input);
+  const entryOf = await loadQueueEntries(client, requests, input.locale);
+  if (input.status === "pending") return { rows: requests.map(entryOf), nextCursor };
+  return {
+    rows: requests.map((request) => ({
+      ...entryOf(request),
+      status: request.status,
+      decidedAt: request.decidedAt,
+      executionStatus: request.executionStatus,
+      conflictReason: approvalConflictReason(request.executionStatus, request.executionResult),
+    })),
+    nextCursor,
+  };
 }

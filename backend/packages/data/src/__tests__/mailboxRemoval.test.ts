@@ -625,7 +625,26 @@ describe("mailbox removal (gh-1690)", () => {
     /** What a pass that did no work called: it opens its connection before its first statement, and closes it. */
     const NO_RECONCILE = ["createImapClient", "close"];
 
-    it("makes a pass do no work for a mailbox that was removed and restored while the pass waited for its connection", async () => {
+    it("makes a pass do no work for a live mailbox whose sync state was deleted while the pass waited for its connection", async () => {
+      const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
+
+      const { calls, changed } = await passAfter(mailbox, async () => {
+        // The store's delete, called directly: the removal deletes the row of a mailbox it trashes, and
+        // since issue gh-2032 the restore of that mailbox inserts one again.
+        expect(await inTenant((client) => deleteMailAccountSyncState(client, mailbox.id))).toBe(true);
+      });
+
+      // The mailbox is live, but it has no sync state: there is nothing to sync.
+      expect(calls).toEqual(NO_RECONCILE);
+      const after = await snapshot(mailbox);
+      expect(after).toEqual(changed);
+      expect(after.accountState).toEqual([]);
+      expect(after.item[0]?.deletedAt).toBeNull();
+      expect(after.credential).toHaveLength(1);
+      expect(after.folderStates).toHaveLength(2);
+    });
+
+    it("lets a pass that waited for its connection reconcile a mailbox that was removed and restored meanwhile, which has a sync state again", async () => {
       const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
       const mailboxes = await inTenant(async (client) => (await resolveMailModuleIds(client)).mailboxesDatabaseId);
 
@@ -634,14 +653,24 @@ describe("mailbox removal (gh-1690)", () => {
         expect(await runInTenant(tenant, () => chokePoint.restoreItem(mailboxes, mailbox.id))).not.toBeNull();
       });
 
-      // The mailbox is live again, but it has no sync state and no credential: there is nothing to sync.
-      expect(calls).toEqual(NO_RECONCILE);
+      // The restore hook of issue gh-2032 gave the mailbox a default sync state, and nothing else back.
+      expect(changed).toMatchObject({ ...REMOVED, accountState: [{ syncMode: "imap" }] });
+      expect(changed.item[0]?.deletedAt).toBeNull();
+      expect(changed.item[0]?.properties).toMatchObject({ syncStatus: "needsReauthorization" });
+      // The pass finds a live mailbox with a sync state, so it reconciles both folders with the
+      // credential it read before the removal deleted it.
+      expect(calls.filter((call) => call.startsWith("selectFolder"))).toEqual([
+        "selectFolder inbox",
+        "selectFolder archive",
+      ]);
       const after = await snapshot(mailbox);
-      expect(after).toEqual(changed);
-      expect(after).toMatchObject(REMOVED);
-      expect(after.item).toHaveLength(1);
-      expect(after.item[0]?.deletedAt).toBeNull();
-      expect(after.item[0]?.properties).toMatchObject({ syncStatus: "needsReauthorization" });
+      expect(after.folderStates).toEqual([mailbox.inbox, mailbox.archive].sort());
+      expect(after.accountState).toEqual([{ syncMode: "imap" }]);
+      // It stores no credential, and it leaves the status the removal wrote: it read `ok` before the
+      // removal and ends as `ok`, so it writes no status.
+      expect(after.credential).toEqual([]);
+      expect(after.serverSettings).toEqual([]);
+      expect(after.item).toEqual(changed.item);
     });
 
     it("makes a pass do no work for a mailbox that the generic delete trashed while the pass waited for its connection", async () => {
@@ -722,7 +751,8 @@ describe("mailbox removal (gh-1690)", () => {
 
   describe("DELETE /api/mail/mailboxes/:id handler", () => {
     function call(id: string, userId: string, tenantId = tenant) {
-      const handler = createMailboxRemovalRouteHandler(runtime);
+      // The empty custom-route container: these tests are about the removal, not its cleanup (issue gh-2030).
+      const handler = createMailboxRemovalRouteHandler(runtime, {});
       return runInTenant(tenantId, () => handler({ params: { id }, identity: { user: { id: userId } } }));
     }
 

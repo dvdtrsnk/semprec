@@ -23,7 +23,6 @@ import {
   createTaskHostEventsClearRouteHandler,
 } from "../taskHostEventRouteHandlers.js";
 import { createTaskRecurrenceClearRouteHandler, createTaskRecurrenceSetRouteHandler } from "../taskRecurrenceRoutes.js";
-import { getTaskRecurrence, setTaskRecurrenceActive } from "../taskRecurrenceStore.js";
 
 /** A tenant with the system databases seeded. */
 interface SeededTenant {
@@ -365,30 +364,6 @@ describe("PUT /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     ]);
   });
 
-  it("waits for a transaction that holds the task's recurrence row and refuses the task it made recurring", async () => {
-    const [taskId, eventId] = [await task({ date: "2026-10-22" }), await event()];
-    const params = { id: taskId };
-    // A recurrence that was set and turned off leaves the task its inactive `task_recurrence` row.
-    await runInTenant(home.id, async () => {
-      await createTaskRecurrenceSetRouteHandler(pool)({ params, body: { preset: "weekly" }, identity });
-      await createTaskRecurrenceClearRouteHandler(pool)({ params, body: {}, identity });
-    });
-    // The holder stands for a writer that holds only the recurrence row: it locks the row and makes it active.
-    const [outcome] = await whileHolding(
-      async (client) => {
-        const row = await getTaskRecurrence(client, taskId, true);
-        if (!row || row.active) throw new Error("Expected an inactive recurrence row");
-        await setTaskRecurrenceActive(client, taskId, true);
-      },
-      1,
-      () => [put(taskId, eventId)],
-    );
-    if (!outcome || outcome.ok) throw new Error("Expected the put to be refused");
-    expect(outcome.error).toBeInstanceOf(ValidationError);
-    expect(outcome.error).toMatchObject({ status: 400, details: { field: "taskId" } });
-    expect(await storedEdges(taskId)).toEqual([]);
-  });
-
   it("announces the relation to the task and to the event", async () => {
     const [taskId, eventId] = [await task(), await event()];
     const { frames } = await framesOf(() => put(taskId, eventId));
@@ -403,20 +378,6 @@ describe("PUT /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     const before = await storedTask(taskId);
     expect(before.properties.status).toBe("done");
     expect(eventIdsOf(await put(taskId, eventId))).toEqual([eventId]);
-    expect(await storedTask(taskId)).toEqual(before);
-  });
-
-  it("refuses a task with an active recurrence with 400 on taskId and writes nothing", async () => {
-    const [taskId, eventId] = [await task({ date: "2026-10-22" }), await event()];
-    await runInTenant(home.id, () =>
-      createTaskRecurrenceSetRouteHandler(pool)({ params: { id: taskId }, body: { preset: "weekly" }, identity }),
-    );
-    const before = await storedTask(taskId);
-    const { error, frames } = await refusal(() => put(taskId, eventId));
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "taskId" } });
-    expect(frames).toEqual([]);
-    expect(await storedEdges(taskId)).toEqual([]);
     expect(await storedTask(taskId)).toEqual(before);
   });
 

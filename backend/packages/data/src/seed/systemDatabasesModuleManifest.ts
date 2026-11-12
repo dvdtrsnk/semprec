@@ -55,6 +55,7 @@ export {
   createTranscriptListRouteHandler,
   createTranscriptSummariesRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
+export { createListEventPeopleRouteHandler } from "../calendar/eventParticipantsRouteHandlers.js";
 
 const AREA_VALUE = { areaValue: true } as const;
 
@@ -393,6 +394,26 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: TRANSCRIPTS_MODULE_ID, propertyKey: "company" },
       via: { databaseKey: TRANSCRIPTS_MODULE_ID, relationKey: "project" },
     },
+    // A task that came from an Event's action item takes over that Event's project and participants
+    // (issue #1724). Ownership handoff: `Tasks.project` (the inverse of `Projects.tasks`) and `Tasks.people` stay
+    // `owner: user`, and the `valueLinks` process writes them only while the item's value link for that property
+    // is `on`. The removal of the `sourceEvents` edge detaches the Event from both links, whatever their state
+    // (`tasks/taskSourceEventLinkDetach.ts`). See
+    // docs/adr/2026-11-11-action-item-tasks-inherit-project-and-people-by-link-rules.md.
+    {
+      key: "taskProjectFromEvent",
+      source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: TASKS_MODULE_ID, propertyKey: "project" },
+      via: { databaseKey: TASKS_MODULE_ID, relationKey: "sourceEvents" },
+    },
+    // The tenant's own person (System settings `selfPerson`) is left out, as in `transcriptPeopleFromEvent`.
+    {
+      key: "taskPeopleFromEvent",
+      source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "people" },
+      target: { databaseKey: TASKS_MODULE_ID, propertyKey: "people" },
+      via: { databaseKey: TASKS_MODULE_ID, relationKey: "sourceEvents" },
+      valueFilter: { omit: { databaseKey: SYSTEM_SETTINGS_MODULE_ID, propertyKey: "selfPerson" } },
+    },
   ],
   customRoutes: [
     {
@@ -567,6 +588,16 @@ export const manifest: ModuleManifest = {
       // The existence check of the action item, the owner lookup and the state write commit together
       // under the transcript's row lock (issue #1754); the state is no item property.
       justification: "transactional-semantics",
+    },
+    {
+      name: "listEventPeople",
+      method: "GET",
+      path: "/api/events/:id/people",
+      handlerExport: "createListEventPeopleRouteHandler",
+      // Shaped for exactly one consumer, an Event's participant list (issue #1757): it joins the Event's
+      // `people` edges and their metadata with each person's name, relationship and addresses, which no
+      // generic item read returns together.
+      justification: "single-consumer-read",
     },
   ],
 };

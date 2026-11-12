@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { moduleManifestSchema } from "../manifest.js";
+import { ModuleRegistry } from "../registry.js";
 import { manifest } from "./fixtures/searchFieldsModule.js";
 
 function parse(database: Record<string, unknown>) {
@@ -41,5 +42,23 @@ describe("database collection metadata descriptor", () => {
 
   it("rejects a non-boolean clientVisible", () => {
     expect(parse({ clientVisible: "yes" }).success).toBe(false);
+  });
+
+  it.each([true, false])("accepts overviewHideable %s", (overviewHideable) => {
+    expect(parse({ overviewHideable }).success).toBe(true);
+  });
+
+  it.each(["yes", 1, null])("rejects a non-boolean overviewHideable: %j", (overviewHideable) => {
+    expect(parse({ overviewHideable }).success).toBe(false);
+  });
+
+  it("projects overviewHideable as declared and omits it for a database that declares none", async () => {
+    const registry = new ModuleRegistry(() => new Set(["overviewHideableFixture"]));
+    await registry.loadModule(new URL("./fixtures/overviewHideableModule.js", import.meta.url).href);
+    expect(await registry.getDatabases()).toEqual([
+      { moduleId: "overviewHideableFixture", key: "hideableItems", name: "Hideable items", overviewHideable: true },
+      { moduleId: "overviewHideableFixture", key: "fixedItems", name: "Fixed items", overviewHideable: false },
+      { moduleId: "overviewHideableFixture", key: "plainItems", name: "Plain items" },
+    ]);
   });
 });

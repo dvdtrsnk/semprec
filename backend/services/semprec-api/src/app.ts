@@ -44,6 +44,7 @@ import {
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { createMailOauthCallbackRequestListener, MAIL_OAUTH_CALLBACK_PATH } from "./mailOauthCallbackHandler.js";
 import { sendJson } from "./adapter/http.js";
+import { createClientIpThrottle } from "./clientIpThrottle.js";
 import { isAllowedOrigin } from "./originCheck.js";
 import { logger } from "./logger.js";
 
@@ -70,6 +71,7 @@ export interface AppOptions {
   /**
    * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
    * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
+   * `createDispatcher` adds its registry provider, and a `throttle` when the container carries none.
    */
   customRouteDependencies?: CustomRouteDependencies;
 }
@@ -97,9 +99,13 @@ export async function createDispatcher(
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
   // Resolved per call, so a module activated or deactivated since the last request is reflected.
   const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
+  const callerDependencies = options.customRouteDependencies ?? createCustomRouteDependencies();
   const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
-    ...(options.customRouteDependencies ?? createCustomRouteDependencies()),
+    ...callerDependencies,
     heartbeatRuleKinds,
+    // Issue gh-1750: one limiter for as long as this dispatcher serves, so every request of the password
+    // connect route is counted in the same windows. A caller's own instance is kept.
+    throttle: callerDependencies.throttle ?? createClientIpThrottle(),
   });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no

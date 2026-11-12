@@ -54,6 +54,8 @@ export interface DatabaseRow {
   system: boolean;
   icon: string | null;
   color: string | null;
+  /** True while the user hides the database from the client overview (issue #2002). */
+  overviewHidden: boolean;
   archivedAt: string | null;
 }
 

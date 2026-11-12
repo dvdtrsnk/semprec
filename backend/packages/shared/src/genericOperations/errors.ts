@@ -4,6 +4,7 @@
  * issue #83's `database_archived` and this issue's `empty_patch`/`relation_definition_required`
  * property-patch rejections. Per-transport parity tests over this union are added by the
  * consumers (REST in #219, MCP/AgentTool in #220) — this file only fixes the closed code set.
+ * Issue #1699 added `option_label_exists`, which the two select-option operations raise.
  */
 export const DOMAIN_ERROR_CODES = [
   "validation_failed",
@@ -17,6 +18,7 @@ export const DOMAIN_ERROR_CODES = [
   "database_archived",
   "empty_patch",
   "relation_definition_required",
+  "option_label_exists",
 ] as const;
 
 export type DomainErrorCode = (typeof DOMAIN_ERROR_CODES)[number];

@@ -1268,6 +1268,61 @@ async function seriesOccurrenceState(tenant: TenantFixture, seriesId: string): P
   });
 }
 
+/** The `tags` property of a tenant's Health records, a multi_select of a schema-locked system database (issue #1699). */
+async function healthTagsPropertyId(tenant: TenantFixture): Promise<string> {
+  const databaseId = await databaseIdFor(tenant.tenantId, "healthRecords");
+  const property = await runInTenant(tenant.tenantId, () =>
+    createChokePoint(pool).getPropertyByKey(databaseId, "tags"),
+  );
+  if (!property) throw new Error(`no Health records 'tags' property in tenant ${tenant.tenantId}`);
+  return property.id;
+}
+
+/**
+ * A multi_select property with the option `one`, in a database the tenant's member creates for one case (issue
+ * #1699): the case writes its own rows and leaves the shared fixture rows as they are.
+ */
+async function caseOptionPropertyId(tenant: TenantFixture, databaseName: string): Promise<string> {
+  const databaseId = readString(
+    await sendOk(tenant.member, { method: "POST", path: "/api/databases", body: { name: databaseName } }),
+    "id",
+  );
+  return readString(
+    await sendOk(tenant.member, {
+      method: "POST",
+      path: `/api/databases/${databaseId}/properties`,
+      body: {
+        key: "choice",
+        name: "Choice",
+        type: "multi_select",
+        config: { options: [{ key: "one", label: "One" }] },
+      },
+    }),
+    "id",
+  );
+}
+
+interface StoredOption {
+  key: string;
+  label?: string;
+  color?: string;
+}
+
+const storedOptionsBody = z.object({
+  config: z.object({
+    options: z.array(z.looseObject({ key: z.string(), label: z.string().optional(), color: z.string().optional() })),
+  }),
+});
+
+/** A property's stored options as its own tenant's member reads them over `GET /api/properties/:id`. */
+async function storedOptions(tenant: TenantFixture, propertyId: string): Promise<StoredOption[]> {
+  const text = await sendOk(tenant.member, { method: "GET", path: `/api/properties/${propertyId}` });
+  return storedOptionsBody.parse(JSON.parse(text)).config.options;
+}
+
+/** The `medication` option of the Health records `tags` exactly as the seed stores it: a color and no label (issue #1705). */
+const SEEDED_MEDICATION_OPTION: StoredOption = { key: "medication", color: "#AF52DE" };
+
 const ROUTE_CASES: Record<string, RouteCase> = {
   "project guidance read": async () => {
     const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` });
@@ -2379,9 +2434,51 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
     const ownA = await createPeriod(a);
     const ownB = await createPeriod(b);
-    const response = await sendOk(b.member, { method: "GET", path: "/api/journal/periods/day/2026-10-16" });
+    /** An Event of that day with a project and a transcript (issue #1721): the ids its `events` entry carries. */
+    const seedDayEvent = (tenant: TenantFixture) =>
+      runInTenant(tenant.tenantId, async () => {
+        const chokePoint = createChokePoint(pool);
+        const eventsId = await databaseIdFor(tenant.tenantId, "events");
+        const event = await chokePoint.createItem({
+          databaseId: eventsId,
+          properties: { name: "Journal day event", date: "2026-10-16", timeFrom: "10:00" },
+        });
+        const project = await chokePoint.createItem({
+          databaseId: await databaseIdFor(tenant.tenantId, "projects"),
+          properties: { name: "Journal day project" },
+        });
+        const transcriptsId = await databaseIdFor(tenant.tenantId, "transcripts");
+        // `status` is a system key that only the transcription process may write.
+        const transcript = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name: "Journal day transcript", status: "done" } },
+            { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        );
+        const properties = await chokePoint.listProperties(eventsId);
+        for (const [key, targetItemId] of [
+          ["project", project.id],
+          ["transcript", transcript.id],
+        ] as const) {
+          const property = properties.find((entry) => entry.key === key);
+          if (!property) throw new Error(`no '${key}' property on Events`);
+          await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: event.id, targetItemId });
+        }
+        return [event.id, project.id, transcript.id];
+      });
+    const dayEventOfA = await seedDayEvent(a);
+    const dayEventOfB = await seedDayEvent(b);
+    const path = "/api/journal/periods/day/2026-10-16";
+    const response = await sendOk(b.member, { method: "GET", path });
     expect(readString(response, "item", "id")).toBe(ownB.id);
     expect(response).not.toContain(ownA.id);
+    expect(dayEventOfB.filter((id) => !response.includes(id))).toEqual([]);
+    expectNoneOf(response, dayEventOfA, "B's journal day");
+    // A's Event is on that day for A, so its absence from B's answer is isolation and not an empty day.
+    const asA = await sendOk(a.member, { method: "GET", path });
+    expect(dayEventOfA.filter((id) => !asA.includes(id))).toEqual([]);
+    expectNoneOf(asA, dayEventOfB, "A's journal day");
     const invalid = await send(b.member, { method: "GET", path: "/api/journal/periods/week/2027-W53" });
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
@@ -2574,6 +2671,39 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await states(a, foreign)).toEqual(before);
     expect(await states(b, foreign)).toEqual([]);
     expect((await states(b, own)).map((row) => [row.action_item_id, row.state])).toEqual([[0, "noted"]]);
+  },
+  // Each tenant gets an Event with one participant, seeded here and used by no other case (issue gh-1757).
+  "event people": async () => {
+    const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const eventId = await create("events", { name: "Participants probe", date: "2026-10-16" });
+      const personId = await create("people", { name: "Participant probe" });
+      await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/items/${eventId}/relations/people/${personId}`,
+        body: {},
+      });
+      return { eventId, personId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const peopleOf = (eventId: string | undefined): Request => ({
+      method: "GET",
+      path: `/api/events/${eventId}/people`,
+    });
+    // A reads the participant of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
+    expect(await sendOk(a.member, peopleOf(foreign.eventId))).toContain(foreign.personId);
+    const listed = await expectExcludesA(b.member, peopleOf(own.eventId), [own.personId]);
+    expectNoneOf(listed.text, [foreign.eventId, foreign.personId], "B's participant list");
+    const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => peopleOf(id));
+    expect(answer.status).toBe(404);
   },
   "inbox types": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/inbox-types" });
@@ -2953,6 +3083,56 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: `/api/properties/${id}`,
       }));
     }),
+  "add property option": async () => {
+    const aTags = await healthTagsPropertyId(a);
+    const label = "Isolation add probe";
+    await leavesAUnchanged(async () => {
+      const refused = await expectForeignLikeRandom(b.member, [aTags], ([id]) => ({
+        method: "POST",
+        path: `/api/properties/${id}/options`,
+        body: { label },
+      }));
+      expect(refused.status).toBe(404);
+    });
+    // The same request on a property of B is served, so the foreign answer is a refusal of A's row.
+    const bProperty = await caseOptionPropertyId(b, "Isolation option add");
+    const own = await send(b.member, {
+      method: "POST",
+      path: `/api/properties/${bProperty}/options`,
+      body: { label },
+    });
+    expect(own.status, own.text).toBe(201);
+    const key = readString(own.text, "key");
+    expect(await storedOptions(b, bProperty)).toContainEqual({ key, label });
+    const aOptions = await storedOptions(a, aTags);
+    expect(aOptions.map((option) => option.key)).not.toContain(key);
+    expect(aOptions.map((option) => option.label)).not.toContain(label);
+  },
+  "update property option": async () => {
+    const aTags = await healthTagsPropertyId(a);
+    const label = "Isolation rename probe";
+    // `medication` is a seeded option of A's Health records, so a foreign rename would find its target.
+    await leavesAUnchanged(async () => {
+      const refused = await expectForeignLikeRandom(b.member, [aTags], ([id]) => ({
+        method: "PATCH",
+        path: `/api/properties/${id}/options/medication`,
+        body: { label },
+      }));
+      expect(refused.status).toBe(404);
+    });
+    // The same kind of request on a property of B is served, so the foreign answer is a refusal of A's row.
+    const bProperty = await caseOptionPropertyId(b, "Isolation option update");
+    const own = await send(b.member, {
+      method: "PATCH",
+      path: `/api/properties/${bProperty}/options/one`,
+      body: { label },
+    });
+    expect(own.status, own.text).toBe(200);
+    expect(await storedOptions(b, bProperty)).toEqual([{ key: "one", label }]);
+    const aOptions = await storedOptions(a, aTags);
+    expect(aOptions).toContainEqual(SEEDED_MEDICATION_OPTION);
+    expect(aOptions.map((option) => option.label)).not.toContain(label);
+  },
 
   // --- tenant: views -------------------------------------------------------------------------
   "list views": async () => {
@@ -3849,6 +4029,21 @@ const MCP_CASES = {
   "property.patch": (p) =>
     p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId, patch: { name: "Renamed by B" } })),
   "property.delete": (p) => p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId })),
+  // REST-only (issue #1699): MCP answers both as unknown tools, for A's Health records `tags` as for a random id.
+  "property.option.add": async (p) => {
+    const aTags = await healthTagsPropertyId(a);
+    await p.foreignLikeRandom([aTags], ([propertyId]) => ({ propertyId, label: "Isolation MCP probe" }));
+    expect((await storedOptions(a, aTags)).map((option) => option.label)).not.toContain("Isolation MCP probe");
+  },
+  "property.option.update": async (p) => {
+    const aTags = await healthTagsPropertyId(a);
+    await p.foreignLikeRandom([aTags], ([propertyId]) => ({
+      propertyId,
+      key: "medication",
+      label: "Isolation MCP rename",
+    }));
+    expect(await storedOptions(a, aTags)).toContainEqual(SEEDED_MEDICATION_OPTION);
+  },
   // Curated views only, as for `GET /api/views`.
   "view.list": (p) => p.excludesA({ limit: 200 }, [b.curatedViewId]),
   "view.get": (p) => p.foreignLikeRandom([a.viewId], ([viewId]) => ({ viewId })),

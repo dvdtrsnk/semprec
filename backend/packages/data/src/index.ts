@@ -423,6 +423,7 @@ export {
 export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 export { PAGES_MODULE_ID, ensurePagesDatabase } from "./docs/pagesDatabase.js";
+export { collectSubpageTree } from "./docs/pageTrash.js";
 export { docEtag, readPageMarkdown, type PageMarkdownRead } from "./docs/pageMarkdown.js";
 export { readProjectNotes } from "./docs/projectNotesRead.js";
 export { listPageChanges, type PageChange, type PageChangeKind } from "./docs/pageChanges.js";
@@ -550,7 +551,18 @@ export {
 export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
 export { manifest as calendarModuleManifest } from "./calendar/calendarModuleManifest.js";
 export { manifest as recipesModuleManifest } from "./recipes/recipesModuleManifest.js";
+export { manifest as sleepModuleManifest } from "./sleep/sleepModuleManifest.js";
+export {
+  resolveSleepNights,
+  type ResolvedSleepNight,
+  type ResolveSleepNightsInput,
+  type SleepNightException,
+  type SleepNightsSettings,
+  type SleepPlan,
+} from "./sleep/resolveSleepNights.js";
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
+export { createListEventPeopleRouteHandler } from "./calendar/eventParticipantsRouteHandlers.js";
+export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
 export * from "./auth/types.js";
@@ -635,15 +647,18 @@ export type {
   GenericOperationApprovalRequestPayload,
   ApprovalRequestStatus,
   ApprovalRequestDecision,
+  ApprovalRequestSourceKind,
   CreatePendingApprovalRequestInput,
   ApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
 export {
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
+  APPROVAL_REQUEST_SOURCE_KINDS,
   createPendingApprovalRequest,
   getApprovalRequest,
   listPendingApprovalRequests,
   isGenericOperationApprovalRequestPayload,
+  parseApprovalRequestListCursor,
   terminalizeApprovalRequestAsConflict,
   markApprovalRequestExecutionSucceeded,
 } from "./mcp/approvalRequestsStore.js";
@@ -651,11 +666,17 @@ export type {
   ApprovalRequestQueueEntry,
   ApprovalRequestSafeSummary,
   ApprovalRequestDecisionView,
+  ApprovalRequestSource,
+  DecidedApprovalRequestQueueEntry,
 } from "./mcp/approvalRequestsQueue.js";
 export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
 export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
-export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";
+export {
+  listApprovalRequestsQueue,
+  listApprovalRequestsQueuePage,
+  toApprovalRequestDecisionView,
+} from "./mcp/approvalRequestsQueue.js";
 export type {
   McpInvokeResult,
   McpInvokeArgs,

@@ -8,6 +8,8 @@ import type { BulkMailHeaders } from "./bulkMail.js";
  * failure — the issue's `Mailboxes.syncStatus = 'needsReauthorization'` state (mailSyncJob.ts
  * catches this specifically to distinguish it from a generic `'error'`). "The worker stops
  * retrying and just leaves it waiting on the user" is enforced by the caller, not this class.
+ * The sync job throws it itself for a mailbox that already shows that status and has no stored
+ * credential, as a removed mailbox that was restored from the trash does (issue gh-2032).
  */
 export class MailReauthorizationRequiredError extends Error {}
 

@@ -46,6 +46,8 @@ export interface Database {
   /** Stored pick of a user-created database; null when none was made or for a system database. */
   icon: string | null;
   color: string | null;
+  /** True while the user hides the database from the client overview (issue #2002). */
+  overviewHidden: boolean;
   archivedAt: string | null;
 }
 

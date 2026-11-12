@@ -2,7 +2,13 @@ import type { ConfirmationResult } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { ChokePointError, ForbiddenError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
+import {
+  ChokePointError,
+  ForbiddenError,
+  RateLimitedError,
+  type AuthenticatedIdentity,
+  type ItemRow,
+} from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
 import { toItemEnvelopeWithBlobs } from "./itemEnvelope.js";
@@ -37,9 +43,14 @@ async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): P
   return authenticateRequest(pool, req);
 }
 
-/** Sends a `ChokePointError` as this adapter's `{ error: { code, details } }` body, at the status the shared code→status table assigns it. */
+/**
+ * Sends a `ChokePointError` as this adapter's `{ error: { code, details } }` body, at the status the shared
+ * code→status table assigns it. A `RateLimitedError` (issue gh-1750) also gets a `Retry-After` header with
+ * its whole seconds, as the bespoke auth listeners answer their own 429.
+ */
 function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
-  sendJson(res, statusForError(err), toErrorResponseBody(err));
+  const headers = err instanceof RateLimitedError ? { "Retry-After": String(err.retryAfterSeconds) } : undefined;
+  sendJson(res, statusForError(err), toErrorResponseBody(err), headers);
 }
 
 export interface AdapterRequestContext {

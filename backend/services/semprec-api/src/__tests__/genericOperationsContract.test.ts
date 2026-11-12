@@ -117,7 +117,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 42-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 44-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -275,6 +275,43 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const invalid = await patch("red");
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "config" } } });
+  },
+  "property.option.add": async (fx, headers, baseUrl) => {
+    const tags = await chokePoint.createProperty({
+      databaseId: fx.database.id,
+      key: "tags",
+      name: "Tags",
+      type: "multi_select",
+      config: { options: [{ key: "herbs", label: "Herbs" }] },
+    });
+    const res = await fetch(`${baseUrl}/api/properties/${tags.id}/options`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ label: "Spices", color: "#34c759" }),
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ key: "spices", label: "Spices", color: "#34C759" });
+    expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([
+      { key: "herbs", label: "Herbs" },
+      { key: "spices", label: "Spices", color: "#34C759" },
+    ]);
+  },
+  "property.option.update": async (fx, headers, baseUrl) => {
+    const tags = await chokePoint.createProperty({
+      databaseId: fx.database.id,
+      key: "tags",
+      name: "Tags",
+      type: "multi_select",
+      config: { options: [{ key: "herbs", label: "Herbs" }] },
+    });
+    const res = await fetch(`${baseUrl}/api/properties/${tags.id}/options/herbs`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ label: "Fresh herbs" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ key: "herbs", label: "Fresh herbs" });
+    expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([{ key: "herbs", label: "Fresh herbs" }]);
   },
   "property.delete": async (fx, headers, baseUrl) => {
     const scratch = await chokePoint.createProperty({

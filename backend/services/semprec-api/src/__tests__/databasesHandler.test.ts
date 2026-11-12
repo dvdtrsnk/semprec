@@ -28,8 +28,16 @@ import { createDispatcher } from "../app.js";
 import { createDatabaseRoutes } from "../databasesHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 const PASSWORD = "s3cret-password";
@@ -878,6 +886,229 @@ describe("database routes (issue #240)", () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("forbidden");
+  });
+
+  describe("overviewHidden (issue #2002)", () => {
+    const envelope = z.object({
+      id: z.string(),
+      key: z.string().nullable(),
+      name: z.string(),
+      searchPlaceholder: z.string().nullable(),
+      ownerModuleId: z.string().nullable(),
+      schemaLocked: z.boolean(),
+      system: z.boolean(),
+      archivedAt: z.string().nullable(),
+      icon: z.string().nullable(),
+      color: z.string().nullable(),
+      overviewOrder: z.number().nullable(),
+      switcherOrder: z.number().nullable(),
+      clientVisible: z.boolean(),
+      overviewHidden: z.boolean(),
+      defaultViewType: z.string().nullable(),
+    });
+    type Envelope = z.infer<typeof envelope>;
+    type RequestHeaders = Record<string, string>;
+    const errorBody = z.object({
+      error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()).optional() }),
+    });
+    const itemsBody = z.object({ items: z.array(z.object({ id: z.string() })) });
+
+    async function jsonHeaders(): Promise<RequestHeaders> {
+      return { ...(await authHeader()), "Content-Type": "application/json" };
+    }
+
+    async function list(headers: RequestHeaders): Promise<Envelope[]> {
+      const res = await fetch(`${baseUrl}/api/databases?limit=200`, { headers });
+      expect(res.status).toBe(200);
+      return z.object({ databases: z.array(envelope), nextCursor: z.null() }).parse(await res.json()).databases;
+    }
+
+    async function byKey(headers: RequestHeaders, key: string): Promise<Envelope> {
+      const found = (await list(headers)).find((db) => db.key === key);
+      if (!found) throw new Error(`${key} is missing from GET /api/databases`);
+      return found;
+    }
+
+    async function detail(headers: RequestHeaders, id: string): Promise<Envelope> {
+      const res = await fetch(`${baseUrl}/api/databases/${id}`, { headers });
+      expect(res.status).toBe(200);
+      return envelope.parse(await res.json());
+    }
+
+    function patch(headers: RequestHeaders, id: string, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/databases/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+    }
+
+    async function storedFlags(id: string): Promise<boolean[]> {
+      const { rows } = await pool.query<{ overview_hidden: boolean }>(
+        "SELECT overview_hidden FROM databases WHERE id = $1",
+        [id],
+      );
+      return rows.map((row) => row.overview_hidden);
+    }
+
+    async function queriedItemIds(headers: RequestHeaders, databaseId: string): Promise<string[]> {
+      const res = await fetch(`${baseUrl}/api/databases/${databaseId}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 200 }),
+      });
+      expect(res.status).toBe(200);
+      return itemsBody.parse(await res.json()).items.map((item) => item.id);
+    }
+
+    it("returns overviewHidden false for every database of a fresh tenant, and for a database it creates", async () => {
+      const headers = await jsonHeaders();
+      const databases = await list(headers);
+      expect(databases.length).toBeGreaterThan(9);
+      expect(databases.map((db) => db.overviewHidden)).toEqual(databases.map(() => false));
+      expect((await detail(headers, (await byKey(headers, "recipes")).id)).overviewHidden).toBe(false);
+
+      const created = await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Wine cellar" }),
+      });
+      expect(created.status).toBe(201);
+      expect(envelope.parse(await created.json()).overviewHidden).toBe(false);
+    });
+
+    it("hides recipes and shows it again, keeping its orders, its place in the list and its items, and publishes a schema invalidation each time", async () => {
+      const headers = await jsonHeaders();
+      const before = await byKey(headers, "recipes");
+      expect(before).toMatchObject({ overviewHidden: false, overviewOrder: 9, switcherOrder: 9 });
+      const createdItem = await fetch(`${baseUrl}/api/databases/${before.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { name: "Goulash" } }),
+      });
+      expect(createdItem.status).toBe(201);
+      const itemId = z.object({ id: z.string() }).parse(await createdItem.json()).id;
+      const keysBefore = (await list(headers)).map((db) => db.key);
+
+      const invalidations: InvalidationEvent[] = [];
+      setInvalidationHook((event) => invalidations.push(event));
+      try {
+        const hiddenResponse = await patch(headers, before.id, { overviewHidden: true });
+        expect(hiddenResponse.status).toBe(200);
+        // The whole envelope but the flag is unchanged, the two orders included.
+        expect(envelope.parse(await hiddenResponse.json())).toEqual({ ...before, overviewHidden: true });
+        expect(invalidations).toEqual([{ scope: "schema", databaseId: before.id, userId: expect.any(String) }]);
+        expect(await storedFlags(before.id)).toEqual([true]);
+
+        expect(await detail(headers, before.id)).toEqual({ ...before, overviewHidden: true });
+        const listed = await list(headers);
+        expect(listed.map((db) => db.key)).toEqual(keysBefore);
+        expect(listed.filter((db) => db.overviewHidden).map((db) => db.key)).toEqual(["recipes"]);
+        expect(await queriedItemIds(headers, before.id)).toEqual([itemId]);
+
+        const shownResponse = await patch(headers, before.id, { overviewHidden: false });
+        expect(shownResponse.status).toBe(200);
+        expect(envelope.parse(await shownResponse.json())).toEqual(before);
+        expect(invalidations).toEqual([
+          { scope: "schema", databaseId: before.id, userId: expect.any(String) },
+          { scope: "schema", databaseId: before.id, userId: expect.any(String) },
+        ]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await storedFlags(before.id)).toEqual([false]);
+      expect(await byKey(headers, "recipes")).toEqual(before);
+      expect(await queriedItemIds(headers, before.id)).toEqual([itemId]);
+    });
+
+    it.each([
+      { name: "the Projects system database", find: (headers: RequestHeaders) => byKey(headers, "projects") },
+      {
+        name: "a user-created collection",
+        find: async (headers: RequestHeaders) => {
+          const created = await fetch(`${baseUrl}/api/databases`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ name: "Wine cellar" }),
+          });
+          expect(created.status).toBe(201);
+          return envelope.parse(await created.json());
+        },
+      },
+    ])("answers 403 when overviewHidden is patched on $name and changes nothing", async ({ find }) => {
+      const headers = await jsonHeaders();
+      const before = await find(headers);
+      const invalidations: InvalidationEvent[] = [];
+      setInvalidationHook((event) => invalidations.push(event));
+      try {
+        for (const body of [
+          { overviewHidden: true },
+          { overviewHidden: false },
+          { name: "Renamed", overviewHidden: true },
+        ]) {
+          const res = await patch(headers, before.id, body);
+          expect(res.status).toBe(403);
+          expect(errorBody.parse(await res.json()).error.code).toBe("forbidden");
+        }
+        expect(invalidations).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await detail(headers, before.id)).toEqual(before);
+      expect(await storedFlags(before.id)).toEqual([false]);
+    });
+
+    it("answers 400 naming the field when overviewHidden is not a boolean, and changes nothing", async () => {
+      const headers = await jsonHeaders();
+      const before = await byKey(headers, "recipes");
+      const invalidations: InvalidationEvent[] = [];
+      setInvalidationHook((event) => invalidations.push(event));
+      try {
+        for (const overviewHidden of ["true", 1, null]) {
+          const res = await patch(headers, before.id, { overviewHidden });
+          expect(res.status).toBe(400);
+          expect(errorBody.parse(await res.json()).error).toMatchObject({
+            code: "validation_failed",
+            details: { field: "patch.overviewHidden" },
+          });
+        }
+        expect(invalidations).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await detail(headers, before.id)).toEqual(before);
+      expect(await storedFlags(before.id)).toEqual([false]);
+    });
+
+    it("still refuses to delete the recipes database, shown or hidden, and keeps it live", async () => {
+      const headers = await jsonHeaders();
+      const recipes = await byKey(headers, "recipes");
+      const refuseDelete = async (): Promise<void> => {
+        const res = await fetch(`${baseUrl}/api/databases/${recipes.id}`, { method: "DELETE", headers });
+        expect(res.status).toBe(403);
+        expect(errorBody.parse(await res.json()).error.code).toBe("forbidden");
+      };
+
+      await refuseDelete();
+      expect((await patch(headers, recipes.id, { overviewHidden: true })).status).toBe(200);
+      await refuseDelete();
+
+      expect(await byKey(headers, "recipes")).toEqual({ ...recipes, overviewHidden: true });
+      expect((await detail(headers, recipes.id)).archivedAt).toBeNull();
+    });
+
+    it("carries in GET /api/schema the overviewHidden of GET /api/databases", async () => {
+      const headers = await jsonHeaders();
+      const recipes = await byKey(headers, "recipes");
+      expect((await patch(headers, recipes.id, { overviewHidden: true })).status).toBe(200);
+
+      const schemaResponse = await fetch(`${baseUrl}/api/schema`, { headers });
+      expect(schemaResponse.status).toBe(200);
+      const schema = z
+        .object({ databases: z.array(z.object({ databaseId: z.string(), overviewHidden: z.boolean() })) })
+        .parse(await schemaResponse.json());
+      const listed = await list(headers);
+      expect(new Map(schema.databases.map((db) => [db.databaseId, db.overviewHidden]))).toEqual(
+        new Map(listed.map((db) => [db.id, db.overviewHidden])),
+      );
+      expect(schema.databases.filter((db) => db.overviewHidden).map((db) => db.databaseId)).toEqual([recipes.id]);
+    });
   });
 
   it("creates a property on a database", async () => {

@@ -1,9 +1,17 @@
 import type { PoolClient } from "pg";
-import { NumberFilterConfigSchema } from "@semprec/shared";
+import { NumberFilterConfigSchema, PropertyOptionLabelSchema } from "@semprec/shared";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
-import { ConflictError, NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
+import {
+  ConflictError,
+  NotFoundError,
+  OptionLabelExistsError,
+  PropertyLockedError,
+  SchemaLockedError,
+  ValidationError,
+} from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { catalogOptionLabels, type CatalogResolver } from "../manifest/catalogResolution.js";
 import { getDatabase } from "./databasesStore.js";
 
 /** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
@@ -433,4 +441,206 @@ export async function deleteProperty(client: PoolClient, propertyId: string): Pr
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
   await client.query(`DELETE FROM properties WHERE id = $1`, [propertyId]);
+}
+
+/** The most options `addPropertyOption` lets one property hold. */
+const PROPERTY_OPTION_LIMIT = 100;
+
+/** One element of a stored `config.options` array that `assertValidSelectOptions` accepts. */
+type StoredOption = Record<string, unknown> & { key: string; label?: string };
+
+function isStoredOption(value: unknown): value is StoredOption {
+  return (
+    isRecord(value) && typeof value.key === "string" && (value.label === undefined || typeof value.label === "string")
+  );
+}
+
+/** What an option write of issue #1699 leaves behind: the updated property row, its database and the written option's key. */
+export interface PropertyOptionWrite {
+  property: PropertyRow;
+  database: DatabaseRow;
+  optionKey: string;
+}
+
+/**
+ * The start of both option writes of issue #1699: locks the property row until the caller's transaction ends and
+ * returns it with its database and its stored options. Refuses an unknown property (`NotFoundError`), a property
+ * that is not a `select` or `multi_select`, one that is itself `locked`, and stored options that
+ * `assertValidSelectOptions` does not accept. The database's `schema_locked` flag is not checked, which is the
+ * exception docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md records.
+ */
+async function lockPropertyForOptionWrite(
+  client: PoolClient,
+  propertyId: string,
+): Promise<{ property: PropertyRow; database: DatabaseRow; options: StoredOption[] }> {
+  const property = await requirePropertyForUpdate(client, propertyId);
+  if (property.type !== "select" && property.type !== "multi_select") {
+    throw new ValidationError(`Property ${propertyId} is not a select or multi_select property`, {
+      field: "propertyId",
+    });
+  }
+  if (property.locked) {
+    throw new PropertyLockedError(`Property ${property.id} is locked; its schema cannot be changed`);
+  }
+  const database = await getDatabase(client, property.databaseId);
+  if (!database) throw new NotFoundError(`Database ${property.databaseId} not found`);
+  assertValidSelectOptions(property.type, property.config);
+  const stored: unknown[] = Array.isArray(property.config.options) ? property.config.options : [];
+  // `assertValidSelectOptions` accepted every element just above, so the guard only narrows the type.
+  return { property, database, options: stored.filter(isStoredOption) };
+}
+
+/**
+ * The label as it is stored: without surrounding whitespace and 1 to 60 UTF-16 code units long. A label that holds
+ * U+0000 or a surrogate without its pair is refused as well: the `jsonb` column cannot hold either, so the `UPDATE`
+ * would fail with a database error instead of this `ValidationError`.
+ */
+function parseOptionLabel(label: string): string {
+  const parsed = PropertyOptionLabelSchema.safeParse(label);
+  if (!parsed.success) {
+    throw new ValidationError(
+      "An option label must have 1 to 60 characters and hold neither U+0000 nor a surrogate without its pair",
+      { field: "label" },
+    );
+  }
+  return parsed.data;
+}
+
+/** A label as two labels are compared: without diacritics, surrounding whitespace and letter case. */
+function foldLabel(label: string): string {
+  return label.normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
+}
+
+/**
+ * Refuses `label` when one of `others` already has it, as its stored label or as the Czech or English catalog label
+ * of its key; labels are compared as `foldLabel` returns them. The raw key an option without any label is displayed
+ * by is not compared.
+ */
+async function assertOptionLabelFree(
+  label: string,
+  others: readonly StoredOption[],
+  property: PropertyRow,
+  database: DatabaseRow,
+  catalogResolver: Pick<CatalogResolver, "getCatalogsForDbKey">,
+): Promise<void> {
+  const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
+  const wanted = foldLabel(label);
+  const existing = others.find((option) =>
+    [option.label, ...catalogOptionLabels(catalogs, database.key, property.key, option.key)].some(
+      (shown) => shown !== undefined && foldLabel(shown) === wanted,
+    ),
+  );
+  if (existing) {
+    throw new OptionLabelExistsError(`Property ${property.id} already has an option with this label`, {
+      key: existing.key,
+    });
+  }
+}
+
+/**
+ * The key of a new option: the words of the label in ASCII camelCase. Diacritics are removed, and every other
+ * character outside `A-Z`, `a-z` and `0-9` separates words. `option` when no word results. A key that `options`
+ * already holds gets the lowest free numeric suffix from 2 up.
+ */
+function newOptionKey(label: string, options: readonly StoredOption[]): string {
+  const words = label
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word.length > 0);
+  const camelCase = words
+    .map((word, index) =>
+      index === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+    )
+    .join("");
+  const base = camelCase.length > 0 ? camelCase : "option";
+  const taken = new Set(options.map((option) => option.key));
+  if (!taken.has(base)) return base;
+  let suffix = 2;
+  while (taken.has(`${base}${suffix}`)) suffix += 1;
+  return `${base}${suffix}`;
+}
+
+/** Writes `options` as the property's `config.options`, after the same config validation every config write runs. */
+async function writePropertyOptions(
+  client: PoolClient,
+  property: PropertyRow,
+  options: readonly StoredOption[],
+): Promise<PropertyRow> {
+  const config = { ...property.config, options };
+  assertValidPropertyConfig(property.type, config);
+  const result = await client.query<PropertyDbRow>(
+    `UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
+    [property.id, JSON.stringify(config)],
+  );
+  requireAffectedRows(result, "properties option write");
+  return mapPropertyRow(requireSingleRow(result.rows, "properties row"));
+}
+
+/**
+ * Appends one option to a `select` or `multi_select` property (issue #1699), also on a schema-locked database. The
+ * key comes from the label (`newOptionKey`). Refused, besides what `lockPropertyForOptionWrite` and the config
+ * validation refuse: a label another option already has (`OptionLabelExistsError` with that option's key), a label
+ * that `parseOptionLabel` refuses and a property that already holds 100 options. The property row stays locked from
+ * the read of its options until the caller's transaction ends, so two concurrent adds both end up stored.
+ */
+export async function addPropertyOption(
+  client: PoolClient,
+  propertyId: string,
+  input: { label: string; color?: string },
+  catalogResolver: Pick<CatalogResolver, "getCatalogsForDbKey">,
+): Promise<PropertyOptionWrite> {
+  const { property, database, options } = await lockPropertyForOptionWrite(client, propertyId);
+  const label = parseOptionLabel(input.label);
+  if (options.length >= PROPERTY_OPTION_LIMIT) {
+    throw new ValidationError(`A property holds at most ${PROPERTY_OPTION_LIMIT} options`, {
+      reason: "option_limit",
+    });
+  }
+  await assertOptionLabelFree(label, options, property, database, catalogResolver);
+  const optionKey = newOptionKey(label, options);
+  const option: StoredOption = { key: optionKey, label, ...(input.color !== undefined ? { color: input.color } : {}) };
+  const updated = await writePropertyOptions(client, property, [...options, option]);
+  return { property: updated, database, optionKey };
+}
+
+/**
+ * Writes the label, the color or both of the option `optionKey` of a `select` or `multi_select` property (issue
+ * #1699), also on a schema-locked database. The key and the option's position stay as they are. Refused, besides
+ * what `lockPropertyForOptionWrite` and the config validation refuse: an unknown option key, a patch with neither
+ * field, a label that `parseOptionLabel` refuses and a label another option of the property already has.
+ */
+export async function updatePropertyOption(
+  client: PoolClient,
+  propertyId: string,
+  optionKey: string,
+  patch: { label?: string; color?: string },
+  catalogResolver: Pick<CatalogResolver, "getCatalogsForDbKey">,
+): Promise<PropertyOptionWrite> {
+  const { property, database, options } = await lockPropertyForOptionWrite(client, propertyId);
+  const current = options.find((option) => option.key === optionKey);
+  if (!current) {
+    throw new NotFoundError(`Property ${propertyId} has no option with the given key`, {
+      resource: "propertyOption",
+      propertyId,
+      key: optionKey,
+    });
+  }
+  if (patch.label === undefined && patch.color === undefined) {
+    throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
+  }
+  const next: StoredOption = { ...current };
+  if (patch.label !== undefined) {
+    const label = parseOptionLabel(patch.label);
+    const others = options.filter((option) => option !== current);
+    await assertOptionLabelFree(label, others, property, database, catalogResolver);
+    next.label = label;
+  }
+  if (patch.color !== undefined) next.color = patch.color;
+  const updated = await writePropertyOptions(
+    client,
+    property,
+    options.map((option) => (option === current ? next : option)),
+  );
+  return { property: updated, database, optionKey };
 }

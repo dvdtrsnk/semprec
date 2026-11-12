@@ -37,7 +37,10 @@ export async function handlePageTitleMirrorTask(pool: Pool, payload: unknown): P
     // The host row is reserved (blocking `FOR UPDATE`, the lock a trash of the host takes first) and rechecked live
     // before its document is loaded or any child is written: a trash committed earlier makes this a no-op, and a
     // trash that starts later waits until this transaction has written the titles. Lock order: host, document, then
-    // the host's own Pages items in id order; the trash cascade walks inline databases and does not lock the Pages items of this host.
+    // the host's own Pages items in id order. The trash of a host that is not a page walks inline databases and locks
+    // none of those Pages items; the trash or restore of a page locks that page first, its subpages after it, and
+    // writes its parent's document last. See
+    // docs/adr/2026-11-10-trashed-pages-leave-the-parent-document-and-record-their-position.md.
     const [visible] = await getItemsByIds(client, [itemId]);
     const host = visible ? await lockItemById(client, visible.databaseId, itemId) : null;
     if (!host || host.deletedAt !== null) return;

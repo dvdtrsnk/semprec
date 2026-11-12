@@ -348,6 +348,43 @@ export async function routeGmailAddress(client: Queryable, emailAddress: string)
   });
 }
 
+/**
+ * Whether other mailboxes depend on the Google account of a `gmail_api` mailbox, as the sync state
+ * rows record it: `sole` when no other mailbox records the account, `shared` when one does, and
+ * `unknown` when the mailbox's own row records no account.
+ */
+export type GmailAccountUse = "sole" | "shared" | "unknown";
+
+/**
+ * Answers whether mailbox `itemId` is the only one that records its Google account (issue gh-2030:
+ * the removal's cleanup stops a watch and revokes a grant only then, because both act on the whole
+ * account). The account is the one the mailbox's `gmail_watch_email_address` names, which the OAuth
+ * connect flow and every watch registration record from the provider's own answer. Another mailbox
+ * records it when `route_gmail_address` returns a row for that address other than `itemId`: any
+ * `gmail_api` mailbox of any tenant, read past row-level security
+ * (docs/adr/2026-10-07-cross-tenant-router-functions.md), a mailbox in the trash that kept its sync
+ * state row included.
+ *
+ * One statement reads the caller's own row under row-level security and reduces the router
+ * function's rows to a boolean, so no id of another tenant's mailbox leaves the database. A mailbox
+ * without a sync state row, or whose row records no address, answers `unknown`.
+ */
+export async function getGmailAccountUse(client: Queryable, itemId: string): Promise<GmailAccountUse> {
+  const { rows } = await client.query<{ recorded: boolean; shared: boolean }>(
+    `SELECT own.gmail_watch_email_address IS NOT NULL AS recorded,
+            EXISTS (
+              SELECT 1 FROM route_gmail_address(own.gmail_watch_email_address) AS other
+               WHERE other.mailbox_item_id <> own.item_id
+            ) AS shared
+       FROM mail_account_sync_state AS own
+      WHERE own.item_id = $1`,
+    [itemId],
+  );
+  const own = rows[0];
+  if (!own?.recorded) return "unknown";
+  return own.shared ? "shared" : "sole";
+}
+
 /** The reaction to a Graph `deltaLink` 410 Gone / `resyncRequired` — analogous to `invalidateGmailHistory`, clearing `graph_delta_link` back to NULL so the next sync runs a full resync instead of resuming from a stale token. */
 export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [

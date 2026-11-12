@@ -403,6 +403,7 @@ export async function createRelationIfAbsentWithClient(
       metadata: input.metadata,
       writer,
       lockMode,
+      insertOnly: true,
     });
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,

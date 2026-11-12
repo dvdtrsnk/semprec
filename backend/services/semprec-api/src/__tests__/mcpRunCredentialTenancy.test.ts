@@ -34,8 +34,16 @@ import { createMcpRequestListener } from "../mcp/mcpHandler.js";
 import { z } from "zod";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 const PASSWORD = "s3cret-password";

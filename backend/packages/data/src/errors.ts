@@ -100,6 +100,22 @@ export class UnauthorizedError extends ChokePointError {
 }
 
 /**
+ * The `rate_limited` code (issue gh-1750): the caller made more attempts than a throttle grants inside its
+ * window. `retryAfterSeconds` is the whole number of seconds until an attempt can be granted again. The REST
+ * adapter of `semprec-api` sends it as the `Retry-After` header (`adapter/adapterRoute.ts`); it is not in
+ * the body.
+ */
+export class RateLimitedError extends ChokePointError {
+  readonly retryAfterSeconds: number;
+
+  constructor(retryAfterSeconds: number) {
+    super(429, "rate_limited", "Too many attempts; try again later");
+    this.name = "RateLimitedError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
  * The `schema_locked` code of the REST error contract (issue #238) — a write rejected because
  * the owning database's schema is locked (`databases.schema_locked`), raised by
  * `assertDatabaseSchemaUnlocked` in `chokePoint/propertiesStore.ts` (issue #240). Extends
@@ -122,6 +138,20 @@ export class PropertyLockedError extends ForbiddenError {
   constructor(message: string, details?: unknown) {
     super(message, details, "property_locked");
     this.name = "PropertyLockedError";
+  }
+}
+
+/**
+ * The `option_label_exists` code of the REST error contract (issue #1699) — an option was to be added or renamed
+ * to a label that another option of the same property already has, as its stored label or as its Czech or English
+ * catalog label. `details.key` is that option's key, so the caller can use the existing option instead.
+ */
+export class OptionLabelExistsError extends ChokePointError {
+  declare readonly details: { key: string };
+
+  constructor(message: string, details: { key: string }) {
+    super(409, "option_label_exists", message, details);
+    this.name = "OptionLabelExistsError";
   }
 }
 

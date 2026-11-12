@@ -749,9 +749,11 @@ async function runSummarizeStep(
 /**
  * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose
  * `date` falls inside the recording's window, or otherwise creates the transcript's single
- * suggestion card. A retry of an unfinished transcript converges: an existing edge or card is left
- * as it is. A transcript whose `status` is already `done` is not matched at all (issue #1712), so a
- * later run of its job neither links an Event again nor adds a card after the user removed the edge.
+ * suggestion card. A retry of an unfinished transcript converges: an existing card, or an existing
+ * edge to an Event that is not in the Trash, is left as it is; an edge to an Event in the Trash is
+ * no link (issue #1743). A transcript whose `status` is already `done` is not matched at all (issue
+ * #1712), so a later run of its job neither links an Event again nor adds a card after the user
+ * removed the edge.
  * The status is read from the row this transaction locked. See
  * docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
  */

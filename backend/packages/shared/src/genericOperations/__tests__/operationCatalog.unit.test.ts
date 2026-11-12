@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "../operationNames.js";
+import { GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, type GenericOperationName } from "../operationNames.js";
 import { GENERIC_OPERATION_BINDINGS } from "../bindings.js";
 import {
   OPERATION_METADATA,
@@ -29,6 +29,8 @@ const EXPECTED_ROWS: Record<
   "property.create": { schema: schemas.PropertyCreateInputSchema, method: "createProperty" },
   "property.patch": { schema: schemas.PropertyPatchInputSchema, method: "patchProperty" },
   "property.delete": { schema: schemas.PropertyDeleteInputSchema, method: "deleteProperty" },
+  "property.option.add": { schema: schemas.PropertyOptionAddInputSchema, method: "addPropertyOption" },
+  "property.option.update": { schema: schemas.PropertyOptionUpdateInputSchema, method: "updatePropertyOption" },
   "view.list": { schema: schemas.ViewListInputSchema, method: "listViews" },
   "view.get": { schema: schemas.ViewGetInputSchema, method: "getView" },
   "view.create": { schema: schemas.ViewCreateInputSchema, method: "createView" },
@@ -142,6 +144,18 @@ const EXPECTED_METADATA: Record<
     requiresApproval: true,
     riskClass: "destructive",
     reversible: false,
+  },
+  "property.option.add": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "property.option.update": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
   },
   "view.list": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
   "view.get": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
@@ -290,14 +304,98 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 42 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(42);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(42);
+  it("has exactly 44 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(44);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(44);
+  });
+});
+
+describe("REST_ONLY_OPERATION_NAMES", () => {
+  it("names exactly the two select-option operations", () => {
+    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update"]);
+  });
+});
+
+describe("select-option input schemas (issue #1699)", () => {
+  const propertyId = "11111111-1111-4111-8111-111111111111";
+
+  it("trims the label and writes the color in upper case", () => {
+    expect(schemas.PropertyOptionAddInputSchema.parse({ propertyId, label: "  Bylinky  ", color: "#34c759" })).toEqual({
+      propertyId,
+      label: "Bylinky",
+      color: "#34C759",
+    });
+    expect(
+      schemas.PropertyOptionUpdateInputSchema.parse({ propertyId, key: "bylinky", label: " Herbs ", color: "#ff9500" }),
+    ).toEqual({ propertyId, key: "bylinky", label: "Herbs", color: "#FF9500" });
+  });
+
+  it("accepts a label of 60 characters and an update that names only a color or only a label", () => {
+    const label = "a".repeat(60);
+    expect(schemas.PropertyOptionAddInputSchema.parse({ propertyId, label })).toEqual({ propertyId, label });
+    expect(schemas.PropertyOptionUpdateInputSchema.parse({ propertyId, key: "a", color: "#000000" })).toEqual({
+      propertyId,
+      key: "a",
+      color: "#000000",
+    });
+    expect(schemas.PropertyOptionUpdateInputSchema.parse({ propertyId, key: "a", label })).toEqual({
+      propertyId,
+      key: "a",
+      label,
+    });
+  });
+
+  it("accepts a label whose surrogates are all paired, up to 60 UTF-16 code units", () => {
+    // U+1F48A, one character outside the Basic Multilingual Plane: a high surrogate followed by its low surrogate.
+    const pill = String.fromCodePoint(0x1f48a);
+    const label = pill.repeat(30);
+    expect(label).toHaveLength(60);
+    expect(schemas.PropertyOptionAddInputSchema.parse({ propertyId, label })).toEqual({ propertyId, label });
+    expect(schemas.PropertyOptionUpdateInputSchema.parse({ propertyId, key: "a", label: `Pills ${pill}` })).toEqual({
+      propertyId,
+      key: "a",
+      label: `Pills ${pill}`,
+    });
+  });
+
+  it.each([
+    ["an empty label", { propertyId, label: "" }, "label"],
+    ["a label of only whitespace", { propertyId, label: "   " }, "label"],
+    ["a label of 61 characters", { propertyId, label: "a".repeat(61) }, "label"],
+    ["a label that holds U+0000", { propertyId, label: "Byl\u0000inky" }, "label"],
+    ["a label of 60 code units cut inside a surrogate pair", { propertyId, label: `${"a".repeat(59)}\ud83d` }, "label"],
+    ["a label that holds a low surrogate without its pair", { propertyId, label: "\udc8a Bylinky" }, "label"],
+    ["a missing label", { propertyId }, "label"],
+    ["a color that is not #RRGGBB", { propertyId, label: "Bylinky", color: "green" }, "color"],
+    ["a property id that is not a UUID", { propertyId: "tags", label: "Bylinky" }, "propertyId"],
+    ["a caller-chosen key", { propertyId, label: "Bylinky", key: "herbs" }, ""],
+  ])("refuses an add with %s", (_label, input, field) => {
+    const parsed = schemas.PropertyOptionAddInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path.join(".")).toBe(field);
+  });
+
+  it.each([
+    ["an empty key", { propertyId, key: "", label: "Herbs" }, "key"],
+    ["a label of 61 characters", { propertyId, key: "bylinky", label: "a".repeat(61) }, "label"],
+    ["a label that holds U+0000", { propertyId, key: "bylinky", label: "Her\u0000bs" }, "label"],
+    ["a label that is one high surrogate without its pair", { propertyId, key: "bylinky", label: "\ud83d" }, "label"],
+    [
+      "a label that ends in a low surrogate without its pair",
+      { propertyId, key: "bylinky", label: "Herbs \udc8a" },
+      "label",
+    ],
+    ["a color that is not #RRGGBB", { propertyId, key: "bylinky", color: "#12345" }, "color"],
+    ["a property id that is not a UUID", { propertyId: "tags", key: "bylinky", label: "Herbs" }, "propertyId"],
+  ])("refuses an update with %s", (_label, input, field) => {
+    const parsed = schemas.PropertyOptionUpdateInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path.join(".")).toBe(field);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 42 catalog rows and no others", () => {
+  it("has exactly the 44 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 42-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725), extracted from #37's
+ * Strict Zod input schemas for the 44-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -96,6 +96,7 @@ export const DatabasePatchInputSchema = z
         name: z.string().min(1).optional(),
         icon: DatabaseIconSchema.nullable().optional(),
         color: DatabaseColorSchema.nullable().optional(),
+        overviewHidden: z.boolean().optional(),
       })
       .strict()
       .refine((patch) => Object.values(patch).some((value) => value !== undefined), {
@@ -226,6 +227,56 @@ export type PropertyPatchInput = z.infer<typeof PropertyPatchInputSchema>;
 
 export const PropertyDeleteInputSchema = z.object({ propertyId: z.string() }).strict();
 export type PropertyDeleteInput = z.infer<typeof PropertyDeleteInputSchema>;
+
+/** Longest label of a `select` or `multi_select` option, in UTF-16 code units. */
+const PROPERTY_OPTION_LABEL_MAX_LENGTH = 60;
+
+/**
+ * Whether `text` can be a string inside a Postgres `jsonb` value. Two kinds of text cannot: text that holds U+0000,
+ * and text that holds a UTF-16 surrogate without its pair, which is what cutting a text in the middle of an emoji
+ * leaves. `JSON.stringify` writes both as `\uXXXX` escapes, and the `jsonb` input function refuses those escapes, so
+ * the write fails in the database. The regular expression has the `u` flag, under which a surrogate pair is one
+ * character outside the Surrogate category: only a surrogate without its pair matches.
+ */
+function isStorableInJsonb(text: string): boolean {
+  return !text.includes("\u0000") && !/\p{Surrogate}/u.test(text);
+}
+
+/**
+ * The label of an option that `property.option.add` or `property.option.update` writes (issue #1699): surrounding
+ * whitespace is removed, and 1 to 60 UTF-16 code units must remain. A label that holds U+0000 or a surrogate without
+ * its pair is refused, because the `jsonb` column that stores the options cannot hold either (`isStorableInJsonb`).
+ */
+export const PropertyOptionLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PROPERTY_OPTION_LABEL_MAX_LENGTH)
+  .refine(isStorableInJsonb, "label must not hold U+0000 or a surrogate without its pair");
+
+/** Adds one option to a `select` or `multi_select` property (issue #1699); the operation derives the option key from `label`. */
+export const PropertyOptionAddInputSchema = z
+  .object({
+    propertyId: canonicalUuid,
+    label: PropertyOptionLabelSchema,
+    color: DatabaseColorSchema.optional(),
+  })
+  .strict();
+export type PropertyOptionAddInput = z.infer<typeof PropertyOptionAddInputSchema>;
+
+/**
+ * Renames or recolors the option `key` of a `select` or `multi_select` property (issue #1699); the key itself is
+ * never changed. An input with neither `label` nor `color` is refused by the operation, not by this schema.
+ */
+export const PropertyOptionUpdateInputSchema = z
+  .object({
+    propertyId: canonicalUuid,
+    key: z.string().min(1),
+    label: PropertyOptionLabelSchema.optional(),
+    color: DatabaseColorSchema.optional(),
+  })
+  .strict();
+export type PropertyOptionUpdateInput = z.infer<typeof PropertyOptionUpdateInputSchema>;
 
 export const ViewListInputSchema = z.object({ cursor, limit }).strict();
 export type ViewListInput = z.infer<typeof ViewListInputSchema>;
@@ -538,7 +589,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 42 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 44 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -552,6 +603,8 @@ export interface InputByOperation {
   "property.create": PropertyCreateInput;
   "property.patch": PropertyPatchInput;
   "property.delete": PropertyDeleteInput;
+  "property.option.add": PropertyOptionAddInput;
+  "property.option.update": PropertyOptionUpdateInput;
   "view.list": ViewListInput;
   "view.get": ViewGetInput;
   "view.create": ViewCreateInput;

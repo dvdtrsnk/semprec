@@ -73,6 +73,34 @@ async function pageOf(itemId: string): Promise<z.infer<typeof pageBody>> {
   return pageBody.parse(JSON.parse(read.text));
 }
 
+/** The page ids the blocks of the page of `itemId` name, in document order. */
+async function namedPageIds(itemId: string): Promise<Array<string | undefined>> {
+  return (await pageOf(itemId)).blocks.map((block) => block.pageId);
+}
+
+/**
+ * An instant of the database clock, as ISO 8601, that a page's history places after every write made so far and before
+ * every write made once this returns. The history dates an update by the start of its transaction and keeps that start
+ * in whole milliseconds, so the instant is the whole millisecond after the current one, and it is returned once the
+ * database clock has left that millisecond.
+ */
+async function instantAfterWrites(): Promise<string> {
+  const { rows } = await harness.admin.query<{ at: Date }>(
+    `SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS at`,
+  );
+  const at = rows[0]?.at;
+  if (!at) throw new Error("Missing database clock");
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const past = await harness.admin.query<{ past: boolean }>(
+      `SELECT date_trunc('milliseconds', clock_timestamp()) > $1::timestamptz AS past`,
+      [at],
+    );
+    if (past.rows[0]?.past) return at.toISOString();
+    if (Date.now() >= deadline) throw new Error("The database clock did not leave the instant");
+  }
+}
+
 function duplicate(pageItemId: string, headers?: Record<string, string>): Promise<Answer> {
   return request("POST", `/api/items/${pageItemId}/page/duplicate`, { headers });
 }
@@ -203,7 +231,17 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
     const checklist = await subpage(project, "Release checklist");
     const kept = await subpage(checklist.pageItemId, "Kept");
     const trashed = await subpage(checklist.pageItemId, "In the trash");
+    const beforeTrash = await instantAfterWrites();
     expect((await request("DELETE", `/api/items/${trashed.pageItemId}`)).status).toBe(200);
+    // The trash takes the page's block out of the original (issue #1723). Restoring the original to its version from
+    // before the trash writes the block again, and the page stays in the trash.
+    expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId]);
+    const restored = await request("POST", `/api/items/${checklist.pageItemId}/page/restore`, {
+      body: { at: beforeTrash },
+    });
+    expect(restored.status, restored.text).toBe(200);
+    expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId, trashed.pageItemId]);
+    expect((await request("GET", `/api/items/${trashed.pageItemId}`)).status).toBe(404);
 
     const answer = await duplicate(checklist.pageItemId);
 
@@ -213,10 +251,7 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
     expect(copied.subpageCount).toBe(1);
     expect(copied.blocks[0]?.pageId).not.toBe(kept.pageItemId);
     // The original still names both of its pages.
-    expect((await pageOf(checklist.pageItemId)).blocks.map((block) => block.pageId)).toEqual([
-      kept.pageItemId,
-      trashed.pageItemId,
-    ]);
+    expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId, trashed.pageItemId]);
   });
 
   it("answers 400 naming pageItemId for a host item, and 400 naming the path parameter for a malformed id", async () => {

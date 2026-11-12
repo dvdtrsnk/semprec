@@ -3,7 +3,9 @@ import { Client, type PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import {
   clearHooksForTests,
+  getItemDeleteApprovalGuard,
   hasItemPreWriteTransform,
+  registerItemDeleteApprovalGuard,
   registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerRelationEdgeChangedHook,
@@ -89,6 +91,7 @@ const CONTEXT: ItemUpdateHookContext = {
     system: false,
     icon: null,
     color: null,
+    overviewHidden: false,
     archivedAt: null,
   },
   item: { id: "item", databaseId: "db", properties: {}, computed: {}, createdAt: "", updatedAt: "", deletedAt: null },
@@ -362,5 +365,38 @@ describe.each([
     await run(TRASH_CONTEXT);
 
     expect(hook).not.toHaveBeenCalled();
+  });
+});
+
+describe("chokePoint/hooks item delete approval guard registry (issue gh-2031)", () => {
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("answers the guard registered for a module, and none for a module that registered none", async () => {
+    const guard = vi.fn(async () => "refused");
+    registerItemDeleteApprovalGuard("mailboxes", guard);
+
+    expect(getItemDeleteApprovalGuard("mailboxes")).toBe(guard);
+    expect(getItemDeleteApprovalGuard("events")).toBeUndefined();
+  });
+
+  it("refuses a second guard for the same module and keeps the first", () => {
+    const first = vi.fn(async () => null);
+    registerItemDeleteApprovalGuard("mailboxes", first);
+
+    expect(() => registerItemDeleteApprovalGuard("mailboxes", async () => "other")).toThrow(
+      "Duplicate item delete approval guard",
+    );
+    expect(() => registerItemDeleteApprovalGuard("mailboxes", first)).toThrow("Duplicate item delete approval guard");
+    expect(getItemDeleteApprovalGuard("mailboxes")).toBe(first);
+  });
+
+  it("is cleared by clearHooksForTests", () => {
+    registerItemDeleteApprovalGuard("mailboxes", async () => null);
+
+    clearHooksForTests();
+
+    expect(getItemDeleteApprovalGuard("mailboxes")).toBeUndefined();
   });
 });

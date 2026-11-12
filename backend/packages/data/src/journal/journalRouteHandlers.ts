@@ -3,6 +3,8 @@ import * as Y from "yjs";
 import { readPageBlocks, serializeBlocks } from "@semprec/block-model";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { readCalendarTimeline } from "../calendar/timelineRead.js";
+import type { CalendarTimelineItem } from "../calendar/timelineSources.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import type { ItemRow } from "../types.js";
 import { ensureJournalPeriodDoc } from "./journalStore.js";
@@ -83,6 +85,48 @@ function pageMarkdown(page: PageStateRead): string {
   return result;
 }
 
+/** One of the day's events in the Journal day response (issue #1721): these fields of its calendar timeline item. */
+type JournalDayEvent = Pick<
+  CalendarTimelineItem,
+  | "id"
+  | "title"
+  | "type"
+  | "date"
+  | "endDate"
+  | "timeFrom"
+  | "timeTo"
+  | "allDay"
+  | "place"
+  | "project"
+  | "calendarId"
+  | "transcript"
+>;
+
+/**
+ * The events of `day` for the Journal day response (issue #1721): the items of kind `event` that the calendar
+ * timeline returns for the range from `day` to `day`, all-day Events included, in the timeline's order. Which
+ * Events belong to the day is the timeline's decision.
+ */
+async function readJournalDayEvents(client: PoolClient, day: string): Promise<JournalDayEvent[]> {
+  const timeline = await readCalendarTimeline(client, { from: day, to: day, shape: "full" });
+  return timeline.items
+    .filter((item) => item.kind === "event")
+    .map(({ id, title, type, date, endDate, timeFrom, timeTo, allDay, place, project, calendarId, transcript }) => ({
+      id,
+      title,
+      type,
+      date,
+      endDate,
+      timeFrom,
+      timeTo,
+      allDay,
+      place,
+      project,
+      calendarId,
+      transcript,
+    }));
+}
+
 const periodType = z.enum(JOURNAL_PERIOD_TYPES);
 interface Context {
   params: Record<string, string>;
@@ -142,6 +186,7 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
         result.week = weekBody(path.week);
         const inbox = entry?.item.computed.inboxItems;
         result.inbox = Array.isArray(inbox) ? inbox : [];
+        result.events = await readJournalDayEvents(client, key);
       }
       if (type.data === "month") result.weeks = weeks.map(weekBody);
       return { status: 200, body: result };

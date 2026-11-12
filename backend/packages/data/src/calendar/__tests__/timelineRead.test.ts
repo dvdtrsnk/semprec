@@ -8,6 +8,7 @@ import { createUser } from "../../auth/usersStore.js";
 import { wallClockToInstant } from "../../calendarTime.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { withTransaction } from "../../db/pool.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -19,6 +20,7 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { logger } from "../logger.js";
 import { readCalendarTimeline } from "../timelineRead.js";
 import { CALENDAR_TIMELINE_SOURCES, type CalendarTimelineItem } from "../timelineSources.js";
@@ -49,6 +51,7 @@ const fullItemSchema = z
     place: z.string().nullable(),
     project: z.object({ id: z.string(), name: z.string(), color: z.string().nullable() }).strict().nullable(),
     people: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
+    transcript: z.object({ id: z.string(), status: z.string().nullable() }).strict().nullable(),
     updatedAt: z.string(),
     readOnly: z.boolean(),
   })
@@ -101,12 +104,55 @@ function world(tenantId: string) {
     await inTenant(() => chokePoint.softDeleteItem(id, itemId));
   }
 
-  async function link(moduleId: string, key: string, itemId: string, targetItemId: string): Promise<void> {
+  async function link(
+    moduleId: string,
+    key: string,
+    itemId: string,
+    targetItemId: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<string> {
     const id = await databaseId(moduleId);
-    await inTenant(async () => {
+    const edge = await inTenant(async () => {
       const property = (await chokePoint.listProperties(id)).find((entry) => entry.key === key);
       if (!property) throw new Error(`No ${moduleId}.${key}`);
-      await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemId, targetItemId });
+      return chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: itemId,
+        targetItemId,
+        ...(metadata === undefined ? {} : { metadata }),
+      });
+    });
+    return edge.id;
+  }
+
+  /** A transcript as the transcription process writes it: `status` is its property, which a user's write may not set. */
+  async function createTranscript(properties: Record<string, unknown>): Promise<string> {
+    const id = await databaseId("transcripts");
+    const item = await inTenant(() =>
+      withTransaction(dataPool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: id, properties },
+          { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        ),
+      ),
+    );
+    return item.id;
+  }
+
+  /**
+   * Moves an Event to `calendarId`, or with `null` removes its calendar edge: the user's single-valued set.
+   * A new Event is linked to the default calendar by its create hook (issue #1761).
+   */
+  async function setCalendar(eventId: string, calendarId: string | null): Promise<void> {
+    const id = await databaseId("events");
+    await inTenant(async () => {
+      const property = (await chokePoint.listProperties(id)).find((entry) => entry.key === "calendar");
+      if (!property) throw new Error("No events.calendar");
+      await chokePoint.setRelation(
+        { relationPropertyId: property.id, callerItemId: eventId, targetItemId: calendarId },
+        USER,
+      );
     });
   }
 
@@ -175,6 +221,8 @@ function world(tenantId: string) {
     update,
     trash,
     link,
+    createTranscript,
+    setCalendar,
     storeRaw,
     updatedAt,
     calendars,
@@ -278,6 +326,7 @@ describe("calendar timeline read (issue #1717)", () => {
       place: null,
       project: null,
       people: [],
+      transcript: null,
       updatedAt: await w.updatedAt("tasks", rent),
       readOnly: false,
     });
@@ -299,6 +348,7 @@ describe("calendar timeline read (issue #1717)", () => {
       place: null,
       project: null,
       people: [],
+      transcript: null,
       updatedAt: await w.updatedAt("events", standup),
       readOnly: false,
     });
@@ -324,6 +374,7 @@ describe("calendar timeline read (issue #1717)", () => {
         { id: jana, name: "Jana Kovářová" },
         { id: petr, name: "Petr Novák" },
       ].sort(byId),
+      transcript: null,
       updatedAt: await w.updatedAt("events", meeting),
       readOnly: false,
     });
@@ -346,6 +397,7 @@ describe("calendar timeline read (issue #1717)", () => {
       place: null,
       project: { id: project, name: "Website", color: "#FF9500" },
       people: [{ id: jana, name: "Jana Kovářová" }],
+      transcript: null,
       updatedAt: await w.updatedAt("tasks", invoice),
       readOnly: false,
     });
@@ -453,8 +505,9 @@ describe("calendar timeline read (issue #1717)", () => {
     const w = world(await newTenant());
     const { defaultId, workId } = await w.calendars();
     const inWork = await w.create("events", { name: "In work", date: DAY });
-    await w.link("events", "calendar", inWork, workId);
+    await w.setCalendar(inWork, workId);
     const withoutEdge = await w.create("events", { name: "Without an edge", date: DAY });
+    await w.setCalendar(withoutEdge, null);
     const before = await w.edgeCounts(withoutEdge);
     expect(before.ofItem).toBe(0);
 
@@ -473,7 +526,7 @@ describe("calendar timeline read (issue #1717)", () => {
     await w.update(CALENDARS_MODULE_ID, workId, { hidden: true });
     await w.update(CALENDARS_MODULE_ID, tasksId, { hidden: true });
     const event = await w.create("events", { name: "In a hidden calendar", date: DAY });
-    await w.link("events", "calendar", event, workId);
+    await w.setCalendar(event, workId);
     const task = await w.create("tasks", { name: "Task", date: DAY });
 
     expect((await w.items(DAY)).map((item) => [item.id, item.calendarId])).toEqual([
@@ -535,6 +588,7 @@ describe("calendar timeline read (issue #1717)", () => {
     const w = world(tenantId);
     const { defaultId, tasksId } = await w.calendars();
     const event = await w.create("events", { name: "Event", date: DAY });
+    await w.setCalendar(event, null);
     const task = await w.create("tasks", { name: "Task", date: DAY });
     // Raw SQL: which calendars may be deleted is decided by later calendar issues, so the trashed default and
     // system calendar are stored directly instead of through a delete those issues may refuse.
@@ -567,6 +621,72 @@ describe("calendar timeline read (issue #1717)", () => {
     expect((await w.items(DAY)).map((item) => [item.id, item.project, item.people])).toEqual([
       [event, null, [{ id: kept, name: "Kept" }]],
     ]);
+  });
+
+  it("gives each Event its own transcript with the stored status, and null to an Event without one and to a Task", async () => {
+    const w = world(await newTenant());
+    const recorded = await w.create("events", { name: "Recorded", date: DAY, timeFrom: "10:00" });
+    const running = await w.create("events", { name: "Running", date: DAY, timeFrom: "11:00" });
+    const plain = await w.create("events", { name: "Plain", date: DAY, timeFrom: "12:00" });
+    const task = await w.create("tasks", { name: "Task", date: DAY, timeFrom: "13:00" });
+    const done = await w.createTranscript({ name: "Recording", status: "done" });
+    const processing = await w.createTranscript({ name: "Being transcribed", status: "processing" });
+    await w.link("events", "transcript", recorded, done);
+    // The same relation written from its other side, `Transcripts.event`.
+    await w.link("transcripts", "event", processing, running);
+
+    expect((await w.items(DAY)).map((item) => [item.id, item.transcript])).toEqual([
+      [recorded, { id: done, status: "done" }],
+      [running, { id: processing, status: "processing" }],
+      [plain, null],
+      [task, null],
+    ]);
+  });
+
+  it("returns a null status for a transcript that stores none", async () => {
+    const w = world(await newTenant());
+    const event = await w.create("events", { name: "Event", date: DAY });
+    const transcript = await w.createTranscript({ name: "Without a status" });
+    await w.link("events", "transcript", event, transcript);
+
+    expect((await w.items(DAY)).map((item) => [item.id, item.transcript])).toEqual([
+      [event, { id: transcript, status: null }],
+    ]);
+  });
+
+  it("gives an Event with several transcripts the first live one by the addedAt of their edges", async () => {
+    const w = world(await newTenant());
+    const event = await w.create("events", { name: "Meeting in three parts", date: DAY });
+    const second = await w.createTranscript({ name: "Part 2", status: "processing" });
+    const third = await w.createTranscript({ name: "Part 3", status: "error" });
+    const first = await w.createTranscript({ name: "Part 1", status: "done" });
+    // The order of the edges is neither the order the transcripts were created in nor the order they were linked in.
+    await w.link("events", "transcript", event, second, { addedAt: "2026-10-16T10:30:00.000Z" });
+    await w.link("events", "transcript", event, third, { addedAt: "2026-10-16T11:00:00.000Z" });
+    await w.link("events", "transcript", event, first, { addedAt: "2026-10-16T10:00:00.000Z" });
+    const transcript = async () => (await w.items(DAY)).map((item) => [item.id, item.transcript]);
+
+    expect(await transcript()).toEqual([[event, { id: first, status: "done" }]]);
+    await w.trash("transcripts", first);
+    expect(await transcript()).toEqual([[event, { id: second, status: "processing" }]]);
+    await w.trash("transcripts", second);
+    await w.trash("transcripts", third);
+    expect(await transcript()).toEqual([[event, null]]);
+  });
+
+  it("orders the transcripts of an Event by edge id when their edges carry no addedAt", async () => {
+    const w = world(await newTenant());
+    const event = await w.create("events", { name: "Meeting in four parts", date: DAY });
+    const edges: { edgeId: string; transcript: string }[] = [];
+    for (const status of ["recording", "processing", "done", "error"]) {
+      const transcript = await w.createTranscript({ name: `Part ${status}`, status });
+      edges.push({ edgeId: await w.link("events", "transcript", event, transcript), transcript });
+    }
+    // Edge ids are lowercase UUIDs of one length, so this comparison is the statement's order of `id::text`.
+    const expected = [...edges].sort((a, b) => (a.edgeId < b.edgeId ? -1 : 1))[0];
+    if (!expected) throw new Error("No edge");
+
+    expect((await w.items(DAY)).map((item) => item.transcript?.id)).toEqual([expected.transcript]);
   });
 
   it("returns an empty title and empty names for rows without a name, and a null colour for a project without one", async () => {
@@ -771,17 +891,19 @@ describe("calendar timeline read (issue #1717)", () => {
     expect((await w.items(DAY)).map((item) => item.id)).toEqual([task, event]);
   });
 
-  it("never returns another tenant's items, projects or people", async () => {
+  it("never returns another tenant's items, projects, people or transcripts", async () => {
     async function seed(name: string) {
       const w = world(await newTenant());
       const project = await w.create("projects", { name: `${name} project` });
       const person = await w.create("people", { name: `${name} person` });
       const event = await w.create("events", { name: `${name} event`, date: DAY });
       const task = await w.create("tasks", { name: `${name} task`, date: DAY });
+      const transcript = await w.createTranscript({ name: `${name} transcript`, status: "done" });
       await w.link("events", "project", event, project);
       await w.link("events", "people", event, person);
+      await w.link("events", "transcript", event, transcript);
       await w.link("tasks", "project", task, project);
-      return { w, project, person, event, task };
+      return { w, project, person, event, task, transcript };
     }
     const a = await seed("A");
     const b = await seed("B");
@@ -793,8 +915,10 @@ describe("calendar timeline read (issue #1717)", () => {
       const items = await own.w.items("2026-10-01", "2026-10-31");
       expect(items.map((item) => item.id).sort()).toEqual([own.event, own.task].sort());
       const text = JSON.stringify(await own.w.read("2026-10-01", "2026-10-31"));
-      for (const id of [foreign.event, foreign.task, foreign.project, foreign.person]) expect(text).not.toContain(id);
-      for (const id of [own.event, own.task, own.project, own.person]) expect(text).toContain(id);
+      for (const id of [foreign.event, foreign.task, foreign.project, foreign.person, foreign.transcript]) {
+        expect(text).not.toContain(id);
+      }
+      for (const id of [own.event, own.task, own.project, own.person, own.transcript]) expect(text).toContain(id);
     }
   });
 
@@ -845,6 +969,51 @@ describe("calendar timeline read (issue #1717)", () => {
     expect(busy.queries).toBe(quiet.queries);
   });
 
+  it("reads the transcripts of all the Events of a range with one statement, whatever their number", async () => {
+    const w = world(await newTenant());
+    const busyDay = "2026-10-20";
+    async function seedDay(date: string, count: number): Promise<void> {
+      for (let index = 0; index < count; index += 1) {
+        const event = await w.create("events", { name: `Event ${index}`, date });
+        const transcript = await w.createTranscript({ name: `Transcript ${index}`, status: "done" });
+        await w.link("events", "transcript", event, transcript);
+      }
+    }
+    await seedDay(DAY, 1);
+    await seedDay(busyDay, 6);
+
+    /** The text of every statement one read sends, and the items it returns. */
+    const observe = (date: string) =>
+      w.inTenant(() =>
+        withTransaction(dataPool, async (client) => {
+          const statements: string[] = [];
+          const observed: PoolClient = new Proxy(client, {
+            get(target, property, receiver) {
+              const value: unknown = Reflect.get(target, property, receiver);
+              if (property !== "query" || typeof value !== "function") return value;
+              return (...args: unknown[]): unknown => {
+                statements.push(typeof args[0] === "string" ? args[0] : "");
+                return Reflect.apply(value, target, args);
+              };
+            },
+          });
+          const timeline = await readCalendarTimeline(observed, { from: date, to: date, shape: "full" });
+          return { statements, items: z.array(fullItemSchema).parse(timeline.items) };
+        }),
+      );
+    /** The statements that select a transcript; only the transcript lookup names a `transcript_id`. */
+    const transcriptReads = (statements: string[]) => statements.filter((sql) => sql.includes("transcript_id")).length;
+
+    const quiet = await observe(DAY);
+    const busy = await observe(busyDay);
+
+    expect(quiet.items.map((item) => item.transcript?.status)).toEqual(["done"]);
+    expect(busy.items.map((item) => item.transcript?.status)).toEqual(Array.from({ length: 6 }, () => "done"));
+    expect(transcriptReads(quiet.statements)).toBe(1);
+    expect(transcriptReads(busy.statements)).toBe(1);
+    expect(busy.statements.length).toBe(quiet.statements.length);
+  });
+
   it("lists the core sources as events, then tasks", () => {
     expect(CALENDAR_TIMELINE_SOURCES.map((source) => source.id)).toEqual(["events", "tasks"]);
   });
@@ -872,6 +1041,7 @@ describe("calendar timeline read (issue #1717)", () => {
       place: null,
       project: null,
       people: [],
+      transcript: null,
       updatedAt: "2026-10-16T00:00:00.000Z",
       readOnly: true,
     };

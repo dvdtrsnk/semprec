@@ -1,11 +1,13 @@
 // Owns the properties domain of the choke point: listing, reading and resolving properties, creating,
-// renaming, reconfiguring, retyping and deleting them, plus the transaction-scoped
+// renaming, reconfiguring, retyping and deleting them, adding and changing the options of a select
+// property, plus the transaction-scoped
 // `propertyDeleteWithClient` the approved-operation executor calls. Relation-definition writes (the
 // paired relation properties themselves), item, view and database writes do not belong here, and
 // neither does any other domain module's code.
 // Constrained by:
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// - docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -23,6 +25,14 @@ import { enqueuePropertyTypeMigration, isConversionSupported } from "../migratio
 import { currentTenantScope } from "@semprec/shared";
 import { enqueueItemSearchBackfill } from "../search/itemSearchBackfill.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import {
+  createCatalogResolver,
+  resolveProperty,
+  toManifestLocale,
+  type CatalogResolver,
+  type ResolvedOption,
+} from "../manifest/catalogResolution.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
  * Issue #1652: after a property is created, changed or deleted, the search documents of its
@@ -39,6 +49,51 @@ async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Ite
     if (!database || database.ownerModuleId === EMAILS_MODULE_ID) continue;
     await enqueueItemSearchBackfill(client, { databaseId, onlyMissing: false });
   }
+}
+
+let optionCatalogResolverPromise: Promise<CatalogResolver> | undefined;
+
+/**
+ * The catalog resolver the option writes of issue #1699 read option labels through, built once per process from a
+ * module registry that `loadFullModuleRegistry` builds: the choke point is constructed from a pool alone and has no
+ * registry of a composition root. A failed load is not cached, so the next call retries.
+ */
+function getOptionCatalogResolver(): Promise<CatalogResolver> {
+  optionCatalogResolverPromise ??= loadFullModuleRegistry()
+    .then((registry) => createCatalogResolver(registry))
+    .catch((error: unknown) => {
+      optionCatalogResolverPromise = undefined;
+      throw error;
+    });
+  return optionCatalogResolverPromise;
+}
+
+/**
+ * What both option writes of issue #1699 do after the store wrote the option, in the same transaction: queue the
+ * search reindex of the database, register the schema invalidation for after the commit, and return the written
+ * option as the schema projection shows it (`resolveProperty`), with its label in `locale`.
+ */
+async function finishOptionWrite(
+  client: PoolClient,
+  written: propertiesStore.PropertyOptionWrite,
+  catalogResolver: CatalogResolver,
+  locale: string,
+  actingUserId: string | undefined,
+): Promise<ResolvedOption> {
+  const { property, database, optionKey } = written;
+  const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
+  const option = resolveProperty(property, database.key, catalogs, toManifestLocale(locale)).options?.find(
+    (candidate) => candidate.key === optionKey,
+  );
+  if (!option) {
+    // An invariant breach, not a domain NotFoundError: the option was written in this transaction.
+    throw new Error(`Option written to property ${property.id} in this transaction is missing from its projection`);
+  }
+  await enqueuePropertySearchReindex(client, [property.databaseId]);
+  runAfterCommit(client, () =>
+    notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+  );
+  return option;
 }
 
 /**
@@ -305,6 +360,49 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
           notifyInvalidation({ scope: "schema", databaseId: result.property.databaseId, userId: actingUserId }),
         );
         return { ...result, database };
+      });
+    },
+
+    /**
+     * `property.option.add` (issue #1699): appends an option to a select or multi_select property, also on a
+     * schema-locked database, and returns it with its generated key. An added option stores its label, so the
+     * locale of the returned projection is never read; the reference locale is passed. The catalog resolver is
+     * obtained before the transaction opens, so the transaction never waits for the module manifests to load.
+     */
+    async addPropertyOption(
+      propertyId: string,
+      input: { label: string; color?: string },
+      actingUserId?: string,
+    ): Promise<ResolvedOption> {
+      const catalogResolver = await getOptionCatalogResolver();
+      return withTransaction(pool, async (client) => {
+        const written = await propertiesStore.addPropertyOption(client, propertyId, input, catalogResolver);
+        return finishOptionWrite(client, written, catalogResolver, "en", actingUserId);
+      });
+    },
+
+    /**
+     * `property.option.update` (issue #1699): writes the label, the color or both of one option, also on a
+     * schema-locked database, and returns the option; its key never changes. `locale` picks the catalog language of
+     * the returned label when the option stores none. The catalog resolver as for `addPropertyOption`.
+     */
+    async updatePropertyOption(
+      propertyId: string,
+      optionKey: string,
+      patch: { label?: string; color?: string },
+      locale: string,
+      actingUserId?: string,
+    ): Promise<ResolvedOption> {
+      const catalogResolver = await getOptionCatalogResolver();
+      return withTransaction(pool, async (client) => {
+        const written = await propertiesStore.updatePropertyOption(
+          client,
+          propertyId,
+          optionKey,
+          patch,
+          catalogResolver,
+        );
+        return finishOptionWrite(client, written, catalogResolver, locale, actingUserId);
       });
     },
 

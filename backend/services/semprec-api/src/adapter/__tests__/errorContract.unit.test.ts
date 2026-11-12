@@ -7,6 +7,7 @@ import {
   HeartbeatEventTriggeredError,
   HeartbeatRunningError,
   NotFoundError,
+  OptionLabelExistsError,
   PropertyLockedError,
   SchemaLockedError,
   ValidationError,
@@ -84,6 +85,11 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     status: 409,
     error: new HeartbeatRunningError("this heartbeat is already running or queued", { activeRun: null }),
   },
+  {
+    code: "option_label_exists",
+    status: 409,
+    error: new OptionLabelExistsError("the property already has an option with this label", { key: "medication" }),
+  },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
@@ -144,6 +150,11 @@ describe("error contract (issue #238)", () => {
       approvalRequestId: "33333333-3333-3333-3333-333333333333",
       link: "/api/approval-requests/33333333-3333-3333-3333-333333333333",
     });
+  });
+
+  it("carries option_label_exists's key of the existing option", () => {
+    const body = toErrorResponseBody(new OptionLabelExistsError("label exists", { key: "medication" }));
+    expect(body.error).toEqual({ code: "option_label_exists", details: { key: "medication" } });
   });
 
   it("falls back to the error's own status for a code outside the closed nine (forward-compatible)", () => {

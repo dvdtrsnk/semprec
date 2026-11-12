@@ -15,7 +15,7 @@ import {
   mailboxConnectionLimitUpdateHook,
 } from "./mail/mailboxConnectionLimitHook.js";
 import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
-import { EMAILS_MODULE_ID } from "./seed/emailModuleKeys.js";
+import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./seed/emailModuleKeys.js";
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
 // The composition point for the choke point's per-process hook registries (chokePoint/hooks.ts):
 // the one place that imports every domain's hook by name and registers it, so chokePoint/ itself
@@ -36,6 +36,7 @@ import {
   registerAutomationBatchReader,
   registerItemRestoreHook,
   registerItemDeleteHook,
+  registerItemDeleteApprovalGuard,
   registerItemPurgeHook,
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
@@ -46,6 +47,7 @@ import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServe
 import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { mailItemPurgeHook } from "./mail/mailPurgeHook.js";
+import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
@@ -54,8 +56,11 @@ import {
   eventReminderValuesItemCreateHook,
   eventReminderValuesItemUpdateHook,
 } from "./calendar/eventReminderValuesHook.js";
+import { eventParticipantEdgeWriteHook } from "./calendar/eventParticipantEdgeHook.js";
+import { defaultCalendarCreateHook } from "./calendar/defaultCalendarCreateHook.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
+import { taskSourceEventLinkDetachEdgeChangedHook } from "./tasks/taskSourceEventLinkDetach.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
@@ -97,6 +102,8 @@ import {
   peopleLastContactItemUpdateHook,
 } from "./people/lastContactHooks.js";
 import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValueHook.js";
+import { pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
+import { mailboxItemRestoreHook } from "./mail/mailboxRestoreHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
@@ -180,6 +187,10 @@ registerItemReadProjection({
 
 registerItemCreateHook(mailboxConnectionLimitCreateHook);
 registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
+// Issue gh-2031: a user's or an agent's trash of a Mailboxes item is refused; the mailbox removal
+// trashes it as the system writer. The guard refuses an agent run's request before it is queued for approval.
+registerItemDeleteHook(mailboxDeleteHook);
+registerItemDeleteApprovalGuard(MAILBOXES_MODULE_ID, mailboxDeleteApprovalGuard);
 // Issue gh-1691: the mail rows of a permanently deleted Emails or Mailboxes item go with it.
 registerItemPurgeHook(mailItemPurgeHook);
 
@@ -202,6 +213,10 @@ registerItemRestoreHook(peopleLastContactItemRestoreHook);
 registerRelationEdgeChangedHook(transcriptCompanyLinkReleaseEdgeChangedHook);
 registerItemDeleteHook(transcriptCompanyLinkReleaseItemDeleteHook);
 
+// Issue #1724: the removal of a Tasks `sourceEvents` edge detaches the Event from the task's project and people
+// links of any state. Registered after `linkRuleEdgeHook`, which recomputes the links that are `on`.
+registerRelationEdgeChangedHook(taskSourceEventLinkDetachEdgeChangedHook);
+
 // Issue #1710: a project's area or company edge change queues the announcement of the project's items.
 registerRelationEdgeChangedHook(projectDerivedValueEdgeChangedHook);
 
@@ -212,3 +227,18 @@ registerItemUpdateHook(eventReminderValuesItemUpdateHook);
 // Issue #1718: each reported `create` or `delete` of an Inbox type edge, a repeated create of an existing edge
 // included, queues the Inbox tick and the recompute of the item's Journal day.
 registerRelationEdgeChangedHook(inboxTypeEdgeChangedHook);
+
+// Issue #1723: a trashed page takes its subpages and its block in its parent's document with it; a restore
+// brings them back.
+registerItemDeleteHook(pageItemDeleteHook);
+registerItemRestoreHook(pageItemRestoreHook);
+
+// Issue gh-2032: a restored mailbox without a sync state gets a default one, and its folders and messages of its
+// deletion epoch return with it.
+registerItemRestoreHook(mailboxItemRestoreHook);
+
+// Issue #1757: the role and the server-written invitation on an Event's participant edges.
+registerRelationEdgeWriteHook(eventParticipantEdgeWriteHook);
+
+// Issue #1761: a new Event gets its calendar, after every Events rule registered above accepted it.
+registerItemCreateHook(defaultCalendarCreateHook);

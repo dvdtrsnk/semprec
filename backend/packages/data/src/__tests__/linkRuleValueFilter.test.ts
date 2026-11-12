@@ -14,7 +14,12 @@ import { readOmittedItemIds, resolveLinkRule } from "../valueLinks/linkRuleCatal
 
 const OWN_PERSON = { databaseKey: "systemSettings", propertyKey: "selfPerson" };
 
-/** A rule over real seeded properties whose value filter names a property System settings does not have. */
+/**
+ * A rule over real seeded properties whose value filter names a property System settings does not have. Its
+ * endpoints are an Event's files and the files of the Event's action-item tasks, so its via edge is the one on
+ * which the real `taskProjectFromEvent` and `taskPeopleFromEvent` rules of the systemDatabases manifest
+ * (issue #1724) copy the project and the people; those two show that the rule engine sees the edge at all.
+ */
 export const manifest: ModuleManifest = {
   id: "fixtureValueFilter",
   version: "1.0.0",
@@ -27,17 +32,10 @@ export const manifest: ModuleManifest = {
   linkRules: [
     {
       key: "fixtureFilter.unresolved",
-      source: { databaseKey: "events", propertyKey: "people" },
-      target: { databaseKey: "tasks", propertyKey: "people" },
+      source: { databaseKey: "events", propertyKey: "files" },
+      target: { databaseKey: "tasks", propertyKey: "files" },
       via: { databaseKey: "events", relationKey: "actionItems" },
       valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "noSuchRelation" } },
-    },
-    // No filter: shows that the edge below is seen by the rule engine at all.
-    {
-      key: "fixtureFilter.control",
-      source: { databaseKey: "events", propertyKey: "project" },
-      target: { databaseKey: "tasks", propertyKey: "project" },
-      via: { databaseKey: "events", relationKey: "actionItems" },
     },
   ],
 };
@@ -189,12 +187,13 @@ describe("link rule value filter (issue #1697)", () => {
 
   describe("a loaded rule whose filter cannot be resolved", () => {
     async function fixture() {
-      const [events, tasks, people, projects] = await Promise.all(
-        ["events", "tasks", "people", "projects"].map((moduleId) => databaseId(moduleId)),
+      const [events, tasks, people, projects, files] = await Promise.all(
+        ["events", "tasks", "people", "projects", "files"].map((moduleId) => databaseId(moduleId)),
       );
-      if (!events || !tasks || !people || !projects) throw new Error("Fixture databases missing");
+      if (!events || !tasks || !people || !projects || !files) throw new Error("Fixture databases missing");
       const person = await inTenant(() => cp.createItem({ databaseId: people, properties: { name: "Alice Novak" } }));
       const project = await inTenant(() => cp.createItem({ databaseId: projects, properties: { name: "Web" } }));
+      const file = await inTenant(() => cp.createItem({ databaseId: files, properties: { name: "Offer.pdf" } }));
       const task = await inTenant(() => cp.createItem({ databaseId: tasks, properties: { name: "Send the offer" } }));
       const event = await inTenant(() =>
         cp.createItem({ databaseId: events, properties: { name: "client meeting", date: "2026-10-16" } }),
@@ -209,6 +208,7 @@ describe("link rule value filter (issue #1697)", () => {
         );
       await edge("people", person.id);
       await edge("project", project.id);
+      await edge("files", file.id);
       const taskTargets = async (key: string): Promise<string[]> =>
         ((await inTenant(async () => cp.listItemRelations(task.id, await propertyId("tasks", key)))) ?? []).map(
           (entry) => entry.targetItemId,
@@ -216,12 +216,13 @@ describe("link rule value filter (issue #1697)", () => {
       return { person, project, task, event, edge, taskTargets };
     }
 
-    it("copies nothing on its via edge, while a rule without a filter on the same edge copies its value", async () => {
+    it("copies nothing on its via edge, while the rules whose filter resolves or that have none copy their values on the same edge", async () => {
       const f = await fixture();
 
       await f.edge("actionItems", f.task.id);
 
-      expect(await f.taskTargets("people")).toEqual([]);
+      expect(await f.taskTargets("files")).toEqual([]);
+      expect(await f.taskTargets("people")).toEqual([f.person.id]);
       expect(await f.taskTargets("project")).toEqual([f.project.id]);
       const links = await inTenant(() =>
         pool.query<{ property_key: string; rule_key: string }>(
@@ -229,7 +230,10 @@ describe("link rule value filter (issue #1697)", () => {
           [f.task.id],
         ),
       );
-      expect(links.rows).toEqual([{ property_key: "project", rule_key: "fixtureFilter.control" }]);
+      expect(links.rows).toEqual([
+        { property_key: "people", rule_key: "taskPeopleFromEvent" },
+        { property_key: "project", rule_key: "taskProjectFromEvent" },
+      ]);
     });
 
     it("refuses a relink with 409 and writes neither the value nor the link state", async () => {
@@ -240,23 +244,23 @@ describe("link rule value filter (issue #1697)", () => {
         withTransaction(pool, (client) =>
           insertValueLink(client, {
             itemId: f.task.id,
-            propertyKey: "people",
+            propertyKey: "files",
             ruleKey: "fixtureFilter.unresolved",
             state: "broken",
             brokenBy: "user",
             brokenAt,
-            sources: [{ kind: "item", sourceItemId: f.event.id, sourcePropertyKey: "people" }],
+            sources: [{ kind: "item", sourceItemId: f.event.id, sourcePropertyKey: "files" }],
           }),
         ),
       );
 
-      await expect(inTenant(() => cp.relinkValue({ itemId: f.task.id, propertyKey: "people" }))).rejects.toMatchObject({
+      await expect(inTenant(() => cp.relinkValue({ itemId: f.task.id, propertyKey: "files" }))).rejects.toMatchObject({
         status: 409,
         code: "value_link_conflict",
       });
 
-      expect(await f.taskTargets("people")).toEqual([]);
-      const entry = (await inTenant(() => cp.getValueLinksForItems([f.task.id]))).get(f.task.id)?.people;
+      expect(await f.taskTargets("files")).toEqual([]);
+      const entry = (await inTenant(() => cp.getValueLinksForItems([f.task.id]))).get(f.task.id)?.files;
       expect(entry).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user", brokenAt: brokenAt.toISOString() });
     });
   });

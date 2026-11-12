@@ -13,8 +13,16 @@ import {
 import { createGenericOperationAgentTools } from "@semprec/agent-runtime";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 /**

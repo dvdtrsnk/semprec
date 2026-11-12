@@ -36,6 +36,7 @@ export interface ModuleDatabaseProjection {
   overviewOrder?: number | null;
   switcherOrder?: number | null;
   clientVisible?: boolean;
+  overviewHideable?: boolean;
   areaFilter?: AreaFilterTemplate;
   quickFilters?: ModuleDatabaseDescriptor["quickFilters"];
   defaultSort?: ModuleDatabaseDescriptor["defaultSort"];
@@ -535,6 +536,7 @@ export class ModuleRegistry {
         ...(db.overviewOrder !== undefined ? { overviewOrder: db.overviewOrder } : {}),
         ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
+        ...(db.overviewHideable !== undefined ? { overviewHideable: db.overviewHideable } : {}),
         ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
         ...(db.quickFilters !== undefined ? { quickFilters: structuredClone(db.quickFilters) } : {}),
         ...(db.defaultSort !== undefined ? { defaultSort: structuredClone(db.defaultSort) } : {}),

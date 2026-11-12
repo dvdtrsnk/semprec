@@ -10,6 +10,7 @@ import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import type { DatabaseRow, PropertyType } from "../types.js";
+import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 import * as propertiesStore from "./propertiesStore.js";
@@ -147,9 +148,18 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    async patchDatabase(id: string, patch: databasesStore.DatabasePatch, actingUserId?: string): Promise<DatabaseRow> {
+    /**
+     * Patches a database in one transaction and publishes one schema invalidation after the commit.
+     * `resolver` decides whether `patch.overviewHidden` is accepted (issue #2002); see `databasesStore.patchDatabase`.
+     */
+    async patchDatabase(
+      id: string,
+      patch: databasesStore.DatabasePatch,
+      actingUserId?: string,
+      resolver?: Pick<CollectionMetadataResolver, "overviewHideable">,
+    ): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
-        const database = await databasesStore.patchDatabase(client, id, patch);
+        const database = await databasesStore.patchDatabase(client, id, patch, resolver);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
         );

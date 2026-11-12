@@ -6,29 +6,34 @@ The protocol that delivered batches 1-39 is in this file's Git history.
 
 ## Program state
 
-The owner stopped further implementation on 2026-11-11. By then forty sources
-were implemented, reviewed and landed, and gh-1364 was closed as already
-delivered: 41 of the 310 sources of sequences 40-74. The integration branch
-goes into `develop` through one pull request, and the program stops there.
-The other 269 sources stay open, approved and routed; a later program
-continues from `develop` with this protocol.
+The owner stopped the program on 2026-11-12: chains in flight were finished
+and nothing new was started. 59 of the 310 sources of sequences 40-74 are
+completed: 41 went into `develop` with pull request #2055, and 18 more were
+landed after the program continued from `origin/develop` at `8d17af6e7`. The
+other 251 sources stay open, approved and routed; a later program continues
+from `develop` with this protocol.
 
-Implemented but not landed, and not kept as branches in the repository:
+Open and not to be started without a decision:
 
-- gh-1699 and gh-1723 passed review and the recheck, but a source that landed
-  before them changed what tests assert: gh-1705 seeds colours on the options
-  that the tests of gh-1699 compare, and the delete hook of gh-1723 removes
-  the block that two tests of gh-1722 rely on. Each needs those tests brought
-  in line before it can land.
-- gh-1756 was held by the recheck. `issues/decisions/gh-1756.md` corrected
-  its specification and added a prerequisite source.
-- gh-1757, gh-1761, gh-1778, gh-2030 and gh-2031 were interrupted during
-  implementation.
+- `sp-5419cac1-f4a7-4717-b870-4f244b1ad166` (order of the edge-changed hooks
+  and the value link break) is blocked under its Task step 2. Its worker
+  found that the reorder removes the reported lock cycle and opens another
+  one, between an edge write on `Transcripts.project` and the move of the
+  transcript's Event to the Trash, and withdrew its change. The cycle the
+  source describes is therefore still in the code since gh-1697.
+- gh-1756 waits for that source.
+- gh-1702 was refused at preflight: its Task allows only a rule declaration,
+  and the link engine of gh-1593 unions the sources of a many-valued target
+  and creates no link for a target that holds a value, which the Task
+  presupposes otherwise.
+
+Started and not finished, with nothing kept in the repository: gh-1778 and
+gh-1765.
 
 Controller: BB thread `thr_hc2df5gf4u`, on the owner's instruction of
 2026-11-10. Scope is backend only. The integration branch is
-`feature/backend-parallel`, cut from `origin/develop` at `745aea3f`. The
-controller's own checkout is the integration worktree.
+`feature/backend-parallel`; "Program state" above names its current base.
+The controller's own checkout is the integration worktree.
 
 ## Roles
 
@@ -112,6 +117,17 @@ For one chain, in this order:
    `acceptance/sources/<id>.md` with the candidate commit, the merge commit,
    the review outcome, the evidence rows and every FAIL, BLOCKED and NOT RUN.
    Then `issues.mjs validate` and `verify.mjs`, and one metadata commit.
+
+## Trains
+
+The queue runner may land up to three chains as one train
+(`docs/adr/2026-11-11-chains-may-land-as-a-train-with-one-gate.md`). It
+merges them in order, each with its own merge commit after the build passes,
+runs step 3 once on the tree that holds all of them, and then does step 5 for
+every member. If a merge cannot be resolved as a registry conflict, or a
+build or the gate fails, it returns the integration branch to the commit
+before the train, and those chains land one at a time. Each receipt names the
+train and the commit the gate ran on.
 
 ## Validating suites of shared files
 

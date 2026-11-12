@@ -37,6 +37,7 @@ import { SYNC_ROUTES } from "./routeMatrix/sync.js";
 import { MAIL_ROUTES } from "./routeMatrix/mail.js";
 import { TRANSCRIPT_SUMMARIES_ROUTES } from "./routeMatrix/transcriptSummaries.js";
 import { CALENDAR_ROUTES } from "./routeMatrix/calendar.js";
+import { EVENTS_ROUTES } from "./routeMatrix/events.js";
 
 /**
  * The single documented artifact issue #143 asks for: every route delivered through auth-v1,
@@ -148,4 +149,5 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   ...MAIL_ROUTES,
   ...TRANSCRIPT_SUMMARIES_ROUTES,
   ...CALENDAR_ROUTES,
+  ...EVENTS_ROUTES,
 ];

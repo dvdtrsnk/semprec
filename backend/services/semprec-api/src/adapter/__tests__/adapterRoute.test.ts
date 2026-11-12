@@ -13,6 +13,7 @@ import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shar
 import {
   ConflictError,
   NotFoundError,
+  RateLimitedError,
   createChokePoint,
   createBlob,
   withTransaction,
@@ -60,8 +61,8 @@ async function tokenFor(email: string, role?: "admin" | "member", tenantId?: str
 /**
  * A fixture handler standing in for a real generic-resource route (#155-158 mount those) —
  * exercises this adapter's shared auth, JSON body validation, and success/error serialization
- * without any business logic of its own. `title: "conflict"`/`"missing"` pick the two error
- * fixtures this test drives through the real HTTP round trip; anything else is a successful
+ * without any business logic of its own. `title: "conflict"`/`"missing"`/`"throttled"` pick the
+ * error fixtures this test drives through the real HTTP round trip; anything else is a successful
  * "echo" write.
  */
 const fixtureHandler: AdapterHandler = async ({ body }) => {
@@ -72,6 +73,9 @@ const fixtureHandler: AdapterHandler = async ({ body }) => {
   }
   if (title === "missing") {
     throw new NotFoundError("Item not found");
+  }
+  if (title === "throttled") {
+    throw new RateLimitedError(37);
   }
   return { status: 200, item: { ...SAMPLE_ITEM, properties: { title } } };
 };
@@ -621,6 +625,23 @@ describe("adapter route (issue #238)", () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
+    // Only a rate limit refusal names a time to wait.
+    expect(res.headers.get("retry-after")).toBeNull();
+  });
+
+  it("maps rate_limited onto 429 with the seconds to wait in Retry-After and not in the body (issue gh-1750)", async () => {
+    const token = await tokenFor("throttled@example.com");
+    const res = await fetch(baseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: "throttled" }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("37");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body: unknown = await res.json();
+    expect(body).toEqual({ error: { code: "rate_limited" } });
   });
 
   it("rejects a body over the 1 MiB cap with payload_too_large", async () => {

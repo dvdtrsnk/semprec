@@ -35,6 +35,7 @@ const ALL_MODULE_IDS = [
   "inboxPipeline",
   "calendar",
   "recipes",
+  "sleep",
 ];
 
 const MANIFEST_PATHS = [
@@ -47,6 +48,7 @@ const MANIFEST_PATHS = [
   manifestPath("inbox/inboxModuleManifest.js"),
   manifestPath("calendar/calendarModuleManifest.js"),
   manifestPath("recipes/recipesModuleManifest.js"),
+  manifestPath("sleep/sleepModuleManifest.js"),
 ];
 
 /** The non-built-in view types this issue covers, each owned by a different manifest than "views". */

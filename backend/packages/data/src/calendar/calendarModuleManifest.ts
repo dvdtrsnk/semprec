@@ -11,6 +11,14 @@ export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
  * process). Its first database is `calendars` (issue #1600), seeded by `seed/seedCalendars.ts`, and its
  * first custom route is the timeline read (issue #1717). Like the Inbox and Mail modules it is
  * non-removable and a system project module.
+ *
+ * Ownership handoff (docs/adr/2026-09-10-single-writer-ownership-model.md, issue #1757): `Events.people`
+ * is a user-owned relation of the systemDatabases module, and the edges and their `role` stay the user's
+ * to write. The `invitation` object in an edge's metadata is handed to this module: its one writer is the
+ * calendar module's invitation code, which issues #1790, #1774 and #1950 will add and which writes with
+ * the system writer kind. `eventParticipantEdgeHook.ts` refuses a write of another writer kind that would
+ * add an `invitation`, or change or remove the stored one
+ * (docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md).
  */
 export const manifest: ModuleManifest = {
   id: CALENDAR_MODULE_ID,

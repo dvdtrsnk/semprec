@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "@semprec/data";
 import {
   assertUuid,
   optionalIntegerField,
   POSTGRES_INT4_MAX,
   POSTGRES_INT4_MIN,
+  requireDecodedStringParam,
   requireIntegerField,
 } from "../requestValidation.js";
 
@@ -115,5 +116,53 @@ describe("assertUuid", () => {
 
   it("rejects an empty string", () => {
     expectFieldValidationError(() => assertUuid("", "targetItemId"), "targetItemId");
+  });
+});
+
+describe("requireDecodedStringParam", () => {
+  it("returns a segment without an escape sequence unchanged", () => {
+    expect(requireDecodedStringParam({ key: "medication" }, "key")).toBe("medication");
+  });
+
+  it.each([
+    ["a space", "To%20do", "To do"],
+    ["a non-ASCII letter", "Vysok%C3%A1", "Vysoká"],
+    ["a slash", "a%2Fb", "a/b"],
+    ["a lower-case escape sequence", "a%2fb", "a/b"],
+  ])("decodes %s", (_case, segment, value) => {
+    expect(requireDecodedStringParam({ key: segment }, "key")).toBe(value);
+  });
+
+  it("decodes once, so an escaped percent sign yields the text of an escape sequence", () => {
+    expect(requireDecodedStringParam({ key: "To%2520do" }, "key")).toBe("To%20do");
+  });
+
+  it("rejects a parameter the route did not capture, naming it", () => {
+    expectFieldValidationError(() => requireDecodedStringParam({}, "key"), "key");
+  });
+
+  it.each([
+    ["a percent sign that starts no escape sequence", "100%"],
+    ["an escape sequence that is not hexadecimal", "%zz"],
+    ["an escape sequence that is cut short", "medication%2"],
+    ["escaped bytes that are not UTF-8", "%C3%28"],
+  ])("rejects %s, naming the parameter", (_case, segment) => {
+    expectFieldValidationError(() => requireDecodedStringParam({ optionKey: segment }, "optionKey"), "optionKey");
+  });
+
+  it("lets a decoding failure that is not a URIError through as it is", () => {
+    const failure = new TypeError("decoder failed");
+    const decode = vi.spyOn(globalThis, "decodeURIComponent").mockImplementation(() => {
+      throw failure;
+    });
+    let thrown: unknown;
+    try {
+      requireDecodedStringParam({ key: "medication" }, "key");
+    } catch (error) {
+      thrown = error;
+    } finally {
+      decode.mockRestore();
+    }
+    expect(thrown).toBe(failure);
   });
 });

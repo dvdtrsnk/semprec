@@ -377,6 +377,41 @@ export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]
   return rows.map(mapRow);
 }
 
+/** How many parent hops `getRootAgentRuns` follows for one run before it stops climbing. */
+export const AGENT_RUN_ROOT_MAX_HOPS = 32;
+
+/**
+ * The root run of each of `runs`, keyed by the id of the given run: the run reached by following
+ * `parent_run_id` until a run has no parent. A run without a parent is its own root.
+ *
+ * The walk has the loop shape of
+ * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md` (one read per level, a
+ * missing link stops the walk instead of failing it), for many runs at once: each level reads the
+ * parents of all chains that are still climbing in one query, so the number of queries follows the
+ * depth of the deepest chain and not the number of runs. A chain stops at the last run it reached
+ * when that run's parent is not visible, and after `AGENT_RUN_ROOT_MAX_HOPS` hops. The hop limit
+ * stands in for that decision's visited set: it also ends a cycle. The run returned for a chain
+ * that stopped early still names a parent.
+ */
+export async function getRootAgentRuns(
+  client: Pool | PoolClient,
+  runs: AgentRunRow[],
+): Promise<Map<string, AgentRunRow>> {
+  const reached = new Map(runs.map((run) => [run.id, run]));
+  let climbing = runs.map((run) => run.id);
+  for (let hop = 0; hop < AGENT_RUN_ROOT_MAX_HOPS && climbing.length > 0; hop += 1) {
+    const parentIds = new Set(climbing.flatMap((runId) => reached.get(runId)?.parentRunId ?? []));
+    const parents = new Map((await getAgentRunsByIds(client, [...parentIds])).map((run) => [run.id, run]));
+    climbing = climbing.filter((runId) => {
+      const parentId = reached.get(runId)?.parentRunId;
+      const parent = parentId ? parents.get(parentId) : undefined;
+      if (parent) reached.set(runId, parent);
+      return parent !== undefined;
+    });
+  }
+  return reached;
+}
+
 /**
  * The audit trail: run history for a heartbeat is a query over agent_runs, no second
  * run-log table. `limit`, when given, bounds the result to the most recent N runs

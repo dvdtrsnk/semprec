@@ -15,7 +15,6 @@ import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approv
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
-import { createDatabase } from "../chokePoint/databasesStore.js";
 import {
   ensureItemAutomation,
   markItemAutomationError,
@@ -248,8 +247,20 @@ it("adds the move state table over populated mail without changing existing meta
     if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
     const { mailboxId, messageId } = await runInTenant(tenantId, () =>
       withTransaction(db, async (client) => {
-        const mailboxDb = await createDatabase(client, { name: "Mailboxes" });
-        const emailDb = await createDatabase(client, { name: "Emails" });
+        // The current database writer returns databases.overview_hidden, which only the later
+        // database_overview_hidden migration adds; write the two fixture databases, each with its items
+        // partition, in the shape this schema has.
+        const createFixtureDatabase = async (name: string): Promise<{ id: string }> => {
+          const { rows } = await client.query<{ id: string }>("INSERT INTO databases (name) VALUES ($1) RETURNING id", [
+            name,
+          ]);
+          const id = rows[0]?.id;
+          if (id === undefined) throw new Error("Expected the inserted fixture database");
+          await client.query("SELECT create_items_partition($1::uuid)", [id]);
+          return { id };
+        };
+        const mailboxDb = await createFixtureDatabase("Mailboxes");
+        const emailDb = await createFixtureDatabase("Emails");
         // The current item writer returns items.created_at, which only migration 0143 adds; write the two
         // fixture rows in the actual pre-0143 shape, in the historical tenant.
         const mailbox = { id: randomUUID() };

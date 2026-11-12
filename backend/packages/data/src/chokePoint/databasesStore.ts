@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
+import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { deleteRollupDependenciesBySourceDatabase } from "../rollup/dependencies.js";
 import { getItemsByIds } from "./itemsStore.js";
 
@@ -25,6 +26,7 @@ type DatabaseDbRow = {
   system: boolean;
   icon: string | null;
   color: string | null;
+  overview_hidden: boolean;
   archived_at: Date | null;
 };
 
@@ -40,12 +42,13 @@ function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
     system: row.system,
     icon: row.icon,
     color: row.color,
+    overviewHidden: row.overview_hidden,
     archivedAt: row.archived_at ? row.archived_at.toISOString() : null,
   };
 }
 
 const DATABASE_COLUMNS =
-  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, archived_at";
+  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, archived_at";
 
 export interface CreateDatabaseInput {
   /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
@@ -237,17 +240,32 @@ export interface DatabasePatch {
   name?: string;
   icon?: string | null;
   color?: string | null;
+  /** Hides the database from the client overview (`true`) or shows it there again (`false`), issue #2002. */
+  overviewHidden?: boolean;
 }
 
 /**
- * Updates any of `name`, `icon`, `color` in one statement. The label is always renamable, same as
- * `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the
+ * Updates any of `name`, `icon`, `color`, `overviewHidden` in one statement. The label is always renamable,
+ * same as `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the
  * display name — but the icon and color of a system database belong to its module manifest.
+ *
+ * `overviewHidden` (issue #2002) is written when `resolver` reports the database as hideable, which the
+ * production resolver does for a system database whose module descriptor declares `overviewHideable: true`.
+ * A patch that carries it for any other database, or without a `resolver`, is refused with `ForbiddenError`
+ * before the statement runs, so none of its other fields is written either.
  */
-export async function patchDatabase(client: PoolClient, id: string, patch: DatabasePatch): Promise<DatabaseRow> {
+export async function patchDatabase(
+  client: PoolClient,
+  id: string,
+  patch: DatabasePatch,
+  resolver?: Pick<CollectionMetadataResolver, "overviewHideable">,
+): Promise<DatabaseRow> {
   const database = await requireDatabase(client, id);
   if (database.system && (patch.icon !== undefined || patch.color !== undefined)) {
     throw new ForbiddenError("The icon and color of a system database come from its module manifest");
+  }
+  if (patch.overviewHidden !== undefined && resolver?.overviewHideable(database) !== true) {
+    throw new ForbiddenError("This database cannot be hidden from the overview");
   }
   const sets: string[] = [];
   const values: unknown[] = [id];
@@ -258,6 +276,7 @@ export async function patchDatabase(client: PoolClient, id: string, patch: Datab
   if (patch.name !== undefined) add("name", patch.name);
   if (patch.icon !== undefined) add("icon", patch.icon);
   if (patch.color !== undefined) add("color", patch.color === null ? null : patch.color.toUpperCase());
+  if (patch.overviewHidden !== undefined) add("overview_hidden", patch.overviewHidden);
   if (sets.length === 0) return database;
   const { rows } = await client.query<DatabaseDbRow>(
     `UPDATE databases SET ${sets.join(", ")} WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
