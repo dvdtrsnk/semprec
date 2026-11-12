@@ -104,9 +104,24 @@ export interface MailLiveSyncRoot {
    * a pass, and a restart whose old lifecycle is still stopping when `stop()` runs hosts nothing.
    */
   restartAccount(mailboxItemId: string): Promise<void>;
+  /**
+   * Stops the lifecycle hosted for mailbox `mailboxItemId` when it is hosted for `tenantId` (issue
+   * gh-2030). It first waits for every discovery pass and every `restartAccount` in flight, then
+   * stops the entry through the same path a deactivated account takes. The lifecycle is stopped once
+   * even when a pass started meanwhile retires it too, and the call resolves only after that stop
+   * finished. A mailbox that is not hosted, or is hosted for another tenant, is left as it is, and
+   * so is every mailbox when the caller is inside the scope of a tenant other than `tenantId`.
+   *
+   * It does not keep a later pass from hosting the mailbox again: a pass hosts what discovery
+   * lists, and discovery lists no Mailboxes item that is in the trash. A `restartAccount` that
+   * begins while this call waits is not waited for
+   * (docs/adr/2026-11-11-a-removed-mailbox-is-cleaned-up-at-the-provider-from-memory-after-the-commit.md).
+   */
+  stopMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
 }
 
 interface HostedEntry {
+  mailboxItemId: string;
   tenantId: string;
   lifecycle: MailAccountLifecycle;
   syncMode: SyncMode;
@@ -133,7 +148,8 @@ interface HostedEntry {
  * its own timers and sockets stays in that tenant; the per-account heartbeat beats in the
  * root's system scope. A tenant that is no longer active is not enumerated, so its lifecycles
  * stop on the next pass, or earlier through `stopTenant` when the tenant deactivation signal
- * reaches this process.
+ * reaches this process. A mailbox removed through `removeMailbox` is stopped by `stopMailbox`
+ * when the removal's cleanup calls it, and otherwise on the next pass (issue gh-2030).
  *
  * Restart-safe by construction rather than by any explicit "am I already running" check: a
  * fresh process starts with an empty `hosted` map, and the only account state it ever reads is
@@ -165,11 +181,11 @@ export function createMailLiveSyncRoot(
   // finish. Never rejects — the interval callback attaches its own handler before storing it.
   let inFlightDiscovery: Promise<unknown> = Promise.resolve();
   // Every `reconcileOnce` pass and every `restartAccount` still running, whoever started it, as a
-  // promise that settles with it and never rejects, so `stopTenant` can wait for them. The promise
-  // of the pass or restart itself, and its rejection, still go to its caller.
+  // promise that settles with it and never rejects, so `stopTenant` and `stopMailbox` can wait for
+  // them. The promise of the pass or restart itself, and its rejection, still go to its caller.
   const runningPasses = new Set<Promise<void>>();
-  // Every entry `stopHosted` has removed from `hosted` whose stop is still running, so `stopTenant`
-  // and `stop()` wait for a stop another caller started instead of resolving ahead of it.
+  // Every entry `stopHosted` has removed from `hosted` whose stop is still running, so `stopTenant`,
+  // `stopMailbox` and `stop()` wait for a stop another caller started instead of resolving ahead of it.
   const stoppingEntries = new Set<HostedEntry>();
   // Guards against a second `start()` re-running the initial reconcile and scheduling a second
   // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
@@ -247,8 +263,8 @@ export function createMailLiveSyncRoot(
 
   /**
    * Stops `entry` once: callers pass entries from a snapshot of `hosted` (another pass's retire
-   * loop, `restartAccount`, `stopTenant`, `stop()`), so an entry another caller already removed is
-   * not stopped again; the call instead waits for that caller's stop, if it is still running. An entry whose
+   * loop, `restartAccount`, `stopTenant`, `stopMailbox`, `stop()`), so an entry another caller already
+   * removed is not stopped again; the call instead waits for that caller's stop, if it is still running. An entry whose
    * `start()` is still running (an overlapping pass retired it) is stopped only after that start
    * settled, and the pass that started it then installs no heartbeat for it.
    */
@@ -271,10 +287,14 @@ export function createMailLiveSyncRoot(
     return entry.stopping;
   }
 
-  /** The stops of `tenantId`'s entries (every tenant's when omitted) another caller already started. */
-  function stopsInFlight(tenantId?: string): Array<Promise<void>> {
+  /**
+   * The stops another caller already started: of `tenantId`'s entries (every tenant's when omitted),
+   * narrowed to the entries of `mailboxItemId` when it is given.
+   */
+  function stopsInFlight(tenantId?: string, mailboxItemId?: string): Array<Promise<void>> {
     return [...stoppingEntries]
       .filter((entry) => tenantId === undefined || entry.tenantId === tenantId)
+      .filter((entry) => mailboxItemId === undefined || entry.mailboxItemId === mailboxItemId)
       .map((entry) => entry.stopping ?? Promise.resolve());
   }
 
@@ -298,7 +318,7 @@ export function createMailLiveSyncRoot(
    */
   async function host(mailboxItemId: string, tenantId: string, syncMode: SyncMode): Promise<void> {
     const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
-    const entry: HostedEntry = { tenantId, lifecycle, syncMode, heartbeat: null };
+    const entry: HostedEntry = { mailboxItemId, tenantId, lifecycle, syncMode, heartbeat: null };
     hosted.set(mailboxItemId, entry);
     const start = runInTenant(tenantId, () => lifecycle.start());
     entry.starting = start.then(
@@ -382,6 +402,16 @@ export function createMailLiveSyncRoot(
           .map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)),
       );
       await Promise.all(stopsInFlight(tenantId));
+    },
+    async stopMailbox(tenantId, mailboxItemId) {
+      // An entry's `stop()` runs in its own tenant's scope, which cannot be entered from another
+      // tenant's: such a caller would unhost the entry without stopping its lifecycle.
+      const caller = currentTenantScope();
+      if (caller?.kind === "tenant" && caller.tenantId !== tenantId) return;
+      await Promise.all([...runningPasses]);
+      const entry = hosted.get(mailboxItemId);
+      if (entry?.tenantId === tenantId) await stopHosted(mailboxItemId, entry);
+      await Promise.all(stopsInFlight(tenantId, mailboxItemId));
     },
     async start() {
       if (started) return;

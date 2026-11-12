@@ -3,7 +3,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions, SempConversation } from "@semprec/agent-runtime";
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  GENERIC_OPERATION_NAMES,
+  OPERATION_METADATA,
+  REST_ONLY_OPERATION_NAMES,
+  runAsSystem,
+  runInTenant,
+} from "@semprec/shared";
 import {
   createSempChatThread,
   createChokePoint,
@@ -505,9 +511,12 @@ describe("Semp thread live prompt", () => {
       const itemTools = toolLists[1] ?? [];
       expect(userInputs[0]).not.toContain("Automation:");
       expect(userInputs[1]).not.toContain("Automation:");
+      // The grants cover the capability of the REST-only operations (issue #1699), so only the gateway keeps them out.
+      expect(fixture.grants).toContain("core.schema.write");
       for (const name of GENERIC_OPERATION_NAMES) {
         if (OPERATION_METADATA[name].riskClass !== "read") expect(itemTools).not.toContain(modelName(name));
-        if (fixture.grants.includes(OPERATION_METADATA[name].requiresCapability))
+        const restOnly = REST_ONLY_OPERATION_NAMES.some((restOnlyName) => restOnlyName === name);
+        if (!restOnly && fixture.grants.includes(OPERATION_METADATA[name].requiresCapability))
           expect(chatTools).toContain(modelName(name));
         else expect(chatTools).not.toContain(modelName(name));
       }

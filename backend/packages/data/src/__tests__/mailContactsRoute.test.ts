@@ -1,6 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -22,6 +23,15 @@ async function request(query: string) {
   return runInTenant(tenant, () =>
     createMailContactsRouteHandler(pool)({ req: { url: `/api/mail/contacts?${query}` } }),
   );
+}
+const contactEmailsSchema = z.object({ contacts: z.array(z.object({ email: z.string() })) });
+/** The addresses a search for `q` returns, sorted here so that no expectation depends on the database's collation. */
+async function searchEmails(q: string): Promise<string[]> {
+  const response = await request(`q=${encodeURIComponent(q)}`);
+  return contactEmailsSchema
+    .parse(response.body)
+    .contacts.map((contact) => contact.email)
+    .sort();
 }
 describe("mail contacts", () => {
   beforeAll(async () => {
@@ -114,5 +124,48 @@ describe("mail contacts", () => {
       await createChokePoint(pool).softDeleteItem(person.databaseId, person.id);
     });
     expect((await request("q=deleted")).body).toEqual({ contacts: [] });
+  });
+  it("matches %, _ and a backslash only as themselves, also in the forms unaccent folds to them", async () => {
+    await runInTenant(tenant, async () => {
+      await create("people", { name: "Sleva 50%", emails: "percent-name@example.com" });
+      await create("people", { name: "Percent Address", emails: "100%off@example.com" });
+      await create("people", { name: "snake_case", emails: "underscore-name@example.com" });
+      await create("people", { name: "Underscore Address", emails: "first_last@example.com" });
+      await create("people", { name: "C:\\temp", emails: "backslash-name@example.com" });
+      await create("people", { name: "Backslash Address", emails: "back\\slash@example.com" });
+      await create("people", { name: "Sleva 50 korun", emails: "plain@example.com" });
+      await create("people", { name: "C:temp", emails: "colon@example.com" });
+    });
+    // unaccent folds U+FF05 and U+FE6A to %, U+FF3F to _, and U+FF3C, U+FE68 and U+2216 to a backslash.
+    for (const q of ["%", "\uFF05", "\uFE6A"]) {
+      expect(await searchEmails(q), q).toEqual(["100%off@example.com", "percent-name@example.com"]);
+    }
+    for (const q of ["_", "\uFF3F"]) {
+      expect(await searchEmails(q), q).toEqual(["first_last@example.com", "underscore-name@example.com"]);
+    }
+    for (const q of ["\\", "\uFF3C", "\uFE68", "\u2216"]) {
+      expect(await searchEmails(q), q).toEqual(["back\\slash@example.com", "backslash-name@example.com"]);
+    }
+    // Inside a longer q the folded character is still that character: a folded % does not match any
+    // text, and a folded backslash does not escape the character after it.
+    expect(await searchEmails("50\uFF05")).toEqual(["percent-name@example.com"]);
+    expect(await searchEmails("C:\uFF3Ctemp")).toEqual(["backslash-name@example.com"]);
+  });
+  it("matches a fullwidth low line in q as an underscore, not as any one character", async () => {
+    await runInTenant(tenant, async () => {
+      await create("people", { name: "Eva-Mala", emails: "dash@example.com" });
+      await create("people", { name: "Eva+Mala", emails: "plus@example.com" });
+      await create("people", { name: "Eva_Mala", emails: "underscore@example.com" });
+    });
+    expect(await searchEmails("Eva\uFF3FMala")).toEqual(["underscore@example.com"]);
+  });
+  it("returns no contacts for a q of combining marks alone and searches the letter a combining mark follows", async () => {
+    await runInTenant(tenant, async () => {
+      await create("people", { name: "Zdeněk", emails: "first@example.com" });
+      await create("people", { name: "Olga", emails: "second@example.com" });
+    });
+    // unaccent removes a combining mark, so nothing of these values is left to search for.
+    for (const q of ["\u0301", "\u0301\u030C"]) expect(await searchEmails(q), q).toEqual([]);
+    expect(await searchEmails("z\u0301")).toEqual(["first@example.com"]);
   });
 });

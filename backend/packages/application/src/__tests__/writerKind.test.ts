@@ -25,8 +25,16 @@ import { createGenericOperationGateway } from "../genericOperationGateway.js";
 import { writerIdentityOf } from "../genericApplicationService.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 let pool: Pool;

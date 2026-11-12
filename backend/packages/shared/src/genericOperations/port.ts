@@ -16,7 +16,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 42 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 44 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -35,6 +35,8 @@ export interface OutputByOperation {
   "property.create": Property;
   "property.patch": Property;
   "property.delete": Property;
+  "property.option.add": PropertyOption;
+  "property.option.update": PropertyOption;
   "view.list": Page<View>;
   "view.get": View;
   "view.create": View;
@@ -66,6 +68,18 @@ export interface OutputByOperation {
   "item.count": ItemCountEntry[];
   "page.duplicate": PageDuplicateOutput;
   "page.rename": PageRenameOutput;
+}
+
+/**
+ * One option of a `select` or `multi_select` property as `property.option.add` and `property.option.update` return
+ * it (issue #1699). `label` is the option's stored label, or for an option without one its label in the caller's
+ * locale from the owning module's catalog, or the raw key the schema projection falls back to when the option has
+ * neither.
+ */
+export interface PropertyOption {
+  key: string;
+  label: string;
+  color?: string;
 }
 
 /** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
@@ -187,7 +201,7 @@ export interface GenericApplicationPort {
    * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 30 catalog operations — `OutputByOperation["property.patch"]` (the
+   * the patch. Not one of the 44 catalog operations — `OutputByOperation["property.patch"]` (the
    * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
    * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
    * AgentTool composition root never call a catalog-external port method. See
@@ -202,6 +216,14 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["property.delete"],
   ): Promise<OutputByOperation["property.delete"]>;
+  addPropertyOption(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.option.add"],
+  ): Promise<OutputByOperation["property.option.add"]>;
+  updatePropertyOption(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.option.update"],
+  ): Promise<OutputByOperation["property.option.update"]>;
   listViews(actor: AuthenticatedActor, input: InputByOperation["view.list"]): Promise<OutputByOperation["view.list"]>;
   getView(actor: AuthenticatedActor, input: InputByOperation["view.get"]): Promise<OutputByOperation["view.get"]>;
   createView(

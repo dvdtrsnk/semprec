@@ -5,7 +5,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { ChokePointError, ValidationError } from "../errors.js";
+import { ChokePointError, RateLimitedError, ValidationError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { ItemRow } from "../types.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
@@ -223,8 +223,17 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
 /** The shape of `verifyMailCredentials`: resolves with the endpoints that accepted the login, rejects when none did. */
 type VerifyPassword = (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
 
+/** What the limiter answers one attempt: granted and counted, or the whole seconds until one can be granted again. */
+type VerificationAttempt = { granted: true } | { granted: false; retryAfterSeconds: number };
+
+/** The part of `semprec-api`'s `ClientIpThrottle` this route calls. */
+interface VerificationThrottle {
+  /** Checks the user's limit and, when the user is under it, counts the attempt in the same synchronous step. */
+  tryAcquire(action: "mailboxCredentialVerification", userId: string): VerificationAttempt;
+}
+
 /**
- * The member of the composition root's custom-route container this route reads
+ * The members of the composition root's custom-route container this route reads
  * (docs/adr/2026-10-29-custom-route-composition-root-dependencies.md). `semprec-api`'s
  * `CustomRouteDependencies` is assignable to it.
  */
@@ -236,6 +245,11 @@ export interface MailboxPasswordRouteDependencies {
      */
     verifyPassword?: VerifyPassword;
   };
+  /**
+   * Counts the login verifications of each user (issue gh-1750). `createDispatcher` of `semprec-api` sets it
+   * (`services/semprec-api/src/app.ts`). The route has no limiter of its own to fall back on.
+   */
+  throttle?: VerificationThrottle;
 }
 
 /**
@@ -254,6 +268,18 @@ function requireVerifyPassword(dependencies: MailboxPasswordRouteDependencies): 
   return verifyPassword;
 }
 
+/**
+ * The limiter the composition root configured. A root that configured none fails the request the way
+ * `requireVerifyPassword` does, so the route never verifies a login it cannot count.
+ */
+function requireThrottle(dependencies: MailboxPasswordRouteDependencies): VerificationThrottle {
+  const throttle = dependencies.throttle;
+  if (!throttle) {
+    throw new Error('custom route dependency "throttle" is not configured by the composition root');
+  }
+  return throttle;
+}
+
 interface MailboxPasswordRouteContext {
   identity: { user: { id: string; locale: string } };
   body: unknown;
@@ -268,16 +294,22 @@ interface MailboxPasswordRouteContext {
  * the isolation level and the absence of a row lock.
  *
  * 1. The body is validated; `imapHost` and `smtpHost` are required for `generic` and refused for `icloud`.
- * 2. The verification is read from the container (`mailServerClients.verifyPassword`, which `serve.ts` sets
- *    to `verifyMailCredentials`). A composition root that configured none fails the request here with a
- *    plain error, so the adapter answers a generic 500.
+ * 2. The verification and the limiter are read from the container (`mailServerClients.verifyPassword`,
+ *    which `serve.ts` sets to `verifyMailCredentials`, and `throttle`, which `createDispatcher` sets). A
+ *    composition root that left one of them out fails the request here with a plain error, so the
+ *    adapter answers a generic 500.
  * 3. One transaction reads the duplicate rule: an address a mailbox of the tenant already holds answers
  *    409 `provider_account_already_connected` before any server is contacted.
- * 4. Outside any transaction that verification checks the login on both protocols. A refusal answers 400
+ * 4. The attempt is counted for the session's user (issue gh-1750,
+ *    docs/adr/2026-11-12-mailbox-credential-verification-is-throttled-per-user.md). A user who is at the
+ *    limit is answered 429 `rate_limited` with the seconds to wait (`RateLimitedError`), and no server is
+ *    contacted. A request that steps 1 to 3 refused was not counted. A counted attempt stays counted
+ *    whatever steps 5 and 6 answer.
+ * 5. Outside any transaction that verification checks the login on both protocols. A refusal answers 400
  *    with the verification's own code (`mail_auth_failed`, `mail_app_password_required`,
  *    `mail_server_unreachable`, `mail_tls_failed`). Every other failure propagates unchanged, so the
  *    adapter answers a generic 500. Nothing has been written at that point.
- * 5. One transaction reads the duplicate rule again and writes the mailbox (`createPasswordMailbox`). A
+ * 6. One transaction reads the duplicate rule again and writes the mailbox (`createPasswordMailbox`). A
  *    mailbox that came to hold the address meanwhile answers 409, and the transaction rolls back whole:
  *    no item, credential, server settings, sync state row or job of the refused mailbox remains.
  *
@@ -286,8 +318,9 @@ interface MailboxPasswordRouteContext {
 export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencies: MailboxPasswordRouteDependencies) {
   return async (ctx: MailboxPasswordRouteContext): Promise<{ status: number; item: ItemRow }> => {
     const request = parseConnectRequest(ctx.body);
-    // Read per request and never while the factory runs: a mount without the member must still start.
+    // Read per request and never while the factory runs: a mount without a member must still start.
     const verifyPassword = requireVerifyPassword(dependencies);
+    const throttle = requireThrottle(dependencies);
     const name = await defaultMailboxName(request.provider, ctx.identity.user.locale);
 
     await withTransaction(pool, async (client) => {
@@ -296,6 +329,11 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
         throw new ProviderAccountAlreadyConnectedError();
       }
     });
+
+    // Directly before the verification, with no `await` between the count and the call: the requests
+    // that are counted are the ones that call the verification. Nothing uncounts an attempt afterwards.
+    const attempt = throttle.tryAcquire("mailboxCredentialVerification", ctx.identity.user.id);
+    if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
 
     let verified: VerifiedMailServerSettings;
     try {

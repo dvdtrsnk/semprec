@@ -207,10 +207,12 @@ export async function handleSyncMailAccountTask(
    * removal runs from here to the end of this transaction. Then it reads the mailbox again, because
    * the prologue's reads are older than this transaction and a removal may have committed since.
    * `false` means there is nothing to sync any more: the Mailboxes item is in the trash or gone, or
-   * its `mail_account_sync_state` row is gone, as for a removed mailbox that was restored. The pass
-   * then does no work, so it writes no sync state row for a mailbox the removal emptied. The two reads
-   * take no row lock: the guard is what keeps the removal out. The generic trash of the item takes no
-   * guard, so it can still happen during a pass, as before.
+   * its `mail_account_sync_state` row is gone. The pass then does no work, so it writes no sync state
+   * row for a mailbox the removal emptied. A removed mailbox that was restored is live and has a row
+   * again (issue gh-2032, `mailboxRestoreHook.ts`), so this returns `true` for it
+   * (docs/adr/2026-11-12-a-restored-mailbox-gets-its-sync-state-and-its-mail-back-in-the-restore-transaction.md).
+   * The two reads take no row lock: the guard is what keeps the removal out. The generic trash of the
+   * item takes no guard, so it can still happen during a pass, as before.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
     await lockMailboxSync(client, payload.mailboxItemId);
@@ -275,7 +277,17 @@ export async function handleSyncMailAccountTask(
       actorType: "sync_worker",
       purpose: syncPurpose[state.syncMode],
     });
-    if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
+    if (!credential) {
+      const missingCredential = `Mailbox ${payload.mailboxItemId} has no stored credential`;
+      // Issue gh-2032: the removal writes `needsReauthorization` in the transaction that deletes the
+      // credential (`mailboxRemoval.ts`), and a mailbox restored from the trash returns with that
+      // status and without a credential. A pass of it is still waiting on the user to sign in, so it
+      // fails as a reauthorization case and the catch block below keeps the status. With any other
+      // status a missing credential stays the ordinary failure it was
+      // (docs/adr/2026-11-12-a-restored-mailbox-gets-its-sync-state-and-its-mail-back-in-the-restore-transaction.md).
+      if (previousSyncStatus === "needsReauthorization") throw new MailReauthorizationRequiredError(missingCredential);
+      throw new Error(missingCredential);
+    }
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
 
@@ -423,7 +435,8 @@ export async function handleSyncMailAccountTask(
 
     // A revoked credential (issue #26: "a normal state, not a system error") gets its own
     // visible status so the worker's continued (bounded, backed-off) retries read as "waiting
-    // on the user," not as a persistent failure indistinguishable from a flaky connection.
+    // on the user," not as a persistent failure indistinguishable from a flaky connection. So
+    // does the missing credential of a mailbox that already shows that status (issue gh-2032).
     const reauthorizationRequired = err instanceof MailReauthorizationRequiredError;
     const syncStatus = reauthorizationRequired ? "needsReauthorization" : "error";
     await withTransaction(pool, async (client) => {

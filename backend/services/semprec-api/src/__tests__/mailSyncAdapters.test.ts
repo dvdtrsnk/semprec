@@ -40,6 +40,7 @@ import {
 import { runAsSystem } from "@semprec/shared";
 import { createMailLiveSyncRoot, type MailLiveSyncRoot } from "@semprec/data";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
+import { createClientIpThrottle } from "../clientIpThrottle.js";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import {
@@ -1916,6 +1917,8 @@ describe("IMAP-mode accounts (issue #1510)", () => {
           smtp: { host: "smtp.mail.test", port: 465, security: "tls" },
         }),
       },
+      // The limiter `createDispatcher` hands the route (issue gh-1750).
+      throttle: createClientIpThrottle(),
     };
     const connectMailbox = createMailboxPasswordConnectRouteHandler(pool, dependencies);
 

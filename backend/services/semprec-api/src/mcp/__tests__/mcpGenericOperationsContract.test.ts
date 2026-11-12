@@ -41,6 +41,7 @@ import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  REST_ONLY_OPERATION_NAMES,
   runAsSystem,
   runInTenant,
   type CapabilityId,
@@ -50,8 +51,16 @@ import {
 import { createMcpRequestListener } from "../mcpHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 const PASSWORD = "s3cret-password";
@@ -144,6 +153,8 @@ async function rpc(
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
+  /** A multi_select property with one option, the target of the two REST-only option operations. */
+  optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
   view: ViewRow;
@@ -172,6 +183,13 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
     key: "title",
     name: "Title",
     type: "text",
+  });
+  const optionProperty = await chokePoint.createProperty({
+    databaseId: database.id,
+    key: "tags",
+    name: "Tags",
+    type: "multi_select",
+    config: { options: [{ key: "herbs", label: "Herbs" }] },
   });
   const itemA = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Arrival" } });
   const itemB = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Dune" } });
@@ -206,6 +224,7 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
   return {
     database,
     property,
+    optionProperty,
     itemA,
     itemB,
     view,
@@ -217,6 +236,25 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
   };
 }
 
+/**
+ * A REST-only operation over MCP (issue #1699): the caller's answer is the one it gets for an invented tool name,
+ * apart from the name the message repeats, and the option list is as the fixture created it.
+ */
+async function expectRefusedAsUnknownTool(
+  baseUrl: string,
+  headers: Record<string, string>,
+  body: JsonRpcResponse,
+  name: string,
+  fx: Fixtures,
+): Promise<void> {
+  const invented = "semprec.property.option.invented";
+  const unknown = await rpc(baseUrl, headers, invented, {});
+  expect(body.error).toEqual({ code: -32601, message: `Unknown tool '${name}'` });
+  expect(unknown.error).toEqual({ code: -32601, message: `Unknown tool '${invented}'` });
+  expect(body.result).toBeUndefined();
+  expect((await chokePoint.getProperty(fx.optionProperty.id))?.config).toEqual(fx.optionProperty.config);
+}
+
 interface Case {
   /** The exact `tools/call` name/arguments a real MCP caller would send — MCP has no route layer to resolve a shorthand on its own, unlike REST's `:propertyKey` relation route. */
   tool: (fx: Fixtures) => { name: string; arguments: unknown };
@@ -225,13 +263,14 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 42-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 44-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
  * human-session actor (never approval-gated, matching `mcpHandler.test.ts`'s existing "no approval
  * gate for MCP actors" case) and by a restricted run-credential actor scoped to exactly the
- * operation's own capability (approval-gated for the 5 destructive operations).
+ * operation's own capability (approval-gated for the 5 destructive operations). The two REST-only
+ * operations (issue #1699) carry valid arguments and are expected to be refused as unknown tools by both actors.
  */
 const CASES: Record<GenericOperationName, Case> = {
   "database.list": { tool: () => ({ name: "semprec.database.list", arguments: {} }) },
@@ -274,6 +313,18 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "property.delete": {
     tool: (fx) => ({ name: "semprec.property.delete", arguments: { propertyId: fx.property.id } }),
+  },
+  "property.option.add": {
+    tool: (fx) => ({
+      name: "semprec.property.option.add",
+      arguments: { propertyId: fx.optionProperty.id, label: "Spices" },
+    }),
+  },
+  "property.option.update": {
+    tool: (fx) => ({
+      name: "semprec.property.option.update",
+      arguments: { propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" },
+    }),
   },
   "view.list": { tool: () => ({ name: "semprec.view.list", arguments: {} }) },
   "view.get": { tool: (fx) => ({ name: "semprec.view.get", arguments: { viewId: fx.view.id } }) },
@@ -819,6 +870,28 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
+  });
+
+  it("lists no REST-only operation for a human session or a run credential holding its capability", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const projectItemId = await createProjectItem();
+    const callers = [await authHeader(), await credentialHeader(projectItemId, ["core.schema.write"])];
+    for (const headers of callers) {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      expect(response.status).toBe(200);
+      const names = z
+        .object({ result: z.object({ tools: z.array(z.object({ name: z.string() })) }) })
+        .parse(await response.json())
+        .result.tools.map((tool) => tool.name);
+      // The same capability's other write is listed, so the two are absent for being REST-only, not ungranted.
+      expect(names).toContain("semprec.property.patch");
+      for (const operation of REST_ONLY_OPERATION_NAMES) expect(names).not.toContain(`semprec.${operation}`);
+    }
   });
 
   it("lists relation.set and both link operations for a human session", async () => {
@@ -1451,8 +1524,14 @@ describe("generic operation MCP contract (issue #220)", () => {
         await testCase.prepare?.(fx);
         const { name, arguments: args } = testCase.tool(fx);
 
-        const body = await rpc(baseUrl, await authHeader(), name, args);
+        const headers = await authHeader();
 
+        const body = await rpc(baseUrl, headers, name, args);
+
+        if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) {
+          await expectRefusedAsUnknownTool(baseUrl, headers, body, name, fx);
+          return;
+        }
         expect(body.error).toBeUndefined();
       });
     }
@@ -1473,6 +1552,10 @@ describe("generic operation MCP contract (issue #220)", () => {
 
         const body = await rpc(baseUrl, headers, name, args);
 
+        if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) {
+          await expectRefusedAsUnknownTool(baseUrl, headers, body, name, fx);
+          return;
+        }
         if (isDestructive) {
           expect(body.error?.code).toBe(-32001);
           const { rows } = await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM approval_requests`);

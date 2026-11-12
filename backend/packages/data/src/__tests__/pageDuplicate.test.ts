@@ -263,6 +263,43 @@ async function trash(itemId: string): Promise<void> {
   expect(trashed).not.toBeNull();
 }
 
+async function isInTrash(itemId: string): Promise<boolean> {
+  const { rows } = await inTenant((client) =>
+    client.query<{ trashed: boolean }>(`SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1`, [itemId]),
+  );
+  const row = rows[0];
+  if (!row) throw new Error(`Item ${itemId} not found`);
+  return row.trashed;
+}
+
+/** The ids the `page` blocks of the document of `itemId` name, in document order. */
+async function namedPageIds(itemId: string): Promise<Array<string | null>> {
+  return (await readBlocks(itemId)).filter((block) => block.type === "page").map((block) => block.pageId);
+}
+
+/**
+ * An instant of the database clock that a document's history places after every write made so far and before every
+ * write made once this returns. The history dates an update by the start of its transaction and keeps that start in
+ * whole milliseconds, so the instant is the whole millisecond after the current one, and it is returned once the
+ * database clock has left that millisecond.
+ */
+async function instantAfterWrites(): Promise<Date> {
+  const { rows } = await admin.query<{ at: Date }>(
+    `SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS at`,
+  );
+  const at = rows[0]?.at;
+  if (!at) throw new Error("Missing database clock");
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const past = await admin.query<{ past: boolean }>(
+      `SELECT date_trunc('milliseconds', clock_timestamp()) > $1::timestamptz AS past`,
+      [at],
+    );
+    if (past.rows[0]?.past) return at;
+    if (Date.now() >= deadline) throw new Error("The database clock did not leave the instant");
+  }
+}
+
 /** A project whose page holds "first", the page block of "Release checklist" and "last", in that order. */
 async function projectWithChecklist(): Promise<{
   project: string;
@@ -417,7 +454,14 @@ describe("page.duplicate (issue #1722)", () => {
     const { project, checklist } = await projectWithChecklist();
     const kept = await subpage(checklist.pageItemId, "Kept");
     const trashed = await subpage(checklist.pageItemId, "Trashed");
+    const beforeTrash = await instantAfterWrites();
     await trash(trashed.pageItemId);
+    // The trash takes the block of the page out of its parent's document (issue #1723). Restoring that document to
+    // its version from before the trash (page.restoreVersion) writes the block again, and the page stays in the Trash.
+    expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId]);
+    await runInTenant(tenant, () => createDocStore(runtime).restoreVersion(checklist.pageItemId, beforeTrash));
+    expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId, trashed.pageItemId]);
+    expect(await isInTrash(trashed.pageItemId)).toBe(true);
     // The sync socket can store any page block: one naming an id no item has (a purged page), one naming a host item,
     // and one whose pageId is not an id at all.
     await appendBlocks(checklist.pageItemId, [

@@ -1,7 +1,13 @@
 import { isIPv4, isIPv6 } from "node:net";
 
-/** The public pre-authentication actions that are throttled per client address (issue #1073). */
-export type ThrottledAction = "login" | "passwordResetRequest" | "passwordResetConsume" | "invitationAccept";
+/**
+ * The throttled actions. `mailboxCredentialVerification` is the login check of the password mailbox connect
+ * route and is counted per user (issue gh-1750,
+ * docs/adr/2026-11-12-mailbox-credential-verification-is-throttled-per-user.md). The other four are the
+ * public pre-authentication actions and are counted per client address (issue #1073).
+ */
+export type ThrottledAction =
+  "login" | "passwordResetRequest" | "passwordResetConsume" | "invitationAccept" | "mailboxCredentialVerification";
 
 export interface ClientIpThrottleLimit {
   /** Counted events one key may have inside the window before further attempts are refused. */
@@ -9,12 +15,13 @@ export interface ClientIpThrottleLimit {
   windowSeconds: number;
 }
 
-/** Sliding-window limit per client address, for each throttled action. */
+/** Sliding-window limit of each throttled action, per key of that action (`throttleKey`). */
 export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottleLimit> = {
   login: { maxEvents: 30, windowSeconds: 15 * 60 },
   passwordResetRequest: { maxEvents: 10, windowSeconds: 60 * 60 },
   passwordResetConsume: { maxEvents: 10, windowSeconds: 60 * 60 },
   invitationAccept: { maxEvents: 10, windowSeconds: 60 * 60 },
+  mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];
@@ -72,6 +79,15 @@ export function throttleKeyForIp(ip: string): string {
     .join(":")}::/64`;
 }
 
+/**
+ * The key an event of `action` is counted under. `mailboxCredentialVerification` is counted per user: its
+ * subject is a user id and is the key as it is. The subject of every other action is a client address,
+ * grouped by `throttleKeyForIp`.
+ */
+function throttleKey(action: ThrottledAction, subject: string): string {
+  return action === "mailboxCredentialVerification" ? subject : throttleKeyForIp(subject);
+}
+
 export interface ClientIpThrottleOptions {
   /** Clock in epoch milliseconds; injected by tests. */
   now?: () => number;
@@ -80,17 +96,21 @@ export interface ClientIpThrottleOptions {
   limits?: Partial<typeof CLIENT_IP_THROTTLE_LIMITS>;
 }
 
+/**
+ * `subject` is what the action is counted per: the user id for `mailboxCredentialVerification`, the client
+ * address for every other action (`throttleKey`).
+ */
 export interface ClientIpThrottle {
-  /** `null` while the address is under the action's limit; otherwise whole seconds (≥ 1) until the oldest counted event leaves the window. */
-  retryAfterSeconds(action: ThrottledAction, ip: string): number | null;
-  /** Counts one event for the address under the action. */
-  record(action: ThrottledAction, ip: string): void;
+  /** `null` while the subject is under the action's limit; otherwise whole seconds (≥ 1) until the oldest counted event leaves the window. */
+  retryAfterSeconds(action: ThrottledAction, subject: string): number | null;
+  /** Counts one event for the subject under the action. */
+  record(action: ThrottledAction, subject: string): void;
   /**
-   * Checks the limit and, when the address is under it, counts one event in the same synchronous
+   * Checks the limit and, when the subject is under it, counts one event in the same synchronous
    * step, so concurrent requests cannot all pass the check before any of them is counted. The
    * returned reservation's `release` uncounts that event again, for an outcome that must not count.
    */
-  tryAcquire(action: ThrottledAction, ip: string): ThrottleAcquisition;
+  tryAcquire(action: ThrottledAction, subject: string): ThrottleAcquisition;
 }
 
 /** An event counted by `tryAcquire`; `release` removes it, and is a no-op once it has expired, been evicted or been released. */
@@ -102,9 +122,10 @@ export type ThrottleAcquisition =
   { granted: true; reservation: ThrottleReservation } | { granted: false; retryAfterSeconds: number };
 
 /**
- * A per-client-address sliding-window limiter for the public authentication routes. State lives in
- * this process's memory and is per `(action, key)` (see `throttleKeyForIp`). That is sound only
- * because production runs exactly one semprec-api process, so this instance sees every request; a
+ * A sliding-window limiter: per client address for the public authentication routes, and per user for
+ * the login check of the password mailbox connect route (issue gh-1750). State lives in this process's
+ * memory and is per `(action, key)` (see `throttleKey`). That is sound only because production runs
+ * exactly one semprec-api process, so an instance sees every request of the routes it is handed to; a
  * second process would give each its own budget. A restart clears every window.
  *
  * Expired events are pruned when a key is read or recorded. At `maxKeys`, recording a new key first
@@ -172,8 +193,8 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
     }
   }
 
-  function retryAfterSeconds(action: ThrottledAction, ip: string): number | null {
-    const key = throttleKeyForIp(ip);
+  function retryAfterSeconds(action: ThrottledAction, subject: string): number | null {
+    const key = throttleKey(action, subject);
     const stored = mapFor(action).get(key);
     if (!stored) return null;
     const at = now();
@@ -185,8 +206,8 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
   }
 
   /** Counts one event and returns the key's event array (kept by identity while the key lives) and its timestamp. */
-  function recordEvent(action: ThrottledAction, ip: string): { key: string; events: number[]; at: number } {
-    const key = throttleKeyForIp(ip);
+  function recordEvent(action: ThrottledAction, subject: string): { key: string; events: number[]; at: number } {
+    const key = throttleKey(action, subject);
     const map = mapFor(action);
     const at = now();
     const stored = map.get(key);
@@ -210,14 +231,14 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
   return {
     retryAfterSeconds,
 
-    record(action, ip) {
-      recordEvent(action, ip);
+    record(action, subject) {
+      recordEvent(action, subject);
     },
 
-    tryAcquire(action, ip) {
-      const retryAfter = retryAfterSeconds(action, ip);
+    tryAcquire(action, subject) {
+      const retryAfter = retryAfterSeconds(action, subject);
       if (retryAfter !== null) return { granted: false, retryAfterSeconds: retryAfter };
-      const { key, events, at } = recordEvent(action, ip);
+      const { key, events, at } = recordEvent(action, subject);
       let released = false;
       return {
         granted: true,

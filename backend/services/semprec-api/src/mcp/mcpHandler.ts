@@ -70,9 +70,12 @@ interface JsonRpcRequestBody {
 
 /**
  * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `initialize`, `tools/list` and
- * `tools/call` over the same 30-operation generic catalog REST (#219) and the AgentTool
+ * `tools/call` over the same 44-operation generic catalog REST (#219) and the AgentTool
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
- * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
+ * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`). The gateway neither
+ * lists nor calls the catalog's REST-only operations (`REST_ONLY_OPERATION_NAMES`, issue #1699) for a
+ * caller of this endpoint; the assistant will propose a new select option on an Inbox proposal
+ * instead (#1994).
  *
  * A request with no bearer token is rejected with `UnauthorizedError` before any session lookup
  * runs — the web session cookie is never consulted, even though `authenticateRequest` would

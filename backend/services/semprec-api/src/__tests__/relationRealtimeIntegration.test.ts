@@ -37,8 +37,16 @@ import { createSyncServer, publishRealtimeMessage, wireRealtimeHooks } from "@se
 import { createDispatcher } from "../app.js";
 
 const resolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 const password = "test-password";
 const zRelationFrame = z.object({ type: z.literal("invalidate"), scope: z.literal("relation"), itemId: z.string() });

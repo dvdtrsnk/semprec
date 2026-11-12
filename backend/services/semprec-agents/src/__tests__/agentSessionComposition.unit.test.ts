@@ -9,8 +9,16 @@ import { logger } from "../logger.js";
 import * as piSession from "../piAgentSession.js";
 
 const testMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 function fakeTool(name: string, label: string): AgentTool {

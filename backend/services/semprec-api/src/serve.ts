@@ -86,8 +86,9 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
 }
 
 // The mail live-sync root is created further down, after the dispatcher, and is bound to this
-// control there. Its `restartAccount` then forwards to the root (issue gh-1742); `startMailbox` and
-// `stopMailbox` have nothing to forward to and refuse with a configuration error that names them.
+// control there. Its `restartAccount` (issue gh-1742) and `stopMailbox` (issue gh-2030) then forward
+// to the root; `startMailbox` has nothing to forward to and refuses with a configuration error that
+// names it.
 const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {

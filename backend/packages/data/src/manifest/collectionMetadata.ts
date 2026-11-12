@@ -8,6 +8,8 @@ export interface CollectionMetadata {
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
+  /** True while the user hides the database from the overview (issue #2002); the orders and `clientVisible` do not depend on it. */
+  overviewHidden: boolean;
 }
 
 /** Appearance of a user-created database without a stored pick; applied when reading, never written (issue #1528). */
@@ -15,9 +17,15 @@ export const DEFAULT_DATABASE_ICON = "database";
 export const DEFAULT_DATABASE_COLOR = "#FF9500";
 
 export interface CollectionMetadataResolver {
+  /** `overviewHidden` is the stored flag of the given row, and false for a caller that passes none. */
   resolve(
-    database: Pick<DatabaseRow, "key" | "system"> & Partial<Pick<DatabaseRow, "icon" | "color">>,
+    database: Pick<DatabaseRow, "key" | "system"> & Partial<Pick<DatabaseRow, "icon" | "color" | "overviewHidden">>,
   ): CollectionMetadata;
+  /**
+   * Whether the user may hide the database from the overview (issue #2002): true for a system database whose
+   * module descriptor declares `overviewHideable: true`, false for every other database.
+   */
+  overviewHideable(database: Pick<DatabaseRow, "key" | "system">): boolean;
   /**
    * The filter tree of the items that belong in the database's collection, as its module manifest declares
    * it (issue #1647). `undefined` for a user-created database and for a system database without one.
@@ -25,7 +33,7 @@ export interface CollectionMetadataResolver {
   collectionFilter(database: Pick<DatabaseRow, "key" | "system">): Record<string, unknown> | undefined;
 }
 
-const NO_METADATA: CollectionMetadata = {
+const NO_METADATA: Omit<CollectionMetadata, "overviewHidden"> = {
   icon: null,
   color: null,
   overviewOrder: null,
@@ -36,7 +44,8 @@ const NO_METADATA: CollectionMetadata = {
 /**
  * Reads `getDatabases()` once and resolves a database row to its declared metadata. A system
  * database without a descriptor is not client-visible; a user-created database is client-visible
- * with its stored or default icon and color and no order.
+ * with its stored or default icon and color and no order. `overviewHidden` is read from the row, not
+ * from a descriptor.
  */
 export async function createCollectionMetadataResolver(
   moduleRegistry: ModuleRegistry,
@@ -44,16 +53,18 @@ export async function createCollectionMetadataResolver(
   const descriptors = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
   return {
     resolve(database) {
+      const overviewHidden = database.overviewHidden ?? false;
       if (!database.system) {
         return {
           ...NO_METADATA,
           icon: database.icon ?? DEFAULT_DATABASE_ICON,
           color: database.color ?? DEFAULT_DATABASE_COLOR,
           clientVisible: true,
+          overviewHidden,
         };
       }
       const descriptor = database.key === null ? undefined : descriptors.get(database.key);
-      if (descriptor === undefined) return { ...NO_METADATA };
+      if (descriptor === undefined) return { ...NO_METADATA, overviewHidden };
       const overviewOrder = descriptor.overviewOrder ?? null;
       const switcherOrder = descriptor.switcherOrder ?? null;
       return {
@@ -62,7 +73,12 @@ export async function createCollectionMetadataResolver(
         overviewOrder,
         switcherOrder,
         clientVisible: overviewOrder !== null || switcherOrder !== null || descriptor.clientVisible === true,
+        overviewHidden,
       };
+    },
+    overviewHideable(database) {
+      if (!database.system || database.key === null) return false;
+      return descriptors.get(database.key)?.overviewHideable === true;
     },
     collectionFilter(database) {
       if (!database.system || database.key === null) return undefined;

@@ -15,7 +15,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { logger as dbLogger } from "../db/logger.js";
 import { withTransaction } from "../db/pool.js";
-import { ChokePointError, ValidationError } from "../errors.js";
+import { ChokePointError, RateLimitedError, ValidationError } from "../errors.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { logger as mailLogger } from "../mail/logger.js";
 import {
@@ -123,18 +123,59 @@ function acceptingVerifier(): AcceptingVerifier {
   };
 }
 
+type Throttle = NonNullable<MailboxPasswordRouteDependencies["throttle"]>;
+
+interface RecordingThrottle {
+  throttle: Throttle;
+  /** The action and the user id of every attempt the route asked for, in order. */
+  attempts: Array<[string, string]>;
+  /** How often the route released a granted attempt. */
+  releases: () => number;
+}
+
+/**
+ * A limiter with the answers of `semprec-api`'s `ClientIpThrottle`: it grants every attempt with a
+ * reservation, or refuses every one with `refuseWithSeconds`. `onAttempt` runs when the route asks.
+ */
+function recordingThrottle(options: { refuseWithSeconds?: number; onAttempt?: () => void } = {}): RecordingThrottle {
+  const attempts: Array<[string, string]> = [];
+  let releases = 0;
+  const reservation = {
+    release: () => {
+      releases += 1;
+    },
+  };
+  const { refuseWithSeconds } = options;
+  return {
+    attempts,
+    releases: () => releases,
+    throttle: {
+      tryAcquire(action: "mailboxCredentialVerification", user: string) {
+        attempts.push([action, user]);
+        options.onAttempt?.();
+        return refuseWithSeconds === undefined
+          ? { granted: true as const, reservation }
+          : { granted: false as const, retryAfterSeconds: refuseWithSeconds };
+      },
+    },
+  };
+}
+
 interface ConnectOptions {
+  /** The verification side of the container; an accepting verification when absent. */
   dependencies?: MailboxPasswordRouteDependencies;
+  /** The limiter the route is mounted with: one that grants every attempt when absent, none for `null`. */
+  throttle?: Throttle | null;
   tenantId?: string;
   locale?: string;
 }
 
 /** Calls the route handler the way the adapter does: inside the caller's tenant, with the session's user. */
 function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status: number; item: ItemRow }> {
-  const handler = createMailboxPasswordConnectRouteHandler(
-    runtime,
-    options.dependencies ?? acceptingVerifier().dependencies,
-  );
+  const handler = createMailboxPasswordConnectRouteHandler(runtime, {
+    ...(options.dependencies ?? acceptingVerifier().dependencies),
+    throttle: options.throttle === undefined ? recordingThrottle().throttle : (options.throttle ?? undefined),
+  });
   return runInTenant(options.tenantId ?? tenant, () =>
     handler({ identity: { user: { id: userId, locale: options.locale ?? "en" } }, body }),
   );
@@ -711,7 +752,8 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         const imap = vi.spyOn(connections, "verifyImapServerConnection").mockResolvedValue("success");
         const smtp = vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
 
-        const error = await rejectionOf(connect(GENERIC_BODY, { dependencies }));
+        // Mounted without a limiter too, so the first container is the empty one its name says.
+        const error = await rejectionOf(connect(GENERIC_BODY, { dependencies, throttle: null }));
 
         // A plain error, which the adapter answers with a generic 500, and no domain status.
         expect(error).toBeInstanceOf(Error);
@@ -728,7 +770,141 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
     );
 
     it("still answers a body it refuses with validation_failed", async () => {
-      const error = await rejectionOf(connect({ ...GENERIC_BODY, address: "owner" }, { dependencies: {} }));
+      const error = await rejectionOf(
+        connect({ ...GENERIC_BODY, address: "owner" }, { dependencies: {}, throttle: null }),
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      if (!(error instanceof ValidationError)) throw new Error("expected a ValidationError");
+      expect(error.details).toEqual({ field: "address" });
+    });
+  });
+
+  describe("the per-user limit of login verifications (issue gh-1750)", () => {
+    beforeEach(seedTenantZero);
+
+    it("counts one attempt for the session's user directly before the verification, and creates the mailbox", async () => {
+      const order: string[] = [];
+      const limiter = recordingThrottle({ onAttempt: () => order.push("attempt") });
+      const dependencies: MailboxPasswordRouteDependencies = {
+        mailServerClients: {
+          verifyPassword: async () => {
+            order.push("verification");
+            return ICLOUD_SETTINGS;
+          },
+        },
+      };
+
+      const answer = await connect(ICLOUD_BODY, { dependencies, throttle: limiter.throttle });
+
+      expect(answer.status).toBe(201);
+      expect(limiter.attempts).toEqual([["mailboxCredentialVerification", userId]]);
+      expect(order).toEqual(["attempt", "verification"]);
+      expect(await mailboxRows()).toEqual(oneWholeMailbox(answer.item.id));
+    });
+
+    it("answers a user at the limit with 429 rate_limited and the seconds to wait, verifies no login and stores nothing", async () => {
+      const verifier = acceptingVerifier();
+      const limiter = recordingThrottle({ refuseWithSeconds: 123 });
+
+      const error = await rejectionOf(
+        connect(GENERIC_BODY, { dependencies: verifier.dependencies, throttle: limiter.throttle }),
+      );
+
+      expect(error).toBeInstanceOf(RateLimitedError);
+      if (!(error instanceof RateLimitedError)) throw new Error("expected a RateLimitedError");
+      expect({ status: error.status, code: error.code, details: error.details }).toEqual({
+        status: 429,
+        code: "rate_limited",
+        details: undefined,
+      });
+      expect(error.retryAfterSeconds).toBe(123);
+      expect(errorText(error)).not.toContain(PASSWORD);
+      expect(limiter.attempts).toEqual([["mailboxCredentialVerification", userId]]);
+      expect(verifier.calls).toEqual([]);
+      expect(await mailboxRows()).toEqual(NOTHING);
+    });
+
+    it.each<[string, unknown]>([
+      ["a body the schema refuses", { ...GENERIC_BODY, address: "owner" }],
+      ["a generic body without its hosts", { provider: "generic", address: ADDRESS, password: PASSWORD }],
+    ])("counts no attempt for %s", async (_name, body) => {
+      const limiter = recordingThrottle();
+
+      const error = await rejectionOf(connect(body, { throttle: limiter.throttle }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(limiter.attempts).toEqual([]);
+    });
+
+    it("counts no attempt for an address the duplicate rule refuses before any server is contacted", async () => {
+      await existingMailbox(recordingProviderAddress(ADDRESS));
+      const verifier = acceptingVerifier();
+      const limiter = recordingThrottle();
+
+      const error = await rejectionOf(
+        connect(GENERIC_BODY, { dependencies: verifier.dependencies, throttle: limiter.throttle }),
+      );
+
+      expect(error).toBeInstanceOf(ProviderAccountAlreadyConnectedError);
+      expect(limiter.attempts).toEqual([]);
+      expect(verifier.calls).toEqual([]);
+    });
+
+    it.each<[string, () => Promise<VerifiedMailServerSettings>, (outcome: unknown) => void]>([
+      ["a created mailbox", async () => ICLOUD_SETTINGS, (outcome) => expect(outcome).toMatchObject({ status: 201 })],
+      [
+        "a login the mail server refused",
+        () => Promise.reject(new MailAuthFailedError()),
+        (outcome) => expect(outcome).toMatchObject({ status: 400, code: "mail_auth_failed" }),
+      ],
+      [
+        "a verification that failed unexpectedly",
+        () => Promise.reject(new Error("the injected verification failed")),
+        (outcome) => expect(outcome).toMatchObject({ message: "the injected verification failed" }),
+      ],
+      [
+        "a mailbox that came to hold the address while the login was verified",
+        async () => {
+          await existingMailbox(listingAlias(ADDRESS));
+          return ICLOUD_SETTINGS;
+        },
+        (outcome) => expect(outcome).toBeInstanceOf(ProviderAccountAlreadyConnectedError),
+      ],
+    ])("keeps the attempt counted after %s", async (_name, verifyPassword, expectOutcome) => {
+      const limiter = recordingThrottle();
+
+      const outcome = await connect(ICLOUD_BODY, {
+        dependencies: { mailServerClients: { verifyPassword } },
+        throttle: limiter.throttle,
+      }).catch((error: unknown) => error);
+
+      expectOutcome(outcome);
+      expect(limiter.attempts).toEqual([["mailboxCredentialVerification", userId]]);
+      expect(limiter.releases()).toBe(0);
+    });
+  });
+
+  describe("a composition root that configured no limiter (issue gh-1750)", () => {
+    beforeEach(seedTenantZero);
+
+    it("fails a request with a configuration error, contacts no server and stores nothing", async () => {
+      const verifier = acceptingVerifier();
+
+      const error = await rejectionOf(connect(GENERIC_BODY, { dependencies: verifier.dependencies, throttle: null }));
+
+      // A plain error, which the adapter answers with a generic 500, and no domain status.
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ChokePointError);
+      if (!(error instanceof Error)) throw new Error("expected an Error");
+      expect(error.message).toBe('custom route dependency "throttle" is not configured by the composition root');
+      expect(errorText(error)).not.toContain(PASSWORD);
+      expect(verifier.calls).toEqual([]);
+      expect(await mailboxRows()).toEqual(NOTHING);
+    });
+
+    it("still answers a body it refuses with validation_failed", async () => {
+      const error = await rejectionOf(connect({ ...GENERIC_BODY, address: "owner" }, { throttle: null }));
 
       expect(error).toBeInstanceOf(ValidationError);
       if (!(error instanceof ValidationError)) throw new Error("expected a ValidationError");

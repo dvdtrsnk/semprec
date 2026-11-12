@@ -42,6 +42,12 @@ export interface CalendarTimelineItem {
   project: { id: string; name: string; color: string | null } | null;
   /** The live people the item is linked to. */
   people: { id: string; name: string }[];
+  /**
+   * A stored Event's live transcript (issue #1721): of several, the first in the order of the Event's
+   * `transcript` relation. `status` is the transcript's stored `status` when that is a string, else `null`.
+   * `null` for an Event without a live transcript, and for a Task.
+   */
+  transcript: { id: string; status: string | null } | null;
   /** The stored item's `updatedAt`, which a write passes back as `ifVersion`. */
   updatedAt: string;
   /** `false` for a stored Event or Task; a source sets `true` on an entry that is not a stored row. */

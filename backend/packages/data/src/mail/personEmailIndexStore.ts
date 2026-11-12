@@ -79,12 +79,16 @@ export interface MailContact {
   relationship: string | null;
 }
 
-/** Escapes LIKE metacharacters before surrounding a literal substring with wildcards. */
-export function escapeContactSearchPattern(query: string): string {
-  return `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-}
-
-/** People-only suggestions; every item/database read is confined by the caller's tenant scope. */
+/**
+ * People-only suggestions; every item/database read is confined by the caller's tenant scope.
+ *
+ * `query` is matched as a substring of a person's name or address through `unaccent` and `ILIKE`.
+ * It is a bound parameter and the pattern is built from it in the statement: the text is folded
+ * with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after that, so
+ * each matches only itself. The order matters because folding itself produces these three
+ * characters, for example `%` from a fullwidth percent sign. A text of which folding leaves
+ * nothing, such as a lone combining mark, returns no contacts.
+ */
 export async function searchMailContacts(
   client: Queryable,
   query: string,
@@ -93,7 +97,11 @@ export async function searchMailContacts(
 ): Promise<MailContact[]> {
   const { rows } = await client.query<MailContact>(
     String.raw`
-    WITH own_addresses AS (
+    WITH needle AS MATERIALIZED (
+      SELECT '%' || replace(replace(replace(folded.text, '\', '\\'), '%', '\%'), '_', '\_') || '%' AS pattern
+      FROM (SELECT unaccent($1::text) AS text) folded
+      WHERE folded.text <> ''
+    ), own_addresses AS (
       SELECT lower(btrim(a.address, E' \t\n\r')) AS email
       FROM items m JOIN databases d ON d.id = m.database_id AND d.owner_module_id = 'mailboxes'
       CROSS JOIN LATERAL regexp_split_to_table(CASE WHEN jsonb_typeof(m.properties->'addresses') = 'string'
@@ -104,17 +112,18 @@ export async function searchMailContacts(
         lower(btrim(a.address, E' \t\n\r')) AS email,
         CASE WHEN jsonb_typeof(p.properties->'relationship') = 'string' THEN p.properties->>'relationship' ELSE NULL END AS relationship
       FROM items p JOIN databases d ON d.id = p.database_id AND d.owner_module_id = 'people'
+      CROSS JOIN needle
       CROSS JOIN LATERAL regexp_split_to_table(CASE WHEN jsonb_typeof(p.properties->'emails') = 'string'
         THEN p.properties->>'emails' ELSE '' END, E'[,\n\r]+') a(address)
       WHERE p.deleted_at IS NULL
-        AND (unaccent(COALESCE(p.properties->>'name', '')) ILIKE unaccent($1) ESCAPE '\'
-          OR unaccent(btrim(a.address, E' \t\n\r')) ILIKE unaccent($1) ESCAPE '\')
+        AND (unaccent(COALESCE(p.properties->>'name', '')) ILIKE needle.pattern ESCAPE '\'
+          OR unaccent(btrim(a.address, E' \t\n\r')) ILIKE needle.pattern ESCAPE '\')
     )
     SELECT "personId", name, email, relationship FROM contacts c
     WHERE email <> '' AND email <> ALL($2::text[])
       AND NOT EXISTS (SELECT 1 FROM own_addresses o WHERE o.email = c.email)
     ORDER BY name, email, "personId" LIMIT $3`,
-    [escapeContactSearchPattern(query), [...new Set(exclude.map(normalizeEmailAddress))], limit],
+    [query, [...new Set(exclude.map(normalizeEmailAddress))], limit],
   );
   return rows;
 }

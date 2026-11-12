@@ -30,8 +30,16 @@ let server: Server;
 let url: string;
 const registry = new ModuleRegistry(() => new Set(["schemaCore", "ownedTools", "mcpFixture"]));
 const metadata = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 function record(value: unknown): Record<string, unknown> {

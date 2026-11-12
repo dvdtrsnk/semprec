@@ -22,6 +22,7 @@ describe("Recipes module manifest (issue #1707)", () => {
         color: "#FF9500",
         overviewOrder: 9,
         switcherOrder: 9,
+        overviewHideable: true,
       },
     ]);
   });
@@ -35,6 +36,7 @@ describe("Recipes module manifest (issue #1707)", () => {
       overviewOrder: 9,
       switcherOrder: 9,
       clientVisible: true,
+      overviewHidden: false,
     });
   });
 

@@ -9,6 +9,8 @@
 // and, for the delete and restore registries, docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md
 // and docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
 // and, for the purge registry, docs/adr/2026-11-10-item-purge-domain-hooks.md
+// and, for the delete approval guard registry,
+// docs/adr/2026-11-11-a-mailboxes-item-is-trashed-only-by-the-system-writer.md
 import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
@@ -138,6 +140,11 @@ export interface RelationEdgeWriteHookContext {
   /** Who made the write; `system` when the caller supplied nothing. */
   writer: WriterIdentity;
   lockMode?: "nowait";
+  /**
+   * Set by `createRelationIfAbsentWithClient` alone: the write inserts the edge when it is not stored and
+   * leaves a stored edge as it is, metadata included.
+   */
+  insertOnly?: true;
 }
 
 export type RelationEdgeWriteHook = (context: RelationEdgeWriteHookContext) => Promise<void>;
@@ -253,6 +260,37 @@ export function registerItemPatchApprovalContribution(
 }
 export function getItemPatchApprovalContribution(moduleId: string): ItemPatchApprovalContribution | undefined {
   return itemPatchApprovalContributions.get(moduleId);
+}
+/** Context of an item delete approval guard: the live item an agent run asks to trash, and its database. */
+export interface ItemDeleteApprovalGuardContext {
+  client: PoolClient;
+  /** The database of `item`; its `ownerModuleId` is the module the guard is registered for. */
+  database: DatabaseRow;
+  /** The item the request names, which is not in the trash. */
+  item: ItemRow;
+}
+
+/**
+ * A module's part of the approval projection of `item.delete` (`destructiveProjection.ts`): the
+ * refusal a delete hook of the module answers an agent's trash of the item with, known before the
+ * trash is attempted. It returns the message of that 403 `forbidden` error, or `null` when no hook of
+ * the module refuses the trash. The projection runs before an agent run's request is stored and again
+ * before an approved request is executed, so a trash that a hook can only refuse is never queued for
+ * approval, and a request that was queued earlier ends as a conflict.
+ *
+ * A delete hook that refuses an agent's trash by a rule, and not by the state of this one attempt,
+ * registers a guard with the same rule. The trash cascade runs its delete hooks only after the soft
+ * delete, so the projection cannot run them itself.
+ */
+export type ItemDeleteApprovalGuard = (context: ItemDeleteApprovalGuardContext) => Promise<string | null>;
+const itemDeleteApprovalGuards = new Map<string, ItemDeleteApprovalGuard>();
+/** One guard per owning module; a second registration for the same module is refused. */
+export function registerItemDeleteApprovalGuard(moduleId: string, guard: ItemDeleteApprovalGuard): void {
+  if (itemDeleteApprovalGuards.has(moduleId)) throw new Error("Duplicate item delete approval guard");
+  itemDeleteApprovalGuards.set(moduleId, guard);
+}
+export function getItemDeleteApprovalGuard(moduleId: string): ItemDeleteApprovalGuard | undefined {
+  return itemDeleteApprovalGuards.get(moduleId);
 }
 const itemUpdateCommands = new Map<string, ItemUpdateCommand>();
 export function registerItemUpdateCommand(moduleId: string, command: ItemUpdateCommand): void {
@@ -453,6 +491,7 @@ export function clearHooksForTests(): void {
   itemPreWritePreparations.clear();
   itemUpdateCommands.clear();
   itemPatchApprovalContributions.clear();
+  itemDeleteApprovalGuards.clear();
   automationBatchReader = undefined;
 }
 

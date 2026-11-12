@@ -163,6 +163,41 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * For each Event of `$2` that has a live transcript, the first one in the order of its `transcript` relation,
+ * which is the order `readEdges` returns edges in, with the transcript's stored `status`. `Events.transcript`
+ * of database `$1` is property A of its relation definition, so an edge holds the Event in `item_a` and the
+ * transcript in `item_b`: the Events seed declares the relation from Events, and
+ * `transcription/eventTranscriptCardinalityCutoverMigration.ts` reads the definition the same way. Each edge
+ * is joined to its transcript in the property's target database (`config.targetDatabaseId`). A trashed
+ * transcript is not joined.
+ */
+const EVENT_TRANSCRIPTS_SQL = `
+  SELECT DISTINCT ON (e.item_a) e.item_a AS event_id, t.id AS transcript_id, t.properties->'status' AS status
+    FROM properties p
+    JOIN relation_definitions d ON d.property_id_a = p.id
+    JOIN item_relations e ON e.relation_definition_id = d.id AND e.item_a = ANY($2::uuid[])
+    JOIN items t ON t.database_id = (p.config->>'targetDatabaseId')::uuid
+     AND t.id = e.item_b AND t.deleted_at IS NULL
+   WHERE p.database_id = $1 AND p.type = 'relation' AND p.key = 'transcript'
+   ORDER BY e.item_a, coalesce(e.metadata->>'addedAt', e.id::text), e.id`;
+
+/**
+ * The transcript of every Event of `eventIds` that has a live one (issue #1721), read with one statement
+ * whatever the number of Events. An Event without a live transcript has no entry.
+ */
+async function readEventTranscripts(
+  client: PoolClient,
+  eventsDatabaseId: string,
+  eventIds: string[],
+): Promise<Map<string, NonNullable<CalendarTimelineItem["transcript"]>>> {
+  const { rows } = await client.query<{ event_id: string; transcript_id: string; status: unknown }>(
+    EVENT_TRANSCRIPTS_SQL,
+    [eventsDatabaseId, eventIds],
+  );
+  return new Map(rows.map((row) => [row.event_id, { id: row.transcript_id, status: text(row.status) }]));
+}
+
 const EVENT_RELATION_KEYS = ["calendar", "project", "people"] as const;
 const TASK_RELATION_KEYS = ["project", "people"] as const;
 
@@ -170,7 +205,8 @@ const TASK_RELATION_KEYS = ["project", "people"] as const;
  * Maps the candidate rows of one database to timeline items. The number of statements does not depend on the
  * number of rows: one reads the rows' edges, `getItemsByIds` reads the linked projects and people (live items
  * only) and `readCalendarIds` the calendars. A candidate whose stored date or times are not valid is left out,
- * with one log line that carries its id.
+ * with one log line that carries its id. Every item is returned with `transcript: null`; the Events source
+ * fills it.
  */
 async function toTimelineItems(
   client: PoolClient,
@@ -242,6 +278,7 @@ async function toTimelineItems(
           ? null
           : { id: project.id, name: text(project.properties.name) ?? "", color: text(project.properties.color) },
       people: liveTargets(row.id, "people").map(({ id, properties }) => ({ id, name: text(properties.name) ?? "" })),
+      transcript: null,
       updatedAt: row.updated_at.toISOString(),
       readOnly: false,
     };
@@ -250,8 +287,8 @@ async function toTimelineItems(
 
 /**
  * The core Events source: every live Event whose `date` is on or before `context.to` and whose last day
- * (`endDate`, else `date`) is on or after `context.from`, once, with its range. A tenant without an Events
- * database has none.
+ * (`endDate`, else `date`) is on or after `context.from`, once, with its range and its transcript. A tenant
+ * without an Events database has none.
  */
 export async function readEventTimelineItems(
   client: PoolClient,
@@ -265,7 +302,13 @@ export async function readEventTimelineItems(
     context.to,
     DAY_PATTERN,
   ]);
-  return toTimelineItems(client, "event", events.id, rows, context);
+  const items = await toTimelineItems(client, "event", events.id, rows, context);
+  const transcripts = await readEventTranscripts(
+    client,
+    events.id,
+    items.map((item) => item.id),
+  );
+  return items.map((item) => ({ ...item, transcript: transcripts.get(item.id) ?? null }));
 }
 
 /**
@@ -331,6 +374,11 @@ export interface CalendarTimeline {
   items: CalendarTimelineItem[] | CalendarTimelineCompactItem[];
 }
 
+/** The timeline a caller that asks for `shape: "full"` gets: its items are in the full shape. */
+export interface CalendarTimelineInFullShape extends CalendarTimeline {
+  items: CalendarTimelineItem[];
+}
+
 /**
  * Everything on the calendar from `from` to `to`, both days included (issue #1717): the items of every source
  * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an item's `date`), then all-day Events, Tasks
@@ -341,6 +389,14 @@ export interface CalendarTimeline {
  * The caller passes calendar dates with `to` not before `from`, and bounds the length of the range. The read
  * writes nothing.
  */
+export function readCalendarTimeline(
+  client: PoolClient,
+  input: { from: string; to: string; shape: "full" },
+): Promise<CalendarTimelineInFullShape>;
+export function readCalendarTimeline(
+  client: PoolClient,
+  input: { from: string; to: string; shape: "full" | "compact" },
+): Promise<CalendarTimeline>;
 export async function readCalendarTimeline(
   client: PoolClient,
   input: { from: string; to: string; shape: "full" | "compact" },

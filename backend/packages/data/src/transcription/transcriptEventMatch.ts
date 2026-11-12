@@ -18,6 +18,7 @@ import { wallClockToInstant } from "../calendarTime.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { assertValidTimezone } from "../timezone.js";
+import { readTranscriptEventEdges, releaseTrashedEventEdges } from "./transcriptEventEdges.js";
 
 /** Only these Events `type` values are matched against a recording; a plain `event` never is. */
 const MATCHABLE_EVENT_TYPES = ["standup", "meeting"];
@@ -50,8 +51,9 @@ export interface MatchTranscriptToEventInput {
  *   Event may already hold other transcripts: the parts of one meeting (issue #1464).
  * - `suggested`: zero or several candidates, so a `kind = 'transcript'` Processing proposal card
  *   was created instead.
- * - `alreadyLinked` / `alreadySuggested`: an earlier run already reached one of the above;
- *   nothing was written.
+ * - `alreadyLinked`: the transcript already has an edge to an Event that is not in the Trash; nothing
+ *   was written. An edge to an Event in the Trash does not count (issue #1743).
+ * - `alreadySuggested`: the transcript already has its suggestion card; nothing was written.
  */
 export type TranscriptEventMatchOutcome = "linked" | "suggested" | "alreadyLinked" | "alreadySuggested";
 
@@ -128,13 +130,17 @@ async function listCandidateEventIds(
  * caller's transaction and row-locks the transcript first, so concurrent runs for the same
  * transcript serialize and every check below still holds when the write lands.
  *
- * A transcript that already has an Event edge, or already has its suggestion card (found by
- * `transcriptSuggestionIdempotencyKey`, whatever that card's status or deletion), is left as it
- * is — a re-run never writes a second edge or a second card. Otherwise exactly one candidate is
- * linked directly, even when that Event already holds other transcripts: an Event has many
- * transcripts, and the database still allows a transcript only one Event. Anything else creates one
- * `proposed` card with `sourceTranscript` pointing at the transcript and a create-Event proposal
- * whose `name`/`date` come from the transcript.
+ * A transcript that already has an edge to an Event that is not in the Trash, or already has its
+ * suggestion card (found by `transcriptSuggestionIdempotencyKey`, whatever that card's status or
+ * deletion), is left as it is — a re-run never writes a second edge or a second card. An edge to an
+ * Event in the Trash is no link (issue #1743): the match goes on as for a transcript without an
+ * Event. `readTranscriptEventEdges` holds that Event's row `FOR SHARE`, so a restore of it waits for
+ * this transaction. Otherwise exactly one candidate is linked directly, even when that Event already
+ * holds other transcripts: an Event has many transcripts, and the database still allows a transcript
+ * only one Event, so an edge to a trashed Event is deleted first, in this transaction
+ * (`releaseTrashedEventEdges`). Anything else creates one `proposed` card with `sourceTranscript`
+ * pointing at the transcript and a create-Event proposal whose `name`/`date` come from the transcript,
+ * and leaves an edge to a trashed Event as it is.
  */
 export async function matchTranscriptToEvent(
   client: PoolClient,
@@ -151,8 +157,8 @@ export async function matchTranscriptToEvent(
   const eventPropertyId = await requirePropertyId(client, transcriptsDatabaseId, "event");
   const eventRelation = await relationsStore.getRelationDefinitionByPropertyId(client, eventPropertyId);
   if (!eventRelation) throw new NotFoundError(`Relation definition for Transcripts 'event' not found`);
-  const transcriptEdges = await relationsStore.listRelationsForItem(client, eventRelation.id, transcript.id);
-  if (transcriptEdges.length > 0) return "alreadyLinked";
+  const eventEdges = await readTranscriptEventEdges(client, eventRelation.id, transcript.id);
+  if (eventEdges.liveEventIds.length > 0) return "alreadyLinked";
 
   const processingProposalsDatabaseId = await requireDatabaseId(client, PROCESSING_PROPOSALS_MODULE_ID);
   const idempotencyKey = transcriptSuggestionIdempotencyKey(transcript.id);
@@ -175,6 +181,7 @@ export async function matchTranscriptToEvent(
 
   const [onlyCandidate] = candidates;
   if (candidates.length === 1 && onlyCandidate) {
+    await releaseTrashedEventEdges(client, { eventPropertyId, transcriptId: transcript.id });
     await createRelationWithClient(client, {
       relationPropertyId: eventPropertyId,
       callerItemId: transcript.id,

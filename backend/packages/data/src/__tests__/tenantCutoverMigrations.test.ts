@@ -416,7 +416,6 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
   });
 
   it("upgrades populated transcript relations through the tenant runner without changing existing edges", async () => {
-    const eventIds = new Map<string, string>();
     for (const tenantId of [zero, b]) {
       await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
       const chokePoint = createChokePoint(dataPool);
@@ -431,7 +430,6 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
         if (!transcripts || !events || !people) throw new Error("Missing transcript, event or people database");
         const transcript = await chokePoint.createItem({ databaseId: transcripts.id, properties: {} });
         const event = await chokePoint.createItem({ databaseId: events.id, properties: { date: "2026-10-16" } });
-        eventIds.set(tenantId, event.id);
         const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
         await withTransaction(dataPool, (client) =>
           itemsStore.writeComputed(client, transcripts.id, transcript.id, "segments", [{ speaker: "SPEAKER_00" }]),
@@ -470,7 +468,9 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     const EDGES_SQL =
       "SELECT id, relation_definition_id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id";
     const before = await adminPool.query<EdgeRow>(EDGES_SQL);
-    expect(before.rows).toHaveLength(4);
+    // Per tenant: the Event's transcript, the transcript's speaker and the Event's calendar, which the
+    // Event's create hook linked (issue #1761).
+    expect(before.rows).toHaveLength(6);
     const speakerCatalogBefore = await adminPool.query<Record<string, unknown>>(
       `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
        JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
@@ -481,40 +481,9 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     expect(speakerBefore).toHaveLength(2);
     await runCutovers(dataPool);
     const firstEdges = await adminPool.query<EdgeRow>(EDGES_SQL);
-    // Every existing edge is kept, with its id, definition, endpoints and metadata.
-    const beforeIds = new Set(before.rows.map((row) => row.id));
-    expect(firstEdges.rows.filter((row) => beforeIds.has(row.id))).toEqual(before.rows);
-    // The only new edges are the Calendars cutover's (issue #1600): per tenant, one Calendars.events edge
-    // from the tenant's default calendar to its one Event, which had no calendar.
-    const expectedCalendarEdges: Omit<EdgeRow, "id">[] = [];
-    for (const tenantId of [zero, b]) {
-      const calendar = await runInTenant(tenantId, async () => {
-        const definition = await dataPool.query<{ id: string }>(
-          `SELECT p.config->>'relationDefinitionId' AS id FROM properties p JOIN databases d ON d.id = p.database_id
-            WHERE d.owner_module_id = 'calendars' AND d.system AND p.key = 'events'`,
-        );
-        const defaults = await dataPool.query<{ id: string }>(
-          `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
-            WHERE d.owner_module_id = 'calendars' AND d.system AND i.deleted_at IS NULL
-              AND i.properties -> 'isDefault' = 'true'::jsonb`,
-        );
-        expect(definition.rows).toHaveLength(1);
-        expect(defaults.rows).toHaveLength(1);
-        return { definitionId: definition.rows[0]!.id, defaultCalendarId: defaults.rows[0]!.id };
-      });
-      expectedCalendarEdges.push({
-        relation_definition_id: calendar.definitionId,
-        item_a: calendar.defaultCalendarId,
-        item_b: eventIds.get(tenantId)!,
-        metadata: "{}",
-      });
-    }
-    const addedEdges = firstEdges.rows
-      .filter((row) => !beforeIds.has(row.id))
-      .map(({ id: _id, ...edge }) => edge)
-      .sort((x, y) => x.item_b.localeCompare(y.item_b));
-    expect(addedEdges).toEqual(expectedCalendarEdges.sort((x, y) => x.item_b.localeCompare(y.item_b)));
-    expect(firstEdges.rows).toHaveLength(before.rows.length + 2);
+    // Every existing edge is kept, with its id, definition, endpoints and metadata, and none is added: each
+    // Event has its calendar already, so the Calendars cutover (issue #1600) links nothing.
+    expect(firstEdges.rows).toEqual(before.rows);
     const speakerCatalogAfter = await adminPool.query<Record<string, unknown>>(
       `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
        JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid

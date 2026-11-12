@@ -39,7 +39,7 @@ export interface SempThreadTitleParts {
 /**
  * The title rule of Semp threads for `locale`, as the thread list applies it. It is one function so
  * that another read that names a thread can resolve the same title; the approval source of issue
- * #1766 is planned to call it. A chat thread has its stored title (null until one is generated), a
+ * #1766 calls it. A chat thread has its stored title (null until one is generated), a
  * tick thread its heartbeat's current name, and an item thread the `semp.thread.itemTitle` template
  * filled with the Inbox item's current text. An item thread whose Inbox item has no text, or is
  * gone, has no title. Nothing is stored: a caller passes the values it read in the same request.

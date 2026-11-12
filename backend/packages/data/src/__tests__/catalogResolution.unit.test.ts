@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProperty } from "../manifest/catalogResolution.js";
+import { catalogOptionLabels, resolveProperty } from "../manifest/catalogResolution.js";
 import type { PropertyRow, PropertyType } from "../types.js";
 
 function property(type: PropertyType, config: Record<string, unknown>): PropertyRow {
@@ -106,5 +106,37 @@ describe("typed config and filterable projection (issue #1360)", () => {
   });
   it.each(["text", "longText", "url", "file"] as const)("treats %s as unfilterable with an empty config", (type) => {
     expect(resolveProperty(property(type, {}), null, undefined, "en")).toMatchObject({ filterable: false, config: {} });
+  });
+});
+
+describe("catalogOptionLabels (issue #1699)", () => {
+  const catalogs = {
+    cs: {
+      "property.healthRecords.tags.option.medication": "Léky",
+      "property.healthRecords.tags.option.czechOnly": "Jen česky",
+    },
+    en: {
+      "property.healthRecords.tags.option.medication": "Medication",
+      "property.healthRecords.tags.option.englishOnly": "English only",
+    },
+  };
+
+  it("returns the Czech and the English entry of an option both catalogs name", () => {
+    expect(catalogOptionLabels(catalogs, "healthRecords", "tags", "medication")).toEqual(["Léky", "Medication"]);
+  });
+
+  it("returns only the entry that exists when one catalog names the option", () => {
+    expect(catalogOptionLabels(catalogs, "healthRecords", "tags", "czechOnly")).toEqual(["Jen česky"]);
+    expect(catalogOptionLabels(catalogs, "healthRecords", "tags", "englishOnly")).toEqual(["English only"]);
+  });
+
+  it("returns nothing for an option, property or database the catalogs do not name", () => {
+    expect(catalogOptionLabels(catalogs, "healthRecords", "tags", "bylinky")).toEqual([]);
+    expect(catalogOptionLabels(catalogs, "healthRecords", "status", "medication")).toEqual([]);
+    expect(catalogOptionLabels(catalogs, null, "tags", "medication")).toEqual([]);
+  });
+
+  it("returns nothing without catalogs", () => {
+    expect(catalogOptionLabels(undefined, "healthRecords", "tags", "medication")).toEqual([]);
   });
 });

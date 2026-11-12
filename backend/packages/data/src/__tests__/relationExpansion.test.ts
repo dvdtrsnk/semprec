@@ -320,8 +320,10 @@ describe("batched relation expansion", () => {
           overviewOrder: null,
           switcherOrder: null,
           clientVisible: true,
+          overviewHidden: false,
         }),
         collectionFilter: () => undefined,
+        overviewHideable: () => false,
       };
       const [result] = await withTransaction(pool, (client) =>
         expandItemRelations(client, [person], { relations: { companies: [] }, resolver: partial }),

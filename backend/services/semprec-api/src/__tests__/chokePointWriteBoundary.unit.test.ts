@@ -102,6 +102,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "property detail": "services/semprec-api/src/propertiesHandler.ts",
   "update property": "services/semprec-api/src/propertiesHandler.ts",
   "delete property": "services/semprec-api/src/propertiesHandler.ts",
+  "add property option": "services/semprec-api/src/propertiesHandler.ts",
+  "update property option": "services/semprec-api/src/propertiesHandler.ts",
   "list views": "services/semprec-api/src/viewsHandler.ts",
   "view detail": "services/semprec-api/src/viewsHandler.ts",
   "create view": "services/semprec-api/src/viewsHandler.ts",
@@ -162,6 +164,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "task host event put": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host event remove": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host events clear": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "event people": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

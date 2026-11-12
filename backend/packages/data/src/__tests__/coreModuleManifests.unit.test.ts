@@ -179,6 +179,7 @@ describe("declared quick filters, default sorts and collection and picker filter
       "inboxPipeline",
       "calendar",
       "recipes",
+      "sleep",
     ]);
     const databases = await loadViewHintManifests();
     expect(declaredFilters(databases).length).toBeGreaterThan(20);

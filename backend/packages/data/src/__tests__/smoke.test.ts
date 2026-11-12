@@ -59,6 +59,10 @@ describe("smoke: choke-point end to end", () => {
         "projects",
         // The Recipes system database (issue #1707).
         "recipes",
+        // The three system databases of the sleep module (issue #1776).
+        "sleepNights",
+        "sleepPlans",
+        "sleepSettings",
         "tasks",
         "transcripts",
       ].sort(),

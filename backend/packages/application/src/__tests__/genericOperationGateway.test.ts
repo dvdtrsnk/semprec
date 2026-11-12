@@ -54,6 +54,7 @@ import {
   canonicalizeJson,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  REST_ONLY_OPERATION_NAMES,
   runInTenant,
   runAsSystem,
   type AuthenticatedActor,
@@ -62,8 +63,16 @@ import {
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 let pool: Pool;
@@ -2140,13 +2149,26 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);
 
       expect(gateway.listOperations(NO_CAPABILITIES)).toEqual([]);
-      expect(gateway.listOperations(ALL_CAPABILITIES)).toEqual([...GENERIC_OPERATION_NAMES]);
+      expect(gateway.listOperations(ALL_CAPABILITIES)).toEqual(
+        GENERIC_OPERATION_NAMES.filter((operation) => !REST_ONLY_OPERATION_NAMES.some((name) => name === operation)),
+      );
 
       const readOnly = new Set(["core.item.read"] as const);
       const expected = GENERIC_OPERATION_NAMES.filter(
         (operation) => OPERATION_METADATA[operation].requiresCapability === "core.item.read",
       );
       expect(gateway.listOperations(readOnly)).toEqual(expected);
+    });
+
+    it("lists no REST-only operation, although the capability it names lists its other operations", () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const schemaWrite = new Set(["core.schema.write"] as const);
+
+      expect(gateway.listOperations(schemaWrite)).toEqual(["property.create", "property.patch", "property.delete"]);
+      for (const operation of REST_ONLY_OPERATION_NAMES) {
+        expect(OPERATION_METADATA[operation].requiresCapability).toBe("core.schema.write");
+        expect(gateway.listOperations(ALL_CAPABILITIES)).not.toContain(operation);
+      }
     });
   });
 
@@ -2158,6 +2180,43 @@ describe("createGenericOperationGateway (issue #220)", () => {
       await expect(gateway.invoke("item.get", actor, NO_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
         NotFoundError,
       );
+    });
+
+    it("refuses both REST-only option operations for a person and for an agent run like an unknown operation, writing nothing", async () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const userId = await createUser();
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "option probe" });
+      const actors: AuthenticatedActor[] = [
+        { userId },
+        { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId },
+      ];
+      const database = await chokePoint.createDatabase({ name: "Gateway options" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "tags",
+        name: "Tags",
+        type: "multi_select",
+        config: { options: [{ key: "herbs", label: "Herbs" }] },
+      });
+
+      for (const actor of actors) {
+        // The same arguments run through the port for a REST caller, so only the gateway refuses them here.
+        const refusals = [
+          gateway.invoke("property.option.add", actor, ALL_CAPABILITIES, { propertyId: property.id, label: "Spices" }),
+          gateway.invoke("property.option.update", actor, ALL_CAPABILITIES, {
+            propertyId: property.id,
+            key: "herbs",
+            label: "Fresh herbs",
+          }),
+        ];
+        for (const refusal of refusals) {
+          await expect(refusal).rejects.toMatchObject({ name: "NotFoundError", code: "not_found", status: 404 });
+        }
+      }
+      expect((await chokePoint.getProperty(property.id))?.config).toEqual(property.config);
+      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe(0);
     });
 
     it("rejects an agent actor carrying runId without agentProjectItemId as owner_violation", async () => {

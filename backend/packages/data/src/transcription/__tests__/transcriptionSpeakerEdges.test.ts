@@ -5,7 +5,6 @@ import {
   createRuntimeRolePool,
   getTenantZeroId,
   getTestPool,
-  inTenantZero,
   resetDatabase,
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
@@ -775,25 +774,22 @@ describe("Transcript speaker mappings (issue #185)", () => {
     });
 
     it("leaves other relations' metadata unconstrained", async () => {
-      const eventsId = await databaseIdFor("events");
-      const peoplePropertyId = await propertyIdFor(eventsId, "people");
-      const eventId = (
+      // A Tasks `people` edge: the Events `people` edge has a metadata shape of its own since issue #1757.
+      const tasksId = await databaseIdFor("tasks");
+      const peoplePropertyId = await propertyIdFor(tasksId, "people");
+      const taskId = (
         await withTransaction(pool, (client) =>
-          createItemWithClient(client, { databaseId: eventsId, properties: { name: "Sync", date: "2026-10-16" } }),
+          createItemWithClient(client, { databaseId: tasksId, properties: { name: "Call Alice" } }),
         )
       ).id;
       const aliceId = await createPerson("Alice");
 
-      // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
-      // needs a tenant scope.
-      const edge = await inTenantZero(() =>
-        chokePoint.createRelation({
-          relationPropertyId: peoplePropertyId,
-          callerItemId: eventId,
-          targetItemId: aliceId,
-          metadata: { anything: true },
-        }),
-      );
+      const edge = await chokePoint.createRelation({
+        relationPropertyId: peoplePropertyId,
+        callerItemId: taskId,
+        targetItemId: aliceId,
+        metadata: { anything: true },
+      });
 
       expect(edge.metadata).toEqual({ anything: true });
     });

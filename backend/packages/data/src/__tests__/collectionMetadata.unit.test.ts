@@ -34,6 +34,7 @@ describe("collection metadata resolver (issue #1407)", () => {
       overviewOrder: 7,
       switcherOrder: null,
       clientVisible: true,
+      overviewHidden: false,
     });
     expect(resolver.resolve({ key: "emails", system: true })).toMatchObject({
       overviewOrder: null,
@@ -47,6 +48,7 @@ describe("collection metadata resolver (issue #1407)", () => {
         overviewOrder: null,
         switcherOrder: null,
         clientVisible: false,
+        overviewHidden: false,
       });
     }
     expect(resolver.resolve({ key: null, system: false })).toEqual({
@@ -55,7 +57,50 @@ describe("collection metadata resolver (issue #1407)", () => {
       overviewOrder: null,
       switcherOrder: null,
       clientVisible: true,
+      overviewHidden: false,
     });
+  });
+
+  it.each([
+    { name: "a system database with a descriptor", database: { key: "recipes", system: true } },
+    { name: "a system database without a descriptor", database: { key: "unknownInternal", system: true } },
+    { name: "a user-created database", database: { key: null, system: false } },
+  ])(
+    "resolves overviewHidden as the stored flag of $name, and false without one (issue #2002)",
+    async ({ database }) => {
+      const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
+      const shown = resolver.resolve({ ...database, overviewHidden: false });
+      expect(shown.overviewHidden).toBe(false);
+      // Hiding changes the flag alone: the orders, the look and the visibility stay as resolved for the shown row.
+      expect(resolver.resolve({ ...database, overviewHidden: true })).toEqual({ ...shown, overviewHidden: true });
+      expect(resolver.resolve(database)).toEqual(shown);
+    },
+  );
+
+  it("reports as hideable only a system database whose descriptor declares overviewHideable true (issue #2002)", async () => {
+    const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
+    expect(resolver.overviewHideable({ key: "recipes", system: true })).toBe(true);
+    // A system database whose descriptor does not declare it, one without a descriptor and one without a key.
+    for (const key of ["projects", "books", "unknownInternal", null]) {
+      expect(resolver.overviewHideable({ key, system: true })).toBe(false);
+    }
+    // A user-created database never takes a module's declaration, whatever its key column holds.
+    expect(resolver.overviewHideable({ key: null, system: false })).toBe(false);
+    expect(resolver.overviewHideable({ key: "recipes", system: false })).toBe(false);
+
+    const explicitlyFixed = {
+      getDatabases: async () => [{ moduleId: "fixture", key: "fixed", name: "Fixed", overviewHideable: false }],
+    } as unknown as ModuleRegistry;
+    expect(
+      (await createCollectionMetadataResolver(explicitlyFixed)).overviewHideable({ key: "fixed", system: true }),
+    ).toBe(false);
+  });
+
+  it("declares overviewHideable for the recipes database only across the fully loaded registry (issue #2002)", async () => {
+    const databases = await (await loadFullModuleRegistry()).getDatabases();
+    expect(
+      databases.filter((db) => db.overviewHideable !== undefined).map((db) => [db.key, db.overviewHideable]),
+    ).toEqual([["recipes", true]]);
   });
 
   it("derives clientVisible from an order, and ignores clientVisible false", async () => {

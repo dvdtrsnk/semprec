@@ -51,6 +51,7 @@ const databaseBody = z.object({
   overviewOrder: z.number().nullable(),
   switcherOrder: z.number().nullable(),
   clientVisible: z.boolean(),
+  overviewHidden: z.boolean(),
   defaultViewType: z.string().nullable(),
 });
 const itemBody = z.object({
@@ -195,6 +196,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
       overviewOrder: 9,
       switcherOrder: 9,
       clientVisible: true,
+      overviewHidden: false,
       defaultViewType: "gallery",
     });
     // Ninth in the list: after the eight collections of switcher positions 1 to 8.
@@ -362,6 +364,35 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(await database(czech, "recipes")).toEqual(recipes);
     const detail = await request(czech, "GET", `/api/databases/${recipes.id}`);
     expect(databaseBody.parse(detail.body).archivedAt).toBeNull();
+  });
+
+  it("hides recipes for the tenant that asks only, and answers a patch of another tenant's recipes like one of an unknown id (issue #2002)", async () => {
+    const czechRecipes = await database(czech, "recipes");
+    const englishRecipes = await database(english, "recipes");
+    const recipe = await createRecipe(czech, czechRecipes.id, { name: "Goulash" });
+
+    const hidden = await request(czech, "PATCH", `/api/databases/${czechRecipes.id}`, { overviewHidden: true });
+    expect(hidden.status).toBe(200);
+    expect(databaseBody.parse(hidden.body)).toEqual({ ...czechRecipes, overviewHidden: true });
+    expect(await recipeIds(czech, czechRecipes.id)).toEqual([recipe]);
+    // The other tenant's own recipes database is still shown.
+    expect(await database(english, "recipes")).toEqual(englishRecipes);
+
+    // The other tenant cannot show it again: the id answers exactly like an id that does not exist.
+    const unknownId = randomUUID();
+    const foreign = await request(english, "PATCH", `/api/databases/${czechRecipes.id}`, { overviewHidden: false });
+    const unknown = await request(english, "PATCH", `/api/databases/${unknownId}`, { overviewHidden: false });
+    expect(unknown.status).toBe(404);
+    expect(errorBody.parse(unknown.body).error.code).toBe("not_found");
+    expect(JSON.stringify(foreign).replaceAll(czechRecipes.id, unknownId)).toBe(JSON.stringify(unknown));
+    expect(await database(czech, "recipes")).toEqual({ ...czechRecipes, overviewHidden: true });
+
+    // A database that is not hideable is refused for the runtime role as well.
+    const projects = await database(czech, "projects");
+    const refused = await request(czech, "PATCH", `/api/databases/${projects.id}`, { overviewHidden: true });
+    expect(refused.status).toBe(403);
+    expect(errorBody.parse(refused.body).error.code).toBe("forbidden");
+    expect(await database(czech, "projects")).toEqual(projects);
   });
 
   it("answers 400 on photo for an unknown blob, a blob of another tenant and a blob that is not an image, and creates the recipe with an image blob of the tenant", async () => {

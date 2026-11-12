@@ -33,6 +33,7 @@ import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { releaseTrashedEventEdges } from "../transcription/transcriptEventEdges.js";
 import { transcriptSpeakerCardContextSchema } from "../transcription/transcriptSpeakerCardContext.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
@@ -197,6 +198,26 @@ async function writeEnvelopeRelations(
       }
     }
   }
+}
+
+/**
+ * Before a pairing card (role `event`) writes its transcript's edge to the Event it confirms: deletes that
+ * transcript's edge to an Event in the Trash, in the confirm transaction, as the confirming user's write
+ * (issue #1743). The relation allows a transcript one Event, so the new edge would otherwise fail with
+ * `cardinality_violation`. A speaker card writes through `speakers` and removes nothing.
+ */
+async function releaseTrashedEventOfPairingCard(
+  client: PoolClient,
+  edge: TranscriptCardEdge,
+  actingUserId?: string,
+): Promise<void> {
+  if (edge.role !== "event") return;
+  await releaseTrashedEventEdges(
+    client,
+    { eventPropertyId: edge.relationPropertyId, transcriptId: edge.transcriptId },
+    CONFIRMING_USER_WRITER,
+    actingUserId,
+  );
 }
 
 /** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
@@ -421,8 +442,11 @@ async function assertValidEnvelopeForCard(
  * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
  * for `'database'` it is written right after the Event is created. Both run in the caller's one
  * transaction, so a failed edge write (e.g. `cardinality_violation` when the transcript is already
- * linked to another Event; an Event may hold many transcripts) leaves no Event, no edge and the card still
- * `proposed`. A `'database'` envelope's `relations` (issue #1476) are written the same way, after
+ * linked to another Event that is not in the Trash; an Event may hold many transcripts) leaves no Event, no
+ * edge and the card still `proposed`. An edge from the transcript to an Event in the Trash is deleted in this
+ * transaction right before the pairing edge is written (issue #1743, `releaseTrashedEventOfPairingCard`), so
+ * it does not fail that write and comes back when the confirm rolls back.
+ * A `'database'` envelope's `relations` (issue #1476) are written the same way, after
  * the item, one edge per target id with the new item as caller; any failing edge aborts the item
  * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
@@ -521,6 +545,7 @@ export async function confirmProposalWithClient(
     }
     // A 'database' envelope on a transcript card is always its create-Event shape.
     if (transcriptCardEdge) {
+      await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
       await createRelationWithClient(
         client,
         {
@@ -543,6 +568,7 @@ export async function confirmProposalWithClient(
     // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
     // names this write.
     if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
+    await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
     await createRelationWithClient(
       client,
       {

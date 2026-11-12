@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
@@ -15,6 +15,9 @@ import { ForbiddenError, NotFoundError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { withTransaction } from "../db/pool.js";
 import { listPropertiesByDatabases, setInitialPosition } from "../chokePoint/propertiesStore.js";
+import { patchDatabase } from "../chokePoint/databasesStore.js";
+import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 async function bounded<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -71,6 +74,17 @@ function observeStatementPid(runtime: Pool, statement: RegExp) {
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+// The production resolver over the full registry: `recipes` is the one database it reports as hideable.
+const metadataResolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
+
+/** The text of the migration that adds `databases.overview_hidden`, found by name because its ordinal can move at landing. */
+async function readOverviewHiddenMigration(): Promise<string> {
+  const directory = new URL("../db/migrations/", import.meta.url);
+  const files = (await readdir(directory)).filter((name) => name.endsWith("_database_overview_hidden.sql"));
+  const [file] = files;
+  if (file === undefined || files.length !== 1) throw new Error("expected exactly one overview_hidden migration");
+  return readFile(new URL(file, directory), "utf8");
+}
 
 describe("choke-point databaseOps", () => {
   beforeEach(async () => {
@@ -206,6 +220,201 @@ describe("choke-point databaseOps", () => {
     } finally {
       await runtime.end();
     }
+  });
+
+  describe("overviewHidden (issue #2002)", () => {
+    it("sets and clears overviewHidden on the database whose descriptor declares it hideable", async () => {
+      const recipes = await chokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
+      expect(recipes.overviewHidden).toBe(false);
+
+      const hidden = await chokePoint.patchDatabase(recipes.id, { overviewHidden: true }, undefined, metadataResolver);
+      expect(hidden).toEqual({ ...recipes, overviewHidden: true });
+      expect(await chokePoint.getDatabase(recipes.id)).toEqual(hidden);
+
+      const shown = await chokePoint.patchDatabase(recipes.id, { overviewHidden: false }, undefined, metadataResolver);
+      expect(shown).toEqual(recipes);
+      expect(await chokePoint.getDatabase(recipes.id)).toEqual(recipes);
+    });
+
+    it("writes overviewHidden in the one statement that writes the other patch fields", async () => {
+      const recipes = await chokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
+      const client = await pool.connect();
+      const statements: string[] = [];
+      // A recording view of the client; the pooled client itself stays unpatched.
+      const recording = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property !== "query") return Reflect.get(target, property, receiver) as unknown;
+          return (...args: unknown[]): unknown => {
+            if (typeof args[0] === "string") statements.push(args[0]);
+            // eslint-disable-next-line @typescript-eslint/unbound-method
+            return Reflect.apply(target.query, target, args);
+          };
+        },
+      });
+      try {
+        const patched = await patchDatabase(
+          recording,
+          recipes.id,
+          { name: "Cookbook", overviewHidden: true },
+          metadataResolver,
+        );
+        expect(patched).toEqual({ ...recipes, name: "Cookbook", overviewHidden: true });
+      } finally {
+        client.release();
+      }
+      const updates = statements.filter((sql) => sql.trimStart().startsWith("UPDATE databases"));
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toContain("SET name = $2, overview_hidden = $3 WHERE id = $1");
+      expect(await chokePoint.getDatabase(recipes.id)).toMatchObject({ name: "Cookbook", overviewHidden: true });
+    });
+
+    it.each([
+      {
+        name: "a system database whose descriptor does not declare it hideable",
+        create: () => chokePoint.createDatabase({ name: "Projects", key: "projects", system: true }),
+        resolver: metadataResolver,
+      },
+      {
+        name: "a user-created database",
+        create: () => chokePoint.createDatabase({ name: "Gifts" }),
+        resolver: metadataResolver,
+      },
+      {
+        name: "a hideable database when the caller passes no resolver",
+        create: () => chokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true }),
+        resolver: undefined,
+      },
+    ])("refuses overviewHidden on $name and writes nothing", async ({ create, resolver }) => {
+      const database = await create();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        for (const patch of [
+          { overviewHidden: true },
+          { overviewHidden: false },
+          { name: "Renamed", overviewHidden: true },
+        ]) {
+          await expect(chokePoint.patchDatabase(database.id, patch, undefined, resolver)).rejects.toBeInstanceOf(
+            ForbiddenError,
+          );
+        }
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await chokePoint.getDatabase(database.id)).toEqual(database);
+    });
+
+    it("publishes one schema invalidation when overviewHidden is set and one when it is cleared", async () => {
+      const recipes = await chokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await chokePoint.patchDatabase(recipes.id, { overviewHidden: true }, "user-1", metadataResolver);
+        expect(events).toEqual([{ scope: "schema", databaseId: recipes.id, userId: "user-1" }]);
+        await chokePoint.patchDatabase(recipes.id, { overviewHidden: false }, "user-1", metadataResolver);
+        expect(events).toEqual([
+          { scope: "schema", databaseId: recipes.id, userId: "user-1" },
+          { scope: "schema", databaseId: recipes.id, userId: "user-1" },
+        ]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
+    it("raises NotFoundError for a missing database before it judges overviewHidden", async () => {
+      // Without a resolver the flag is refused for every existing database, so NotFoundError shows the lookup ran first.
+      await expect(chokePoint.patchDatabase(randomUUID(), { overviewHidden: true })).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
+      await expect(
+        chokePoint.patchDatabase(randomUUID(), { overviewHidden: true }, undefined, metadataResolver),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("reads false for a row written in the pre-migration shape, from a NOT NULL column that defaults to false", async () => {
+      // The legacy insert omits the column, as code deployed before the overview_hidden migration does.
+      const { rows } = await pool.query<{ overview_hidden: boolean }>(
+        "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING overview_hidden",
+        ["Legacy"],
+      );
+      expect(rows).toEqual([{ overview_hidden: false }]);
+      const columns = await pool.query<{ data_type: string; is_nullable: string; column_default: string | null }>(
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'databases' AND column_name = $1",
+        ["overview_hidden"],
+      );
+      expect(columns.rows).toEqual([{ data_type: "boolean", is_nullable: "NO", column_default: "false" }]);
+    });
+
+    it("gives a row created before the overview_hidden migration the value false and keeps its other columns", async () => {
+      const migration = await readOverviewHiddenMigration();
+      await withTransaction(pool, async (client) => {
+        await client.query("CREATE TEMP TABLE databases (id uuid PRIMARY KEY, name text NOT NULL) ON COMMIT DROP");
+        await client.query("SET LOCAL search_path = pg_temp");
+        const id = randomUUID();
+        await client.query("INSERT INTO databases (id, name) VALUES ($1, $2)", [id, "Before upgrade"]);
+        await client.query(migration);
+        const { rows } = await client.query<{ id: string; name: string; overview_hidden: boolean }>(
+          "SELECT id, name, overview_hidden FROM databases WHERE id = $1",
+          [id],
+        );
+        expect(rows).toEqual([{ id, name: "Before upgrade", overview_hidden: false }]);
+      });
+    });
+
+    it("allows the data runtime role to write overview_hidden", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+        await runInTenant(getTenantZeroId(), async () => {
+          const runtimeChokePoint = createChokePoint(runtime);
+          const recipes = await runtimeChokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
+          expect(
+            await runtimeChokePoint.patchDatabase(recipes.id, { overviewHidden: true }, undefined, metadataResolver),
+          ).toMatchObject({ id: recipes.id, overviewHidden: true });
+          expect((await runtimeChokePoint.getDatabase(recipes.id))?.overviewHidden).toBe(true);
+        });
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("confines overviewHidden to the caller's tenant on the runtime role", async () => {
+      const tenantA = getTenantZeroId();
+      const tenantB = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const runtimeChokePoint = createChokePoint(runtime);
+        const create = () => runtimeChokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
+        const recipesA = await runInTenant(tenantA, create);
+        const recipesB = await runInTenant(tenantB, create);
+
+        await runInTenant(tenantB, async () => {
+          // Tenant A's database is answered like an id that does not exist, and stays as it was.
+          for (const id of [recipesA.id, randomUUID()]) {
+            await expect(
+              runtimeChokePoint.patchDatabase(id, { overviewHidden: true }, undefined, metadataResolver),
+            ).rejects.toBeInstanceOf(NotFoundError);
+          }
+          expect(
+            await runtimeChokePoint.patchDatabase(recipesB.id, { overviewHidden: true }, undefined, metadataResolver),
+          ).toMatchObject({ id: recipesB.id, overviewHidden: true });
+        });
+
+        await runInTenant(tenantA, async () => {
+          expect((await runtimeChokePoint.getDatabase(recipesA.id))?.overviewHidden).toBe(false);
+          expect(await runtimeChokePoint.getDatabase(recipesB.id)).toBeNull();
+        });
+        await runInTenant(tenantB, async () => {
+          expect((await runtimeChokePoint.getDatabase(recipesB.id))?.overviewHidden).toBe(true);
+        });
+      } finally {
+        await runtime.end();
+      }
+    });
   });
 
   it("renameDatabase on a missing database raises NotFoundError", async () => {

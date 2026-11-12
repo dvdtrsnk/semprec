@@ -1,4 +1,4 @@
-import { getItemPatchApprovalContribution } from "./hooks.js";
+import { getItemDeleteApprovalGuard, getItemPatchApprovalContribution } from "./hooks.js";
 // Owns the single authorize-and-project call for approved destructive operations: the read-only
 // projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
 // with the exact domain error the matching mutation would throw. `page_restore` is the one kind this
@@ -299,6 +299,12 @@ export async function computeDestructiveResourceProjection(
           currentResource: projected,
         });
       }
+      // The cascade's delete hooks run after the soft delete, so they cannot be run here. The owning
+      // module's guard states the refusal one of them answers an agent's trash of this item with; it
+      // comes last, as the hooks do in `itemDeleteWithClient`.
+      const guard = database.ownerModuleId ? getItemDeleteApprovalGuard(database.ownerModuleId) : undefined;
+      const refusal = guard ? await guard({ client, database, item }) : null;
+      if (refusal !== null) throw new ForbiddenError(refusal, { currentResource: projected });
       return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
     }
     case "relation.delete": {

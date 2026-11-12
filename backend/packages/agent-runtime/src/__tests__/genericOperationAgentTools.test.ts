@@ -25,7 +25,7 @@ import {
   type ChokePoint,
 } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import {
   TOOL_CHANGE_VALUE_MAX_LENGTH,
   createGenericOperationAgentTools,
@@ -33,8 +33,16 @@ import {
 } from "../tools/generic/genericOperationAgentTools.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 let pool: Pool;
@@ -710,7 +718,14 @@ describe("generic operation AgentTools (issue #220)", () => {
       });
       try {
         const granted = await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver);
-        const excluded = ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"];
+        const excluded = [
+          "page.get",
+          "page.ensure",
+          "page.restoreVersion",
+          "page.insert",
+          "page.changes",
+          ...REST_ONLY_OPERATION_NAMES,
+        ];
         expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
         for (const name of excluded) expect(granted).not.toContain(name);
         expect(seen?.has("owned.read")).toBe(false);
@@ -736,13 +751,20 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(granted).toEqual([]);
     });
 
-    it("returns all operations except page operations under the project grant policy", async () => {
+    it("returns all operations except page operations and the REST-only ones under the project grant policy", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check tools" });
 
       const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
-      const excluded = ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"];
+      const excluded = [
+        "page.get",
+        "page.ensure",
+        "page.restoreVersion",
+        "page.insert",
+        "page.changes",
+        ...REST_ONLY_OPERATION_NAMES,
+      ];
       expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
       for (const name of excluded) expect(granted).not.toContain(name);
     });

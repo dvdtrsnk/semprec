@@ -182,6 +182,33 @@ describe("database icon and color inputs", () => {
   );
 });
 
+describe("database overviewHidden patch input (issue #2002)", () => {
+  it.each([true, false])("accepts overviewHidden %s as a patch of its own", (overviewHidden) => {
+    expect(DatabasePatchInputSchema.parse({ databaseId: "d", patch: { overviewHidden } }).patch).toEqual({
+      overviewHidden,
+    });
+  });
+
+  it("accepts overviewHidden beside the other patch fields", () => {
+    expect(
+      DatabasePatchInputSchema.parse({ databaseId: "d", patch: { name: "Cookbook", overviewHidden: true } }).patch,
+    ).toEqual({ name: "Cookbook", overviewHidden: true });
+  });
+
+  it.each([["true"], ["false"], [1], [0], [null], [[]], [{}]])(
+    "rejects the non-boolean overviewHidden %j and names the field",
+    (overviewHidden) => {
+      const result = DatabasePatchInputSchema.safeParse({ databaseId: "d", patch: { overviewHidden } });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(validationIssueField(result.error.issues)).toBe("patch.overviewHidden");
+    },
+  );
+
+  it("does not accept overviewHidden when a database is created", () => {
+    expect(DatabaseCreateInputSchema.safeParse({ name: "Gifts", overviewHidden: true }).success).toBe(false);
+  });
+});
+
 describe("PropertyGetByKeyInputSchema", () => {
   it("accepts a database id and key, with or without a type filter", () => {
     expect(PropertyGetByKeyInputSchema.safeParse({ databaseId: "db1", key: "assignedTo" }).success).toBe(true);

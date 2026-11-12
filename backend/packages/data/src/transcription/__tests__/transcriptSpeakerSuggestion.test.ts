@@ -19,9 +19,9 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { proposalHistoryEntrySchema } from "../../inbox/proposalHistory.js";
-import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
-import { writeComputed } from "../../chokePoint/itemsStore.js";
+import { lockItemById, writeComputed } from "../../chokePoint/itemsStore.js";
 import type { ProposalEnvelope } from "../../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
@@ -39,6 +39,13 @@ import {
 
 let pool: Pool;
 
+/** An invitation of the shape issue #1757 gives a participant edge; an internal write without a writer stores it as `system`. */
+const ACCEPTED_INVITATION = {
+  status: "accepted",
+  email: "alice@example.com",
+  mailboxId: "6f1f8d0e-3c57-4a56-9d0b-2f8a3e3f4b11",
+};
+
 const SEGMENTS = [
   { speaker: "SPEAKER_00", text: "Thanks for joining, Bob.", startsAt: 0, endsAt: 1 },
   { speaker: "SPEAKER_01", text: "Happy to, Alice.", startsAt: 1, endsAt: 2 },
@@ -48,6 +55,23 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
   return rows[0].id;
+}
+
+/**
+ * The value of `work`, or the string `"still waiting"` when it has not settled after `milliseconds`. The limit
+ * only ends a wait that would otherwise last as long as a lock is held; work that does not wait settles long
+ * before it.
+ */
+async function settledWithin<T>(work: Promise<T>, milliseconds = 10_000): Promise<T | "still waiting"> {
+  let timer: NodeJS.Timeout | undefined;
+  const limit = new Promise<"still waiting">((resolve) => {
+    timer = setTimeout(() => resolve("still waiting"), milliseconds);
+  });
+  try {
+    return await Promise.race([work, limit]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function propertyIdFor(databaseId: string, key: string): Promise<string> {
@@ -254,14 +278,19 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         relationPropertyId,
         callerItemId: eventId,
         targetItemId: aliceId,
-        metadata: { invitation: { status: "accepted" } },
+        metadata: { invitation: ACCEPTED_INVITATION },
       });
-      await chokePoint.createRelation({
+      const bobEdge = await chokePoint.createRelation({
         relationPropertyId,
         callerItemId: eventId,
         targetItemId: bobId,
-        metadata: { invitation: { status: "unknown" } },
       });
+      // The participant edge hook (issue #1757) refuses this shape, so only an edge stored before it can hold it.
+      const legacy = await pool.query("UPDATE item_relations SET metadata = $2::jsonb WHERE id = $1", [
+        bobEdge.id,
+        JSON.stringify({ invitation: { status: "unknown" } }),
+      ]);
+      expect(legacy.rowCount).toBe(1);
       expect((await context())?.candidates).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: aliceId, invitationStatus: "accepted" }),
@@ -706,7 +735,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                   relationPropertyId: propertyId,
                   callerItemId: eventId,
                   targetItemId: person.id,
-                  metadata: { invitation: "accepted" },
+                  metadata: { role: "attendee" },
                 },
                 undefined,
                 { writerKind: "user" },
@@ -749,19 +778,25 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                     ? secondFailure
                     : new Error("Second concurrent operation failed", { cause: secondFailure });
                 expect(secondPid).not.toBe(0);
-                const blocked = await runtime.query<{ blocked: boolean; insertion: boolean; enqueue: boolean }>(
-                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue FROM pg_stat_activity WHERE pid = $1::int",
+                const blocked = await runtime.query<{
+                  blocked: boolean;
+                  insertion: boolean;
+                  enqueue: boolean;
+                  eventLock: boolean;
+                }>(
+                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue, position('FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE' IN query) > 0 AS \"eventLock\" FROM pg_stat_activity WHERE pid = $1::int",
                   [secondPid, firstPid],
                 );
                 // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted participant
-                // edge. User-first: the confirm writes its speakers edge first, and that edge's People `lastContact`
+                // edge. The confirm's insert-only write takes no Event row lock in the participant edge hook
+                // (issue #1757), so the user write passes that hook's lock and is not held there.
+                // User-first: the confirm writes its speakers edge first, and that edge's People `lastContact`
                 // enqueue (issue #1660) waits on the user write's uncommitted job under the same person's key, before
-                // the confirm reaches its participant INSERT; this order no longer waits on an uncommitted participant
-                // edge.
+                // the confirm reaches its participant insert.
                 expect(blocked.rows[0]).toEqual(
                   order === "user-first"
-                    ? { blocked: true, insertion: false, enqueue: true }
-                    : { blocked: true, insertion: true, enqueue: false },
+                    ? { blocked: true, insertion: false, enqueue: true, eventLock: false }
+                    : { blocked: true, insertion: true, enqueue: false, eventLock: false },
                 );
               },
               { timeout: 5000 },
@@ -775,7 +810,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
               [eventId, person.id],
             );
             expect(rows.rows).toHaveLength(1);
-            expect(rows.rows[0]?.metadata).toEqual({ invitation: "accepted" });
+            expect(rows.rows[0]?.metadata).toEqual({ role: "attendee" });
             // Both writers queued the same person's recompute; job-key deduplication left one job.
             const lastContactJobs = await pool.query<{ task_identifier: string; key: string | null }>(
               "SELECT task_identifier, key FROM graphile_worker.jobs WHERE key = $1",
@@ -829,6 +864,46 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       20_000,
     );
 
+    it("confirms while an Event update holds the Event's row lock, and the update then queues the same person's recompute", async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let confirming: Promise<unknown> | undefined;
+      try {
+        const cardId = await onlyCardId();
+        await runInTenant(getTenantZeroId(), async () => {
+          const outcome = await withTransaction(runtime, async (update) => {
+            // What an Event update holds first: the row lock of the Event.
+            await lockItemById(update, eventsId, eventId);
+            confirming = withTransaction(runtime, (client) =>
+              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+            );
+            // The confirm's speakers edge queued Alice's `lastContact` recompute (issue #1660). Alice already takes
+            // part in the Event, so the update below queues the same job key. A confirm whose participant insert
+            // waited for the row lock here would hold that key while it waits, and the two would deadlock. Such a
+            // wait cannot end inside this callback, so it is given a limit.
+            const confirmed = await settledWithin(confirming);
+            const updated = await updateItemWithClient(
+              update,
+              { databaseId: eventsId, itemId: eventId, propertiesPatch: { date: "2026-10-17" } },
+              { writer: { writerKind: "user" } },
+            );
+            return { confirmed, date: updated.properties.date };
+          });
+          expect(outcome.confirmed).toMatchObject({ properties: { status: "confirmed" } });
+          expect(outcome.date).toBe("2026-10-17");
+        });
+        expect(await mappedPersonIds()).toContain(aliceId);
+        const lastContactJobs = await pool.query<{ key: string | null }>(
+          "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+          [peopleLastContactJobKey(aliceId)],
+        );
+        expect(lastContactJobs.rows).toEqual([{ key: peopleLastContactJobKey(aliceId) }]);
+      } finally {
+        // After the update ended, a confirm that did wait ends too; it is settled before the pool is closed.
+        await confirming?.catch(() => undefined);
+        await runtime.end();
+      }
+    }, 30_000);
+
     it("keeps an existing participant's metadata and omits a new-edge history entry", async () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       try {
@@ -848,7 +923,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             relationPropertyId: property.rows[0].id,
             callerItemId: eventId,
             targetItemId: aliceId,
-            metadata: { invitation: "accepted" },
+            metadata: { invitation: ACCEPTED_INVITATION },
           });
           const before = await runtime.query<{ id: string; metadata: unknown }>(
             "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",

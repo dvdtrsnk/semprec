@@ -1,15 +1,20 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant, type ItemReadInclude } from "@semprec/shared";
 import {
   createChokePoint,
+  createUser,
   ensureItemAutomation,
+  getDatabaseByModuleId,
   markItemAutomationDone,
   createCollectionMetadataResolver,
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
+  setInvalidationHook,
   withTransaction,
+  type InvalidationEvent,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
@@ -341,5 +346,90 @@ describe("derived item reads in the generic application service", () => {
         }
       }
     });
+  });
+});
+
+describe("select option operations in the generic application service (issue #1699)", () => {
+  // This suite's own pools and tenant; the suite above ends the module-level ones in its `afterAll`.
+  let admin: Pool;
+  let runtime: Pool;
+  let tenant: string;
+  const invalidation = vi.fn<(event: InvalidationEvent) => void>();
+
+  beforeAll(async () => {
+    admin = getTestPool();
+    runtime = await createRuntimeRolePool(admin, "semprec_data");
+  });
+  beforeEach(async () => {
+    await resetDatabase(admin);
+    tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));
+    invalidation.mockClear();
+    setInvalidationHook(invalidation);
+  });
+  afterEach(() => setInvalidationHook(() => {}));
+  afterAll(async () => {
+    await runtime.end();
+    await admin.end();
+  });
+
+  /** The service on the runtime role, and the tenant's Health records `tags` property. */
+  async function fixture() {
+    const service = createGenericApplicationService(
+      runtime,
+      await createCollectionMetadataResolver(await loadFullModuleRegistry()),
+    );
+    const tags = await runInTenant(tenant, async () => {
+      const database = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "healthRecords"));
+      if (!database) throw new Error("Health records database missing");
+      const property = await createChokePoint(runtime).getPropertyByKey(database.id, "tags");
+      if (!property) throw new Error("Health records tags property missing");
+      return property;
+    });
+    return { service, tags };
+  }
+
+  it("adds an option for the actor and names the actor in the schema invalidation", async () => {
+    const { service, tags } = await fixture();
+    const actor = { userId: randomUUID() };
+
+    const option = await runInTenant(tenant, () =>
+      service.addPropertyOption(actor, { propertyId: tags.id, label: "Bylinky", color: "#34C759" }),
+    );
+
+    expect(option).toEqual({ key: "bylinky", label: "Bylinky", color: "#34C759" });
+    expect(invalidation).toHaveBeenCalledExactlyOnceWith({
+      scope: "schema",
+      databaseId: tags.databaseId,
+      userId: actor.userId,
+    });
+  });
+
+  it("returns a recolored catalog option's label in the caller's locale, and in English when the caller's user row is not visible", async () => {
+    const { service, tags } = await fixture();
+    const czechUser = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.com`,
+      passwordHash: "unused",
+      locale: "cs",
+    });
+    const unknownActor = { userId: randomUUID() };
+
+    const czech = await runInTenant(tenant, () =>
+      service.updatePropertyOption(
+        { userId: czechUser.id },
+        { propertyId: tags.id, key: "medication", color: "#FF3B30" },
+      ),
+    );
+    const fallback = await runInTenant(tenant, () =>
+      service.updatePropertyOption(unknownActor, { propertyId: tags.id, key: "epilepsy", color: "#000000" }),
+    );
+
+    expect(czech).toEqual({ key: "medication", label: "Léky", color: "#FF3B30" });
+    expect(fallback).toEqual({ key: "epilepsy", label: "Epilepsy", color: "#000000" });
+    expect(invalidation.mock.calls).toEqual([
+      [{ scope: "schema", databaseId: tags.databaseId, userId: czechUser.id }],
+      [{ scope: "schema", databaseId: tags.databaseId, userId: unknownActor.userId }],
+    ]);
   });
 });

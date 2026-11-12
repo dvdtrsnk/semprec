@@ -78,6 +78,19 @@ export async function hasCredential(client: Queryable, itemId: string): Promise<
   return rows.length > 0;
 }
 
+/**
+ * The type of the credential item `itemId` holds, or `null` when it holds none. It reads the type
+ * only: nothing is decrypted, so no `credential_access_log` entry is written.
+ */
+export async function getCredentialType(client: Queryable, itemId: string): Promise<CredentialType | null> {
+  const { rows } = await client.query<{ credential_type: string }>(
+    `SELECT credential_type FROM external_credentials WHERE item_id = $1`,
+    [itemId],
+  );
+  const row = rows[0];
+  return row ? assertKnownValue(CREDENTIAL_TYPES, row.credential_type, "credential type") : null;
+}
+
 export interface DecryptCredentialInput {
   itemId: string;
   actorType: CredentialActorType;
@@ -95,7 +108,8 @@ export interface DecryptCredentialInput {
  * access attempt on record) — and returns `null` (no log entry) only when there is nothing to
  * decrypt at all, since "no credential stored" is not itself a credential access. Callers: the
  * mail sync worker (every sync cycle) and the MCP connection manager (once per opened
- * transport) — never an agent tool.
+ * transport) — never an agent tool. The mailbox removal (issue gh-2030) reads an OAuth mailbox's
+ * refresh token once, as the removing user, for its cleanup at the provider.
  */
 export async function getDecryptedCredential(client: Queryable, input: DecryptCredentialInput): Promise<string | null> {
   const { rows } = await client.query<{

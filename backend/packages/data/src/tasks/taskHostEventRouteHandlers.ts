@@ -11,7 +11,6 @@ import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { getTaskRecurrence } from "./taskRecurrenceStore.js";
 
 interface Context {
   params: Record<string, string>;
@@ -144,14 +143,18 @@ function parseReschedule(body: unknown): Record<string, unknown> {
 
 /**
  * `PUT /api/tasks/:id/host-events/:eventId` (issue #1764): puts a task into an event. In one transaction it locks the
- * task, then its `task_recurrence` row (items before `task_recurrence`,
- * docs/adr/2026-10-25-task-and-event-recurrence-model.md), and writes the `Tasks.hostEvents` edge as the Tasks process
- * with the metadata `{ addedAt }` (`nextAddedAt`). An edge that already exists gets the new `addedAt`, which makes
- * that event the last of the task's host events. The request body is not read.
+ * task and writes the `Tasks.hostEvents` edge as the Tasks process with the metadata `{ addedAt }` (`nextAddedAt`). An
+ * edge that already exists gets the new `addedAt`, which makes that event the last of the task's host events. The
+ * request body is not read.
  *
- * A task or an event that is missing, in the trash or another tenant's is not found alike. A task whose recurrence is
- * active is refused with 400 on `taskId`. The event row is not locked: the edge write checks both endpoints again, and
- * an event trashed after that check keeps its edge, as an event trashed after the request does.
+ * An occurrence of a recurring series, the series' current instance or another stored occurrence, is put into the
+ * event like any other task (issue #2012). The handler writes the edge of that item; it neither reads nor writes
+ * `task_recurrence` or another occurrence of the series, so the series row with its rule and template stays as it is.
+ * Completing the series' current instance advances the series whether or not that instance sits in an event.
+ *
+ * A task or an event that is missing, in the trash or another tenant's is not found alike. The event row is not
+ * locked: the edge write checks both endpoints again, and an event trashed after that check keeps its edge, as an
+ * event trashed after the request does.
  */
 export function createTaskHostEventPutRouteHandler(pool: Pool) {
   return async (ctx: Context): Promise<{ status: number; body: TaskHostEventsBody }> => {
@@ -163,10 +166,6 @@ export function createTaskHostEventPutRouteHandler(pool: Pool) {
       const relation = await hostEventsRelation(client, tasksDatabaseId);
       const event = await itemsStore.getItemById(client, relation.eventsDatabaseId, eventId);
       if (!event || event.deletedAt) throw new NotFoundError(`Event ${eventId} not found`);
-      const recurrence = await getTaskRecurrence(client, taskId, true);
-      if (recurrence?.active) {
-        throw new ValidationError("A task with an active recurrence cannot be put into an event", { field: "taskId" });
-      }
       const addedAt = nextAddedAt(await storedHostEvents(client, relation, taskId));
       await createRelationWithClient(
         client,

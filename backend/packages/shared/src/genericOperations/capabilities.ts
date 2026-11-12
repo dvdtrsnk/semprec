@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 42 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 44 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -79,6 +79,9 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "property.create": nonDestructive("core.schema.write", "write"),
   "property.patch": nonDestructive("core.schema.write", "write"),
   "property.delete": destructive("core.schema.write", false),
+  // Neither removes an option nor changes an option key, so every stored item value stays valid (issue #1699).
+  "property.option.add": nonDestructive("core.schema.write", "write"),
+  "property.option.update": nonDestructive("core.schema.write", "write"),
   "view.list": nonDestructive("core.view.read", "read"),
   "view.get": nonDestructive("core.view.read", "read"),
   "view.query": nonDestructive("core.view.read", "read"),

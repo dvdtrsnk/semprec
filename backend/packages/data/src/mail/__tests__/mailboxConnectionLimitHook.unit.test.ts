@@ -14,6 +14,7 @@ function database(ownerModuleId: string | null): DatabaseRow {
     system: false,
     icon: null,
     color: null,
+    overviewHidden: false,
     archivedAt: null,
   };
 }

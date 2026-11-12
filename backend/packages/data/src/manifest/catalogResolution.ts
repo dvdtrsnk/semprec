@@ -236,6 +236,22 @@ function resolveConfig(
   return config;
 }
 
+/**
+ * The labels the catalogs give one option of a property (issue #1699): its Czech entry and its English entry, each
+ * only when the catalog has one. Empty when no catalogs are given and for an option the catalogs do not name, such
+ * as one added at runtime.
+ */
+export function catalogOptionLabels(
+  catalogs: ModuleCatalogs | undefined,
+  dbKey: string | null,
+  propertyKey: string,
+  optionKey: string,
+): string[] {
+  if (!catalogs) return [];
+  const catalogKey = `property.${dbKey}.${propertyKey}.option.${optionKey}`;
+  return [catalogs.cs[catalogKey], catalogs.en[catalogKey]].filter((label) => label !== undefined);
+}
+
 export function resolveProperty(
   p: PropertyRow,
   dbKey: string | null,

@@ -767,15 +767,19 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     });
   }
 
-  /** How many relation edges of any kind end at `itemId`, read inside `tenantId`. */
-  async function countEdgesOf(tenantId: string, itemId: string): Promise<number | undefined> {
+  /**
+   * How many relation edges of any kind end at `itemId`, read inside `tenantId`. A live Event has one from
+   * its create, to its calendar (issue #1761), so a test compares the count with the one it read before.
+   */
+  async function countEdgesOf(tenantId: string, itemId: string): Promise<number> {
     const { rows } = await inTenant(tenantId, (client) =>
       client.query<{ count: number }>(
         "SELECT count(*)::int AS count FROM item_relations WHERE item_a = $1 OR item_b = $1",
         [itemId],
       ),
     );
-    return rows[0]?.count;
+    if (!rows[0]) throw new Error("Missing edge count");
+    return rows[0].count;
   }
 
   it("links the transcript to the upload's live Event while it is still processing, and the pipeline adds no pairing card", async () => {
@@ -826,6 +830,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
             (await chokePoint.purgeExpiredTrashSubtree(eventId, new Date(Date.now() + 60_000))).purgedItemIds,
           ).toEqual([eventId]);
       });
+      const edgesBefore = await countEdgesOf(tenant, eventId);
 
       await runCreateLane();
 
@@ -836,7 +841,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
         pairingCards: [],
         speakerCards: [],
       });
-      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+      expect(await countEdgesOf(tenant, eventId)).toBe(edgesBefore);
 
       await runPipelineLane();
 
@@ -847,7 +852,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
         pairingCards: ["transcript"],
         speakerCards: ["needsClarification", "needsClarification"],
       });
-      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+      expect(await countEdgesOf(tenant, eventId)).toBe(edgesBefore);
     },
   );
 
@@ -855,6 +860,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     const eventId = await createEvent(tenant);
     const fileItemId = await uploadRecording(tenant, eventId);
     const task = createTranscriptionCreateTask(runtime);
+    const edgesBefore = await countEdgesOf(tenant, eventId);
 
     await runInTenant(tenant, async () => {
       await task({ fileItemId });
@@ -867,7 +873,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
       pairingCards: [],
       speakerCards: [],
     });
-    expect(await countEdgesOf(tenant, eventId)).toBe(1);
+    expect(await countEdgesOf(tenant, eventId)).toBe(edgesBefore + 1);
   });
 
   it("keeps a concurrent trash of the Event waiting until step 0 has committed its edge", async () => {
@@ -957,6 +963,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     "writes no edge for a request naming %s, and nothing in the other tenant",
     async (requested) => {
       const foreignEventId = await createEvent(foreign);
+      const foreignEdgesBefore = await countEdgesOf(foreign, foreignEventId);
       const fileItemId = await uploadRecording(tenant, null);
       // recordRecordingIntake refuses an Event outside the tenant, so only a direct write can leave such an id in the request.
       const planted = await runInTenant(tenant, () =>
@@ -976,7 +983,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
         pairingCards: [],
         speakerCards: [],
       });
-      expect(await countEdgesOf(foreign, foreignEventId)).toBe(0);
+      expect(await countEdgesOf(foreign, foreignEventId)).toBe(foreignEdgesBefore);
       expect(await readRecording(foreign, fileItemId)).toEqual({
         statuses: [],
         eventIds: [],
@@ -990,6 +997,9 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     const eventId = await createEvent(tenant);
     const fileItemId = await uploadRecording(tenant, eventId);
     const reindexKey = `item-search-reindex:item:${eventId}`;
+    // The Event's create queued this job through its calendar edge (issue #1761). It is removed with
+    // graphile-worker's public remove_job, so the job found below is the one step 0's edge queued.
+    await pool.query("SELECT graphile_worker.remove_job($1)", [reindexKey]);
     expect(await queuedJobKeys([reindexKey])).toEqual([]);
 
     await runCreateLane();
@@ -1018,6 +1028,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
       // Simulate a missing built-in catalog entry, which normal APIs cannot remove.
       const removed = await runInTenant(tenant, () => runtime.query(removeCatalogEntry));
       expect(removed.rowCount).toBe(1);
+      const edgesBefore = await countEdgesOf(tenant, eventId);
 
       await expect(runInTenant(tenant, () => createTranscriptionCreateTask(runtime)({ fileItemId }))).rejects.toThrow(
         message,
@@ -1029,7 +1040,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
         pairingCards: [],
         speakerCards: [],
       });
-      expect(await countEdgesOf(tenant, eventId)).toBe(0);
+      expect(await countEdgesOf(tenant, eventId)).toBe(edgesBefore);
       const checkpoint = await inTenant(tenant, (client) =>
         client.query<{ created: boolean }>("SELECT computed ? 'create' AS created FROM items WHERE id = $1", [
           fileItemId,

@@ -4,7 +4,7 @@ import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 /**
  * The descriptor of the `recipes` database (issue #1707): position 9 of the overview and of the collection
  * switcher, and a `gallery` default view. `seed/seedRecipesModule.ts` creates the default view with the type and
- * the name declared here.
+ * the name declared here. The user may hide the database from the overview (issue #2002).
  */
 export const RECIPES_DATABASE_DESCRIPTOR = {
   key: RECIPES_MODULE_ID,
@@ -14,6 +14,7 @@ export const RECIPES_DATABASE_DESCRIPTOR = {
   color: "#FF9500",
   overviewOrder: 9,
   switcherOrder: 9,
+  overviewHideable: true,
 } as const satisfies ModuleDatabaseDescriptor;
 
 /**

@@ -16,6 +16,22 @@ export function requireStringParam(params: Readonly<Record<string, string | unde
   return value;
 }
 
+/**
+ * A path parameter that names a stored string which is not limited to URL-safe characters, such as the key of a
+ * select option: the segment after one percent-decoding. `mountRoutes` hands a handler each segment as it travelled
+ * on the wire, so the undecoded segment of `To do` is `To%20do` and equals no stored value. A segment that is not
+ * valid percent-encoding of UTF-8 is `validation_failed` naming `name`.
+ */
+export function requireDecodedStringParam(params: Readonly<Record<string, string | undefined>>, name: string): string {
+  const segment = requireStringParam(params, name);
+  try {
+    return decodeURIComponent(segment);
+  } catch (error) {
+    if (!(error instanceof URIError)) throw error;
+    throw new ValidationError(`Path parameter '${name}' is not valid percent-encoding`, { field: name });
+  }
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**

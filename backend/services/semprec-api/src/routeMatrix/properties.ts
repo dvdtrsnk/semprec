@@ -54,4 +54,20 @@ export const PROPERTIES_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "add property option",
+    method: "POST",
+    path: `/api/properties/${EXAMPLE_ID}/options`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "update property option",
+    method: "PATCH",
+    path: `/api/properties/${EXAMPLE_ID}/options/probe`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

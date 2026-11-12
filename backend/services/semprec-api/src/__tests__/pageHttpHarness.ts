@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant, type CapabilityId } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createChokePoint,
@@ -110,10 +110,7 @@ export class PageHttpHarness {
    * A restricted MCP run credential of a project agent of `tenantId` with exactly `capabilities`, acting for the
    * tenant's user; returns the bearer token a caller presents.
    */
-  async mintRunCredential(
-    tenantId: string,
-    capabilities: Array<"core.page.read" | "core.page.write">,
-  ): Promise<string> {
+  async mintRunCredential(tenantId: string, capabilities: CapabilityId[]): Promise<string> {
     await runInTenant(tenantId, () => seedSystem(this.runtime));
     const minted = await runInTenant(tenantId, async () => {
       const chokePoint = createChokePoint(this.runtime);

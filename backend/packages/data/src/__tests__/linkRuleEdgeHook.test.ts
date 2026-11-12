@@ -31,14 +31,10 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   // The union cases use the real `fileCompaniesFromProjects` rule of the systemDatabases manifest (issue #1653),
-  // which replaced the fixture rule over the same three properties.
+  // which replaced the fixture rule over the same three properties. The conflict case uses the real
+  // `taskProjectFromEvent` rule (issue #1724): the fixture rule it replaced ran the other way over the same edge,
+  // from `Tasks.project` to `Events.project`, and the two together would be a cycle.
   linkRules: [
-    {
-      key: "fixtureSingle.taskProject",
-      source: { databaseKey: "tasks", propertyKey: "project" },
-      target: { databaseKey: "events", propertyKey: "project" },
-      via: { databaseKey: "events", relationKey: "actionItems" },
-    },
     {
       key: "fixtureProposal.eventName",
       source: { databaseKey: "events", propertyKey: "name" },
@@ -492,34 +488,34 @@ describe("value link via-edge union", () => {
       };
       const taskProject = await property(tasks, "project");
       const eventProject = await property(events, "project");
-      const via = await property(events, "actionItems");
+      const via = await property(tasks, "sourceEvents");
       const firstProject = await cp.createItem({ databaseId: projects, properties: { name: "First" } });
       const secondProject = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
-      const firstTask = await cp.createItem({ databaseId: tasks, properties: { name: "One" } });
-      const secondTask = await cp.createItem({ databaseId: tasks, properties: { name: "Two" } });
-      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
-      for (const [task, project] of [
-        [firstTask, firstProject],
-        [secondTask, secondProject],
+      const firstEvent = await cp.createItem({ databaseId: events, properties: { name: "One", date: "2026-10-16" } });
+      const secondEvent = await cp.createItem({ databaseId: events, properties: { name: "Two", date: "2026-10-17" } });
+      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
+      for (const [event, project] of [
+        [firstEvent, firstProject],
+        [secondEvent, secondProject],
       ] as const)
-        await cp.createRelation({ relationPropertyId: taskProject, callerItemId: task.id, targetItemId: project.id });
-      const edge = (taskId: string) => ({ relationPropertyId: via, callerItemId: event.id, targetItemId: taskId });
+        await cp.createRelation({ relationPropertyId: eventProject, callerItemId: event.id, targetItemId: project.id });
+      const edge = (eventId: string) => ({ relationPropertyId: via, callerItemId: task.id, targetItemId: eventId });
       const target = async () =>
-        (await cp.listItemRelations(event.id))
-          ?.filter((entry) => entry.relationPropertyId === eventProject)
+        (await cp.listItemRelations(task.id))
+          ?.filter((entry) => entry.relationPropertyId === taskProject)
           .map((entry) => entry.targetItemId);
-      await cp.createRelation(edge(firstTask.id));
+      await cp.createRelation(edge(firstEvent.id));
       expect(await target()).toEqual([firstProject.id]);
-      await cp.createRelation(edge(secondTask.id));
+      await cp.createRelation(edge(secondEvent.id));
       expect(await target()).toEqual([firstProject.id]);
       const row = await withTransaction(data, (client) =>
         client.query<{ state: string }>(
           "SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'project'",
-          [event.id],
+          [task.id],
         ),
       );
       expect(row.rows).toEqual([{ state: "on" }]);
-      await cp.deleteRelation(edge(firstTask.id));
+      await cp.deleteRelation(edge(firstEvent.id));
       expect(await target()).toEqual([secondProject.id]);
     });
   });

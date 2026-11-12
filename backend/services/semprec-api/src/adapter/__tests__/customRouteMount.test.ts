@@ -16,6 +16,7 @@ import {
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
 import { createDispatcher } from "../../app.js";
+import { createClientIpThrottle } from "../../clientIpThrottle.js";
 import {
   CustomRouteConfigurationError,
   createCustomRouteDependencies,
@@ -302,6 +303,8 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies).not.toBe(container);
     expect(seen.dependencies?.oauth).toBe(container.oauth);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    // The container carried no limiter, so the dispatcher added its own to the copy (issue gh-1750).
+    expect(seen.dependencies?.throttle?.tryAcquire("mailboxCredentialVerification", "user-fixture").granted).toBe(true);
     expect(container.oauth).toEqual({ redirectBaseUrl: "https://app.example.test" });
     expect(Object.keys(container).sort()).toEqual(["heartbeatRuleKinds", "oauth"]);
     expect(container.heartbeatRuleKinds).toBe(callerProvider);
@@ -395,7 +398,76 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(configured.status).toBe(201);
   });
 
-  it("createDispatcher supplies only its registry provider when the caller gives no container", async () => {
+  it("the password connect route answers 500 on a mount without a limiter, and verifies no login (issue gh-1750)", async () => {
+    await inTenantZero(() => seedSystem(pool));
+    const token = await tokenFor("password-connect-limiter@example.com");
+    const definitions = await (await loadFullModuleRegistry()).getCustomRouteDefinitions();
+    let verifications = 0;
+    const mailServerClients: CustomRouteDependencies["mailServerClients"] = {
+      verifyPassword: async () => {
+        verifications += 1;
+        return {
+          imap: { host: "imap.example.test", port: 993, security: "tls" },
+          smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+        };
+      },
+    };
+    /** Mounts the real custom routes of every module with `dependencies` and nothing else, as no dispatcher does. */
+    const connect = async (dependencies: CustomRouteDependencies): Promise<Response> => {
+      const server = await listen(definitions, dependencies);
+      openServers.push(server);
+      return fetch(`${baseUrlOf(server)}/api/mail/mailboxes`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "generic",
+          address: "owner@example.test",
+          password: "connect-password",
+          imapHost: "imap.example.test",
+          smtpHost: "smtp.example.test",
+        }),
+      });
+    };
+
+    const unconfigured = await connect({ mailServerClients });
+
+    expect(unconfigured.status).toBe(500);
+    expect(await unconfigured.json()).toEqual({ error: { code: "internal_error" } });
+    expect(verifications).toBe(0);
+
+    // The same request creates the mailbox once the mount has a limiter, so nothing else refused it above.
+    const configured = await connect({ mailServerClients, throttle: createClientIpThrottle() });
+
+    expect(configured.status).toBe(201);
+    expect(verifications).toBe(1);
+  });
+
+  it("createDispatcher hands on the limiter of the caller's container instead of creating one (issue gh-1750)", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    const seen: { dependencies?: CustomRouteDependencies } = {};
+    const capturing: CustomRouteHandlerFactory = (_factoryPool, dependencies) => {
+      seen.dependencies = dependencies;
+      return async () => ({ status: 200, body: {} });
+    };
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue([
+      { ...REDIRECT_DEFINITION, handler: capturing },
+    ]);
+    const throttle = createClientIpThrottle();
+
+    await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+      customRouteDependencies: { throttle },
+    });
+
+    expect(seen.dependencies?.throttle).toBe(throttle);
+  });
+
+  it("createDispatcher supplies only its registry provider and a limiter when the caller gives no container", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
     const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { dependencies?: CustomRouteDependencies } = {};
@@ -416,8 +488,9 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       maxFileSizeBytes: 1024,
     });
 
-    expect(Object.keys(seen.dependencies ?? {})).toEqual(["heartbeatRuleKinds"]);
+    expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual(["heartbeatRuleKinds", "throttle"]);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    expect(seen.dependencies?.throttle?.tryAcquire("mailboxCredentialVerification", "user-fixture").granted).toBe(true);
     expect(registryRules).not.toHaveBeenCalled();
     await seen.dependencies?.heartbeatRuleKinds?.();
     expect(registryRules).toHaveBeenCalledOnce();

@@ -28,7 +28,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 42-operation catalog's business logic.
+ * path into the 44-operation catalog's business logic.
  */
 
 /**
@@ -145,7 +145,7 @@ export function createGenericApplicationService(
 
     async patchDatabase(actor, input) {
       assertNonEmptyPatch(input.patch);
-      return chokePoint.patchDatabase(input.databaseId, input.patch, actor.userId);
+      return chokePoint.patchDatabase(input.databaseId, input.patch, actor.userId, resolver);
     },
 
     async archiveDatabase(actor, input) {
@@ -238,6 +238,25 @@ export function createGenericApplicationService(
 
     async deleteProperty(actor, input) {
       return chokePoint.deleteProperty(input.propertyId, actor.userId);
+    },
+
+    async addPropertyOption(actor, input) {
+      return chokePoint.addPropertyOption(input.propertyId, { label: input.label, color: input.color }, actor.userId);
+    },
+
+    /**
+     * The returned label of an option that stores none is its catalog label in the caller's locale, English when the
+     * user row is not visible. The empty-patch and unknown-option refusals are raised inside the choke point's
+     * transaction.
+     */
+    async updatePropertyOption(actor, input) {
+      return chokePoint.updatePropertyOption(
+        input.propertyId,
+        input.key,
+        { label: input.label, color: input.color },
+        (await chokePoint.findUserLocale(actor.userId)) ?? "en",
+        actor.userId,
+      );
     },
 
     // ---- views ----

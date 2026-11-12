@@ -7,6 +7,7 @@ import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
+import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import {
   EMAILS_MODULE_ID,
@@ -42,6 +43,7 @@ const ALL_MODULE_IDS = [
   "inboxPipeline",
   "calendar",
   "recipes",
+  "sleep",
 ];
 
 const MANIFEST_PATHS = [
@@ -54,6 +56,7 @@ const MANIFEST_PATHS = [
   manifestPath("inbox/inboxModuleManifest.js"),
   manifestPath("calendar/calendarModuleManifest.js"),
   manifestPath("recipes/recipesModuleManifest.js"),
+  manifestPath("sleep/sleepModuleManifest.js"),
 ];
 
 async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<ModuleRegistry> {
@@ -116,6 +119,9 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         PROCESSING_PROPOSALS_MODULE_ID,
         CALENDARS_MODULE_ID,
         RECIPES_MODULE_ID,
+        SLEEP_SETTINGS_MODULE_ID,
+        SLEEP_PLANS_MODULE_ID,
+        SLEEP_NIGHTS_MODULE_ID,
         PAGES_MODULE_ID,
       ].sort(),
     );

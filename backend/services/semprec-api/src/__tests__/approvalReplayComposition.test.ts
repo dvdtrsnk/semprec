@@ -37,8 +37,16 @@ import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js"
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);

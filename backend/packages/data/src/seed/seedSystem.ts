@@ -43,6 +43,7 @@ import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 import { seedCalendarsInTransaction } from "./seedCalendars.js";
 import { seedRecipesModuleInTransaction } from "./seedRecipesModule.js";
+import { seedSleepModuleInTransaction } from "./seedSleepModule.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
@@ -366,6 +367,10 @@ export async function seedSystem(
     // Recipes (issue #1707): depends only on the Projects database above. A tenant seeded before it gets the
     // module from runRecipesModuleCutoverMigration instead.
     await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
+
+    // Sleep (issue #1776): three system databases, one settings item and two default plans. Depends only on the
+    // Projects database above. Issue #1779 will deliver the module to tenants seeded before it.
+    await seedSleepModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
     return "created";
   });
 

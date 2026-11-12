@@ -28,6 +28,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  REST_ONLY_OPERATION_NAMES,
   runAsSystem,
   runInTenant,
   type GenericOperationName,
@@ -38,8 +39,16 @@ import {
 } from "../tools/generic/genericOperationAgentTools.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
-  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+  resolve: () => ({
+    icon: null,
+    color: null,
+    overviewOrder: null,
+    switcherOrder: null,
+    clientVisible: true,
+    overviewHidden: false,
+  }),
   collectionFilter: () => undefined,
+  overviewHideable: () => false,
 };
 
 let pool: Pool;
@@ -68,6 +77,8 @@ async function createProjectItem(): Promise<string> {
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
+  /** A multi_select property with one option, the target of the two REST-only option operations. */
+  optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
   view: ViewRow;
@@ -95,6 +106,13 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
     key: "title",
     name: "Title",
     type: "text",
+  });
+  const optionProperty = await chokePoint.createProperty({
+    databaseId: database.id,
+    key: "tags",
+    name: "Tags",
+    type: "multi_select",
+    config: { options: [{ key: "herbs", label: "Herbs" }] },
   });
   const itemA = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Arrival" } });
   const itemB = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Dune" } });
@@ -135,6 +153,7 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
   return {
     database,
     property,
+    optionProperty,
     itemA,
     itemB,
     view,
@@ -154,7 +173,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 42-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 44-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -181,6 +200,11 @@ const CASES: Record<GenericOperationName, Case> = {
   "property.create": { args: (fx) => ({ databaseId: fx.database.id, key: "score", name: "Score", type: "number" }) },
   "property.patch": { args: (fx) => ({ propertyId: fx.property.id, patch: { name: "New Title" } }) },
   "property.delete": { args: (fx) => ({ propertyId: fx.property.id }) },
+  // REST-only (issue #1699): valid arguments, so only the gateway's refusal can keep these two from running.
+  "property.option.add": { args: (fx) => ({ propertyId: fx.optionProperty.id, label: "Spices" }) },
+  "property.option.update": {
+    args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
+  },
   "view.list": { args: () => ({}) },
   "view.get": { args: (fx) => ({ viewId: fx.view.id }) },
   "view.create": { args: (fx) => ({ databaseId: fx.database.id, type: "table", name: "All rows" }) },
@@ -679,11 +703,14 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         operation === "page.ensure" ||
         operation === "page.restoreVersion" ||
         operation === "page.insert" ||
-        operation === "page.changes"
+        operation === "page.changes" ||
+        REST_ONLY_OPERATION_NAMES.some((name) => name === operation)
       ) {
         expect(outcome.error).toBe(true);
         expect(outcome.approvalRequestId).toBeUndefined();
         expect(outcome.result).toContain("Unknown operation");
+        // The refused call wrote nothing: the option list is as the fixture created it.
+        expect((await chokePoint.getProperty(fx.optionProperty.id))?.config).toEqual(fx.optionProperty.config);
       } else if (isDestructive) {
         expect(outcome.error).toBe(false);
         expect(outcome.result).toContain("requires human approval");

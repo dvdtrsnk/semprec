@@ -32,6 +32,8 @@ export interface SchemaDatabaseProjection {
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
+  /** True while the user hides the database from the overview (issue #2002). */
+  overviewHidden: boolean;
   properties: ResolvedProperty[];
   /** The collection's quick-filter chips in display order, labels resolved for the locale; empty without declarations (issue #1647). */
   quickFilters: SchemaQuickFilterProjection[];

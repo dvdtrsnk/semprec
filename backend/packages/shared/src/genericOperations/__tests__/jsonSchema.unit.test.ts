@@ -12,6 +12,12 @@ it("advertises a nonempty strict database patch", () => {
   const patch = objectSchema.parse(objectSchema.parse(root.properties).patch);
   expect(patch).toMatchObject({ type: "object", minProperties: 1, additionalProperties: false });
 });
+it("advertises overviewHidden as an optional boolean of the database patch (issue #2002)", () => {
+  const root = operationInputJsonSchema("database.patch");
+  const patch = objectSchema.parse(objectSchema.parse(root.properties).patch);
+  expect(objectSchema.parse(patch.properties).overviewHidden).toEqual({ type: "boolean" });
+  expect(z.array(z.string()).optional().parse(patch.required) ?? []).not.toContain("overviewHidden");
+});
 const value = "11111111-1111-4111-8111-111111111111";
 const validLeaf = { type: "relation_path_contains", path: ["project", "area"], value };
 const invalidLeaves = [
@@ -126,12 +132,15 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 // Recorded from the unchanged compiled shared generator at the repair base. `page.get` was re-recorded when issue #1678
 // added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676),
 // `page.insert` (#1679), `page.changes` (#1680), `page.duplicate` (#1722) and `page.rename` (#1725) were recorded when
-// they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions.
+// they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions, and so were the
+// REST-only `property.option.add` and `property.option.update` (#1699), whose schemas no MCP listing advertises.
+// `database.patch` was re-recorded when issue #2002 added the optional boolean `overviewHidden` to its patch (an
+// additive change).
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
   "database.create": "064856dd34ac71c38f6a0bd719eceace3430804f25f060feafc2adc7bba1f52c",
-  "database.patch": "1bd1029f10fbe3b026362b2b745ae92841045b55f94bbbb9aa8bd451b563aa5a",
+  "database.patch": "f8e9f1a5b60509b0b1c03a54ae44b3aeaa164c804974814287dfcd5d11907e3f",
   "database.archive": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
   "database.restore": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
   "property.list": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -140,6 +149,8 @@ const defaultHashes: Record<string, string> = {
   "property.create": "d2e456112e03d6967cdc9ad0500df375c8444fae39dbbffaa3eb02e74b22114d",
   "property.patch": "1849c9f5848ffb08a62f25255e7c81dc7547cd458a486440464b14b960f1f942",
   "property.delete": "3ec9951c274d2a39f8bcb97e988d1c6db52f925747d827a4c6dc44a6a6009b0a",
+  "property.option.add": "ef192f416ee0d3847dd865f8df602dc1c449edf6aa87255e59468b1542f7f2f4",
+  "property.option.update": "9729f94bc6a8a391595961b6e0facecdfcfe90777136aaaeb57ff5372126fd8a",
   "view.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "view.get": "559a12505aff3c7f9f61c27fec8615a10d0416ebccb3801031274c7cacc8c06f",
   "view.create": "b3c015042164623a164a5518c20d6e5994ad15593d408e181bf636cf03fca2db",

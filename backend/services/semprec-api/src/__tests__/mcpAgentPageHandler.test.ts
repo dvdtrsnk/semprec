@@ -10,7 +10,7 @@ import {
   resetDatabase,
   tenantForNextTestUser,
 } from "@semprec/data/testSupport";
-import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
+import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import { createGenericOperationGateway } from "@semprec/application";
 import {
   createViewTypeRegistry,
@@ -362,8 +362,16 @@ describe("createMcpAgentPageRequestListener", () => {
       expect(await listedLabel(humanHeaders)).toBe("Human label");
 
       const gateway = createGenericOperationGateway(pool, {
-        resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+        resolve: () => ({
+          icon: null,
+          color: null,
+          overviewOrder: null,
+          switcherOrder: null,
+          clientVisible: true,
+          overviewHidden: false,
+        }),
         collectionFilter: () => undefined,
+        overviewHideable: () => false,
       });
       const mcp = createServer(
         await createMcpRequestListener(pool, gateway, new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),
@@ -395,7 +403,12 @@ describe("createMcpAgentPageRequestListener", () => {
             throw new Error("Invalid MCP tool");
           return tool.name;
         });
-        expect(names.sort()).toEqual(GENERIC_OPERATION_NAMES.map((name) => `semprec.${name}`).sort());
+        // Every catalog operation except the REST-only ones, which the gateway lists for no caller (issue #1699).
+        expect(names.sort()).toEqual(
+          GENERIC_OPERATION_NAMES.filter((name) => !REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === name))
+            .map((name) => `semprec.${name}`)
+            .sort(),
+        );
         const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
           method: "POST",
           headers: { Authorization: `Bearer ${minted.token}`, "Content-Type": "application/json" },
