@@ -15,7 +15,12 @@ import {
   readConfirmationResults,
   rejectProposalWithClient,
 } from "../../inbox/proposalActions.js";
-import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
+import {
+  setInboxCardsInvalidationHook,
+  setInvalidationHook,
+  type InboxCardsInvalidationEvent,
+  type InvalidationEvent,
+} from "../../realtimeHook.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { setSelfPersonId } from "../../selfPerson.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
@@ -301,6 +306,18 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
     await fn();
   } finally {
     setInvalidationHook(() => {});
+  }
+  return events;
+}
+
+/** The `inboxCards` invalidations `fn` publishes after its transactions committed (issue #1811). */
+async function capturingInboxCards(fn: () => Promise<unknown>): Promise<InboxCardsInvalidationEvent[]> {
+  const events: InboxCardsInvalidationEvent[] = [];
+  setInboxCardsInvalidationHook((event) => events.push(event));
+  try {
+    await fn();
+  } finally {
+    setInboxCardsInvalidationHook(() => {});
   }
   return events;
 }
@@ -914,6 +931,79 @@ describe("transcript speaker assignment (issue #1770)", () => {
         const events = await capturingInvalidations(async () => {
           await refusal(assign(world.transcript, "SPEAKER_09", { personId: world.carol }));
         });
+
+        expect(events).toEqual([]);
+      });
+    });
+
+    it("announces a created card for each speaker the pipeline proposes (issue #1811)", async () => {
+      await runInTenant(tenant, async () => {
+        const world = await buildWorld();
+
+        const events = await capturingInboxCards(() => createCards(world));
+
+        const cardIds = await Promise.all(
+          ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"].map(
+            async (speaker) => (await cardOf(world.transcript, speaker)).id,
+          ),
+        );
+        expect(events).toHaveLength(3);
+        expect(events).toEqual(cardIds.map((cardId) => ({ op: "created", cardId })));
+      });
+    });
+
+    it("announces a card rejected by a manual assignment as closed (issue #1811)", async () => {
+      await runInTenant(tenant, async () => {
+        const world = await buildWorld();
+        await createCards(world);
+        const card = await cardOf(world.transcript, "SPEAKER_00");
+
+        const events = await capturingInboxCards(() => assigned(world.transcript, "SPEAKER_00", world.carol));
+
+        expect((await cardOf(world.transcript, "SPEAKER_00")).card.status).toBe("rejected");
+        expect(events).toEqual([{ op: "closed", cardId: card.id }]);
+      });
+    });
+
+    it("announces a card confirmed by a manual assignment as closed (issue #1811)", async () => {
+      await runInTenant(tenant, async () => {
+        const world = await buildWorld();
+        await createCards(world);
+        await storeProposal(world.transcript, "SPEAKER_01", {
+          entityKind: "relation",
+          target: world.alice,
+          properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+        });
+        const card = await cardOf(world.transcript, "SPEAKER_01");
+
+        const events = await capturingInboxCards(() => assigned(world.transcript, "SPEAKER_01", world.alice));
+
+        expect((await cardOf(world.transcript, "SPEAKER_01")).card.status).toBe("confirmed");
+        expect(events).toEqual([{ op: "closed", cardId: card.id }]);
+      });
+    });
+
+    it("announces nothing for a card that was already rejected (issue #1811)", async () => {
+      await runInTenant(tenant, async () => {
+        const world = await buildWorld();
+        await createCards(world);
+        const proposals = await databaseId("processingProposals");
+        const rejected = await cardOf(world.transcript, "SPEAKER_02");
+        await withTransaction(runtime, (client) =>
+          rejectProposalWithClient(client, { processingProposalsDatabaseId: proposals }, rejected.id),
+        );
+
+        const events = await capturingInboxCards(() => assigned(world.transcript, "SPEAKER_02", world.bob));
+
+        expect(events).toEqual([]);
+      });
+    });
+
+    it("announces nothing for a key that has no card (issue #1811)", async () => {
+      await runInTenant(tenant, async () => {
+        const world = await buildWorld();
+
+        const events = await capturingInboxCards(() => assigned(world.transcript, "SPEAKER_02", world.bob));
 
         expect(events).toEqual([]);
       });

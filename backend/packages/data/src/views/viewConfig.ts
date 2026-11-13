@@ -15,6 +15,7 @@ const viewConfigSchema = z
     groupBy: z.string().optional(),
     groupDirection: z.enum(["asc", "desc"]).optional(),
     membership: z.literal("manual").optional(),
+    systemKey: z.string().min(1).optional(),
   })
   .catchall(z.unknown());
 
@@ -28,6 +29,12 @@ export interface ViewConfig {
   /** Direction of the leading group sort; defaults to `asc`. */
   groupDirection?: "asc" | "desc";
   membership?: "manual";
+  /**
+   * A stable, name-independent key of a system view (for example the Tasks `today` view). A database holds at most
+   * one view per key (`views_database_system_key_uq`), a view that has one is read-only for every actor, and only the
+   * system writes the key (`assertSystemKeyWritable`, ADR 2026-11-13 on the view system key).
+   */
+  systemKey?: string;
   [key: string]: unknown;
 }
 

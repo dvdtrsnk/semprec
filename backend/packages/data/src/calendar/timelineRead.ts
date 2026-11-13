@@ -11,7 +11,9 @@ import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
+  type CalendarDerivedTimelineItem,
   type CalendarTimelineContext,
+  type CalendarTimelineEntry,
   type CalendarTimelineItem,
 } from "./timelineSources.js";
 
@@ -331,10 +333,31 @@ export async function readTaskTimelineItems(
   return toTimelineItems(client, "task", tasks.id, rows, context);
 }
 
-/** The place of an item among the items of one day: all-day Events, Tasks without a time, timed Events, timed Tasks. */
-function dayGroup(item: CalendarTimelineItem): number {
-  if (item.kind === "event") return item.allDay ? 0 : 2;
-  return item.allDay ? 1 : 3;
+/** The key the merge orders an entry by: its day, its place in the day, its start time and its title. */
+interface SortKey {
+  date: string;
+  group: number;
+  timeFrom: string;
+  title: string;
+}
+
+/**
+ * The place of an entry among the entries of one day: public holidays, birthdays, all-day Events, Tasks without
+ * a time, timed Events, timed Tasks, then sleep nights, which belong to the day of their evening.
+ */
+function sortKey(entry: CalendarTimelineEntry): SortKey {
+  switch (entry.kind) {
+    case "holiday":
+      return { date: entry.date, group: 0, timeFrom: "", title: entry.title };
+    case "birthday":
+      return { date: entry.date, group: 1, timeFrom: "", title: entry.title };
+    case "event":
+      return { date: entry.date, group: entry.allDay ? 2 : 4, timeFrom: entry.timeFrom ?? "", title: entry.title };
+    case "task":
+      return { date: entry.date, group: entry.allDay ? 3 : 5, timeFrom: entry.timeFrom ?? "", title: entry.title };
+    case "sleep":
+      return { date: entry.night, group: 6, timeFrom: "", title: "" };
+  }
 }
 
 function compareText(a: string, b: string): number {
@@ -357,8 +380,13 @@ export type CalendarTimelineCompactItem = Pick<
   | "readOnly"
 >;
 
-function toCompactItem(item: CalendarTimelineItem): CalendarTimelineCompactItem {
-  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly } = item;
+/**
+ * The compact shape of an entry. A derived entry has none of the stored-only fields the projection drops, so
+ * the compact shape returns it as it is.
+ */
+function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactItem | CalendarDerivedTimelineItem {
+  if (entry.kind !== "event" && entry.kind !== "task") return entry;
+  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly } = entry;
   return { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly };
 }
 
@@ -371,20 +399,21 @@ export interface CalendarTimeline {
   now: WallClock;
   from: string;
   to: string;
-  items: CalendarTimelineItem[] | CalendarTimelineCompactItem[];
+  items: CalendarTimelineEntry[] | (CalendarTimelineCompactItem | CalendarDerivedTimelineItem)[];
 }
 
 /** The timeline a caller that asks for `shape: "full"` gets: its items are in the full shape. */
 export interface CalendarTimelineInFullShape extends CalendarTimeline {
-  items: CalendarTimelineItem[];
+  items: CalendarTimelineEntry[];
 }
 
 /**
  * Everything on the calendar from `from` to `to`, both days included (issue #1717): the items of every source
- * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an item's `date`), then all-day Events, Tasks
- * without a time, timed Events and timed Tasks, then `timeFrom`, then title, then id. Titles compare in the
- * language of the tenant's user, Czech or English (`toManifestLocale`), and in Czech when the tenant has no
- * user. `shape: "compact"` returns the fields of `CalendarTimelineCompactItem` only.
+ * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an entry's `date`, a sleep night's `night`), then
+ * public holidays, birthdays, all-day Events, Tasks without a time, timed Events, timed Tasks and sleep
+ * nights, then `timeFrom`, then title, then id. Titles compare in the language of the tenant's user, Czech or
+ * English (`toManifestLocale`), and in Czech when the tenant has no user. `shape: "compact"` returns the
+ * fields of `CalendarTimelineCompactItem` for an Event or a Task; a derived entry is returned as it is.
  *
  * The caller passes calendar dates with `to` not before `from`, and bounds the length of the range. The read
  * writes nothing.
@@ -410,18 +439,21 @@ export async function readCalendarTimeline(
     today: clock.today(at),
     now: clock.now(at),
   };
-  const items: CalendarTimelineItem[] = [];
+  const items: CalendarTimelineEntry[] = [];
   for (const source of CALENDAR_TIMELINE_SOURCES) items.push(...(await source.readItems(client, context)));
 
   const collator = new Intl.Collator(toManifestLocale((await getTenantUserLocale(client)) ?? "cs"));
-  items.sort(
-    (a, b) =>
-      compareText(a.date, b.date) ||
-      dayGroup(a) - dayGroup(b) ||
-      compareText(a.timeFrom ?? "", b.timeFrom ?? "") ||
-      collator.compare(a.title, b.title) ||
-      compareText(a.id, b.id),
-  );
+  items.sort((a, b) => {
+    const keyA = sortKey(a);
+    const keyB = sortKey(b);
+    return (
+      compareText(keyA.date, keyB.date) ||
+      keyA.group - keyB.group ||
+      compareText(keyA.timeFrom, keyB.timeFrom) ||
+      collator.compare(keyA.title, keyB.title) ||
+      compareText(a.id, b.id)
+    );
+  });
   return {
     timezone: context.timezone,
     today: context.today,

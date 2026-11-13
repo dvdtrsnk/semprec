@@ -17,7 +17,7 @@ export function createSempHistoryReconstruction(roots?: {
         entries.push(entry);
         continue;
       }
-      const expanded = await expandSempRefs(pool, entry.message.context, roots, wake.signal);
+      const expanded = await expandSempRefs(pool, entry.message.context, roots, wake.signal, wake.projectItemId);
       const text = typeof entry.message.text === "string" ? entry.message.text : "";
       entries.push({
         ...entry,

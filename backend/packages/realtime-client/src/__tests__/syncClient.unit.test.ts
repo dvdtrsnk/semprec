@@ -107,6 +107,65 @@ describe("createSyncClient (issue #164)", () => {
     expect(onInvalidate).toHaveBeenCalledWith(frame);
   });
 
+  it("exposes a mailThread invalidation after the initial refetch and drops a malformed one (issue #1816)", async () => {
+    const onInvalidate = vi.fn();
+    const client = createSyncClient({ createSocket, refetchActiveState: async () => {}, onInvalidate });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    socket.receiveFrame({ type: "invalidate", scope: "mailThread", threadId: 7 });
+    expect(onInvalidate).not.toHaveBeenCalled();
+
+    const frame = { type: "invalidate", scope: "mailThread", threadId: "9d0c7a52-5b1e-4f3a-8c26-1e4b7d9a3f05" };
+    socket.receiveFrame(frame);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    expect(onInvalidate).toHaveBeenCalledWith(frame);
+  });
+
+  it("exposes an inboxCards invalidation after the initial refetch and drops a malformed one (issue #1811)", async () => {
+    const onInvalidate = vi.fn();
+    const client = createSyncClient({ createSocket, refetchActiveState: async () => {}, onInvalidate });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    const cardId = "6b2f0c1e-8a47-4d63-b1f5-0e9d3c7a5b12";
+
+    socket.receiveFrame({ type: "invalidate", scope: "inboxCards", op: "closed", cardId: "card-1" });
+    expect(onInvalidate).not.toHaveBeenCalled();
+
+    const frame = { type: "invalidate", scope: "inboxCards", op: "closed", cardId };
+    socket.receiveFrame(frame);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    expect(onInvalidate).toHaveBeenCalledWith(frame);
+  });
+
+  it("drops an inboxCards invalidation that arrives before the active-state refetch resolves (issue #1811)", async () => {
+    let finishRefetch: () => void = () => {};
+    const refetchActiveState = vi.fn(() => new Promise<void>((resolve) => (finishRefetch = resolve)));
+    const onInvalidate = vi.fn();
+    const client = createSyncClient({ createSocket, refetchActiveState, onInvalidate });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+
+    socket.receiveFrame({
+      type: "invalidate",
+      scope: "inboxCards",
+      op: "created",
+      cardId: "6b2f0c1e-8a47-4d63-b1f5-0e9d3c7a5b12",
+    });
+    expect(onInvalidate).not.toHaveBeenCalled();
+
+    finishRefetch();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
   it("runs refetchActiveState and fetchUnreadNotifications once on the first successful connect", async () => {
     const refetchActiveState = vi.fn().mockResolvedValue(undefined);
     const fetchUnreadNotifications = vi.fn().mockResolvedValue(undefined);

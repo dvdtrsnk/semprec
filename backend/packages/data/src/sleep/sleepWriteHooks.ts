@@ -1,13 +1,15 @@
-import type { PoolClient } from "pg";
+import { DatabaseError, type PoolClient } from "pg";
 import type {
   ItemCreateHook,
+  ItemCreateHookContext,
   ItemPreWritePreparation,
   ItemPreWriteTransform,
   ItemUpdateHook,
 } from "../chokePoint/hooks.js";
 import { isCalendarDate } from "../calendar/eventValidationHook.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { requireSingleRow } from "../db/pool.js";
-import { DuplicateItemError, ValidationError } from "../errors.js";
+import { ConflictError, DuplicateItemError, ValidationError } from "../errors.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { normalizeWallClockTime } from "../timezone.js";
 
@@ -203,3 +205,102 @@ export const sleepItemUpdateHook: ItemUpdateHook = async ({ client, database, it
     if (Object.hasOwn(propertiesPatch, "night")) await assertNightIsFree(client, database.id, item.id, night);
   }
 };
+
+/** A sleep plan another plan's write has to take days from: its id and the `wakeDays` it holds once locked. */
+interface PlanHoldingDays {
+  id: string;
+  wakeDays: readonly string[];
+}
+
+/** Postgres SQLSTATE `deadlock_detected`. */
+const DEADLOCK_DETECTED = "40P01";
+
+/**
+ * The clients whose transaction is removing days from other plans right now. The removal is a nested
+ * `updateItemWithClient`, which runs every update hook again, this one included; a plan that lost days must not
+ * take days back from the plan that took them, so the hook skips a nested run.
+ */
+const clientsRemovingDays = new WeakSet<PoolClient>();
+
+/**
+ * Selects, in a new statement, the other non-deleted plans of the database that hold any of `days` and locks them
+ * `FOR UPDATE` in id order. A deadlock between two transactions that lock each other's plans (A takes a day from B
+ * while B takes a day from A) ends one of them with `40P01`; that one is answered as a 409 so the client repeats
+ * the request. Only this statement is mapped: any other failure, a deadlock of another statement included, passes
+ * through unchanged.
+ */
+async function lockPlansHoldingDays(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  days: readonly string[],
+): Promise<PlanHoldingDays[]> {
+  try {
+    const { rows } = await client.query<{ id: string; wake_days: unknown }>(
+      `SELECT id, properties -> 'wakeDays' AS wake_days FROM items
+        WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL AND properties -> 'wakeDays' ?| $3::text[]
+        ORDER BY id
+          FOR UPDATE`,
+      [databaseId, itemId, days],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      wakeDays: Array.isArray(row.wake_days)
+        ? row.wake_days.filter((day): day is string => typeof day === "string")
+        : [],
+    }));
+  } catch (error) {
+    if (error instanceof DatabaseError && error.code === DEADLOCK_DETECTED) {
+      throw new ConflictError("Another sleep plan write is changing the same wake days; repeat the request");
+    }
+    throw error;
+  }
+}
+
+/**
+ * The create and update hook of issue gh-1799 for the sleep plans (the same function serves both registries): a
+ * wake day is in at most one plan. After a write whose merged item has non-empty `wakeDays`, every other
+ * non-deleted plan of the database that holds one of those days loses it, by a nested `updateItemWithClient`
+ * without `ifVersion` in this transaction, so the other plan's hooks, realtime invalidation and `updatedAt` apply
+ * as for any write. A plan keeps its empty `wakeDays` when it loses all days. Restores from the trash are not
+ * checked.
+ *
+ * The plans are read and locked by a `SELECT ... FOR UPDATE` that is repeated as a new statement. A statement
+ * that waited for a plan another transaction was changing rechecks that plan against its new version, but does
+ * not see a plan that transaction committed in the meantime and that now holds the day, so an empty result can be
+ * stale. The loop therefore ends only after two statements in a row returned no plan: the second one starts after
+ * the first one ended, which is after every wait of the first one. A day nobody holds when the loop ends is not
+ * serialized by it; two transactions that take the same free day into two plans are not detected.
+ */
+export async function keepWakeDaysInOnePlan({
+  client,
+  database,
+  item,
+}: Pick<ItemCreateHookContext, "client" | "database" | "item">): Promise<void> {
+  if (database.ownerModuleId !== SLEEP_PLANS_MODULE_ID || clientsRemovingDays.has(client)) return;
+  const taken = item.properties.wakeDays;
+  if (!Array.isArray(taken) || taken.length === 0) return;
+  const takenDays = new Set<unknown>(taken);
+  const takenList = taken.filter((day): day is string => typeof day === "string");
+  let emptyStatements = 0;
+  while (emptyStatements < 2) {
+    const plans = await lockPlansHoldingDays(client, database.id, item.id, takenList);
+    if (plans.length === 0) {
+      emptyStatements += 1;
+      continue;
+    }
+    emptyStatements = 0;
+    clientsRemovingDays.add(client);
+    try {
+      for (const plan of plans) {
+        await updateItemWithClient(client, {
+          databaseId: database.id,
+          itemId: plan.id,
+          propertiesPatch: { wakeDays: plan.wakeDays.filter((day) => !takenDays.has(day)) },
+        });
+      }
+    } finally {
+      clientsRemovingDays.delete(client);
+    }
+  }
+}

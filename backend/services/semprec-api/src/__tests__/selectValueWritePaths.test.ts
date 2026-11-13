@@ -157,6 +157,15 @@ describe("Health records select values are judged alike through REST, the agent 
     const projectItemId = await createTestProjectItem(pool);
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "file a health record" });
     agentActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    // Health records is a sensitive database, so the data layer closes it to an agent's project until the user grants
+    // write access (issue gh-1810). The user-only admin store is not exported from `@semprec/data`, so the fixture
+    // stores the decision with the statement of `setAgentDatabaseGrant`.
+    const grant = await pool.query(
+      `INSERT INTO agent_database_grants (project_item_id, database_id, access)
+         SELECT $1, id, 'write' FROM databases WHERE id = $2`,
+      [projectItemId, healthId],
+    );
+    expect(grant.rowCount).toBe(1);
     mcpToken = (
       await withTransaction(pool, (client) =>
         mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.write"], userId: user.id }),

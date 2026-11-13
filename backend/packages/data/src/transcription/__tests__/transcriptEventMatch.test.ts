@@ -10,8 +10,10 @@ import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
+import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
-import { matchTranscriptToEvent } from "../transcriptEventMatch.js";
+import { listOverlappingEventIds, matchTranscriptToEvent } from "../transcriptEventMatch.js";
+import { getCalendarClock, type CalendarClock } from "../../calendarTime.js";
 
 let pool: Pool;
 
@@ -83,17 +85,17 @@ describe("matchTranscriptToEvent (issue #247)", () => {
   }
 
   /**
-   * An Event row as stored before a write rule existed: a `date` that still carries the instant (written
-   * before issue #1598), or a `date` or `timeFrom` the Event rules of issue #1663 now refuse (a malformed
-   * date, a non-time, a `24:00` start). Raw SQL on a valid Event the choke point created, because every
-   * write path now normalizes or refuses such values; the matcher must still read them defensively.
+   * An Event whose stored time values are exactly `stored`. Raw SQL on a valid Event the choke point
+   * created: every write path normalizes or refuses values such as a malformed date, a non-time, a
+   * `24:00` start, an end before the start or a start without an end (the Events time rules of issues
+   * #1598 and #1663), so only a row written before those rules can hold them; the matcher must still
+   * read them defensively.
    */
-  async function createLegacyEvent(type: string, date: string, timeFrom?: string): Promise<string> {
+  async function createRawEvent(type: string, stored: Record<string, unknown>): Promise<string> {
     const eventId = await createEvent(type, "2024-01-01");
-    const legacy: Record<string, unknown> = { date, ...(timeFrom === undefined ? {} : { timeFrom }) };
     const updated = await pool.query(
-      "UPDATE items SET properties = (properties - 'timeFrom' - 'timeTo' - 'time') || $3::jsonb WHERE database_id = $1 AND id = $2",
-      [eventsId, eventId, JSON.stringify(legacy)],
+      "UPDATE items SET properties = (properties - 'timeFrom' - 'timeTo' - 'time' - 'endDate') || $3::jsonb WHERE database_id = $1 AND id = $2",
+      [eventsId, eventId, JSON.stringify(stored)],
     );
     expect(updated.rowCount).toBe(1);
     return eventId;
@@ -105,10 +107,8 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: { timezone: zone } });
   }
 
-  function match(transcriptId: string) {
-    return withTransaction(pool, (client) =>
-      matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
-    );
+  function match(transcriptId: string, durationSeconds = DURATION_SECONDS) {
+    return withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds }));
   }
 
   /** The Event ids linked to `transcriptId` through the Transcripts <-> Events relation. */
@@ -141,7 +141,58 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     return Number(rows[0]?.count);
   }
 
-  it("links the one candidate inside the window directly and creates no card", async () => {
+  /** The `inboxCards` invalidations `fn` publishes after its transaction committed (issue #1811). */
+  async function capturingInboxCards(fn: () => Promise<unknown>): Promise<InboxCardsInvalidationEvent[]> {
+    const events: InboxCardsInvalidationEvent[] = [];
+    setInboxCardsInvalidationHook((event) => events.push(event));
+    try {
+      await fn();
+    } finally {
+      setInboxCardsInvalidationHook(() => {});
+    }
+    return events;
+  }
+
+  it("announces the new suggestion card once, and nothing when the run converges on it (issue #1811)", async () => {
+    const transcriptId = await createTranscript();
+
+    const created = await capturingInboxCards(() => match(transcriptId));
+    const [card] = await cardsFor(transcriptId);
+    const again = await capturingInboxCards(async () => expect(await match(transcriptId)).toBe("alreadySuggested"));
+
+    expect(card).toBeDefined();
+    expect(created).toEqual([{ op: "created", cardId: card!.id }]);
+    expect(again).toEqual([]);
+  });
+
+  it("announces no card when the one candidate is linked directly (issue #1811)", async () => {
+    const transcriptId = await createTranscript();
+    await createEvent("meeting", "2024-03-01T11:45:00.000Z");
+
+    const events = await capturingInboxCards(async () => expect(await match(transcriptId)).toBe("linked"));
+
+    expect(events).toEqual([]);
+  });
+
+  it("announces no card when the transaction that created it rolls back (issue #1811)", async () => {
+    const transcriptId = await createTranscript();
+
+    const events = await capturingInboxCards(async () => {
+      await expect(
+        withTransaction(pool, async (client) => {
+          expect(await matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS })).toBe(
+            "suggested",
+          );
+          throw new Error("force rollback");
+        }),
+      ).rejects.toThrow("force rollback");
+    });
+
+    expect(events).toEqual([]);
+    expect(await proposalCount()).toBe(0);
+  });
+
+  it("links the one candidate whose interval overlaps the recording directly and creates no card", async () => {
     const transcriptId = await createTranscript();
     const eventId = await createEvent("meeting", "2024-03-01T11:45:00.000Z");
 
@@ -149,15 +200,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
     expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
     expect(await proposalCount()).toBe(0);
-  });
-
-  it("counts both window edges as inside: 30 minutes before the start and the recording's end", async () => {
-    const transcriptId = await createTranscript();
-    await createEvent("standup", "2024-03-01T11:30:00.000Z");
-    await createEvent("meeting", "2024-03-01T13:00:00.000Z");
-
-    expect(await match(transcriptId)).toBe("suggested");
-    expect(await linkedEventIds(transcriptId)).toEqual([]);
   });
 
   it("creates one proposed transcript card with the create-Event proposal when no Event matches", async () => {
@@ -174,47 +216,264 @@ describe("matchTranscriptToEvent (issue #247)", () => {
       proposal: {
         entityKind: "database",
         target: eventsId,
-        properties: { name: "Weekly sync", type: "meeting", date: RECORDING_START },
+        properties: { name: "Weekly sync", type: "meeting", date: "2024-03-01" },
       },
-      history: [expect.objectContaining({ author: "ai" })],
+      history: [
+        expect.objectContaining({
+          author: "ai",
+          message: "0 Events overlapped the recording's time interval, so none was linked; proposed a new Event.",
+        }),
+      ],
     });
     expect(await proposalCount()).toBe(1);
   });
 
-  it("creates a card and no edge when several Events match", async () => {
+  it("creates exactly one card and no edge when two Events overlap, and a second run adds neither", async () => {
     const transcriptId = await createTranscript();
-    await createEvent("meeting", "2024-03-01T12:00:00.000Z");
-    await createEvent("standup", "2024-03-01T12:10:00.000Z");
+    await createEvent("meeting", "2024-03-01", { timeFrom: "13:00", timeTo: "13:30" });
+    await createEvent("standup", "2024-03-01", { timeFrom: "13:10", timeTo: "13:40" });
 
     expect(await match(transcriptId)).toBe("suggested");
+    const [card] = await cardsFor(transcriptId);
+    expect(await match(transcriptId)).toBe("alreadySuggested");
 
     expect(await linkedEventIds(transcriptId)).toEqual([]);
-    const cards = await cardsFor(transcriptId);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]?.properties).toMatchObject({
+    expect(await cardsFor(transcriptId)).toEqual([card]);
+    expect(card?.properties).toMatchObject({
       history: [
         expect.objectContaining({
-          message: "2 Events matched the recording's time window, so none was linked; proposed a new Event.",
+          message: "2 Events overlapped the recording's time interval, so none was linked; proposed a new Event.",
         }),
       ],
     });
+    expect(await proposalCount()).toBe(1);
   });
 
-  it("never considers Events outside the window, of another type, without a time, or deleted", async () => {
-    const transcriptId = await createTranscript();
-    // Since issue #1598 an Event's start is stored to the minute, so the nearest starts outside the window
-    // are one minute out; the second-precision edges of a pre-#1598 row are covered further down.
-    await createEvent("meeting", "2024-03-01T11:29:00.000Z");
-    await createEvent("meeting", "2024-03-01T13:01:00.000Z");
-    await createEvent("event", "2024-03-01T12:05:00.000Z");
-    await createEvent("meeting", "2024-03-01");
-    const notADate = await createLegacyEvent("meeting", "not a date");
-    expect(await storedStart(notADate)).toEqual({ date: "not a date", timeFrom: undefined });
-    const deletedId = await createEvent("standup", "2024-03-01T12:05:00.000Z");
-    await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [deletedId]);
+  describe("the overlap rule in the tenant's time zone", () => {
+    // Europe/Prague on 2024-03-01 is UTC+1: a recording at 12:52Z for 47 minutes runs 13:52-14:39 local.
+    const AFTERNOON_RECORDING = { date: "2024-03-01T12:52:00.000Z", durationSeconds: 47 * 60 };
 
-    expect(await match(transcriptId)).toBe("suggested");
-    expect(await linkedEventIds(transcriptId)).toEqual([]);
+    it("links a meeting 12:30-14:00 to a recording 13:52-14:39", async () => {
+      const transcriptId = await createTranscript({ date: AFTERNOON_RECORDING.date });
+      const eventId = await createEvent("meeting", "2024-03-01", { timeFrom: "12:30", timeTo: "14:00" });
+
+      expect(await match(transcriptId, AFTERNOON_RECORDING.durationSeconds)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
+      expect(await proposalCount()).toBe(0);
+    });
+
+    it("does not link a meeting 13:25-13:40 that ended before a recording 13:52-14:39", async () => {
+      const transcriptId = await createTranscript({ date: AFTERNOON_RECORDING.date });
+      await createEvent("meeting", "2024-03-01", { timeFrom: "13:25", timeTo: "13:40" });
+
+      expect(await match(transcriptId, AFTERNOON_RECORDING.durationSeconds)).toBe("suggested");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+      expect(await proposalCount()).toBe(1);
+    });
+
+    it("links a meeting that began hours before the recording and runs through it", async () => {
+      const transcriptId = await createTranscript();
+      const eventId = await createEvent("meeting", "2024-03-01", { timeFrom: "09:00", timeTo: "17:00" });
+
+      expect(await match(transcriptId)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
+    });
+
+    // The recording is 13:00-14:00 local. Touching boundaries do not overlap; one minute more does.
+    it.each([
+      { side: "ends exactly when the recording starts", timeFrom: "12:00", timeTo: "13:00", outcome: "suggested" },
+      { side: "starts exactly when the recording ends", timeFrom: "14:00", timeTo: "15:00", outcome: "suggested" },
+      { side: "ends one minute after the recording starts", timeFrom: "12:00", timeTo: "13:01", outcome: "linked" },
+      { side: "starts one minute before the recording ends", timeFrom: "13:59", timeTo: "15:00", outcome: "linked" },
+    ])("an Event that $side is $outcome", async ({ timeFrom, timeTo, outcome }) => {
+      const transcriptId = await createTranscript();
+      const eventId = await createEvent("meeting", "2024-03-01", { timeFrom, timeTo });
+
+      expect(await match(transcriptId)).toBe(outcome);
+
+      expect(await linkedEventIds(transcriptId)).toEqual(outcome === "linked" ? [eventId] : []);
+    });
+
+    it.each(["meeting", "standup"])("considers an Event of type %s", async (type) => {
+      const transcriptId = await createTranscript();
+      const eventId = await createEvent(type, "2024-03-01", { timeFrom: "13:10", timeTo: "13:50" });
+
+      expect(await match(transcriptId)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
+    });
+
+    it("never considers an Event of type event", async () => {
+      const transcriptId = await createTranscript();
+      await createEvent("event", "2024-03-01", { timeFrom: "13:10", timeTo: "13:50" });
+
+      expect(await match(transcriptId)).toBe("suggested");
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+    });
+
+    it("never considers an all-day Event, whatever its type", async () => {
+      const transcriptId = await createTranscript();
+      await createEvent("meeting", "2024-03-01");
+      await createEvent("standup", "2024-03-01");
+
+      expect(await match(transcriptId)).toBe("suggested");
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+      expect((await cardsFor(transcriptId))[0]?.properties).toMatchObject({
+        history: [expect.objectContaining({ message: expect.stringContaining("0 Events overlapped") })],
+      });
+    });
+
+    it("never considers an Event in the Trash", async () => {
+      const transcriptId = await createTranscript();
+      const deletedId = await createEvent("standup", "2024-03-01", { timeFrom: "13:10", timeTo: "13:50" });
+      await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [deletedId]);
+
+      expect(await match(transcriptId)).toBe("suggested");
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+    });
+
+    it("never considers an Event on another day", async () => {
+      const transcriptId = await createTranscript();
+      await createEvent("meeting", "2024-03-02", { timeFrom: "13:10", timeTo: "13:50" });
+
+      expect(await match(transcriptId)).toBe("suggested");
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+    });
+
+    it("compares an Event of 2026-10-14 13:30-14:30 in Europe/Prague (UTC+2) with a recording starting 11:45 UTC", async () => {
+      // 13:30-14:30 in Prague is 11:30Z-12:30Z, so it overlaps the recording 11:45Z-12:45Z.
+      const transcriptId = await createTranscript({ date: "2026-10-14T11:45:00.000Z" });
+      const eventId = await createEvent("meeting", "2026-10-14", { timeFrom: "13:30", timeTo: "14:30" });
+
+      expect(await match(transcriptId)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
+    });
+
+    it("reads the same Event in a UTC tenant as 13:30Z-14:30Z, which a recording starting 11:45 UTC for an hour misses", async () => {
+      await setTenantZone("UTC");
+      const transcriptId = await createTranscript({ date: "2026-10-14T11:45:00.000Z" });
+      await createEvent("meeting", "2026-10-14", { timeFrom: "13:30", timeTo: "14:30" });
+
+      expect(await match(transcriptId)).toBe("suggested");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+    });
+
+    // 22:00 on 2026-10-14 to 02:00 on 2026-10-15 in Prague (UTC+2) is 20:00Z to 00:00Z.
+    it("ends an overnight Event on its endDate: a recording after midnight local time is inside it", async () => {
+      const transcriptId = await createTranscript({ date: "2026-10-14T23:30:00.000Z" });
+      const eventId = await createEvent("meeting", "2026-10-14", {
+        timeFrom: "22:00",
+        endDate: "2026-10-15",
+        timeTo: "02:00",
+      });
+
+      expect(await match(transcriptId, 1800)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
+    });
+
+    it("does not link an overnight Event to a recording that starts after its end on the endDate", async () => {
+      const transcriptId = await createTranscript({ date: "2026-10-15T00:30:00.000Z" });
+      await createEvent("meeting", "2026-10-14", { timeFrom: "22:00", endDate: "2026-10-15", timeTo: "02:00" });
+
+      expect(await match(transcriptId, 1800)).toBe("suggested");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([]);
+    });
+
+    // A start with no end is a point: the write rules always add an end, so only an older row lacks one.
+    it.each([
+      { moment: "inside the recording", timeFrom: "13:30", outcome: "linked" },
+      { moment: "exactly at the recording's start", timeFrom: "13:00", outcome: "suggested" },
+      { moment: "exactly at the recording's end", timeFrom: "14:00", outcome: "suggested" },
+      { moment: "after the recording", timeFrom: "14:30", outcome: "suggested" },
+    ])("an Event without timeTo whose start is $moment is $outcome", async ({ timeFrom, outcome }) => {
+      const transcriptId = await createTranscript();
+      const eventId = await createRawEvent("meeting", { date: "2024-03-01", timeFrom });
+
+      expect(await match(transcriptId)).toBe(outcome);
+
+      expect(await linkedEventIds(transcriptId)).toEqual(outcome === "linked" ? [eventId] : []);
+    });
+
+    const VALID_TIMES = { date: "2024-03-01", timeFrom: "13:20", timeTo: "13:40" };
+    // Each stored value below would overlap the 13:00-14:00 recording if it were read.
+    it.each([
+      { why: "a date that is not on the calendar", stored: { date: "2024-02-30", timeFrom: "13:10", timeTo: "13:50" } },
+      { why: "a missing date", stored: { date: null, timeFrom: "13:10", timeTo: "13:50" } },
+      { why: "a start that is not a time", stored: { date: "2024-03-01", timeFrom: "nine", timeTo: "13:50" } },
+      { why: "an end that is not a time", stored: { date: "2024-03-01", timeFrom: "13:10", timeTo: "later" } },
+      {
+        why: "an endDate that is not on the calendar",
+        stored: { date: "2024-03-01", timeFrom: "13:10", endDate: "2024-03-32", timeTo: "13:50" },
+      },
+      {
+        why: "a date still carrying an offset, from before the Events rules of issue #1598",
+        stored: { date: "2024-03-01T12:10:00.000Z", timeFrom: "13:10", timeTo: "13:50" },
+      },
+      { why: "an end before the start", stored: { date: "2024-03-01", timeFrom: "13:50", timeTo: "13:10" } },
+    ])("leaves out an Event with $why and still links the valid one", async ({ stored }) => {
+      const transcriptId = await createTranscript();
+      await createRawEvent("meeting", stored);
+      const validId = await createRawEvent("standup", VALID_TIMES);
+
+      expect(await match(transcriptId)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([validId]);
+      expect(await proposalCount()).toBe(0);
+    });
+
+    it("leaves out an Event that starts at 24:00 and converts an end of 24:00 to the midnight ending its day", async () => {
+      // Recording 23:30-00:30 local. A 24:00 start would be the point at midnight, inside it.
+      const transcriptId = await createTranscript({ date: "2024-03-01T22:30:00.000Z" });
+      await createRawEvent("meeting", { date: "2024-03-01", timeFrom: "24:00", timeTo: "24:00" });
+      const validId = await createEvent("standup", "2024-03-01", { timeFrom: "23:40", timeTo: "24:00" });
+
+      expect(await match(transcriptId)).toBe("linked");
+
+      expect(await linkedEventIds(transcriptId)).toEqual([validId]);
+    });
+  });
+
+  describe("listOverlappingEventIds", () => {
+    const RECORDING = {
+      startMs: Date.parse(RECORDING_START),
+      endMs: Date.parse(RECORDING_START) + DURATION_SECONDS * 1000,
+    };
+
+    function list(clockOverride?: (clock: CalendarClock) => CalendarClock): Promise<string[]> {
+      return withTransaction(pool, async (client) => {
+        const clock = await getCalendarClock(client);
+        return listOverlappingEventIds(client, eventsId, RECORDING, clockOverride ? clockOverride(clock) : clock);
+      });
+    }
+
+    it("orders the candidates by interval start, then id", async () => {
+      const later = await createEvent("meeting", "2024-03-01", { timeFrom: "13:30", timeTo: "13:40" });
+      const firstOfTie = await createEvent("standup", "2024-03-01", { timeFrom: "13:10", timeTo: "13:20" });
+      const secondOfTie = await createEvent("meeting", "2024-03-01", { timeFrom: "13:10", timeTo: "13:50" });
+      const earliest = await createEvent("meeting", "2024-03-01", { timeFrom: "09:00", timeTo: "17:00" });
+
+      expect(await list()).toEqual([earliest, ...[firstOfTie, secondOfTie].sort(), later]);
+    });
+
+    it("lets a failure other than a refused date or time propagate", async () => {
+      await createEvent("meeting", "2024-03-01", { timeFrom: "13:10", timeTo: "13:50" });
+
+      await expect(
+        list((clock) => ({
+          ...clock,
+          wallClockToInstant: () => {
+            throw new TypeError("clock broke");
+          },
+        })),
+      ).rejects.toThrow(new TypeError("clock broke"));
+    });
   });
 
   it("links a second recording directly to the one Event that already holds a transcript, and creates no card (issue #1464)", async () => {
@@ -322,66 +581,25 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(await proposalCount()).toBe(0);
   });
 
-  it("keeps reading a pre-#1598 date that carries a time to the second, ahead of any timeFrom", async () => {
-    const transcriptId = await createTranscript();
-    await createLegacyEvent("meeting", "2024-03-01T11:29:59.000Z");
-    await createLegacyEvent("meeting", "2024-03-01T13:00:01.000Z");
-    // Its own time wins: as a wall-clock start in Prague, 20:00 would be outside the window.
-    const legacyId = await createLegacyEvent("standup", "2024-03-01T11:45:00.000Z", "20:00");
-    expect(await storedStart(legacyId)).toEqual({ date: "2024-03-01T11:45:00.000Z", timeFrom: "20:00" });
-
-    expect(await match(transcriptId)).toBe("linked");
-    expect(await linkedEventIds(transcriptId)).toEqual([legacyId]);
-  });
-
-  it("leaves out an Event whose date or timeFrom is malformed or whose start is 24:00, and still links the valid one", async () => {
-    // At UTC+12 the midnight ending 2024-03-01 is 12:00Z, the recording's start: read as a start, a 24:00
-    // timeFrom would fall inside the window.
-    await setTenantZone("Etc/GMT-12");
-    const transcriptId = await createTranscript();
-    // Stored before the Event rules of issue #1663 refused them.
-    const malformed = [
-      await createLegacyEvent("meeting", "2024-03-01", "24:00"),
-      await createLegacyEvent("meeting", "2024-03-01", "nine"),
-      await createLegacyEvent("meeting", "2024-02-30", "23:50"),
-    ];
-    expect(await Promise.all(malformed.map(storedStart))).toEqual([
-      { date: "2024-03-01", timeFrom: "24:00" },
-      { date: "2024-03-01", timeFrom: "nine" },
-      { date: "2024-02-30", timeFrom: "23:50" },
-    ]);
-    await createEvent("meeting", "2024-03-01");
-    const validId = await createEvent("standup", "2024-03-01", { timeFrom: "23:50" });
-    expect(await storedStart(validId)).toEqual({ date: "2024-03-01", timeFrom: "23:50" });
-
-    expect(await match(transcriptId)).toBe("linked");
-    // 23:50 at UTC+12 is 11:50Z, inside the window.
-    expect(await linkedEventIds(transcriptId)).toEqual([validId]);
-    expect(await proposalCount()).toBe(0);
-  });
-
-  it("propagates an invalid tenant zone once an Event needs it, writing nothing, and does not read it for a pre-#1598 date", async () => {
+  it("propagates an invalid tenant zone, writing neither an edge nor a card", async () => {
     // Raw SQL: the settings write refuses an invalid zone, so only a corrupted row holds one.
     const settingsUpdate = await pool.query(
       'UPDATE items SET properties = properties || \'{"timezone": "Not/AZone"}\'::jsonb WHERE database_id = $1',
       [await withTransaction(pool, (client) => getSystemSettingsDatabaseId(client))],
     );
     expect(settingsUpdate.rowCount).toBe(1);
-    const legacyId = await createLegacyEvent("meeting", "2024-03-01T11:45:00.000Z");
-    const firstTranscriptId = await createTranscript();
-    expect(await match(firstTranscriptId)).toBe("linked");
-    expect(await linkedEventIds(firstTranscriptId)).toEqual([legacyId]);
+    await createEvent("meeting", "2024-03-01", { timeFrom: "12:30", timeTo: "14:00" });
+    const transcriptId = await createTranscript();
 
-    await createEvent("meeting", "2024-03-01", { timeFrom: "12:30" });
-    const secondTranscriptId = await createTranscript();
-    const failure = await match(secondTranscriptId).then(
+    const failure = await match(transcriptId).then(
       () => null,
       (error: unknown) => error,
     );
+
     expect(failure).toBeInstanceOf(ValidationError);
     expect(failure).toMatchObject({ details: { field: "timezone" } });
-    expect(await linkedEventIds(secondTranscriptId)).toEqual([]);
-    expect(await cardsFor(secondTranscriptId)).toEqual([]);
+    expect(await linkedEventIds(transcriptId)).toEqual([]);
+    expect(await cardsFor(transcriptId)).toEqual([]);
     expect(await proposalCount()).toBe(0);
   });
 
@@ -396,7 +614,25 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(cards[0]?.properties.aiProposal).toEqual({
       entityKind: "database",
       target: eventsId,
-      properties: { name: "Weekly sync", type: "meeting", date: RECORDING_START },
+      properties: { name: "Weekly sync", type: "meeting", date: "2024-03-01" },
+    });
+  });
+
+  // The recording starts at 23:30 UTC on 2024-03-01: already 2024-03-02 in Prague (UTC+1), still the 1st in UTC.
+  it.each([
+    { zone: "Europe/Prague", date: "2024-03-02" },
+    { zone: "UTC", date: "2024-03-01" },
+  ])("proposes the new Event on the recording's date in $zone: $date", async ({ zone, date }) => {
+    await setTenantZone(zone);
+    const transcriptId = await createTranscript({ date: "2024-03-01T23:30:00.000Z" });
+
+    expect(await match(transcriptId)).toBe("suggested");
+
+    const [card] = await cardsFor(transcriptId);
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "database",
+      target: eventsId,
+      properties: { name: "Weekly sync", type: "meeting", date },
     });
   });
 });

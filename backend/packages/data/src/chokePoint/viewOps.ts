@@ -8,6 +8,7 @@
 // - docs/adr/2026-09-10-agent-identity-verified-against-projects-items.md
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// - docs/adr/2026-11-13-a-view-system-key-is-unique-per-database-and-written-by-the-system-alone.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -18,7 +19,12 @@ import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
 import type { ViewTypeRegistry } from "./viewTypeRegistry.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
-import { assertAuthenticatedAgentIdentity, assertViewWritable, type Actor } from "./authorization.js";
+import {
+  assertAuthenticatedAgentIdentity,
+  assertSystemKeyWritable,
+  assertViewWritable,
+  type Actor,
+} from "./authorization.js";
 
 /** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
 async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
@@ -83,6 +89,7 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
     ): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, actor);
+        assertSystemKeyWritable(input.config, actor);
         const view = await viewsStore.createView(
           client,
           {
@@ -128,6 +135,7 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
         const view = await viewsStore.getView(client, input.id);
         if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
+        assertSystemKeyWritable(input.config, input.actor);
         if (input.actor.type === "ai_agent" && input.isDefault !== undefined) {
           throw new ForbiddenError(
             "is_default cannot be set by an agent, not even on its own view",

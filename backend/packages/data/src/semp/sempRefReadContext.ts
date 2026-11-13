@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
-import { currentTenantScope, type SempMessageRef } from "@semprec/shared";
+import { currentTenantScope, type HiddenRelationTarget, type SempMessageRef } from "@semprec/shared";
 import { requireManagedTransaction } from "../db/pool.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { projectItemsForRead } from "../chokePoint/itemReadProjection.js";
@@ -11,6 +11,7 @@ import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.
 import { getBlock, listBlocks } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
+import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
@@ -44,8 +45,18 @@ async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {
   return typeof value === "string" ? value.slice(0, 500) : "";
 }
 
-async function relatedNames(client: PoolClient, item: ItemRow, keys: ReadonlySet<string> = RELATED_KEYS) {
-  const result: Record<string, { names: string[]; truncated: boolean }> = {};
+/**
+ * The names of the items an item relates to through the given relation keys. A target in a database of
+ * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849) contributes its id
+ * under `hidden` as `{ id, hidden: true }` and no name.
+ */
+async function relatedNames(
+  client: PoolClient,
+  item: ItemRow,
+  keys: ReadonlySet<string> = RELATED_KEYS,
+  unreadableDatabaseIds: ReadonlySet<string> = new Set(),
+) {
+  const result: Record<string, { names: string[]; truncated: boolean; hidden?: HiddenRelationTarget[] }> = {};
   for (const property of await listPropertiesByDatabase(client, item.databaseId)) {
     if (property.type !== "relation" || !keys.has(property.key)) continue;
     const definition = await getRelationDefinitionByPropertyId(client, property.id);
@@ -59,9 +70,14 @@ async function relatedNames(client: PoolClient, item: ItemRow, keys: ReadonlySet
       client,
       rows.slice(0, MAX_RELATION_TARGETS).map((edge) => (edge.item_a === item.id ? edge.item_b : edge.item_a)),
     );
+    const readable = targets.filter((target) => !unreadableDatabaseIds.has(target.databaseId));
+    const hidden = targets
+      .filter((target) => unreadableDatabaseIds.has(target.databaseId))
+      .map((target): HiddenRelationTarget => ({ id: target.id, hidden: true }));
     result[property.key] = {
-      names: await Promise.all(targets.map((target) => itemTitle(client, target))),
+      names: await Promise.all(readable.map((target) => itemTitle(client, target))),
       truncated: rows.length > MAX_RELATION_TARGETS,
+      ...(hidden.length > 0 ? { hidden } : {}),
     };
   }
   return result;
@@ -159,6 +175,7 @@ async function readTaskOccurrenceContext(
   client: PoolClient,
   seriesId: string,
   occurrenceDate: string,
+  unreadableDatabaseIds: ReadonlySet<string>,
 ): Promise<SempRefContext | null> {
   // `series_id` is a uuid column: a string of any other shape names no series, and must not reach the cast.
   if (!SERIES_ID_SHAPE.test(seriesId)) return null;
@@ -177,14 +194,31 @@ async function readTaskOccurrenceContext(
       series: { seriesId: seriesId.toLowerCase(), mode: series.mode, rule: series.rule, anchorDate: series.anchorDate },
       template,
       occurrenceDate,
-      relations: await relatedNames(client, instance, TASK_RELATED_KEYS),
+      relations: await relatedNames(client, instance, TASK_RELATED_KEYS, unreadableDatabaseIds),
     },
     blob: null,
   };
 }
 
-/** Composes existing tenant readers for exactly the reference carried by this turn. */
-export async function readSempRefContext(client: PoolClient, ref: SempMessageRef): Promise<SempRefContext | null> {
+/** Who the context is read for. */
+export interface SempRefReader {
+  /**
+   * The Projects item of the agent the context is built for (issue #1849). The names of relation targets that lie in a
+   * database this project may not read are left out and listed as `{ id, hidden: true }`. Without a reader every target
+   * is named.
+   */
+  agentProjectItemId: string;
+}
+
+/**
+ * Composes existing tenant readers for exactly the reference carried by this turn. The referenced item itself is
+ * read because the user attached it; the items it relates to are read only as far as `reader` may read them.
+ */
+export async function readSempRefContext(
+  client: PoolClient,
+  ref: SempMessageRef,
+  reader?: SempRefReader,
+): Promise<SempRefContext | null> {
   requireManagedTransaction(client);
   if (currentTenantScope()?.kind !== "tenant") throw new Error("Semp reference read requires tenant scope");
   if (ref.kind === "agentRun") {
@@ -226,7 +260,11 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
       blob: blobProjection(await getBlob(client, row.blob_id)),
     };
   }
-  if (ref.kind === "taskOccurrence") return readTaskOccurrenceContext(client, ref.seriesId, ref.occurrenceDate);
+  const unreadableDatabaseIds = reader
+    ? await listUnreadableDatabaseIds(client, reader.agentProjectItemId)
+    : new Set<string>();
+  if (ref.kind === "taskOccurrence")
+    return readTaskOccurrenceContext(client, ref.seriesId, ref.occurrenceDate, unreadableDatabaseIds);
   const [raw] = await getItemsByIdsIncludingDeleted(client, [ref.itemId]);
   if (!raw || ((ref.kind === "item" || ref.kind === "taskTrace") && raw.databaseId !== ref.databaseId.toLowerCase()))
     return null;
@@ -247,7 +285,7 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
       state,
       details: {
         properties: item.properties,
-        relations: await relatedNames(client, item, TASK_RELATED_KEYS),
+        relations: await relatedNames(client, item, TASK_RELATED_KEYS, unreadableDatabaseIds),
         traceDay: ref.traceDay,
       },
       blob: null,
@@ -287,6 +325,7 @@ export async function readSempRefContext(client: PoolClient, ref: SempMessageRef
         client,
         item,
         database.ownerModuleId === "tasks" ? TASK_RELATED_KEYS : RELATED_KEYS,
+        unreadableDatabaseIds,
       ),
       inboxRelated: await inboxRelatedItems(client, item, database.ownerModuleId),
       ...(database.ownerModuleId === "emails" ? { thread: await mailThreadMessages(client, item.id) } : {}),

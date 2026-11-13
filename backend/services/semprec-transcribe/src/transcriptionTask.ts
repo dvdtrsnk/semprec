@@ -747,8 +747,8 @@ async function runSummarizeStep(
 }
 
 /**
- * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose
- * `date` falls inside the recording's window, or otherwise creates the transcript's single
+ * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose time
+ * interval overlaps the recording's interval, or otherwise creates the transcript's single
  * suggestion card. A retry of an unfinished transcript converges: an existing card, or an existing
  * edge to an Event that is not in the Trash, is left as it is; an edge to an Event in the Trash is
  * no link (issue #1743). A transcript whose `status` is already `done` is not matched at all (issue

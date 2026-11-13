@@ -8,15 +8,30 @@ import type { ItemRelationRow, PropertyRow } from "../types.js";
 import * as itemsStore from "./itemsStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
+import { assertAgentDatabaseAccess, listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 
 /** One live edge seen from one end: the listed item's own relation property and the item on the other side. */
-export interface ItemRelationEntry {
+export interface VisibleItemRelationEntry {
   relationPropertyId: string;
   propertyKey: string;
   targetItemId: string;
   targetDatabaseId: string;
   metadata: Record<string, unknown>;
 }
+
+/**
+ * An edge to an item in a database the reading agent's project may not read (issue #1810): the listed item's own
+ * property and the target's id, and neither the target's database nor the edge's metadata. Only an agent read
+ * produces it.
+ */
+export interface HiddenItemRelationEntry {
+  relationPropertyId: string;
+  propertyKey: string;
+  targetItemId: string;
+  hidden: true;
+}
+
+export type ItemRelationEntry = VisibleItemRelationEntry | HiddenItemRelationEntry;
 
 /** One of the item's own relation properties, with the definition it reads and which side of that definition it is. */
 interface ReadableSide {
@@ -39,18 +54,35 @@ function byPropertyKeyThenTarget(a: ItemRelationEntry, b: ItemRelationEntry): nu
  * field. An edge is omitted when its target is soft-deleted or its database is archived.
  *
  * Returns `null` when the item does not exist, is in the trash, or belongs to another tenant. The
- * three answer alike, so the caller reports one not-found for all of them.
+ * three answer alike, so the caller reports one not-found for all of them. An agent (`agentProjectItemId`,
+ * issue #1810) needs `read` access to the database of the listed item, else the read is refused as `forbidden`,
+ * and sees an edge to an item in a database it may not read as a `HiddenItemRelationEntry`.
  *
  * Runs a fixed number of queries whatever the number of relation properties: the item, the
  * database's properties, the definitions of the relation ones, their edges and the live targets.
  */
+export function listItemRelationsWithClient(
+  client: PoolClient,
+  itemId: string,
+  relationPropertyId?: string,
+): Promise<VisibleItemRelationEntry[] | null>;
+export function listItemRelationsWithClient(
+  client: PoolClient,
+  itemId: string,
+  relationPropertyId: string | undefined,
+  agentProjectItemId: string | undefined,
+): Promise<ItemRelationEntry[] | null>;
 export async function listItemRelationsWithClient(
   client: PoolClient,
   itemId: string,
   relationPropertyId?: string,
+  agentProjectItemId?: string,
 ): Promise<ItemRelationEntry[] | null> {
   const [item] = await itemsStore.getItemsByIds(client, [itemId]);
   if (!item) return null;
+  if (agentProjectItemId !== undefined) {
+    await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId: item.databaseId, access: "read" });
+  }
 
   const relationProperties = (await propertiesStore.listPropertiesByDatabase(client, item.databaseId)).filter(
     (property) => property.type === "relation",
@@ -105,10 +137,21 @@ export async function listItemRelationsWithClient(
       (target) => [target.id, target.databaseId] as const,
     ),
   );
+  const unreadable =
+    agentProjectItemId !== undefined ? await listUnreadableDatabaseIds(client, agentProjectItemId) : undefined;
   const entries: ItemRelationEntry[] = [];
   for (const { side, edge, targetItemId } of candidates) {
     const targetDatabaseId = liveTargets.get(targetItemId);
     if (targetDatabaseId === undefined) continue;
+    if (unreadable?.has(targetDatabaseId)) {
+      entries.push({
+        relationPropertyId: side.property.id,
+        propertyKey: side.property.key,
+        targetItemId,
+        hidden: true,
+      });
+      continue;
+    }
     entries.push({
       relationPropertyId: side.property.id,
       propertyKey: side.property.key,

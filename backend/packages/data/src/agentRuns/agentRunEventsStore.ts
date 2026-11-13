@@ -3,7 +3,8 @@ import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { notifyAgentRunEvent } from "../realtimeHook.js";
-import type { SessionAgentRunsFilter } from "./agentRunsStore.js";
+import { AGENT_RUN_STEP_EVENT_KINDS, AGENT_RUN_STEP_MAX_LIMIT, agentRunStepPageRowLimit } from "./agentRunStepPages.js";
+import type { AgentRunRow, SessionAgentRunsFilter } from "./agentRunsStore.js";
 
 export type AgentRunEventKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction" | "user_message";
@@ -167,6 +168,54 @@ export async function listAgentRunEventsAfter(
     rowLimit === undefined ? [agentRunId, afterEventId] : [agentRunId, afterEventId, rowLimit],
   );
   return rows.map(mapRow);
+}
+
+/**
+ * The read behind one page of `GET /api/agent-runs/:id/steps` (issue #1821): the events after
+ * `afterEventId` that can produce a step (`AGENT_RUN_STEP_EVENT_KINDS`), in id order, at most
+ * `agentRunStepPageRowLimit(stepLimit)` of them. A page of `stepLimit` steps needs at most two events
+ * per step, so the limit leaves room for a block of parallel tool calls; it is the bound of the
+ * read, never an unbounded set. `hasMore` is true when more events follow the ones returned.
+ */
+export async function listAgentRunEventsForStepPage(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  afterEventId: string,
+  stepLimit: number,
+): Promise<{ events: AgentRunEventRow[]; hasMore: boolean }> {
+  if (!Number.isInteger(stepLimit) || stepLimit < 1 || stepLimit > AGENT_RUN_STEP_MAX_LIMIT) {
+    throw new ValidationError("Invalid agent run step limit");
+  }
+  const rowLimit = agentRunStepPageRowLimit(stepLimit);
+  const { rows } = await client.query<AgentRunEventDbRow>(
+    `SELECT id, agent_run_id, kind, payload, at
+     FROM agent_run_events
+     WHERE agent_run_id = $1 AND id > $2::bigint AND kind = ANY($3::text[])
+     ORDER BY id ASC LIMIT $4`,
+    [agentRunId, afterEventId, AGENT_RUN_STEP_EVENT_KINDS, rowLimit + 1],
+  );
+  return { events: rows.slice(0, rowLimit).map(mapRow), hasMore: rows.length > rowLimit };
+}
+
+/**
+ * Whether events at the start of the run's history are gone (issue #1821): the run's first stored
+ * event is not its opening `run_status` of `running`, which every run writes first. Retention
+ * (`handleAgentRunEventsRetentionTask`) removes the events of a finished session run that precede a
+ * compaction checkpoint, and the checkpoint stays, so the first event left is not the opening one.
+ * A run with no event at all is truncated when it is finished, because a finished run has at least
+ * its terminal `run_status`; a run that is still `running` is only about to write its first.
+ */
+export async function isAgentRunHistoryTruncated(
+  client: Pool | PoolClient,
+  run: Pick<AgentRunRow, "id" | "status">,
+): Promise<boolean> {
+  const { rows } = await client.query<{ kind: string; status: string | null }>(
+    `SELECT kind, payload->>'status' AS status FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC LIMIT 1`,
+    [run.id],
+  );
+  const first = rows[0];
+  if (!first) return run.status !== "running";
+  return !(first.kind === "run_status" && first.status === "running");
 }
 
 /** Fetches one durable event only when it belongs to the run named by its thin realtime reference. */

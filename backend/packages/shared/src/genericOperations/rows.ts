@@ -111,6 +111,16 @@ export interface ExpandedRelationTarget extends ReducedRelationTarget {
   properties?: Record<string, unknown>;
   blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
 }
+/**
+ * A relation target in a database the reading agent's project may not read (issue #1810): its id and nothing
+ * else. Only an agent read produces it; a person reads every target in full.
+ */
+export interface HiddenRelationTarget {
+  id: string;
+  hidden: true;
+}
+/** One target of an expanded relation property. */
+export type ItemRelationTarget = ExpandedRelationTarget | HiddenRelationTarget;
 
 export interface Item {
   automation?: {
@@ -151,7 +161,7 @@ export interface Item {
   deletedAt: string | null;
   /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
   fromInbox?: boolean;
-  relations?: Record<string, ExpandedRelationTarget[]>;
+  relations?: Record<string, ItemRelationTarget[]>;
   relationsTruncated?: string[];
   /** Present only when the read asked for `include: ["links"]`; keyed by property key, empty when the item has no link. */
   links?: Record<string, ItemLink>;
@@ -171,13 +181,26 @@ export interface RelationEdge {
  * listed item's own property, `targetItemId` the item on the other side, and `targetDatabaseId`
  * that item's database. A paired definition reports the other end under that end's own property.
  */
-export interface RelationListEntry {
+export interface VisibleRelationListEntry {
   relationPropertyId: string;
   propertyKey: string;
   targetItemId: string;
   targetDatabaseId: string;
   metadata: Record<string, unknown>;
 }
+
+/**
+ * An edge to an item in a database the reading agent's project may not read (issue #1810): the listed item's own
+ * property and the target's id, without the target's database and the edge's metadata. A person reads every edge in full.
+ */
+export interface HiddenRelationListEntry {
+  relationPropertyId: string;
+  propertyKey: string;
+  targetItemId: string;
+  hidden: true;
+}
+
+export type RelationListEntry = VisibleRelationListEntry | HiddenRelationListEntry;
 
 /**
  * The page after `page.restoreVersion` (issue #1617): the restored instant as ISO 8601 and the ids

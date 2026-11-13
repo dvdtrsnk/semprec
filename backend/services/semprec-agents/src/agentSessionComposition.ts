@@ -348,6 +348,8 @@ export async function createAgentSessionFactoryForRun(
         if (!thread) throw new Error("Semp thread not found for run");
         const schema = await generateSchemaProjection(client, moduleRegistry, {
           locale: toManifestLocale(locale ?? "en"),
+          // The prompt lists only the databases the run's project may read (issue #1810).
+          ...(run.projectItemId ? { agentProjectItemId: run.projectItemId } : {}),
         });
         const turn =
           thread.kind === "tick" && currentSempMessage?.current

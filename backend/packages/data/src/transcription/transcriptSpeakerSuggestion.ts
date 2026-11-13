@@ -15,6 +15,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { aiProposalPatch, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
+import { publishInboxCardChange } from "../inbox/inboxCardsRealtime.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError } from "../errors.js";
@@ -238,6 +239,7 @@ export async function proposeSpeakerMappings(
       { relationPropertyId: sourceTranscriptProperty.id, callerItemId: card.id, targetItemId: input.transcriptId },
       PROCESSING_PROPOSALS_RELATION_CONTEXT,
     );
+    publishInboxCardChange(client, card.id, "created");
     proposed.push(detail.speaker);
   }
   return proposed;

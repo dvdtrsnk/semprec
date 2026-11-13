@@ -32,6 +32,7 @@ import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js"
 import { executeProposalSteps } from "./proposalSteps.js";
 import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
+import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { releaseTrashedEventEdges } from "../transcription/transcriptEventEdges.js";
@@ -757,6 +758,7 @@ export async function confirmProposalWithClient(
       actingUserId,
     },
   );
+  publishInboxCardChange(client, proposal.id, "closed");
   // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
   // the source Inbox item's displayed status but never touch the Inbox item itself, so
   // nothing else would invalidate its Journal day's cached list.
@@ -795,6 +797,7 @@ export async function rejectProposalWithClient(
     },
     { allowedSystemKeys: ["status", "history"] },
   );
+  publishInboxCardChange(client, proposal.id, "closed");
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;
 }
@@ -860,6 +863,7 @@ export async function settleSpeakerCardWithClient(
       },
       { allowedSystemKeys: ["status", "history"], writer: CONFIRMING_USER_WRITER, actingUserId },
     );
+    publishInboxCardChange(client, proposal.id, "closed");
     await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
     return "rejected";
   }
@@ -907,6 +911,7 @@ export async function settleSpeakerCardWithClient(
       actingUserId,
     },
   );
+  publishInboxCardChange(client, proposal.id, "closed");
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return "confirmed";
 }

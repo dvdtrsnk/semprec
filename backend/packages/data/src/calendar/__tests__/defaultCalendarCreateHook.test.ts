@@ -383,7 +383,14 @@ describe("default calendar create hook (issue #1761)", () => {
       runInTenant(tenant, async () => {
         const f = await setup();
         const errorLog = vi.spyOn(logger, "error").mockImplementation(() => undefined);
-        await f.cp.softDeleteItem(f.db(CALENDARS_MODULE_ID), f.calendar("Personal"));
+        // A tenant without a live default is a state of before issue gh-1803: deleting the default calendar now hands
+        // the mark on, so only a raw write puts it in the Trash.
+        await withTransaction(runtime, (client) =>
+          client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
+            f.db(CALENDARS_MODULE_ID),
+            f.calendar("Personal"),
+          ]),
+        );
 
         const error: unknown = await f.create().then(
           () => undefined,

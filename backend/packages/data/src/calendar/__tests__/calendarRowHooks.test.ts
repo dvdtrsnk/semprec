@@ -8,12 +8,10 @@ import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { registerItemUpdateHook } from "../../chokePoint/hooks.js";
-import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import type { WriterIdentity } from "../../chokePoint/writerKind.js";
 import { withTransaction } from "../../db/pool.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
-import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
@@ -188,7 +186,31 @@ describe("calendar row hooks (issue #1778)", () => {
       );
       expect(result.rowCount).toBe(1);
     };
-    return { cp, calendarsId, rows, row, id, defaults, patch, create, createOfKind, markDefaultWithoutHooks };
+    /**
+     * Puts a calendar in the Trash without the delete hooks. The hook of issue gh-1803 hands the default mark on when
+     * the default calendar is deleted, so a default calendar in the Trash, or an uncommitted trash of one, is a state
+     * of before that hook: only a raw write reaches it now.
+     */
+    const trashWithoutHooks = async (client: PoolClient, calendarId: string) => {
+      const result = await client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
+        calendarsId,
+        calendarId,
+      ]);
+      expect(result.rowCount).toBe(1);
+    };
+    return {
+      cp,
+      calendarsId,
+      rows,
+      row,
+      id,
+      defaults,
+      patch,
+      create,
+      createOfKind,
+      markDefaultWithoutHooks,
+      trashWithoutHooks,
+    };
   }
 
   /**
@@ -481,7 +503,7 @@ describe("calendar row hooks (issue #1778)", () => {
           kind === "system"
             ? f.id("Birthdays")
             : (await f.createOfKind("subscription", { name: "Feed", color: "#8E8E93" })).id;
-        await f.cp.softDeleteItem(f.calendarsId, f.id("Personal"));
+        await withTransaction(runtime, (client) => f.trashWithoutHooks(client, f.id("Personal")));
         const before = await f.rows();
 
         expect(await refusal(f.patch(calendarId, { isDefault: true }))).toMatchObject(NOT_AN_OWN_CALENDAR);
@@ -611,7 +633,7 @@ describe("calendar row hooks (issue #1778)", () => {
       it("is not the default that stays", () =>
         runInTenant(tenant, async () => {
           const f = await setup();
-          await f.cp.softDeleteItem(f.calendarsId, f.id("Personal"));
+          await withTransaction(runtime, (client) => f.trashWithoutHooks(client, f.id("Personal")));
           const before = await f.rows();
 
           expect(await refusal(f.patch(f.id("Work"), { isDefault: false }))).toMatchObject(NO_DEFAULT_LEFT);
@@ -621,7 +643,7 @@ describe("calendar row hooks (issue #1778)", () => {
       it("is not written when another calendar becomes the default", () =>
         runInTenant(tenant, async () => {
           const f = await setup();
-          await f.cp.softDeleteItem(f.calendarsId, f.id("Personal"));
+          await withTransaction(runtime, (client) => f.trashWithoutHooks(client, f.id("Personal")));
           const trashed = await f.cp.findItemIncludingDeleted(f.id("Personal"));
 
           await f.patch(f.id("Work"), { isDefault: true });
@@ -806,9 +828,7 @@ describe("calendar row hooks (issue #1778)", () => {
   describe("a trash of the default calendar that is uncommitted", () => {
     /** Trashes Personal, the default, in a transaction that stays open. */
     const trashPersonal = (f: Awaited<ReturnType<typeof setup>>) =>
-      heldOpen((client) =>
-        itemDeleteWithClient(client, f.calendarsId, f.id("Personal"), { queueAffinity: createActionQueueAffinity() }),
-      );
+      heldOpen((client) => f.trashWithoutHooks(client, f.id("Personal")));
 
     it("makes a switch wait and then leave the trashed calendar unwritten", () =>
       runInTenant(tenant, async () => {

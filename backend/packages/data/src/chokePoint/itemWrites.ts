@@ -54,6 +54,7 @@ import {
   type ItemPreWriteTransformContext,
 } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { requireApprovalForChangedItemLinks } from "./valueLinkApproval.js";
 import { assertValueLinkHandoff, breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 import { isDeepStrictEqual } from "node:util";
@@ -191,13 +192,14 @@ const selectOptionsConfigSchema = z.object({ options: z.array(z.object({ key: z.
  * value is `null` or one `config.options[].key`; a `multi_select` value is `null` or an array of such keys,
  * and `[]` clears it. Internal writers are not checked, since mail, transcription and similar ingest paths write
  * their own values. Only the keys of `patch` are inspected. A value that deep-equals the one in `stored` (the
- * item's properties on an update, `null` on a create) is accepted, so a client that sends a whole record back
- * does not fail on an old value that left the catalog. A violation is a `ValidationError` whose `field` is the
+ * item's properties on an update) is accepted, so a client that sends a whole record back does not fail on an
+ * old value that left the catalog; `stored` is `null` on a create and for an Inbox proposal's database envelope
+ * or `create` step, where nothing is stored and every value is checked. A violation is a `ValidationError` whose `field` is the
  * property key: a value that is not in the catalog is named in the message, a value of the wrong shape is
  * described by the shape expected. The caller passes only values the caller or a transform supplied, never
  * one a create filled in from `config.default`.
  */
-function assertSelectValuesKnown(
+export function assertSelectValuesKnown(
   properties: PropertyRow[],
   patch: Record<string, unknown>,
   stored: Record<string, unknown> | null,
@@ -434,6 +436,8 @@ export async function createItemReportingReplay(
   options: CreateItemWithClientOptions,
   initialRelations?: readonly ItemCreateInitialRelation[],
 ): Promise<{ item: ItemRow; created: boolean }> {
+  // An agent's project needs `write` access to the database, also for an idempotent replay (issue #1810).
+  await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write");
   const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
   if (replay) return { item: replay, created: false };
 
@@ -583,6 +587,7 @@ export async function updateItemWithClient(
   input: UpdateItemInput,
   options: UpdateItemWithClientOptions = {},
 ): Promise<itemsStore.UpdateItemResult> {
+  await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write");
   await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);

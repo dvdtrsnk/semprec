@@ -80,15 +80,24 @@ export function createGenericApplicationService(
     return item;
   }
 
-  /** Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
-  async function withLinks<T extends Item>(items: T[], include: ItemReadInclude): Promise<T[]> {
+  /**
+   * Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched.
+   * For an agent (`agentProjectItemId`, issue #1849) a link source item in a database its project may not read is left out of the link.
+   */
+  async function withLinks<T extends Item>(
+    items: T[],
+    include: ItemReadInclude,
+    agentProjectItemId: string | undefined,
+  ): Promise<T[]> {
     const links = Array.isArray(include) ? include.includes("links") : include?.links === true;
     const derived = Array.isArray(include) ? include.includes("derived") : include?.derived === true;
     const automation = Array.isArray(include) ? include.includes("automation") : include?.automation === true;
     if (!links && !derived && !automation) return items;
     const ids = items.map((item) => item.id);
     const valuesByItem = derived ? await chokePoint.getDerivedValuesForItems(ids) : undefined;
-    const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived, valuesByItem) : undefined;
+    const linksByItem = links
+      ? await chokePoint.getValueLinksForItems(ids, derived, valuesByItem, agentProjectItemId)
+      : undefined;
     const automationByItem = automation ? await chokePoint.readAutomationForItems(ids) : undefined;
     return items.map((item) => ({
       ...item,
@@ -105,13 +114,13 @@ export function createGenericApplicationService(
   }
   return {
     // ---- databases ----
-    async listDatabases(_actor, input) {
-      const databases = await chokePoint.listDatabases();
+    async listDatabases(actor, input) {
+      const databases = await chokePoint.listDatabases(writerIdentityOf(actor).agentProjectItemId);
       return paginate<Database>(databases, input.cursor, input.limit);
     },
 
-    async getDatabase(_actor, input) {
-      const database = await chokePoint.getDatabase(input.databaseId);
+    async getDatabase(actor, input) {
+      const database = await chokePoint.getDatabase(input.databaseId, writerIdentityOf(actor).agentProjectItemId);
       if (!database)
         throw new NotFoundError(`Database ${input.databaseId} not found`, {
           resource: "database",
@@ -314,8 +323,9 @@ export function createGenericApplicationService(
           includeCount: input.includeCount,
         },
         expansion(input.include),
+        writerIdentityOf(actor).agentProjectItemId,
       );
-      return { ...page, items: await withLinks(page.items, input.include) };
+      return { ...page, items: await withLinks(page.items, input.include, writerIdentityOf(actor).agentProjectItemId) };
     },
 
     async addViewItem(actor, input) {
@@ -342,10 +352,16 @@ export function createGenericApplicationService(
     },
 
     // ---- items ----
-    async getItem(_actor, input) {
-      const item = await chokePoint.findItem(input.itemId, expansion(input.include));
+    async getItem(actor, input) {
+      const writer = writerIdentityOf(actor);
+      const item = await chokePoint.findItem(
+        input.itemId,
+        expansion(input.include),
+        writer.agentProjectItemId,
+        writer.agentRunId,
+      );
       if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
-      const [withItemLinks] = await withLinks([item], input.include);
+      const [withItemLinks] = await withLinks([item], input.include, writer.agentProjectItemId);
       return withItemLinks ?? item;
     },
 
@@ -435,8 +451,9 @@ export function createGenericApplicationService(
           includeCount: input.includeCount,
         },
         expansion(input.include),
+        writerIdentityOf(actor).agentProjectItemId,
       );
-      return { ...page, items: await withLinks(page.items, input.include) };
+      return { ...page, items: await withLinks(page.items, input.include, writerIdentityOf(actor).agentProjectItemId) };
     },
 
     /** The choke point resolves every entry's database in the caller's tenant, and applies the declared collection filter through `resolver`. */
@@ -489,8 +506,12 @@ export function createGenericApplicationService(
     },
 
     /** The choke point answers `null` for an unknown, trashed or foreign item; that is the same not-found `requireItem` gives, so no caller can tell the three apart. */
-    async listRelations(_actor, input) {
-      const relations = await chokePoint.listItemRelations(input.itemId, input.relationPropertyId);
+    async listRelations(actor, input) {
+      const relations = await chokePoint.listItemRelations(
+        input.itemId,
+        input.relationPropertyId,
+        writerIdentityOf(actor).agentProjectItemId,
+      );
       if (!relations)
         throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return relations;
@@ -503,7 +524,10 @@ export function createGenericApplicationService(
       return chokePoint.unlinkValue(input, { ...writer, writerKind: writer.writerKind }, actor.userId);
     },
     async relinkValue(actor, input) {
-      return chokePoint.relinkValue(input, actor.userId);
+      // The full identity, so an agent under a run is held to its project's grant on the item's database (issue #1810).
+      const writer = writerIdentityOf(actor);
+      if (writer.writerKind === "system") throw new Error("An actor never writes as the system");
+      return chokePoint.relinkValue(input, actor.userId, { ...writer, writerKind: writer.writerKind });
     },
 
     async getPage(actor, input) {

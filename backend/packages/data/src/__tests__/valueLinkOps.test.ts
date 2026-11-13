@@ -5,7 +5,16 @@ import { randomUUID } from "node:crypto";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestProjectItem,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
+import { ApprovalRequiredForWrite } from "../errors.js";
+import { computeDestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { insertValueLink } from "../chokePoint/valueLinksStore.js";
@@ -76,6 +85,72 @@ describe("explicit value link operations", () => {
         valueKind: "inheritedBroken",
         brokenBy: "agent",
       });
+    });
+  });
+
+  it("holds an agent under a run to its project's write grant on the item's database for unlink and relink (issue #1810)", async () => {
+    await runInTenant(tenant, async () => {
+      const db = await cp.createDatabase({ name: "Link grants" });
+      await cp.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+      const source = await cp.createItem({ databaseId: db.id, properties: { name: "source" } });
+      const active = await cp.createItem({ databaseId: db.id, properties: { name: "active" } });
+      const broken = await cp.createItem({ databaseId: db.id, properties: { name: "old" } });
+      for (const item of [active, broken]) {
+        await withTransaction(data, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: "name",
+            ruleKey: "test",
+            sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "name" }],
+          }),
+        );
+      }
+      await cp.unlinkValue({ itemId: broken.id, propertyKey: "name" }, "user");
+      const projectItemId = await createTestProjectItem(data);
+      const writer = { writerKind: "agent", agentRunId: randomUUID(), agentProjectItemId: projectItemId } as const;
+      const grant = (access: "none" | "write") =>
+        withTransaction(data, (client) => setAgentDatabaseGrant(client, { projectItemId, databaseId: db.id, access }));
+      const FORBIDDEN = { status: 403, code: "forbidden" };
+      const stateOf = async (itemId: string) => (await cp.getValueLinksForItems([itemId])).get(itemId)?.name?.valueKind;
+
+      await grant("none");
+      await expect(cp.relinkValue({ itemId: broken.id, propertyKey: "name" }, undefined, writer)).rejects.toMatchObject(
+        FORBIDDEN,
+      );
+      await expect(cp.unlinkValue({ itemId: broken.id, propertyKey: "name" }, writer)).rejects.toMatchObject(FORBIDDEN);
+      await expect(cp.unlinkValue({ itemId: active.id, propertyKey: "name" }, writer)).rejects.toMatchObject(FORBIDDEN);
+      // The approval request of an unlink is refused before it exists, as the write itself would be.
+      const projection = (agentProjectItemId: string) =>
+        withTransaction(data, (client) =>
+          computeDestructiveResourceProjection(client, {
+            operation: "link.unlink",
+            input: { itemId: active.id, propertyKey: "name" },
+            agentProjectItemId,
+          }),
+        );
+      await expect(projection(projectItemId)).rejects.toMatchObject(FORBIDDEN);
+      // An item that does not exist stays not found, and nothing about the refused ones changed.
+      await expect(
+        cp.relinkValue({ itemId: randomUUID(), propertyKey: "name" }, undefined, writer),
+      ).rejects.toMatchObject({ status: 404 });
+      expect((await cp.getItem(db.id, broken.id))?.properties.name).toBe("old");
+      expect(await stateOf(broken.id)).toBe("inheritedBroken");
+      expect(await stateOf(active.id)).toBe("inherited");
+      // The person who owns the data is not checked.
+      expect(await cp.relinkValue({ itemId: broken.id, propertyKey: "name" })).toMatchObject({
+        valueKind: "inherited",
+      });
+      await cp.unlinkValue({ itemId: broken.id, propertyKey: "name" }, "user");
+
+      await grant("write");
+      expect(await cp.relinkValue({ itemId: broken.id, propertyKey: "name" }, undefined, writer)).toMatchObject({
+        valueKind: "inherited",
+      });
+      await expect(projection(projectItemId)).resolves.toMatchObject({ currentResource: { item: { id: active.id } } });
+      // With the grant an unlink of an active link reaches its approval, as for any agent under a run.
+      await expect(cp.unlinkValue({ itemId: active.id, propertyKey: "name" }, writer)).rejects.toBeInstanceOf(
+        ApprovalRequiredForWrite,
+      );
     });
   });
 

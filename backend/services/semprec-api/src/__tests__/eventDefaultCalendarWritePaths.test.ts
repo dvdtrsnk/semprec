@@ -286,7 +286,13 @@ describe("every write path gives a new Event the default calendar (issue #1761)"
   });
 
   it("answers a create with a server error and stores no Event while no live calendar is the default", async () => {
-    await inTenantZero(() => createChokePoint(pool).softDeleteItem(calendarsId, personalId));
+    // A tenant without a live default is a state of before issue gh-1803: deleting the default calendar now hands the
+    // mark on, so only a raw write puts it in the Trash.
+    const trashed = await pool.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
+      calendarsId,
+      personalId,
+    ]);
+    expect(trashed.rowCount).toBe(1);
     const failed = await rest("POST", `/api/databases/${eventsId}/items`, { properties: EVENT });
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ error: { code: "internal_error" } });

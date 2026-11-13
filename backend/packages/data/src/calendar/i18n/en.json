@@ -19,5 +19,19 @@
   "seed.calendars.birthdays.name": "Birthdays",
   "seed.calendars.tasks.name": "Tasks",
   "seed.calendars.sleep.name": "Sleep",
-  "seed.calendars.holidaysCz.name": "Public holidays - Czechia"
+  "seed.calendars.holidaysCz.name": "Public holidays - Czechia",
+  "calendar.birthday.title": "Birthday - {name}",
+  "calendar.holiday.newYear": "New Year's Day",
+  "calendar.holiday.goodFriday": "Good Friday",
+  "calendar.holiday.easterMonday": "Easter Monday",
+  "calendar.holiday.labourDay": "Labour Day",
+  "calendar.holiday.victoryDay": "Victory Day",
+  "calendar.holiday.cyrilAndMethodius": "Saints Cyril and Methodius Day",
+  "calendar.holiday.janHus": "Jan Hus Day",
+  "calendar.holiday.statehood": "Czech Statehood Day",
+  "calendar.holiday.independence": "Independence Day of Czechoslovakia",
+  "calendar.holiday.freedomAndDemocracy": "Struggle for Freedom and Democracy Day",
+  "calendar.holiday.christmasEve": "Christmas Eve",
+  "calendar.holiday.christmasDay": "Christmas Day",
+  "calendar.holiday.boxingDay": "Boxing Day"
 }

@@ -4,6 +4,7 @@
 // Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
 import type { PoolClient } from "pg";
 import { ForbiddenError, NotFoundError } from "../errors.js";
+import type { DatabaseRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 
 /**
@@ -11,8 +12,9 @@ import * as databasesStore from "./databasesStore.js";
  * archived database with a canonical 403 `database_archived`, while reads (and restoring the
  * database itself) remain unaffected. Used directly by every item and relation mutation except item
  * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate` (in `itemWrites.ts`).
+ * Returns the database it checked, for a caller that needs the row next.
  */
-export async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
+export async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<DatabaseRow> {
   const database = await databasesStore.getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
   if (database.archivedAt) {
@@ -22,4 +24,5 @@ export async function assertDatabaseNotArchived(client: PoolClient, databaseId: 
       "database_archived",
     );
   }
+  return database;
 }

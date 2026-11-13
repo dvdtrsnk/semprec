@@ -39,6 +39,7 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  createEventInCalendar,
   createHeartbeat,
   createInvite,
   createItemWithClient,
@@ -2942,6 +2943,28 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => peopleOf(id));
     expect(answer.status).toBe(404);
   },
+  // Each tenant gets an Event that hosts one task, seeded here and used by no other case (issue gh-1801).
+  "event tasks": async () => {
+    const [own, foreign] = [await taskAndEvent(b), await taskAndEvent(a)];
+    await sendOk(b.member, { method: "PUT", path: hostEventPath(own.taskId, own.eventId) });
+    await sendOk(a.member, { method: "PUT", path: hostEventPath(foreign.taskId, foreign.eventId) });
+    const tasksOf = (eventId: string | undefined): Request => ({ method: "GET", path: `/api/events/${eventId}/tasks` });
+    // A reads the task of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
+    expect(await sendOk(a.member, tasksOf(foreign.eventId))).toContain(foreign.taskId);
+    const listed = await expectExcludesA(b.member, tasksOf(own.eventId), [own.taskId]);
+    expectNoneOf(listed.text, [foreign.eventId, foreign.taskId], "B's event tasks");
+    // The Event's day is fixed, so the state is open or missed depending on the day the test runs; both count as open.
+    expect(JSON.parse(listed.text)).toMatchObject({
+      eventId: own.eventId,
+      tasks: [{ taskId: own.taskId }],
+      counts: { open: 1, total: 1 },
+    });
+    const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => tasksOf(id));
+    expect(answer.status).toBe(404);
+    const invalid = await send(b.member, tasksOf("not-a-uuid"));
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
   // Each tenant gets an area with one project that holds an overdue open task, seeded here and used by no
   // other case (issue gh-1760). An overdue task is in the overview's list whatever the day the test runs on.
   "area overview": async () => {
@@ -3107,6 +3130,165 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: "/api/calendar/timeline?from=2026-10-17&to=2026-10-16",
     });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  // A and B each get an exception for the night of 2026-10-15 with a bedtime of its own, seeded here and used by
+  // no other case (issue gh-1809). Each reads its own bedtime for the night and never the other's; both tenants
+  // also keep their seeded plans, so a night that follows a plan is not mistaken for an empty answer.
+  "sleep nights": async () => {
+    const seedNight = (tenant: TenantFixture, bedTime: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const database = await getDatabaseByModuleId(client, "sleepNights");
+        if (!database) throw new Error("sleepNights not seeded");
+        await createItemWithClient(client, {
+          databaseId: database.id,
+          properties: { night: "2026-10-15", bedTime },
+        });
+      });
+    const foreignBedTime = "21:17";
+    const ownBedTime = "21:19";
+    await seedNight(a, foreignBedTime);
+    await seedNight(b, ownBedTime);
+    const request: Request = { method: "GET", path: "/api/sleep/nights?from=2026-10-15&to=2026-10-16" };
+    const asB = await expectExcludesA(b.member, request);
+    expect(asB.text).toContain(`"bedTime":"${ownBedTime}"`);
+    expect(asB.text).not.toContain(foreignBedTime);
+    // A's exception is on that night for A, so its absence from B's answer is isolation and not an empty fixture.
+    const asA = await sendOk(a.member, request);
+    expect(asA).toContain(`"bedTime":"${foreignBedTime}"`);
+    expect(asA).not.toContain(ownBedTime);
+    const invalid = await send(b.member, { method: "GET", path: "/api/sleep/nights?from=2026-10-17&to=2026-10-16" });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  // Each tenant gets an Event with one participant, seeded here and used by no other case (issue gh-1796). B names
+  // A's Event: the copy answers like a random id and creates nothing in either tenant. An Idempotency-Key is a
+  // reservation of one tenant, so the key B used does not find A's copy.
+  "calendar item duplicate": async () => {
+    const seed = async (
+      tenant: TenantFixture,
+    ): Promise<{ eventId: string; personId: string; eventsDatabaseId: string }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const eventId = await create("events", { name: "Duplicate probe", date: "2026-11-02" });
+      const personId = await create("people", { name: "Duplicate probe person" });
+      await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/items/${eventId}/relations/people/${personId}`,
+        body: {},
+      });
+      return { eventId, personId, eventsDatabaseId: await databaseIdFor(tenant.tenantId, "events") };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const duplicateOf = (eventId: string | undefined): Request => ({
+      method: "POST",
+      path: `/api/calendar/items/${eventId}/duplicate`,
+      body: { date: "2026-11-03" },
+      headers: { "Idempotency-Key": "isolation-duplicate" },
+    });
+    const eventsOf = (caller: Caller, databaseId: string): Promise<string> =>
+      sendOk(caller, { method: "POST", path: `/api/databases/${databaseId}/query`, body: {} });
+    const peopleOf = (caller: Caller, eventId: string): Promise<string> =>
+      sendOk(caller, { method: "GET", path: `/api/items/${eventId}/relations?propertyKey=people` });
+    const [eventsOfA, eventsOfB] = [
+      await eventsOf(a.member, foreign.eventsDatabaseId),
+      await eventsOf(b.member, own.eventsDatabaseId),
+    ];
+
+    const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => duplicateOf(id));
+    expect(answer.status).toBe(404);
+    expect(await eventsOf(a.member, foreign.eventsDatabaseId)).toBe(eventsOfA);
+    expect(await eventsOf(b.member, own.eventsDatabaseId)).toBe(eventsOfB);
+
+    // B copies its own Event with the same key, so the 404 above is a refusal and not a route that never works.
+    const copy = await sendOk(b.member, duplicateOf(own.eventId));
+    const copyId = readString(copy, "id");
+    expect(copyId).not.toBe(own.eventId);
+    expectNoneOf(copy, [foreign.eventId, foreign.personId], "B's copy");
+    expect(await peopleOf(b.member, copyId)).toContain(own.personId);
+    expectNoneOf(await eventsOf(b.member, own.eventsDatabaseId), [foreign.eventId, foreign.personId], "B's Events");
+    // A's request with the key B already used makes A's own copy, not B's.
+    const copyOfA = readString(await sendOk(a.member, duplicateOf(foreign.eventId)), "id");
+    expect(copyOfA).not.toBe(copyId);
+    expect(await peopleOf(a.member, copyOfA)).toContain(foreign.personId);
+    expect(await peopleOf(b.member, copyId)).not.toContain(foreign.personId);
+  },
+  // Each tenant gets its own calendar whose Events carry invitations, seeded here and used by no other case
+  // (issue gh-2003). A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
+  "calendar cancellation impact": async () => {
+    const seed = async (tenant: TenantFixture, eventCount: number): Promise<{ calendarId: string; ids: string[] }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const calendarId = await create("calendars", { name: "Cancellation probe" });
+      const personId = await create("people", { name: "Cancellation probe person" });
+      const eventsDatabaseId = await databaseIdFor(tenant.tenantId, "events");
+      const eventIds = await runInTenant(tenant.tenantId, async () => {
+        const chokePoint = createChokePoint(pool);
+        const people = (await chokePoint.listProperties(eventsDatabaseId)).find(
+          (property) => property.key === "people",
+        );
+        if (!people) throw new Error("Missing Events.people");
+        const created: string[] = [];
+        for (let index = 0; index < eventCount; index += 1) {
+          const event = await withTransaction(pool, (client) =>
+            createEventInCalendar(
+              client,
+              { properties: { name: `Cancellation probe event ${index}`, date: "2026-11-16" } },
+              calendarId,
+              { writer: { writerKind: "user" } },
+            ),
+          );
+          // The invitation is written by the server only, so the fixture writes it with the system writer kind.
+          await chokePoint.createRelation({
+            relationPropertyId: people.id,
+            callerItemId: event.id,
+            targetItemId: personId,
+            metadata: {
+              invitation: {
+                status: "pending",
+                email: `${tenant.tenantId}.${index}@example.com`,
+                mailboxId: randomUUID(),
+              },
+            },
+          });
+          created.push(event.id);
+        }
+        return created;
+      });
+      return { calendarId, ids: [personId, ...eventIds] };
+    };
+    const [own, foreign] = [await seed(b, 1), await seed(a, 2)];
+    const impactOf = (calendarId: string | undefined): Request => ({
+      method: "GET",
+      path: `/api/calendar/calendars/${calendarId}/cancellation-impact`,
+    });
+    // A reads its own calendar, so the 404 B gets for it below is a refusal and not an empty fixture.
+    expect(JSON.parse(await sendOk(a.member, impactOf(foreign.calendarId)))).toEqual({
+      eventCount: 2,
+      cancellationCount: 2,
+      recipientCount: 2,
+    });
+    const listed = await expectExcludesA(b.member, impactOf(own.calendarId));
+    expect(JSON.parse(listed.text)).toEqual({ eventCount: 1, cancellationCount: 1, recipientCount: 1 });
+    expectNoneOf(listed.text, [foreign.calendarId, ...foreign.ids], "B's cancellation impact");
+    const answer = await expectForeignLikeRandom(b.member, [foreign.calendarId], ([id]) => impactOf(id));
+    expect(answer.status).toBe(404);
+    const invalid = await send(b.member, impactOf("not-a-uuid"));
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
@@ -3352,6 +3534,41 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const removed = await adminPool.query("DELETE FROM agent_runs WHERE id = $1", [otherActorRun.id]);
     expect(removed.rowCount).toBe(1);
     expect(otherActor.status).toBe(404);
+  },
+  "agent run steps": async () => {
+    // A's run has an opening `run_status` event, so an unchecked answer would carry its id as a step id.
+    const foreign = await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
+      method: "GET",
+      path: `/api/agent-runs/${id}/steps`,
+    }));
+    expect(foreign.status).toBe(404);
+    expectNoneOf(foreign.text, [a.agentRunId, `"stepId":"${a.agentRunEventId}"`], "agent run steps");
+    // B's member reads B's own run, whose opening event is its first step.
+    const own = await send(b.member, { method: "GET", path: `/api/agent-runs/${b.agentRunId}/steps` });
+    expect(own.status, own.text).toBe(200);
+    expect(own.text).toContain(`"stepId":"${b.agentRunEventId}"`);
+    // A run of B's tenant with another actor and an event of its own answers like an unknown id (issue gh-1821).
+    // Raw fixture for the actor, as in "agent run detail": the foreign key is skipped for this one insert.
+    const otherActor = await runInTenant(b.tenantId, () =>
+      withTransaction(adminPool, async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        const run = await createAgentRun(client, { triggeredBy: "user", task: "actor probe", userId: a.member.userId });
+        const event = await insertAgentRunEvent(client, run.id, "run_status", { status: "running" });
+        return { runId: run.id, eventId: event.id };
+      }),
+    );
+    const answer = await expectForeignLikeRandom(b.member, [otherActor.runId], ([id]) => ({
+      method: "GET",
+      path: `/api/agent-runs/${id}/steps`,
+    }));
+    const removedEvents = await adminPool.query("DELETE FROM agent_run_events WHERE agent_run_id = $1", [
+      otherActor.runId,
+    ]);
+    expect(removedEvents.rowCount).toBe(1);
+    const removed = await adminPool.query("DELETE FROM agent_runs WHERE id = $1", [otherActor.runId]);
+    expect(removed.rowCount).toBe(1);
+    expect(answer.status).toBe(404);
+    expectNoneOf(answer.text, [`"stepId":"${otherActor.eventId}"`], "agent run steps of another actor");
   },
   "mint mcp run credential": () =>
     leavesAUnchanged(async () => {
@@ -4361,6 +4578,13 @@ function ownerProbes(): OwnerProbe[] {
       status: 200,
     },
     { label: "agent run detail", ids: [a.agentRunId], build: get(([id]) => `/api/agent-runs/${id}`), status: 200 },
+    {
+      label: "agent run steps",
+      ids: [a.agentRunId],
+      build: get(([id]) => `/api/agent-runs/${id}/steps`),
+      status: 200,
+      contains: [`"stepId":"${a.agentRunEventId}"`],
+    },
     {
       label: "project mcp grants",
       ids: [a.projectItemId],

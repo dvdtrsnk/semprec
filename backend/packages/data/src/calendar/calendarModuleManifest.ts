@@ -3,6 +3,7 @@ import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 
 export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
+export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpactRouteHandler.js";
 
 /**
  * Manifest of the calendar module. The later calendar issues (invitations, reminders, recurrence, agent
@@ -38,6 +39,16 @@ export const manifest: ModuleManifest = {
       // Shaped for exactly one consumer, the calendar views: one call merges the Events and Tasks of a
       // date range with their calendar, project and people, which the generic query reads one database
       // at a time and without relations.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "calendarCancellationImpact",
+      method: "GET",
+      path: "/api/calendar/calendars/:id/cancellation-impact",
+      handlerExport: "createCalendarCancellationImpactRouteHandler",
+      // Shaped for exactly one consumer, the confirmation dialog of a calendar deletion (issue gh-2003): one
+      // call counts the Events, cancellations and invited people the deletion affects, which the generic
+      // reads would have to assemble from the Events of a calendar and the edges of each.
       justification: "single-consumer-read",
     },
   ],

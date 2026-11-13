@@ -1,4 +1,5 @@
-import { expandItemRelations, type RelationExpansionOptions } from "./relationExpansion.js";
+import { expandItemRelations, expansionForReader, type RelationExpansionOptions } from "./relationExpansion.js";
+import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
@@ -61,6 +62,8 @@ export interface ListItemsInput extends itemsStore.ListItemsOptions {
   filter?: unknown;
   /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
   now?: Date;
+  /** The Projects item of the reading agent's run: the read needs `read` access to the database (issue #1810). */
+  agentProjectItemId?: string;
 }
 
 export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
@@ -183,13 +186,22 @@ async function resolveFilterSql(
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions) {
+    async getItem(
+      databaseId: string,
+      itemId: string,
+      expansion?: RelationExpansionOptions,
+      agentProjectItemId?: string,
+    ) {
       return withTransaction(pool, async (client) => {
+        if (agentProjectItemId !== undefined) {
+          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access: "read" });
+        }
         const item = await itemsStore.getItemById(client, databaseId, itemId);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
         const projected = await projectItemsForRead(client, [stamped ?? item]);
-        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
+        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
     },
 
@@ -198,14 +210,31 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * `databaseId` to route `getItem`'s partitioned lookup through). Backed by the same
      * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
      * for the same reason: a single-row point lookup, not a scan over a large membership list.
+     *
+     * An agent (`agentProjectItemId`) needs `read` access to the item's database, or, when it also passes its run
+     * (`agentRunId`), a per-turn read allowance for this very item (issue #1849).
      */
-    async findItem(itemId: string, expansion?: RelationExpansionOptions) {
+    async findItem(
+      itemId: string,
+      expansion?: RelationExpansionOptions,
+      agentProjectItemId?: string,
+      agentRunId?: string,
+    ) {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
         if (!item) return null;
+        if (agentProjectItemId !== undefined) {
+          await assertAgentDatabaseAccess(client, {
+            agentProjectItemId,
+            databaseId: item.databaseId,
+            access: "read",
+            ...(agentRunId !== undefined ? { readAllowance: { agentRunId, itemId: item.id } } : {}),
+          });
+        }
         const [stamped] = await withFromInbox(client, [item]);
         const projected = await projectItemsForRead(client, [stamped ?? item]);
-        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
+        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
     },
 
@@ -279,7 +308,10 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
         // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
-        const { filter, now, ...rest } = options ?? {};
+        const { filter, now, agentProjectItemId, ...rest } = options ?? {};
+        if (agentProjectItemId !== undefined) {
+          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access: "read" });
+        }
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
           now,

@@ -32,6 +32,7 @@ import {
   TRANSCRIPTION_OWNER_PROCESS,
   setAgentRunEventHook,
   setDocUpdateHook,
+  setInboxCardsInvalidationHook,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
@@ -199,6 +200,7 @@ function resetRealtimeHooks(): void {
   setNotificationReadStateHook(() => {});
   setSessionRevokedHook(() => {});
   setAgentRunEventHook(() => {});
+  setInboxCardsInvalidationHook(() => {});
 }
 
 afterAll(async () => {
@@ -2581,16 +2583,16 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     return { eventIds: edges.map((edge) => edge.other), cards };
   }
 
-  async function createEvent(date: string): Promise<string> {
+  async function createEvent(date: string, extra: Record<string, unknown> = {}, type = "meeting"): Promise<string> {
     const events = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "events"));
     if (!events) throw new Error("Events database was not seeded");
     const event = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: events.id, properties: { name: "Sync", type: "meeting", date } }),
+      createItemWithClient(client, { databaseId: events.id, properties: { name: "Sync", type, date, ...extra } }),
     );
     return event.id;
   }
 
-  it("links the one Event in the recording's window before finalizing, and a rerun adds nothing", async () => {
+  it("links the one Event whose interval overlaps the recording before finalizing, and a rerun adds nothing", async () => {
     const { file } = await createSourceFile();
     const eventId = await createEvent(FIXTURE_CREATION_TIME);
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
@@ -2601,6 +2603,60 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
     expect(await readMatch(transcript.id)).toEqual({ eventIds: [eventId], cards: [] });
+  });
+
+  // The recording starts at FIXTURE_CREATION_TIME (12:00 UTC, 13:00 in the seeded Europe/Prague zone) and
+  // lasts a few seconds.
+  it("links a meeting that began before the recording and is still running", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent("2024-03-01", { timeFrom: "11:30", timeTo: "14:00" });
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(await readMatch((await readTranscript(file.id)).id)).toEqual({ eventIds: [eventId], cards: [] });
+  });
+
+  it.each([
+    {
+      why: "a meeting that ended before the recording started",
+      type: "meeting",
+      extra: { timeFrom: "12:00", timeTo: "12:50" },
+    },
+    { why: "an Event of type event", type: "event", extra: { timeFrom: "12:30", timeTo: "14:00" } },
+    { why: "an all-day meeting", type: "meeting", extra: {} },
+  ])("creates the transcript card and no edge for $why", async ({ type, extra }) => {
+    const { file } = await createSourceFile();
+    await createEvent("2024-03-01", extra, type);
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const match = await readMatch((await readTranscript(file.id)).id);
+    expect(match.eventIds).toEqual([]);
+    expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
+  });
+
+  it("creates one transcript card when two Events overlap the recording, and a rerun adds no second card or edge", async () => {
+    const { file } = await createSourceFile();
+    await createEvent("2024-03-01", { timeFrom: "12:30", timeTo: "13:30" });
+    await createEvent("2024-03-01", { timeFrom: "12:45", timeTo: "13:15" }, "standup");
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const match = await readMatch((await readTranscript(file.id)).id);
+    expect(match.eventIds).toEqual([]);
+    expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
   });
 
   async function ownedTranscriptionJobs(fileIds: string[]): Promise<string[]> {
@@ -2807,6 +2863,64 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(observedLogs.chunks.join("")).not.toContain(privateText);
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
+  });
+
+  it("publishes an inboxCards invalidation of the tenant for each card the pipeline writes, and for none on a rerun (issue #1811)", async () => {
+    const { file } = await createSourceFile();
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+    wireRealtimeHooks(pool);
+    const listenClient = await pool.connect();
+    const received: Array<{ tenantId: string | null; message: unknown }> = [];
+    try {
+      await listenClient.query("LISTEN semprec_events");
+      listenClient.on("notification", (notification) => {
+        const envelope = z
+          .object({ tenantId: z.string().uuid().nullable(), message: z.unknown() })
+          .parse(JSON.parse(notification.payload ?? "null"));
+        received.push(envelope);
+      });
+
+      await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+      // No Event matched and no participant exists: one transcript card proposes a new Event and the two
+      // speaker keys each get a card that needs clarification.
+      const { rows: cards } = await pool.query<{ id: string }>(
+        `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE d.owner_module_id = 'processingProposals'`,
+      );
+      expect(cards).toHaveLength(3);
+      const inboxCardsMessage = z.object({
+        type: z.literal("invalidation"),
+        scope: z.literal("inboxCards"),
+        op: z.literal("created"),
+        cardId: z.string().uuid(),
+      });
+      const announced = () =>
+        received.flatMap((envelope) => {
+          const parsed = inboxCardsMessage.strict().safeParse(envelope.message);
+          return parsed.success ? [{ tenantId: envelope.tenantId, cardId: parsed.data.cardId }] : [];
+        });
+      await vi.waitFor(() => expect(announced()).toHaveLength(3));
+      expect(announced().map((entry) => entry.tenantId)).toEqual([
+        getTenantZeroId(),
+        getTenantZeroId(),
+        getTenantZeroId(),
+      ]);
+      expect(
+        announced()
+          .map((entry) => entry.cardId)
+          .sort(),
+      ).toEqual(cards.map((card) => card.id).sort());
+
+      // A rerun of the finished transcript writes no card, so it announces none.
+      received.length = 0;
+      await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(announced()).toEqual([]);
+    } finally {
+      listenClient.release(true);
+      resetRealtimeHooks();
+    }
   });
 
   it("the queued runtime worker stores aiProposal and version on Event and speaker cards", async () => {

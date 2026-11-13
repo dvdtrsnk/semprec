@@ -52,6 +52,8 @@ const TENANT_TABLES = [
   "mcp_tool_registrations",
   "mcp_server_connection_state",
   "project_mcp_grants",
+  "agent_database_grants",
+  "agent_run_read_allowances",
   "project_agent_guidance",
   "project_agent_guidance_versions",
   "agent_guidance_drift_findings",

@@ -127,8 +127,13 @@ export function deriveEventTimeProperties(
   return output;
 }
 
+/** Whether `date` is an instant (it carries an offset or `Z`), the one form that is converted in the tenant zone. */
+export function eventDateIsInstant(date: unknown): boolean {
+  return typeof date === "string" && readEventDate(date).kind === "instant";
+}
+
 function patchNeedsZone(patch: Record<string, unknown>): boolean {
-  return typeof patch.date === "string" && readEventDate(patch.date).kind === "instant";
+  return eventDateIsInstant(patch.date);
 }
 
 /**

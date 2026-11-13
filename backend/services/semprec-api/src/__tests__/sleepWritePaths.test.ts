@@ -130,6 +130,17 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
     const projectItemId = await createTestProjectItem(pool);
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan my sleep" });
     agentActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    // The Sleep databases are sensitive, so the data layer closes them to an agent's project until the user grants
+    // write access (issue gh-1810). The user-only admin store is not exported from `@semprec/data`, so the fixture
+    // stores the decision with the statement of `setAgentDatabaseGrant`.
+    for (const key of Object.keys(databaseIds) as ModuleKey[]) {
+      const grant = await pool.query(
+        `INSERT INTO agent_database_grants (project_item_id, database_id, access)
+           SELECT $1, id, 'write' FROM databases WHERE id = $2`,
+        [projectItemId, databaseIds[key]],
+      );
+      expect(grant.rowCount).toBe(1);
+    }
 
     server = createServer(
       await createDispatcher(pool, {
@@ -353,6 +364,38 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
 
       expect(refusal).toEqual({ status: 409, code: "duplicate_item", details: { field: "night" } });
       expect(await storedItems("sleepNights")).toEqual(before);
+    },
+  );
+  it.each(TRANSPORTS)(
+    "moves fri from the weekday plan to the weekend plan with one patch through %s, without an approval step",
+    async (transport) => {
+      const plans = await storedItems("sleepPlans");
+      const weekday = plans.find(
+        (plan) => Array.isArray(plan.properties.wakeDays) && plan.properties.wakeDays.includes("mon"),
+      );
+      const weekend = plans.find(
+        (plan) => Array.isArray(plan.properties.wakeDays) && plan.properties.wakeDays.includes("sat"),
+      );
+      if (!weekday || !weekend) throw new Error("The seed left no weekday and weekend plan");
+      const properties = { wakeDays: ["fri", "sat", "sun"] };
+      const ifVersion = await versionOf(weekend.id);
+
+      if (transport === "rest") {
+        const patched = await rest("PATCH", `/api/items/${weekend.id}`, { properties, ifVersion });
+        expect(patched.status).toBe(200);
+      } else {
+        await gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), {
+          itemId: weekend.id,
+          properties,
+          ifVersion,
+        });
+      }
+
+      const after = await storedItems("sleepPlans");
+      expect(after.find((plan) => plan.id === weekend.id)?.properties.wakeDays).toEqual(["fri", "sat", "sun"]);
+      expect(after.find((plan) => plan.id === weekday.id)?.properties.wakeDays).toEqual(["mon", "tue", "wed", "thu"]);
+      const approvals = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
+      expect(approvals.rows).toEqual([{ count: 0 }]);
     },
   );
 });

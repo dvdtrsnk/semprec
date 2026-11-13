@@ -17,6 +17,7 @@ import {
   createChokePoint,
   createCoreTaskList,
   createLibraryMetadataFetcher,
+  createSemprecTickAction,
   createDocStore,
   deleteRelationWithClient,
   ensureItemAutomation,
@@ -30,8 +31,10 @@ import {
   login,
   provisionTenant,
   publishSempThreadInvalidation,
+  resolveMailModuleIds,
   setAgentRunEventHook,
   setDocUpdateHook,
+  setInboxCardsInvalidationHook,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
@@ -44,7 +47,15 @@ import {
   type DocStore,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createInboxItemWithClient,
+  createRuntimeRolePool,
+  createTestTenant,
+  ensureFolderItem,
+  getTestPool,
+  ingestEmailMessage,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   buildBinaryFrame,
   decodeDocId,
@@ -583,6 +594,132 @@ async function restPost(cookie: string, path: string, body: unknown): Promise<Re
   });
 }
 
+async function restGet(cookie: string, path: string): Promise<Response> {
+  return fetch(`${baseUrl}${path}`, { headers: { Cookie: cookie, Origin: baseUrl } });
+}
+
+/** The `total` of `GET /api/inbox/cards`, which the count of the Inbox stack is read from. */
+async function inboxCardsTotal(cookie: string): Promise<number> {
+  const response = await restGet(cookie, "/api/inbox/cards");
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  if (!isRecord(body) || typeof body.total !== "number") throw new Error("Expected an inbox card list with a total");
+  return body.total;
+}
+
+function isInboxCardFrame(op: string, cardId?: string): (frame: Frame) => boolean {
+  return (frame) =>
+    frame.kind === "text" &&
+    frame.type === "invalidate" &&
+    frame.body.scope === "inboxCards" &&
+    frame.body.op === op &&
+    (cardId === undefined || frame.body.cardId === cardId);
+}
+
+/**
+ * A `proposed` Processing proposals card in `tenantId`, made by the tick over the runtime pool (issue #1811): a
+ * typed Inbox item and a tick with a stubbed computation. Returns the Inbox item id.
+ */
+async function createProposedCard(tenantId: string): Promise<string> {
+  return runInTenant(tenantId, async () => {
+    const databases = await pool.query<{ id: string; owner_module_id: string }>(
+      "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
+      [["inbox", "inboxItemTypes", "processingProposals"]],
+    );
+    const idOf = (moduleId: string): string => {
+      const row = databases.rows.find((candidate) => candidate.owner_module_id === moduleId);
+      if (!row) throw new Error(`Database '${moduleId}' was not seeded`);
+      return row.id;
+    };
+    const type = await chokePoint.createItem({
+      databaseId: idOf("inboxItemTypes"),
+      properties: { name: "Task", emoji: "T", processingMethod: "database", targetDatabase: "tasks" },
+    });
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: idOf("inbox"),
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    await createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk" } }))(
+      {
+        inboxDatabaseId: idOf("inbox"),
+        inboxItemTypesDatabaseId: idOf("inboxItemTypes"),
+        processingProposalsDatabaseId: idOf("processingProposals"),
+      },
+      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+    );
+    return item.id;
+  });
+}
+
+/**
+ * Ingests one new message into a folder of a new mailbox of `tenantId` over the runtime pool (issue #1816); returns
+ * the id of the mail thread the message joined.
+ */
+async function ingestMessageIn(tenantId: string): Promise<string> {
+  return runInTenant(tenantId, async () => {
+    const { rows: mailboxDatabases } = await pool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = 'mailboxes'",
+    );
+    const mailboxesDatabaseId = mailboxDatabases[0]?.id;
+    if (!mailboxesDatabaseId) throw new Error("Mailboxes database was not seeded");
+    const mailbox = await chokePoint.createItem({
+      databaseId: mailboxesDatabaseId,
+      properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
+    });
+    const messageItemId = await withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const propertyId = async (databaseId: string, key: string): Promise<string> => {
+        const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
+        if (!property) throw new Error(`expected the ${key} property to be seeded`);
+        return property.id;
+      };
+      const folderItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: ids.foldersDatabaseId,
+        mailboxItemId: mailbox.id,
+        mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
+        providerId: "INBOX",
+        name: "Inbox",
+        behavior: "folder",
+        specialPurpose: "inbox",
+      });
+      const ingested = await ingestEmailMessage(client, {
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
+        attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
+        folderItemId,
+        mailboxItemId: mailbox.id,
+        messageId: `<${randomUUID()}@example.test>`,
+        envelope: { from: { address: "sender@example.test" } },
+        attachments: [],
+        storage: new LocalFsBlobStorageWriter(blobDir ?? tmpdir()),
+        storageKeyPrefix: mailbox.id,
+      });
+      expect(ingested.created).toBe(true);
+      return ingested.itemId;
+    });
+    const { rows } = await pool.query<{ thread_id: string }>(
+      "SELECT thread_id FROM mail_message_meta WHERE item_id = $1",
+      [messageItemId],
+    );
+    if (!rows[0]) throw new Error("Expected the ingested message to have a thread");
+    return rows[0].thread_id;
+  });
+}
+
+function isMailThreadFrame(threadId?: string): (frame: Frame) => boolean {
+  return (frame) =>
+    frame.kind === "text" &&
+    frame.type === "invalidate" &&
+    frame.body.scope === "mailThread" &&
+    (threadId === undefined || frame.body.threadId === threadId);
+}
+
 /** Publishes a schema invalidation in `tenantId` that reaches all of its sockets; returns its marker. */
 async function publishSentinel(tenantId: string): Promise<string> {
   const databaseId = randomUUID();
@@ -751,6 +888,68 @@ async function expectRequestAndThreadInvalidations(
 const notifyCases = {
   invalidation: {
     scenarios: {
+      "inboxCards scope, from the tick creating A's card and the confirm of it on A1": async () => {
+        const total = await inboxCardsTotal(a1Cookie);
+        await createProposedCard(tenantA.tenantId);
+        const created = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isInboxCardFrame("created"))));
+        const cardId = created[0]?.kind === "text" ? created[0].body.cardId : undefined;
+        if (typeof cardId !== "string") throw new Error("Expected the created frame to name the card");
+        expect(created.map((frame) => (frame.kind === "text" ? frame.body.cardId : undefined))).toEqual([
+          cardId,
+          cardId,
+        ]);
+        expect(created.map((frame) => (frame.kind === "text" ? Object.keys(frame.body).sort() : []))).toEqual([
+          ["cardId", "op", "scope", "type"],
+          ["cardId", "op", "scope", "type"],
+        ]);
+        await expectNothingReceived(b1, tenantB.tenantId);
+        expect(await inboxCardsTotal(a1Cookie)).toBe(total + 1);
+
+        const confirmed = await restPost(a1Cookie, `/api/proposals/${cardId}/confirm`, {});
+        expect(confirmed.status).toBe(200);
+
+        // Device A1 confirmed and device A2 is the other device of the same tenant: both are told it closed.
+        await Promise.all([a1, a2].map((socket) => socket.nextMatching(isInboxCardFrame("closed", cardId))));
+        await expectNothingReceived(b1, tenantB.tenantId);
+        expect(await inboxCardsTotal(a1Cookie)).toBe(total);
+        return ["invalidate"];
+      },
+      "mailThread scope, from the ingest of a new message in A, once to both of A's sockets and not to B1":
+        async () => {
+          const threadId = await ingestMessageIn(tenantA.tenantId);
+
+          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isMailThreadFrame(threadId))));
+          for (const frame of frames) {
+            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "mailThread", threadId } });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "threadId", "type"]);
+          }
+          // One sentinel reaches both of A's sockets; nothing about the thread arrived before it a second time.
+          const sentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isMailThreadFrame())).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "mailThread scope, from the ingest of a new message in B, which reaches B1 only": async () => {
+        const threadId = await ingestMessageIn(tenantB.tenantId);
+
+        await b1.nextMatching(isMailThreadFrame(threadId));
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "inboxCards scope, from the tick creating B's card, which reaches B1 only": async () => {
+        await createProposedCard(tenantB.tenantId);
+
+        await b1.nextMatching(isInboxCardFrame("created"));
+        // One sentinel reaches both of A's sockets, so each is drained up to it.
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
       "approvalRequest scope, from the creation of a request on A's run with a thread": async () => {
         const { runId, threadId } = await createRunOnThread(tenantA);
         const request = await runInTenant(tenantA.tenantId, () =>
@@ -1155,6 +1354,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     setNotificationReadStateHook(() => {});
     setSessionRevokedHook(() => {});
     setSempThreadInvalidationHook(() => {});
+    setInboxCardsInvalidationHook(() => {});
     if (blobDir !== undefined) await rm(blobDir, { recursive: true, force: true });
     if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;

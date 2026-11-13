@@ -1,4 +1,4 @@
-import type { ExpandedRelationTarget, Item } from "@semprec/shared";
+import type { Item, ItemRelationTarget } from "@semprec/shared";
 import type { Pool } from "pg";
 import { loadBlobMetadataForItems, withTransaction } from "@semprec/data";
 import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
@@ -13,7 +13,7 @@ import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
 export interface ItemEnvelope {
   derived?: Item["derived"];
   automation?: Item["automation"];
-  relations?: Record<string, ExpandedRelationTarget[]>;
+  relations?: Record<string, ItemRelationTarget[]>;
   relationsTruncated?: string[];
   id: string;
   databaseId: string;
@@ -40,7 +40,7 @@ export function toItemEnvelope(
     derived?: Item["derived"];
     automation?: Item["automation"];
     links?: ItemValueLinks;
-    relations?: Record<string, ExpandedRelationTarget[]>;
+    relations?: Record<string, ItemRelationTarget[]>;
     relationsTruncated?: string[];
   },
 ): ItemEnvelope {
@@ -86,7 +86,7 @@ export async function toItemEnvelopeWithBlobs(
     derived?: Item["derived"];
     automation?: Item["automation"];
     links?: ItemValueLinks;
-    relations?: Record<string, ExpandedRelationTarget[]>;
+    relations?: Record<string, ItemRelationTarget[]>;
     relationsTruncated?: string[];
   },
 ): Promise<ItemEnvelope> {

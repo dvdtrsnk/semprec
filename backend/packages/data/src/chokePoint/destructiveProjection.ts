@@ -26,6 +26,8 @@ import {
   normalizeRelationSides,
 } from "./relationEdgeContext.js";
 import { reserveBreakingLinks, reserveEdgeLinks, type BreakingValueLinks } from "./valueLinkApproval.js";
+import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { assertWriterDeleteCascadeAccess } from "./itemSubtreeAccess.js";
 
 /** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`). */
 export type ResourceSnapshotKind =
@@ -78,15 +80,30 @@ export type DestructiveOperationCheck =
   | { operation: "database.archive"; input: { databaseId: string } }
   | { operation: "property.delete"; input: { propertyId: string } }
   | { operation: "view.delete"; input: { viewId: string }; actor: Actor }
-  | { operation: "item.delete"; input: { itemId: string } }
+  | {
+      operation: "item.delete";
+      input: { itemId: string };
+      /** The agent's project: its `write` access to the item's database and to every database its cascade reaches is checked as `itemDeleteWithClient` does (issue #1810). */
+      agentProjectItemId?: string;
+    }
   | { operation: "item.patch"; input: { itemId: string; properties?: Record<string, unknown>; ifVersion?: string } }
   | { operation: "relation.put"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } }
   | {
       operation: "relation.set";
       input: { relationPropertyId: string; callerItemId: string; targetItemId: string | null };
     }
-  | { operation: "relation.delete"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } }
-  | { operation: "link.unlink"; input: { itemId: string; propertyKey: string } };
+  | {
+      operation: "relation.delete";
+      input: { relationPropertyId: string; callerItemId: string; targetItemId: string };
+      /** The agent's project: its `write` access to both endpoint databases is checked as `deleteRelationWithClient` does (issue #1810). */
+      agentProjectItemId?: string;
+    }
+  | {
+      operation: "link.unlink";
+      input: { itemId: string; propertyKey: string };
+      /** The agent's project: its `write` access to the item's database is checked as `changeValueLinkWithClient` does (issue #1810). */
+      agentProjectItemId?: string;
+    };
 
 /**
  * Reserves the live item of an approval check for the rest of the transaction. It requires a tenant-scoped
@@ -338,6 +355,8 @@ export async function computeDestructiveResourceProjection(
       // resource that is already gone.
       const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      await assertWriterDatabaseAccess(client, check, item.databaseId, "write");
+      await assertWriterDeleteCascadeAccess(client, check, item);
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
       const projected = {
@@ -376,6 +395,8 @@ export async function computeDestructiveResourceProjection(
       // loading it earlier just to attach it to a rejection would risk diverging from the
       // mutation's own error precedence, which this function's docstring promises to preserve.
       const edgeContext = await loadRelationEdgeContext(client, check.input.relationPropertyId);
+      await assertWriterDatabaseAccess(client, check, edgeContext.property.databaseId, "write");
+      await assertWriterDatabaseAccess(client, check, edgeContext.targetDatabaseId, "write");
       await assertRelationDatabasesNotArchived(client, edgeContext);
       assertRelationPropertyWritable(edgeContext.property, undefined);
       const { itemA, itemB } = normalizeRelationSides(
@@ -412,6 +433,7 @@ export async function computeDestructiveResourceProjection(
     }
     case "link.unlink": {
       const item = await reserveItemForApproval(client, check.input.itemId, "Item");
+      await assertWriterDatabaseAccess(client, check, item.databaseId, "write");
       const valueLinks = await reserveBreakingLinks(client, [
         { itemId: item.id, propertyKey: check.input.propertyKey },
       ]);

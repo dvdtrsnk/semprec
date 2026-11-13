@@ -56,10 +56,13 @@ describe("ten hardcoded databases (issue #24)", () => {
       const { rows } = await pool.query("SELECT system, schema_locked FROM databases WHERE id = $1", [databaseId]);
       expect(rows[0]).toEqual({ system: true, schema_locked: true });
 
-      const { rows: viewRows } = await pool.query(
-        "SELECT type, created_by, is_default FROM views WHERE database_id = $1",
+      // Tasks also holds the Today system view (issue #1798), which is not a default view.
+      const { rows: allViewRows } = await pool.query(
+        "SELECT type, created_by, is_default, config->>'systemKey' AS system_key FROM views WHERE database_id = $1",
         [databaseId],
       );
+      expect(allViewRows.filter((row) => row.system_key !== null)).toHaveLength(moduleId === "tasks" ? 1 : 0);
+      const viewRows = allViewRows.filter((row) => row.system_key === null);
       expect(viewRows).toHaveLength(1);
       expect(viewRows[0].created_by).toBe("system");
       expect(viewRows[0].is_default).toBe(true);

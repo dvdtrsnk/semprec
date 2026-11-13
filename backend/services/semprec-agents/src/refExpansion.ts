@@ -79,12 +79,19 @@ async function readRefBytes(stream: Readable, cap: number, signal?: AbortSignal)
   return outcome.bytes;
 }
 
-/** Resolve each stored reference independently; only labels and refs are retained for replay. */
+/**
+ * Resolve each stored reference independently; only labels and refs are retained for replay. With
+ * `agentProjectItemId` (the Projects item of the run the context is built for, issue #1849) the items a referenced
+ * item relates to are read only as far as that project may read their databases: a related item in a database it may
+ * not read appears as `{ id, hidden: true }` and is not named. The referenced item itself is read because the user
+ * attached it.
+ */
 export async function expandSempRefs(
   pool: Pool,
   stored: unknown,
   roots?: StorageRoots,
   signal?: AbortSignal,
+  agentProjectItemId?: string,
 ): Promise<{ context: LabeledSempMessageRef[]; text: string; images: AgentImage[] }> {
   if (!Array.isArray(stored)) return { context: [], text: "", images: [] };
   const entries: unknown[] = stored;
@@ -103,7 +110,11 @@ export async function expandSempRefs(
     let label = old.success ? old.data.label : "";
     try {
       const observed = await withTransaction(pool, async (client) => {
-        const resolved = await readSempRefContext(client, ref);
+        const resolved = await readSempRefContext(
+          client,
+          ref,
+          agentProjectItemId === undefined ? undefined : { agentProjectItemId },
+        );
         const primary = roots && resolved?.blob ? await primaryRootForBlob(client, resolved.blob.id) : null;
         return { resolved, primary };
       });

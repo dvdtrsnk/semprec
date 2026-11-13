@@ -1,18 +1,42 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import type { ExpandedRelationTarget, ReducedRelationTarget } from "@semprec/shared";
+import type {
+  ExpandedRelationTarget,
+  HiddenRelationTarget,
+  ItemRelationTarget,
+  ReducedRelationTarget,
+} from "@semprec/shared";
 import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import type { ItemRow, PropertyRow } from "../types.js";
 import { ValidationError } from "../errors.js";
 import { listPropertiesByDatabases } from "./propertiesStore.js";
 import { projectItemForRead } from "./hooks.js";
+import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 
 export interface RelationExpansionOptions {
   relations: Record<string, string[]> | true;
   resolver: CollectionMetadataResolver;
   databaseIds?: string[];
+  /**
+   * The databases whose items the reader may not read (an agent's project, issue #1810). A target in one is
+   * returned as `{ id, hidden: true }` only, at the top level and inside a projected relation property.
+   */
+  unreadableDatabaseIds?: ReadonlySet<string>;
 }
-type ExpandedItem = ItemRow & { relations?: Record<string, ExpandedRelationTarget[]>; relationsTruncated?: string[] };
+/**
+ * The expansion an agent's read runs under: the relation targets in the databases the agent's project may not
+ * read are hidden (issue #1810). A reader that is not an agent gets `expansion` untouched.
+ */
+export async function expansionForReader(
+  client: PoolClient,
+  expansion: RelationExpansionOptions | undefined,
+  agentProjectItemId: string | undefined,
+): Promise<RelationExpansionOptions | undefined> {
+  if (!expansion || agentProjectItemId === undefined) return expansion;
+  return { ...expansion, unreadableDatabaseIds: await listUnreadableDatabaseIds(client, agentProjectItemId) };
+}
+
+type ExpandedItem = ItemRow & { relations?: Record<string, ItemRelationTarget[]>; relationsTruncated?: string[] };
 type Edge = {
   id: string;
   property_id: string;
@@ -126,10 +150,13 @@ export async function expandItemRelations(
     ),
   );
   const byId = new Map(targets.map((item) => [item.id, item]));
+  const unreadable = options.unreadableDatabaseIds ?? new Set<string>();
+  // A hidden target is neither projected nor looked at again: the reader gets its id and nothing else.
+  const readableTargets = targets.filter((item) => !unreadable.has(item.databaseId));
   const nestedProperties = selections.flatMap(({ property, projection }) =>
     (schemas.get(targetDatabase(property)) ?? []).filter((p) => p.type === "relation" && projection.includes(p.key)),
   );
-  const nested = new Map<string, ReducedRelationTarget[]>();
+  const nested = new Map<string, (ReducedRelationTarget | HiddenRelationTarget)[]>();
   if (nestedProperties.length > 0) {
     const result = await client.query<{
       source_id: string;
@@ -161,9 +188,16 @@ export async function expandItemRelations(
       WHERE p.id=ANY($1::uuid[]) AND target.deleted_at IS NULL
       AND (CASE WHEN rd.property_id_a=p.id THEN e.item_a ELSE e.item_b END)=ANY($2::uuid[])
       ) SELECT * FROM ranked WHERE target_rank <= 50 ORDER BY target_rank`,
-      [nestedProperties.map((p) => p.id), targets.map((item) => item.id)],
+      [nestedProperties.map((p) => p.id), readableTargets.map((item) => item.id)],
     );
     for (const row of result.rows) {
+      const key = `${row.source_id}:${row.property_id}`;
+      const values = nested.get(key) ?? [];
+      if (unreadable.has(row.database_id)) {
+        if (values.length < 50) values.push({ id: row.id, hidden: true });
+        nested.set(key, values);
+        continue;
+      }
       const properties = jsonObject.parse(row.properties);
       const fallback = options.resolver.resolve({
         key: row.database_key,
@@ -183,13 +217,11 @@ export async function expandItemRelations(
         const value = typeof own === "string" && own.trim() !== "" ? own : fallback[key];
         if (typeof value === "string" && value !== "") reduced[key] = value;
       }
-      const key = `${row.source_id}:${row.property_id}`;
-      const values = nested.get(key) ?? [];
       if (values.length < 50) values.push(reduced);
       nested.set(key, values);
     }
   }
-  const blobItems = targets.map((item) => ({
+  const blobItems = readableTargets.map((item) => ({
     ...item,
     properties: Object.fromEntries(
       selections
@@ -228,7 +260,7 @@ export async function expandItemRelations(
     blobs.set(entry.itemId, metadata);
   }
   return items.map((item) => {
-    const relations: Record<string, ExpandedRelationTarget[]> = {};
+    const relations: Record<string, ItemRelationTarget[]> = {};
     const relationsTruncated: string[] = [];
     for (const { property, projection } of selected.get(item.databaseId) ?? []) {
       const visible = edgeRows.filter(
@@ -238,8 +270,9 @@ export async function expandItemRelations(
           byId.get(edge.target_id)?.databaseId === targetDatabase(property),
       );
       if (visible.length > 50) relationsTruncated.push(property.key);
-      relations[property.key] = visible.slice(0, 50).map((edge) => {
+      relations[property.key] = visible.slice(0, 50).map((edge): ItemRelationTarget => {
         const target = byId.get(edge.target_id)!;
+        if (unreadable.has(target.databaseId)) return { id: target.id, hidden: true };
         const db = dbs.get(target.databaseId)!;
         const schema = schemas.get(target.databaseId) ?? [];
         const titleKey = schema.find((p) => p.type === "title")?.key ?? "name";

@@ -12,6 +12,14 @@ export const AGENT_RUNS_ROUTES: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "agent run steps",
+    method: "GET",
+    path: `/api/agent-runs/${EXAMPLE_ID}/steps`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "mint mcp run credential",
     method: "POST",
     path: "/api/agent-runs/mcp-credentials",

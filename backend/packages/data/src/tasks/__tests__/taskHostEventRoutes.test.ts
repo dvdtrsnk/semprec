@@ -470,7 +470,7 @@ describe("DELETE /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     expect(await storedEdges(taskId)).toEqual(before);
   });
 
-  it("leaves a trashed event out of the list, lists it again once restored, and removes its edge", async () => {
+  it("leaves a trashed event out of the list, keeps its edge, and removes the edge of a trashed event", async () => {
     const taskId = await task();
     const [first, second, third] = [await event(), await event(), await event()];
     await put(taskId, first);
@@ -479,9 +479,12 @@ describe("DELETE /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     expect(eventIdsOf(await put(taskId, third))).toEqual([first, third]);
     expect((await storedEdges(taskId)).map((edge) => edge.eventId)).toEqual([first, second, third].sort());
 
+    // Issue #1819: restoring the event does not put the task back into it, and the restore removes the edge.
     await runInTenant(home.id, () => cp.restoreItem(home.eventsId, second));
-    expect(eventIdsOf(await removeOne(taskId, randomUUID()))).toEqual([first, second, third]);
+    expect(eventIdsOf(await removeOne(taskId, randomUUID()))).toEqual([first, third]);
+    expect((await storedEdges(taskId)).map((edge) => edge.eventId)).toEqual([first, third].sort());
 
+    await put(taskId, second);
     await trash(home.eventsId, second);
     expect(eventIdsOf(await removeOne(taskId, second))).toEqual([first, third]);
     expect((await storedEdges(taskId)).map((edge) => edge.eventId)).toEqual([first, third].sort());

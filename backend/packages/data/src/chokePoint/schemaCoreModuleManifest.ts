@@ -41,10 +41,12 @@ export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeat
  * loadable and structurally checkable through `ModuleRegistry`.
  *
  * `heartbeat.list`/`heartbeat.history` (issue #135) are its first two agent tools: read-only
- * introspection over `project_heartbeats`/`agent_runs`, scoped exclusively to the calling
- * run's own project, so neither declares a `capability` gate (see `heartbeatAgentTools.ts`).
- * `heartbeat.trigger` (issue #136) joins them on the same terms — project-scoped availability
- * only, no `capability` gate and no approval requirement beyond that.
+ * introspection over `project_heartbeats`/`agent_runs`. They derive their scope from the persisted run
+ * (its own project, or the whole tenant for a run of a Semp chat thread minus the projects the
+ * sensitive-grant exclusion leaves out, issue #2018), so neither declares a `capability` gate
+ * (see `heartbeatAgentTools.ts`). `heartbeat.trigger` (issue #136) joins them on the same terms —
+ * availability only, no `capability` gate and no approval requirement beyond that — but stays
+ * limited to the calling run's own project.
  *
  * `capabilities` registers the generic-operation capability ids from
  * `CAPABILITY_IDS` (issue #220) — the same `OPERATION_METADATA.requiresCapability` values

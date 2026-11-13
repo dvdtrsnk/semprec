@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { enqueueJob } from "@semprec/queue";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import {
   HeartbeatDisabledError,
@@ -17,10 +18,13 @@ import {
 } from "../agentRuns/agentRunsStore.js";
 import {
   getHeartbeatForProject,
+  getHeartbeatVisibleToChatRun,
   hasWaitingHeartbeatFireJob,
   listHeartbeatsByProject,
+  listHeartbeatsVisibleToChatRun,
   lockHeartbeatForManualFire,
   manualHeartbeatFireJobKey,
+  type HeartbeatRow,
 } from "./schedulerStore.js";
 import { resolveAgentRunLane, resolveHeartbeatFireTaskName } from "./actions.js";
 import { isOnItemEventRule, type HeartbeatRuleKindRegistry } from "./rule.js";
@@ -65,6 +69,13 @@ export interface HeartbeatListEntry {
   lastFiredAt: string | null;
 }
 
+/** An entry of `heartbeat.list` for a Semp chat run (issue #2018): the own-project entry plus the project it belongs to. */
+export interface TenantHeartbeatListEntry extends HeartbeatListEntry {
+  projectItemId: string;
+  /** The project item's `name`, or `null` when the item has none or is gone. */
+  projectName: string | null;
+}
+
 export interface HeartbeatHistoryEntry {
   id: string;
   status: string;
@@ -89,12 +100,69 @@ async function resolveCallingProjectItemId(pool: Pool, currentRunId: string): Pr
 }
 
 /**
+ * What `heartbeat.list` and `heartbeat.history` may read for one run (issue #2018): `project` is the run's own
+ * project; `tenant` is every project of the tenant minus the ones the sensitive rule leaves out
+ * (`listHeartbeatsVisibleToChatRun`), and carries the run's project, which that rule compares grants against.
+ */
+interface HeartbeatReadScope {
+  scope: "project" | "tenant";
+  projectItemId: string;
+}
+
+/**
+ * The read scope of the calling run, derived from persisted rows only, never from tool arguments: `tenant` when
+ * the run's `agent_runs.thread_id` points at a Semp thread of kind `chat` (a delegated run inherits the thread,
+ * issue #1452), otherwise `project`. A run without a thread, or on an `item` or `tick` thread, keeps the own
+ * project. `null` when the run is unknown or has no project.
+ */
+async function resolveHeartbeatReadScope(pool: Pool, currentRunId: string): Promise<HeartbeatReadScope | null> {
+  const run = await getAgentRun(pool, currentRunId);
+  if (!run?.projectItemId) return null;
+  if (run.threadId === null) return { scope: "project", projectItemId: run.projectItemId };
+  const { rows } = await pool.query<{ is_chat: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM semp_threads WHERE id = $1 AND kind = 'chat') AS is_chat",
+    [run.threadId],
+  );
+  return { scope: rows[0]?.is_chat === true ? "tenant" : "project", projectItemId: run.projectItemId };
+}
+
+function toListEntry(heartbeat: HeartbeatRow): HeartbeatListEntry {
+  return {
+    id: heartbeat.id,
+    name: heartbeat.name,
+    rule: heartbeat.rule,
+    enabled: heartbeat.enabled,
+    lastFiredAt: heartbeat.lastFiredAt,
+  };
+}
+
+/** The tenant-scope entries: each heartbeat with the id and the current name of its project. */
+async function toTenantListEntries(pool: Pool, heartbeats: HeartbeatRow[]): Promise<TenantHeartbeatListEntry[]> {
+  const projects = await getItemsByIds(pool, [...new Set(heartbeats.map((heartbeat) => heartbeat.projectItemId))]);
+  const nameById = new Map(
+    projects.map((project) => [
+      project.id,
+      typeof project.properties.name === "string" ? project.properties.name : null,
+    ]),
+  );
+  return heartbeats.map((heartbeat) => ({
+    ...toListEntry(heartbeat),
+    projectItemId: heartbeat.projectItemId,
+    projectName: nameById.get(heartbeat.projectItemId) ?? null,
+  }));
+}
+
+/**
  * `heartbeat.list` (issue #135): the calling agent's own project's heartbeat configuration —
  * full `rule`, assignment/purpose (`name`), `enabled` state, and `last_fired_at` — for every
  * heartbeat, agent-triggered and deterministic alike. Neither this tool nor `heartbeat.history`
- * below accepts a project id: the project is derived exclusively from the persisted
- * `agent_run.project_item_id` of `currentRunId`, so an agent cannot, by construction, list or
- * inspect another project's heartbeats — only delegation to a run in that project can.
+ * below accepts a project id: the scope is derived exclusively from the persisted
+ * `agent_run.project_item_id` and `thread_id` of `currentRunId` (`resolveHeartbeatReadScope`).
+ * A run that is not a Semp chat run cannot, by construction, list or inspect another project's
+ * heartbeats — only delegation to a run in that project can. A run of a Semp chat thread
+ * (issue #2018) lists the heartbeats of every project of the tenant, each entry with its
+ * `projectItemId` and `projectName`, except those of a project with a sensitive-database grant its
+ * own project lacks (`listHeartbeatsVisibleToChatRun`).
  */
 export function createHeartbeatListTool(
   pool: Pool,
@@ -106,19 +174,18 @@ export function createHeartbeatListTool(
       return { error: true, result: `Invalid arguments: ${parsedArgs.error.message}` };
     }
 
-    const projectItemId = await resolveCallingProjectItemId(pool, currentRunId);
-    if (!projectItemId) {
+    const readScope = await resolveHeartbeatReadScope(pool, currentRunId);
+    if (!readScope) {
       return { error: true, result: `No project context for run ${currentRunId}` };
     }
 
-    const heartbeats = await listHeartbeatsByProject(pool, projectItemId, moduleRuleKinds);
-    const entries: HeartbeatListEntry[] = heartbeats.map((heartbeat) => ({
-      id: heartbeat.id,
-      name: heartbeat.name,
-      rule: heartbeat.rule,
-      enabled: heartbeat.enabled,
-      lastFiredAt: heartbeat.lastFiredAt,
-    }));
+    if (readScope.scope === "tenant") {
+      const visible = await listHeartbeatsVisibleToChatRun(pool, readScope.projectItemId, moduleRuleKinds);
+      return { error: false, result: JSON.stringify(await toTenantListEntries(pool, visible)) };
+    }
+
+    const heartbeats = await listHeartbeatsByProject(pool, readScope.projectItemId, moduleRuleKinds);
+    const entries: HeartbeatListEntry[] = heartbeats.map(toListEntry);
 
     return { error: false, result: JSON.stringify(entries) };
   };
@@ -127,13 +194,15 @@ export function createHeartbeatListTool(
 /**
  * `heartbeat.history({heartbeatId, limit})` (issue #135): the last `limit` (default
  * `HEARTBEAT_HISTORY_DEFAULT_LIMIT`, bounded by `HEARTBEAT_HISTORY_MAX_LIMIT`) agent runs for
- * one of the calling agent's own heartbeats — status, timestamps, and `result`, never a full
- * transcript (those live in `agent_run_events`, untouched here). `heartbeatId` ownership is
- * checked with one scoped query (`getHeartbeatForProject`, `WHERE id = $1 AND
- * project_item_id = $2`), so an unknown id and a real id belonging to another project produce
- * the identical error — no way to distinguish "doesn't exist" from "not yours". A deterministic
- * heartbeat action that never started an agent run naturally returns an empty list, not an
- * error — there is no second run-log table for it to miss.
+ * one heartbeat in the calling run's read scope (`resolveHeartbeatReadScope`) — status, timestamps,
+ * and `result`, never a full transcript (those live in `agent_run_events`, untouched here). The
+ * scope is part of one query (`getHeartbeatForProject`, `WHERE id = $1 AND project_item_id = $2`
+ * for the own project; `getHeartbeatVisibleToChatRun` for a Semp chat run, issue #2018), so an
+ * unknown id and a real id outside the scope (another project's for a non-chat run; another
+ * tenant's or one left out by the sensitive rule for a chat run) produce the identical error — no
+ * way to distinguish "doesn't exist" from "not yours". A deterministic heartbeat action that never
+ * started an agent run naturally returns an empty list, not an error — there is no second run-log
+ * table for it to miss.
  */
 export function createHeartbeatHistoryTool(
   pool: Pool,
@@ -145,12 +214,20 @@ export function createHeartbeatHistoryTool(
       return { error: true, result: `Invalid arguments: ${parsedArgs.error.message}` };
     }
 
-    const projectItemId = await resolveCallingProjectItemId(pool, currentRunId);
-    if (!projectItemId) {
+    const readScope = await resolveHeartbeatReadScope(pool, currentRunId);
+    if (!readScope) {
       return { error: true, result: `No project context for run ${currentRunId}` };
     }
 
-    const heartbeat = await getHeartbeatForProject(pool, projectItemId, parsedArgs.data.heartbeatId, moduleRuleKinds);
+    const heartbeat =
+      readScope.scope === "tenant"
+        ? await getHeartbeatVisibleToChatRun(
+            pool,
+            readScope.projectItemId,
+            parsedArgs.data.heartbeatId,
+            moduleRuleKinds,
+          )
+        : await getHeartbeatForProject(pool, readScope.projectItemId, parsedArgs.data.heartbeatId, moduleRuleKinds);
     if (!heartbeat) {
       return { error: true, result: `Heartbeat ${parsedArgs.data.heartbeatId} not found` };
     }
@@ -173,7 +250,9 @@ export function createHeartbeatHistoryTool(
  * `heartbeat.trigger({heartbeatId})` (issue #136): manually fires one of the calling agent's own
  * time-based heartbeats (`dailyTime`, `weekly`, `interval`, `everyNDays`) right now, without
  * waiting for the sweep. Ownership is the calling run's project: the lookup is scoped to it, so an
- * unknown id and one belonging to another project are indistinguishable.
+ * unknown id and one belonging to another project are indistinguishable. This holds for a Semp chat
+ * run too: its wider read scope for `heartbeat.list` and `heartbeat.history` (issue #2018) does not
+ * apply to triggering.
  *
  * An `onItemEvent` heartbeat has no meaningful "now" to fire at outside the item write that
  * would trigger it — this returns `HEARTBEAT_EVENT_TRIGGERED_ERROR` (the canonical 409) and
