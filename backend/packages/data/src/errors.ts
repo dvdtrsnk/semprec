@@ -28,8 +28,8 @@ export class ForbiddenError extends ChokePointError {
 }
 
 export class ConflictError extends ChokePointError {
-  constructor(message: string, details?: unknown) {
-    super(409, "version_conflict", message, details);
+  constructor(message: string, details?: unknown, code = "version_conflict") {
+    super(409, code, message, details);
     this.name = "ConflictError";
   }
 }

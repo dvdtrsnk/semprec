@@ -11,17 +11,51 @@ function mapViewItemRow(row: ViewItemDbRow): ViewItemRow {
   return { viewId: row.view_id, itemId: row.item_id, position: row.position };
 }
 
-export async function listViewItems(client: PoolClient, viewId: string): Promise<ViewItemRow[]> {
+/**
+ * The databases a read of a curated view's members may come from: every visible database but the excluded ones
+ * (the ones an agent's project may not read, issue #1810).
+ */
+async function readableDatabaseIds(client: PoolClient, excluded: ReadonlySet<string> | undefined): Promise<string[]> {
+  const databaseIds = await visibleDatabaseIds(client);
+  return excluded === undefined || excluded.size === 0 ? databaseIds : databaseIds.filter((id) => !excluded.has(id));
+}
+
+/**
+ * The members of a view in position order. `excludeDatabaseIds`, when given and not empty, keeps only the members
+ * whose item (live or trashed) lies in another database, so the members an agent may not read are not in the list.
+ */
+export async function listViewItems(
+  client: PoolClient,
+  viewId: string,
+  options: { excludeDatabaseIds?: ReadonlySet<string> } = {},
+): Promise<ViewItemRow[]> {
+  if (options.excludeDatabaseIds === undefined || options.excludeDatabaseIds.size === 0) {
+    const { rows } = await client.query<ViewItemDbRow>(
+      `SELECT view_id, item_id, position FROM view_items WHERE view_id = $1 ORDER BY position ASC`,
+      [viewId],
+    );
+    return rows.map(mapViewItemRow);
+  }
   const { rows } = await client.query<ViewItemDbRow>(
-    `SELECT view_id, item_id, position FROM view_items WHERE view_id = $1 ORDER BY position ASC`,
-    [viewId],
+    `SELECT m.view_id, m.item_id, m.position FROM view_items m
+     JOIN items i ON i.id = m.item_id AND i.database_id = ANY($2::uuid[])
+     WHERE m.view_id = $1
+     ORDER BY m.position ASC`,
+    [viewId, await readableDatabaseIds(client, options.excludeDatabaseIds)],
   );
   return rows.map(mapViewItemRow);
 }
 
-/** The number of live (non-trashed) members of a curated view, counted over the same join `listLiveViewItemsAfter` pages. */
-export async function countLiveViewItems(client: PoolClient, viewId: string): Promise<number> {
-  const databaseIds = await visibleDatabaseIds(client);
+/**
+ * The number of live (non-trashed) members of a curated view, counted over the same join `listLiveViewItemsAfter` pages,
+ * without the members in `excludeDatabaseIds`.
+ */
+export async function countLiveViewItems(
+  client: PoolClient,
+  viewId: string,
+  options: { excludeDatabaseIds?: ReadonlySet<string> } = {},
+): Promise<number> {
+  const databaseIds = await readableDatabaseIds(client, options.excludeDatabaseIds);
   const { rows } = await client.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM view_items m
      JOIN items i ON i.id = m.item_id AND i.database_id = ANY($2::uuid[])
@@ -36,14 +70,16 @@ export async function countLiveViewItems(client: PoolClient, viewId: string): Pr
  * page a curated view's default listing, where a page must fill with `limit` live items
  * rather than come back short whenever memberships happen to point at trashed items. The
  * join also binds the caller's visible database ids (`visibleDatabaseIds`), so the planner
- * prunes `items` to those partitions instead of scanning every tenant's partition.
+ * prunes `items` to those partitions instead of scanning every tenant's partition. `excludeDatabaseIds` drops the
+ * members of those databases from the join, so a page fills with readable members and its end is the end of the
+ * readable ones (issue #1810).
  */
 export async function listLiveViewItemsAfter(
   client: PoolClient,
   viewId: string,
-  input: { afterPosition: number | null; limit: number },
+  input: { afterPosition: number | null; limit: number; excludeDatabaseIds?: ReadonlySet<string> },
 ): Promise<ViewItemRow[]> {
-  const databaseIds = await visibleDatabaseIds(client);
+  const databaseIds = await readableDatabaseIds(client, input.excludeDatabaseIds);
   const conditions = ["m.view_id = $1", "i.deleted_at IS NULL"];
   const params: unknown[] = [viewId, input.limit, databaseIds];
   if (input.afterPosition !== null) {

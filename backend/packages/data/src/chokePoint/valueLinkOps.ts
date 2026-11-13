@@ -17,6 +17,7 @@ import { createRelationWithClient, deleteRelationWithClient } from "./relationOp
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { loadLinkRules, readOmittedItemIds, resolveValueFilter } from "../valueLinks/linkRuleCatalog.js";
 import { withPropagationHop } from "../valueLinks/propagationContext.js";
+import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 
 export interface LinkInput {
   itemId: string;
@@ -104,6 +105,10 @@ export type ValueLinkWriter = "user" | "agent" | (WriterIdentity & { writerKind:
  * would end an active link asks for approval first (issue #1758), which rolls the transaction back; the
  * approved replay (`approvedRequestId`) ends the link with `broken_by` agent. An unlink of a link that
  * is already broken stays the idempotent no-op it always was.
+ *
+ * An agent writer that carries a project (`agentProjectItemId`, issue #1810) needs `write` access to the
+ * item's database, checked before anything about the link is read, so a refusal tells it nothing about the
+ * link and a relink's own item and relation writes (which run as the value-links process) stay inside that grant.
  */
 export async function changeValueLinkWithClient(
   client: PoolClient,
@@ -117,6 +122,7 @@ export async function changeValueLinkWithClient(
   if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
   const item = await itemsStore.lockItemById(client, visible.databaseId, input.itemId);
   if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
+  await assertWriterDatabaseAccess(client, identity, item.databaseId, "write");
   const link = await valueLinksStore.lockValueLink(client, item.id, input.propertyKey);
   if (!link) conflict();
   let changed: boolean;
@@ -197,7 +203,7 @@ export function createValueLinkOps({ pool }: Pick<ChokePointDeps, "pool">) {
   return {
     unlinkValue: (input: LinkInput, writer: ValueLinkWriter, userId?: string) =>
       withTransaction(pool, (client) => changeValueLinkWithClient(client, input, "unlink", writer, userId)),
-    relinkValue: (input: LinkInput, userId?: string) =>
-      withTransaction(pool, (client) => changeValueLinkWithClient(client, input, "relink", "user", userId)),
+    relinkValue: (input: LinkInput, userId?: string, writer: ValueLinkWriter = "user") =>
+      withTransaction(pool, (client) => changeValueLinkWithClient(client, input, "relink", writer, userId)),
   };
 }

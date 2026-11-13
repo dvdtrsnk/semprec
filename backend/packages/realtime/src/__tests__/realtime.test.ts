@@ -6,12 +6,14 @@ import { Pool, type PoolClient } from "pg";
 import {
   setDocUpdateHook,
   setAgentRunEventHook,
+  setInboxCardsInvalidationHook,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
   notifyDocUpdate,
   notifyAgentRunEvent,
+  notifyInboxCardsInvalidation,
   notifyInvalidation,
   notifyNotificationCreated,
   notifySessionRevoked,
@@ -41,6 +43,7 @@ function resetHooks(): void {
   setNotificationReadStateHook(() => {});
   setSessionRevokedHook(() => {});
   setAgentRunEventHook(() => {});
+  setInboxCardsInvalidationHook(() => {});
 }
 
 function frameText(data: RawData): string {
@@ -358,6 +361,86 @@ describe("realtime", () => {
     }
   });
 
+  it("wireRealtimeHooks turns a mail-thread event into a thin Postgres NOTIFY, carrying the user only when the event names one (issue #1816)", async () => {
+    wireRealtimeHooks(pool);
+    const threadId = randomUUID();
+    const userId = randomUUID();
+
+    const listenClient = await pool.connect();
+    try {
+      await listenClient.query("LISTEN semprec_events");
+      const received: Array<{ channel: string; payload?: string }> = [];
+      listenClient.on("notification", (notification) => received.push(notification));
+
+      notifyInvalidation({ scope: "mailThread", threadId });
+      notifyInvalidation({ scope: "mailThread", threadId, userId });
+      await vi.waitFor(() => expect(received).toHaveLength(2));
+
+      // The two NOTIFY statements run on separate pooled connections, so their arrival order is not
+      // fixed; the payload without a user id is put first before the payloads are compared.
+      const payloads = received
+        .map((notification) => notification.payload ?? "{}")
+        .sort((left, right) => Number(left.includes('"userId"')) - Number(right.includes('"userId"')));
+      expect(payloads.map((payload) => JSON.parse(payload))).toEqual([
+        { tenantId: getTenantZeroId(), message: { type: "invalidation", scope: "mailThread", threadId } },
+        { tenantId: getTenantZeroId(), message: { type: "invalidation", scope: "mailThread", threadId, userId } },
+      ]);
+    } finally {
+      listenClient.release(true);
+      setInvalidationHook(() => {});
+    }
+  });
+
+  it("wireRealtimeHooks turns an inbox-cards event into a thin Postgres NOTIFY on the shared channel (issue #1811)", async () => {
+    wireRealtimeHooks(pool);
+    const cardId = randomUUID();
+    const userId = randomUUID();
+
+    const listenClient = await pool.connect();
+    try {
+      await listenClient.query("LISTEN semprec_events");
+      const received: Array<{ channel: string; payload?: string }> = [];
+      listenClient.on("notification", (notification) => received.push(notification));
+
+      notifyInboxCardsInvalidation({ op: "closed", cardId });
+      notifyInboxCardsInvalidation({ op: "created", cardId, userId });
+      await vi.waitFor(() => expect(received).toHaveLength(2));
+
+      // Only the card and the operation travel: no proposal, status or history of the card. The two
+      // NOTIFY statements run on separate pooled connections, so the "closed" payload is put first
+      // before the payloads are compared.
+      const payloads = received
+        .map((notification) => notification.payload ?? "{}")
+        .sort((left, right) => Number(right.includes('"op":"closed"')) - Number(left.includes('"op":"closed"')));
+      expect(payloads.map((payload) => JSON.parse(payload))).toEqual([
+        {
+          tenantId: getTenantZeroId(),
+          message: { type: "invalidation", scope: "inboxCards", op: "closed", cardId },
+        },
+        {
+          tenantId: getTenantZeroId(),
+          message: { type: "invalidation", scope: "inboxCards", op: "created", cardId, userId },
+        },
+      ]);
+    } finally {
+      listenClient.release(true);
+      setInboxCardsInvalidationHook(() => {});
+    }
+  });
+
+  it("does not throw out of an inbox-cards event when its NOTIFY fails (issue #1811)", async () => {
+    const unusable = createPool(process.env.TEST_DATABASE_URL ?? "");
+    await unusable.end();
+    wireRealtimeHooks(unusable);
+    try {
+      expect(() => notifyInboxCardsInvalidation({ op: "updated", cardId: randomUUID() })).not.toThrow();
+      // The rejected publish is handled by the hook; an unhandled rejection would fail this file.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      resetHooks();
+    }
+  });
+
   it("wireRealtimeHooks turns a doc-update event into a thin Postgres NOTIFY on the shared channel (issue #161)", async () => {
     wireRealtimeHooks(pool);
 
@@ -502,6 +585,25 @@ describe("realtime", () => {
         const envelope = (await payload()) as { tenantId: string; message: Record<string, unknown> };
         expect(envelope.tenantId).toBe(tenantId);
         expect(envelope.message).toMatchObject({ type: "invalidation", scope: "schema", databaseId: "db-1" });
+      } finally {
+        listenClient.release(true);
+      }
+    });
+
+    it("stamps the publisher's tenant on an inbox-cards event and ignores a tenantId inside the event (issue #1811)", async () => {
+      const tenantId = await createTestTenant(pool);
+      const bodyTenant = await createTestTenant(pool);
+      const cardId = randomUUID();
+      wireRealtimeHooks(scopedPool);
+      const listenClient = await pool.connect();
+      try {
+        const payload = await listen(listenClient);
+        runInTenant(tenantId, () => {
+          notifyInboxCardsInvalidation({ op: "created", cardId, tenantId: bodyTenant } as never);
+        });
+        const envelope = (await payload()) as { tenantId: string; message: Record<string, unknown> };
+        expect(envelope.tenantId).toBe(tenantId);
+        expect(envelope.message).toMatchObject({ type: "invalidation", scope: "inboxCards", op: "created", cardId });
       } finally {
         listenClient.release(true);
       }

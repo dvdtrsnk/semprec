@@ -16,6 +16,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { pageContentV2Schema } from "./proposalEnvelope.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { assertSelectValuesKnown } from "../chokePoint/itemWrites.js";
 
 const PAGE_TARGET_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -110,7 +111,7 @@ export async function assertValidEnvelopeRelations(
 }
 
 /** Checks that every key of `properties` is a writable, user-owned, non-relation, non-rollup property of the database. */
-export function assertWritableProposalPropertyKeys(
+function assertWritableProposalPropertyKeys(
   properties: Record<string, unknown>,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
   databaseId: string,
@@ -134,6 +135,48 @@ export function assertWritableProposalPropertyKeys(
     }
   }
 }
+
+/**
+ * Checks that every `select` and `multi_select` value of a proposed write names an option of the target's
+ * catalog, by the rule an item write by the user follows. The write is made at confirm as the user, so refusing
+ * a wrong key here keeps it off a card that would otherwise show as a normal proposal. `stored` is the
+ * properties of the item an `update` step rewrites, so a value the item already holds is accepted as an item
+ * update accepts it; it is `null` for a `create` step and for a database envelope, where nothing is stored.
+ */
+function assertProposalSelectValuesKnown(
+  properties: Record<string, unknown>,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+  stored: Record<string, unknown> | null,
+): void {
+  assertSelectValuesKnown([...propertiesByKey.values()], properties, stored, { writerKind: "user" });
+}
+
+/** What one step of a multi-step envelope must satisfy about its `properties`: writable keys and known options. */
+export function assertValidStepProperties(
+  properties: Record<string, unknown>,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+  databaseId: string,
+  stored: Record<string, unknown> | null,
+): void {
+  assertWritableProposalPropertyKeys(properties, propertiesByKey, databaseId);
+  assertProposalSelectValuesKnown(properties, propertiesByKey, stored);
+}
+
+/**
+ * What a `database` envelope's top-level `properties` must satisfy: writable keys and, for a single-step envelope,
+ * known options. A multi-step envelope's top-level properties mirror its primary step, which
+ * `assertValidStepProperties` checked against the stored item when that step updates one, so a value the item
+ * keeps is not refused here.
+ */
+export function assertValidEnvelopeProperties(
+  envelope: { properties: Record<string, unknown>; operations?: readonly unknown[] },
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+  databaseId: string,
+): void {
+  assertWritableProposalPropertyKeys(envelope.properties, propertiesByKey, databaseId);
+  if (envelope.operations === undefined) assertProposalSelectValuesKnown(envelope.properties, propertiesByKey, null);
+}
+
 function errorDetails(err: { details?: unknown }): Record<string, unknown> {
   return typeof err.details === "object" && err.details !== null ? { ...err.details } : {};
 }

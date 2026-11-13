@@ -65,6 +65,13 @@ export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
 export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
 export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
+export {
+  assertAgentDatabaseAccess,
+  type AssertAgentDatabaseAccessInput,
+  type RequiredAgentDatabaseAccess,
+} from "./agentGrants/agentDatabaseAccess.js";
+export type { AgentDatabaseAccess } from "./agentGrants/agentDatabaseGrantsStore.js";
+export { allowItemsForTurn, clearForRun } from "./agentGrants/agentRunReadAllowancesStore.js";
 export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
 export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
@@ -176,6 +183,12 @@ export { deriveRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
 export type { AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
 export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
 export * from "./agentRuns/agentRunEventsStore.js";
+export {
+  AGENT_RUN_STEP_DEFAULT_LIMIT,
+  AGENT_RUN_STEP_MAX_LIMIT,
+  buildAgentRunStepPage,
+  isAgentRunStepReadSettled,
+} from "./agentRuns/agentRunStepPages.js";
 export {
   AGENT_RUN_EVENTS_RETENTION_DAYS,
   handleAgentRunEventsRetentionTask,
@@ -482,6 +495,9 @@ export * from "./tasks/taskRecurrenceRule.js";
 export { taskDisplayDay } from "./tasks/taskDisplayDay.js";
 export { taskSinceRule } from "./tasks/taskSinceRule.js";
 export { computeTaskHostState, recomputeTaskHostState } from "./tasks/taskHostEventState.js";
+export { eventTaskCounts, readEventTasks, taskStateInEvent } from "./tasks/taskStateInEvent.js";
+export { countTasksReturningFromEvent } from "./tasks/eventHostedTasksHooks.js";
+export { createEventTasksRouteHandler } from "./tasks/eventTasksRouteHandler.js";
 export { projectToolCallUsageStore } from "./guidanceDrift/projectToolCallUsageStore.js";
 export { loadGuidanceSections, saveGuidanceSections } from "./projectAgentGuidance/projectAgentGuidanceSections.js";
 export {
@@ -579,9 +595,18 @@ export {
   type SleepPlan,
 } from "./sleep/resolveSleepNights.js";
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
+export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
 export { createListEventPeopleRouteHandler } from "./calendar/eventParticipantsRouteHandlers.js";
+export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
+export { convertEventDateToWallClock } from "./calendar/eventDateMigration.js";
+export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
+export {
+  eventRecurrenceOccursOn,
+  parseEventRecurrenceRule,
+  type EventRecurrenceRule,
+} from "./calendar/eventRecurrenceRule.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
 export * from "./auth/types.js";

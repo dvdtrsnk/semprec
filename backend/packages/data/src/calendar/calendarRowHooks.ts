@@ -16,12 +16,12 @@ import type { DatabaseRow, ItemRow } from "../types.js";
 
 const CALENDAR_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
-function isCalendarsDatabase(database: DatabaseRow): boolean {
+export function isCalendarsDatabase(database: DatabaseRow): boolean {
   return database.system && database.ownerModuleId === CALENDARS_MODULE_ID;
 }
 
 /** Whether `kind` is `system` or `subscription`. Every other value, an absent one included, is one of the user's own calendars. */
-function isSystemOrSubscription(kind: unknown): boolean {
+export function isSystemOrSubscription(kind: unknown): boolean {
   return kind === "system" || kind === "subscription";
 }
 
@@ -43,7 +43,7 @@ function assertCalendarColor(values: Record<string, unknown>): void {
  * id, and holds it until the caller's transaction ends. Taking it again in the same transaction returns at
  * once. The statement text is the one the tests look for in `pg_stat_activity`.
  */
-async function lockDefaultMark(client: PoolClient, calendarsDatabaseId: string): Promise<void> {
+export async function lockDefaultMark(client: PoolClient, calendarsDatabaseId: string): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended('calendars-default:' || $1::text, 0))", [
     calendarsDatabaseId,
   ]);

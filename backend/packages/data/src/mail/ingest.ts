@@ -1,6 +1,8 @@
 import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
+import { runAfterCommit } from "../db/pool.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -88,7 +90,9 @@ export interface IngestEmailMessageResult {
  * onto the same item instead of duplicating; the same message delivered to another mailbox
  * becomes that mailbox's own item, so read/flag state never leaks across mailboxes), resolves/updates the conversation thread, links the message into the given
  * folder (always — even for an already-known message, since the same message can appear in
- * a newly-observed folder), ingests attachments, and reindexes full-text search. Must be
+ * a newly-observed folder), ingests attachments, and reindexes full-text search. A newly created
+ * message announces its thread to the tenant's sockets (a `mailThread` invalidation) once the
+ * transaction has committed; a rolled-back or already-known message announces nothing. Must be
  * called inside a transaction: the Emails item write and the `mail_message_meta` write need
  * to commit together for the onItemEvent person-linking trigger (personLinkingActions.ts) to
  * see a consistent envelope once its enqueued job actually runs.
@@ -209,6 +213,9 @@ export async function ingestEmailMessage(
       });
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
+      // One announcement per newly created message, for every socket of the tenant (no `userId`). The savepoint
+      // is released, so a provider-id conflict that converged onto another message announces nothing here.
+      runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
     } catch (err) {
       if (!isProviderMessageIdConflict(err)) throw err;
       await client.query("ROLLBACK TO SAVEPOINT ingest_provider_msg_conflict");

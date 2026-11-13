@@ -19,6 +19,7 @@ import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
 import { requireRollupCoordinationTransaction } from "./databaseRowLocks.js";
+import { assertAgentDatabaseAccess, listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 
 /** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
 async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
@@ -175,12 +176,26 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    async getDatabase(id: string): Promise<DatabaseRow | null> {
-      return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
+    /** An agent (`agentProjectItemId`, issue #1810) is refused with `forbidden` for a database its project may not read. */
+    async getDatabase(id: string, agentProjectItemId?: string): Promise<DatabaseRow | null> {
+      return withTransaction(pool, async (client) => {
+        if (agentProjectItemId !== undefined) {
+          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId: id, access: "read" });
+        }
+        return databasesStore.getDatabase(client, id);
+      });
     },
-    /** Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases. */
-    async listDatabases(): Promise<DatabaseRow[]> {
-      return withTransaction(pool, (client) => databasesStore.listAllDatabases(client));
+    /**
+     * Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases.
+     * For an agent (`agentProjectItemId`, issue #1810) the databases its project may not read are left out.
+     */
+    async listDatabases(agentProjectItemId?: string): Promise<DatabaseRow[]> {
+      return withTransaction(pool, async (client) => {
+        const databases = await databasesStore.listAllDatabases(client);
+        if (agentProjectItemId === undefined) return databases;
+        const unreadable = await listUnreadableDatabaseIds(client, agentProjectItemId);
+        return databases.filter((database) => !unreadable.has(database.id));
+      });
     },
 
     /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */

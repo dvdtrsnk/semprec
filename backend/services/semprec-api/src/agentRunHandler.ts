@@ -3,10 +3,16 @@ import {
   withTransaction,
   ChokePointError,
   ValidationError,
+  AGENT_RUN_STEP_DEFAULT_LIMIT,
+  AGENT_RUN_STEP_MAX_LIMIT,
   agentRunErrorFields,
+  buildAgentRunStepPage,
   getAgentRun,
   getAgentRunDetail,
   getAgentRunUsage,
+  isAgentRunHistoryTruncated,
+  isAgentRunStepReadSettled,
+  listAgentRunEventsForStepPage,
   mintMcpRunCredential,
   toManifestLocale,
 } from "@semprec/data";
@@ -21,6 +27,7 @@ import { logger } from "./logger.js";
 const MAX_BODY_BYTES = 64 * 1024;
 
 const AGENT_RUN_PATH = /^\/api\/agent-runs\/([^/]+)$/;
+const AGENT_RUN_STEPS_PATH = /^\/api\/agent-runs\/([^/]+)\/steps$/;
 const MCP_CREDENTIALS_PATH = "/api/agent-runs/mcp-credentials";
 
 interface MintMcpCredentialRequestBody {
@@ -47,6 +54,34 @@ function parseMintMcpCredentialBody(body: unknown): { projectItemId: string; cap
   return { projectItemId, capabilities: parsed.capabilities, task: parsed.task };
 }
 
+/** The largest `agent_run_events.id`, a Postgres `bigint`. */
+const MAX_EVENT_ID = 9_223_372_036_854_775_807n;
+
+/**
+ * The one value of a query parameter that is a string of digits; `null` when the request does not send it.
+ * A repeated, empty or non-numeric parameter is a validation error naming it.
+ */
+function readDigitsParam(url: URL, name: string): bigint | null {
+  const values = url.searchParams.getAll(name);
+  if (values.length === 0) return null;
+  const value = values[0]!;
+  if (values.length > 1 || !/^[0-9]{1,19}$/.test(value)) {
+    throw new ValidationError(`'${name}' must be a number`, { field: name });
+  }
+  return BigInt(value);
+}
+
+/** The cursor and page size of `GET /api/agent-runs/:id/steps`, validated against the id column and the cap. */
+function parseStepsQuery(url: URL): { after: string; limit: number } {
+  const after = readDigitsParam(url, "after") ?? 0n;
+  if (after > MAX_EVENT_ID) throw new ValidationError("'after' is not an event id", { field: "after" });
+  const limit = readDigitsParam(url, "limit") ?? BigInt(AGENT_RUN_STEP_DEFAULT_LIMIT);
+  if (limit < 1n || limit > BigInt(AGENT_RUN_STEP_MAX_LIMIT)) {
+    throw new ValidationError(`'limit' must be between 1 and ${AGENT_RUN_STEP_MAX_LIMIT}`, { field: "limit" });
+  }
+  return { after: after.toString(), limit: Number(limit) };
+}
+
 /**
  * `GET /api/agent-runs/:id` — the destination the global approval queue's (issue #132) "source
  * agent-run link" points at — a read-only view of one run: the fields of its row (`getAgentRun`)
@@ -56,6 +91,11 @@ function parseMintMcpCredentialBody(body: unknown): { projectItemId: string; cap
  * as `usage`, its AI spend per model with the model names in that locale (`getAgentRunUsage`, issue
  * #1822). A run whose `actorUserId` is not the session user answers the 404 of an unknown id,
  * before anything else about the run is read.
+ *
+ * `GET /api/agent-runs/:id/steps?after=<eventId>&limit=<n>` (issue #1821) — the run's events grouped
+ * into steps, one page at a time, with `nextCursor` to pass as the next `after` (`buildAgentRunStepPage`
+ * holds the grouping and the cursor rule) and `truncatedHistory` when retention removed the run's
+ * opening events. It answers 404 under the same rule as the run detail.
  *
  * `POST /api/agent-runs/mcp-credentials` (issue #220, AC34/44/47) mints a restricted, single-run
  * `agent_run` plus an opaque credential for it (`mintMcpRunCredential`) — the piece that lets an
@@ -103,6 +143,34 @@ export function createAgentRunRequestListener(pool: Pool) {
             capabilities: minted.capabilities,
             expiresAt: minted.expiresAt,
           });
+          return;
+        }
+
+        const stepsMatch = url.pathname.match(AGENT_RUN_STEPS_PATH);
+        if (stepsMatch && req.method === "GET") {
+          // Group 1 of the route pattern is not optional, so a successful match always captured it.
+          const stepsRunId = assertUuid(stepsMatch[1]!, "id");
+          const query = parseStepsQuery(url);
+          const page = await withTransaction(pool, async (client) => {
+            const run = await getAgentRun(client, stepsRunId);
+            if (!run || run.actorUserId !== identity.user.id) return null;
+            const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, query.after, query.limit);
+            return {
+              ...buildAgentRunStepPage({
+                events,
+                hasMore,
+                after: query.after,
+                limit: query.limit,
+                runSettled: isAgentRunStepReadSettled(run),
+              }),
+              truncatedHistory: await isAgentRunHistoryTruncated(client, run),
+            };
+          });
+          if (!page) {
+            sendJson(res, 404, { error: "Not found" });
+            return;
+          }
+          sendJson(res, 200, page);
           return;
         }
 

@@ -19,8 +19,10 @@ import {
   getAgentRunEventById,
   listAgentRunEvents,
   listAgentRunEventsAfter,
+  listAgentRunEventsForStepPage,
   listSessionAgentRunEventsFromLastCompaction,
 } from "../agentRuns/agentRunEventsStore.js";
+import { agentRunStepPageRowLimit } from "../agentRuns/agentRunStepPages.js";
 import { setAgentRunEventHook } from "../realtimeHook.js";
 import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
 import { claimSempMessage, finishSempMessageTurn, startSempMessageTurn } from "../semp/sempMessagesStore.js";
@@ -490,5 +492,63 @@ describe("agentRunEventsStore", () => {
 
     expect(event.payload).toBe(payload);
     expect(await countEvents(run.id)).toBe(1);
+  });
+
+  describe("listAgentRunEventsForStepPage (issue #1821)", () => {
+    it("returns the step-producing events of the run after the cursor in id order and leaves out the others", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "page" });
+      const other = await createAgentRun(pool, { triggeredBy: "user", task: "other run" });
+      const first = await insertAgentRunEvent(pool, run.id, "run_status", { status: "running" });
+      await insertAgentRunEvent(pool, run.id, "turn_start", {});
+      await insertAgentRunEvent(pool, other.id, "message", {});
+      const message = await insertAgentRunEvent(pool, run.id, "message", {});
+      await insertAgentRunEvent(pool, run.id, "compaction", {});
+      await insertAgentRunEvent(pool, run.id, "user_message", {});
+      const use = await insertAgentRunEvent(pool, run.id, "tool_use", {});
+      const result = await insertAgentRunEvent(pool, run.id, "tool_result", {});
+      await insertAgentRunEvent(pool, run.id, "turn_end", {});
+
+      const all = await listAgentRunEventsForStepPage(pool, run.id, "0", 100);
+      const afterFirst = await listAgentRunEventsForStepPage(pool, run.id, first.id, 100);
+
+      expect(all.events.map((e) => e.id)).toEqual([first.id, message.id, use.id, result.id]);
+      expect(all.hasMore).toBe(false);
+      expect(afterFirst.events.map((e) => e.id)).toEqual([message.id, use.id, result.id]);
+    });
+
+    it("reads at most two events per step and a margin, and says when more follow", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "bounded" });
+      // One step needs at most two events; the read of a one-step page holds 102.
+      const rowLimit = agentRunStepPageRowLimit(1);
+      for (let i = 0; i < rowLimit + 1; i++) await insertAgentRunEvent(pool, run.id, "message", {});
+
+      const full = await listAgentRunEventsForStepPage(pool, run.id, "0", 1);
+      expect(full.events).toHaveLength(rowLimit);
+      expect(full.hasMore).toBe(true);
+
+      const rest = await listAgentRunEventsForStepPage(pool, run.id, full.events.at(-1)!.id, 1);
+      expect(rest.events).toHaveLength(1);
+      expect(rest.hasMore).toBe(false);
+
+      await pool.query("DELETE FROM agent_run_events WHERE id = $1", [rest.events[0]!.id]);
+      const exact = await listAgentRunEventsForStepPage(pool, run.id, "0", 1);
+      expect(exact.events).toHaveLength(rowLimit);
+      expect(exact.hasMore).toBe(false);
+    });
+
+    it.each([0, -1, 1.5, 501, Number.NaN])("rejects a step limit of %s before it queries", async (limit) => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "limit" });
+
+      await expect(listAgentRunEventsForStepPage(pool, run.id, "0", limit)).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("accepts the largest step limit", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "limit" });
+
+      await expect(listAgentRunEventsForStepPage(pool, run.id, "0", 500)).resolves.toEqual({
+        events: [],
+        hasMore: false,
+      });
+    });
   });
 });

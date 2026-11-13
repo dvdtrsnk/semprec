@@ -26,13 +26,17 @@ export type ItemValueLinks = Record<string, ValueLinkEntry>;
  * map. A constant number of queries whatever the number of items or sources: links, sources, the
  * source items (a trashed or missing one is left out of `sources`, the entry still returned), and
  * their databases. Under the caller's tenant scope, so another tenant's rows and items are
- * invisible, a source id that belongs to another tenant included.
+ * invisible, a source id that belongs to another tenant included. A source item in one of
+ * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849) is left
+ * out of `sources` like a missing one, so its id, database key and title are not returned. The derived
+ * sources are projects, areas and companies, which are non-sensitive system databases that every project may read.
  */
 export async function getValueLinksForItems(
   client: PoolClient,
   itemIds: string[],
   includeDerived = false,
   preloadedDerived?: ReadonlyMap<string, DerivedValues>,
+  unreadableDatabaseIds: ReadonlySet<string> = new Set(),
 ): Promise<Map<string, ItemValueLinks>> {
   const links = await valueLinksStore.listValueLinksByItemIds(client, itemIds);
   const result = new Map<string, ItemValueLinks>();
@@ -61,7 +65,7 @@ export async function getValueLinksForItems(
       return { kind: "senderDomain", domain: row.domain, propertyKey: row.sourcePropertyKey };
     }
     const item = sourceItems.get(row.sourceItemId);
-    if (!item) return null;
+    if (!item || unreadableDatabaseIds.has(item.databaseId)) return null;
     const database = databases.get(item.databaseId);
     const titleValue = database?.titlePropertyKey ? item.properties[database.titlePropertyKey] : undefined;
     return {

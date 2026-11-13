@@ -10,6 +10,7 @@ import {
   createPendingApprovalRequestAndPublish,
   createPool,
   createSempChatThread,
+  createSemprecTickAction,
   createUser,
   finishAgentRunWithErrorNotification,
   insertAndNotifyAgentRunEvent,
@@ -17,9 +18,11 @@ import {
   loadFullModuleRegistry,
   publishSempThreadInvalidation,
   seedSystem,
+  setInboxCardsInvalidationHook,
   withTransaction,
 } from "@semprec/data";
 import {
+  createInboxItemWithClient,
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
@@ -34,7 +37,7 @@ import {
   type RealtimeMessage,
   type SyncServer,
 } from "@semprec/realtime";
-import { runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
 import { createAgentRunTask } from "../agentRunTasks.js";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 
@@ -78,6 +81,7 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
   });
 
   afterEach(() => {
+    setInboxCardsInvalidationHook(() => {});
     listener?.release(true);
     listener = undefined;
   });
@@ -523,6 +527,55 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     );
     // The rolled-back attempt published nothing: exactly one message of each scope exists.
     expect(published).toHaveLength(2);
+    expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
+  });
+
+  it("publishes an inboxCards invalidation of the writing tenant for a card the agents tick writes (issue #1811)", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const envelopes = await collectEnvelopes(listener!);
+
+    const cardId = await runInTenant(tenantId, async () => {
+      const databases = await agentsPool.query<{ id: string; owner_module_id: string }>(
+        "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
+        [["inbox", "inboxItemTypes", "processingProposals"]],
+      );
+      const idOf = (moduleId: string): string => {
+        const row = databases.rows.find((candidate) => candidate.owner_module_id === moduleId);
+        if (!row) throw new Error(`Database '${moduleId}' was not seeded`);
+        return row.id;
+      };
+      const item = await withTransaction(agentsPool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: idOf("inbox"),
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+        }),
+      );
+      // The budget refusal is recorded on a new `computeFailed` card, written by the tick of an agents run.
+      await createSemprecTickAction(agentsPool, async () => {
+        throw new AiGatewayFailedError("budget_exceeded");
+      })(
+        {
+          inboxDatabaseId: idOf("inbox"),
+          inboxItemTypesDatabaseId: idOf("inboxItemTypes"),
+          processingProposalsDatabaseId: idOf("processingProposals"),
+        },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id, isFinalAttempt: true },
+      );
+      const cards = await agentsPool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
+        idOf("processingProposals"),
+      ]);
+      expect(cards.rows).toHaveLength(1);
+      return cards.rows[0]!.id;
+    });
+
+    await waitUntil(() => envelopes.some((e) => e.message.type === "invalidation" && e.message.scope === "inboxCards"));
+    const published = envelopes.filter((e) => e.message.type === "invalidation" && e.message.scope === "inboxCards");
+    expect(published).toEqual([
+      { tenantId, message: { type: "invalidation", scope: "inboxCards", op: "created", cardId } },
+    ]);
     expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
   });
 

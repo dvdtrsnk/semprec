@@ -9,6 +9,8 @@ import {
   registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerItemUpdatePreLockHook,
+  registerItemDeletePreLockHook,
+  registerItemRestorePreLockHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
   registerItemDeleteHook,
@@ -20,6 +22,9 @@ import {
   runItemPreWriteTransforms,
   runItemUpdateHooks,
   runItemUpdatePreLockHooks,
+  runItemDeletePreLockHooks,
+  runItemRestorePreLockHooks,
+  type ItemTrashPreLockHookContext,
   type ItemDeleteHookContext,
   type ItemPreWriteTransformContext,
   type ItemRestoreHookContext,
@@ -357,6 +362,101 @@ describe("chokePoint/hooks item update pre-lock registry", () => {
 
     clearHooksForTests();
     await runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(0);
+  });
+});
+
+const TRASH_PRE_LOCK_CONTEXT: ItemTrashPreLockHookContext = {
+  client: offlineClient,
+  database: CONTEXT.database,
+  itemId: "item",
+};
+
+describe.each([
+  {
+    name: "item delete pre-lock",
+    register: registerItemDeletePreLockHook,
+    run: runItemDeletePreLockHooks,
+    other: { register: registerItemRestorePreLockHook, run: runItemRestorePreLockHooks },
+  },
+  {
+    name: "item restore pre-lock",
+    register: registerItemRestorePreLockHook,
+    run: runItemRestorePreLockHooks,
+    other: { register: registerItemDeletePreLockHook, run: runItemDeletePreLockHooks },
+  },
+])("chokePoint/hooks $name registry", ({ register, run, other }) => {
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("runs nothing for a module that registered no hook", async () => {
+    await expect(run("calendars", TRASH_PRE_LOCK_CONTEXT)).resolves.toBeUndefined();
+  });
+
+  it("passes the exact context to a module's hooks, in registration order", async () => {
+    const seen: Array<[string, ItemTrashPreLockHookContext]> = [];
+    register("calendars", async (context) => {
+      seen.push(["first", context]);
+    });
+    register("calendars", async (context) => {
+      seen.push(["second", context]);
+    });
+
+    await run("calendars", TRASH_PRE_LOCK_CONTEXT);
+
+    expect(seen.map(([name]) => name)).toEqual(["first", "second"]);
+    expect(seen.every(([, context]) => context === TRASH_PRE_LOCK_CONTEXT)).toBe(true);
+  });
+
+  it("runs a hook registered twice only once", async () => {
+    let calls = 0;
+    const hook = async () => {
+      calls += 1;
+    };
+    register("calendars", hook);
+    register("calendars", hook);
+
+    await run("calendars", TRASH_PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(1);
+  });
+
+  it("keeps each module's hooks apart, and the delete registry apart from the restore registry", async () => {
+    let calls = 0;
+    register("calendars", async () => {
+      calls += 1;
+    });
+
+    await run("tasks", TRASH_PRE_LOCK_CONTEXT);
+    await other.run("calendars", TRASH_PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(0);
+    expect(other.register).not.toBe(register);
+  });
+
+  it("propagates the first rejection and runs no later hook of the module", async () => {
+    let laterRan = false;
+    register("calendars", async () => {
+      throw new Error("boom");
+    });
+    register("calendars", async () => {
+      laterRan = true;
+    });
+
+    await expect(run("calendars", TRASH_PRE_LOCK_CONTEXT)).rejects.toThrow("boom");
+    expect(laterRan).toBe(false);
+  });
+
+  it("is cleared by clearHooksForTests", async () => {
+    let calls = 0;
+    register("calendars", async () => {
+      calls += 1;
+    });
+
+    clearHooksForTests();
+    await run("calendars", TRASH_PRE_LOCK_CONTEXT);
 
     expect(calls).toBe(0);
   });

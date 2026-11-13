@@ -4,7 +4,7 @@ import { readPageBlocks, serializeBlocks } from "@semprec/block-model";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { readCalendarTimeline } from "../calendar/timelineRead.js";
-import type { CalendarTimelineItem } from "../calendar/timelineSources.js";
+import type { CalendarBirthdayTimelineItem, CalendarTimelineItem } from "../calendar/timelineSources.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import type { ItemRow } from "../types.js";
 import { ensureJournalPeriodDoc } from "./journalStore.js";
@@ -102,29 +102,36 @@ type JournalDayEvent = Pick<
   | "transcript"
 >;
 
+/** One of the day's birthdays in the Journal day response (issue #2015): these fields of its calendar timeline item. */
+type JournalDayBirthday = Pick<
+  CalendarBirthdayTimelineItem,
+  "id" | "personId" | "personName" | "title" | "date" | "calendarId"
+>;
+
 /**
- * The events of `day` for the Journal day response (issue #1721): the items of kind `event` that the calendar
- * timeline returns for the range from `day` to `day`, all-day Events included, in the timeline's order. Which
- * Events belong to the day is the timeline's decision.
+ * The events (issue #1721) and the birthdays (issue #2015) of `day` for the Journal day response, both taken from
+ * one read of the calendar timeline for the range from `day` to `day`, in the timeline's order. `events` holds
+ * the items of kind `event`, all-day Events included; `birthdays` holds the items of kind `birthday`, so a
+ * birthday is never an event. Which of them belong to the day is the timeline's decision; any other kind, a
+ * public holiday among them, is in neither list.
  */
-async function readJournalDayEvents(client: PoolClient, day: string): Promise<JournalDayEvent[]> {
+async function readJournalDayTimeline(
+  client: PoolClient,
+  day: string,
+): Promise<{ events: JournalDayEvent[]; birthdays: JournalDayBirthday[] }> {
   const timeline = await readCalendarTimeline(client, { from: day, to: day, shape: "full" });
-  return timeline.items
-    .filter((item) => item.kind === "event")
-    .map(({ id, title, type, date, endDate, timeFrom, timeTo, allDay, place, project, calendarId, transcript }) => ({
-      id,
-      title,
-      type,
-      date,
-      endDate,
-      timeFrom,
-      timeTo,
-      allDay,
-      place,
-      project,
-      calendarId,
-      transcript,
-    }));
+  const events: JournalDayEvent[] = [];
+  const birthdays: JournalDayBirthday[] = [];
+  for (const item of timeline.items) {
+    if (item.kind === "event") {
+      const { id, title, type, date, endDate, timeFrom, timeTo, allDay, place, project, calendarId, transcript } = item;
+      events.push({ id, title, type, date, endDate, timeFrom, timeTo, allDay, place, project, calendarId, transcript });
+    } else if (item.kind === "birthday") {
+      const { id, personId, personName, title, date, calendarId } = item;
+      birthdays.push({ id, personId, personName, title, date, calendarId });
+    }
+  }
+  return { events, birthdays };
 }
 
 const periodType = z.enum(JOURNAL_PERIOD_TYPES);
@@ -186,7 +193,9 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
         result.week = weekBody(path.week);
         const inbox = entry?.item.computed.inboxItems;
         result.inbox = Array.isArray(inbox) ? inbox : [];
-        result.events = await readJournalDayEvents(client, key);
+        const { events, birthdays } = await readJournalDayTimeline(client, key);
+        result.events = events;
+        result.birthdays = birthdays;
       }
       if (type.data === "month") result.weeks = weeks.map(weekBody);
       return { status: 200, body: result };

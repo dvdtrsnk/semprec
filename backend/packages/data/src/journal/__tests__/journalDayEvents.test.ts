@@ -5,15 +5,21 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../../auth/usersStore.js";
-import { readCalendarTimeline, readTaskTimelineItems } from "../../calendar/timelineRead.js";
-import { CALENDAR_TIMELINE_SOURCES, type CalendarTimelineItem } from "../../calendar/timelineSources.js";
+import { readCalendarTimeline } from "../../calendar/timelineRead.js";
+import { CALENDAR_TIMELINE_SOURCES } from "../../calendar/timelineSources.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { withTransaction } from "../../db/pool.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { seedSystem } from "../../seed/seedSystem.js";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../../testSupport/testDb.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { createJournalPeriodReadRouteHandler } from "../journalRouteHandlers.js";
 
@@ -43,7 +49,24 @@ const journalEventSchema = z
 
 const dayResponseSchema = z.object({ type: z.literal("day"), period: z.string(), events: z.array(journalEventSchema) });
 
-const calendarSchema = z.object({ id: z.string(), properties: z.object({ isDefault: z.boolean() }) });
+/** One element of `birthdays`: exactly the fields issue #2015 lists. */
+const journalBirthdaySchema = z
+  .object({
+    id: z.string(),
+    personId: z.string(),
+    personName: z.string(),
+    title: z.string(),
+    date: z.string(),
+    calendarId: z.string().nullable(),
+  })
+  .strict();
+
+const birthdaysResponseSchema = z.object({ birthdays: z.array(journalBirthdaySchema) });
+
+const calendarSchema = z.object({
+  id: z.string(),
+  properties: z.object({ isDefault: z.boolean(), systemKey: z.string().optional() }),
+});
 
 /** The response body as JSON carries it. */
 function wire(body: unknown): unknown {
@@ -107,11 +130,34 @@ function world(tenantId: string) {
     await inTenant(() => chokePoint.softDeleteItem(id, itemId));
   }
 
+  /**
+   * Puts a calendar in the Trash with a raw write: the delete hook of issue gh-1803 refuses to trash a system
+   * calendar, so a trashed Birthdays calendar is a state only a write that skips the hooks reaches.
+   */
+  async function trashCalendarWithoutHooks(calendarId: string): Promise<void> {
+    const id = await databaseId(CALENDARS_MODULE_ID);
+    await withTenantTransaction(adminPool, tenantId, async (client) => {
+      const result = await client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
+        id,
+        calendarId,
+      ]);
+      expect(result.rowCount).toBe(1);
+    });
+  }
+
   async function defaultCalendarId(): Promise<string> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
     const calendar = rows.find((row) => row.properties.isDefault);
     if (!calendar) throw new Error("No default calendar");
+    return calendar.id;
+  }
+
+  async function birthdaysCalendarId(): Promise<string> {
+    const id = await databaseId(CALENDARS_MODULE_ID);
+    const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
+    const calendar = rows.find((row) => row.properties.systemKey === "birthdays");
+    if (!calendar) throw new Error("No birthdays calendar");
     return calendar.id;
   }
 
@@ -125,6 +171,9 @@ function world(tenantId: string) {
   /** The `events` of a Journal day, each checked to carry exactly the listed fields. */
   const events = async (day: string) => dayResponseSchema.parse(await readPeriod("day", day)).events;
 
+  /** The `birthdays` of a Journal day, each checked to carry exactly the listed fields. */
+  const birthdays = async (day: string) => birthdaysResponseSchema.parse(await readPeriod("day", day)).birthdays;
+
   /** The ids of everything the calendar timeline returns for `day`, in its order, with each item's kind. */
   const timelineOf = async (day: string) =>
     (
@@ -133,7 +182,20 @@ function world(tenantId: string) {
       )
     ).items.map((item) => ({ id: item.id, kind: item.kind }));
 
-  return { create, createTranscript, link, trash, defaultCalendarId, readPeriod, events, timelineOf };
+  return {
+    create,
+    createTranscript,
+    link,
+    trash,
+    trashCalendarWithoutHooks,
+    defaultCalendarId,
+    birthdaysCalendarId,
+    readPeriod,
+    events,
+    birthdays,
+    timelineOf,
+    inTenant,
+  };
 }
 
 /**
@@ -187,7 +249,7 @@ function observed(pool: Pool): { pool: Pool; statements: string[] } {
   return { pool: proxy, statements };
 }
 
-describe("journal day events (issue #1721)", () => {
+describe("journal day events and birthdays (issues #1721, #2015)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
     dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
@@ -269,50 +331,18 @@ describe("journal day events (issue #1721)", () => {
     });
   });
 
-  it("leaves a Task with a time and a derived birthday entry out of events, although the timeline has both on the day", async () => {
+  it("leaves a Task with a time and a birthday out of events, although the timeline has both on the day", async () => {
     const w = world(await newTenant());
     const fixture = await seedFixtureDay(w);
     const task = await w.create("tasks", { name: "Send invoice", date: DAY, timeFrom: "08:00" });
-    const person = await w.create("people", { name: "Jana Kovářová" });
-    // No birthday can be stored or generated yet: `People.birthday` is issue #1795 and the birthday source is
-    // issue #1800, which gives its entries a kind of their own. This stand-in is shaped like such an entry as
-    // far as today's item type allows: a derived, read-only, all-day entry of the one kind that is not `event`.
-    const birthday: CalendarTimelineItem = {
-      kind: "task",
-      id: `birthday:${person}:2026`,
-      databaseId: randomUUID(),
-      title: "Birthday - Jana",
-      type: null,
-      date: DAY,
-      endDate: null,
-      timeFrom: null,
-      timeTo: null,
-      effectiveTo: null,
-      hasEnd: false,
-      allDay: true,
-      calendarId: null,
-      status: null,
-      place: null,
-      project: null,
-      people: [],
-      transcript: null,
-      updatedAt: "2026-10-16T00:00:00.000Z",
-      readOnly: true,
-    };
-    const tasksSource = CALENDAR_TIMELINE_SOURCES.find((source) => source.id === "tasks");
-    if (!tasksSource) throw new Error("No tasks source");
-    // Restored by `vi.restoreAllMocks()` in `afterEach`.
-    vi.spyOn(tasksSource, "readItems").mockImplementation(async (client, context) => [
-      ...(await readTaskTimelineItems(client, context)),
-      birthday,
-    ]);
+    const person = await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
 
     const events = await w.events(DAY);
     const timeline = await w.timelineOf(DAY);
 
     // Both are on the day for the timeline, so their absence from `events` is the Journal's choice of kind.
     expect(timeline).toContainEqual({ id: task, kind: "task" });
-    expect(timeline).toContainEqual({ id: birthday.id, kind: "task" });
+    expect(timeline).toContainEqual({ id: `birthday:${person}:2026`, kind: "birthday" });
     expect(events.map((event) => event.id)).toEqual([
       fixture.conference,
       fixture.standup,
@@ -336,7 +366,9 @@ describe("journal day events (issue #1721)", () => {
       [trip, "2026-10-15", "2026-10-17"],
       [onTheDay, DAY, null],
     ]);
-    expect(events.map((event) => event.id)).toEqual((await w.timelineOf(DAY)).map((item) => item.id));
+    // A seeded tenant also has the sleep nights of the day (issue #1806) in its timeline; the Journal lists Events.
+    const timelineEvents = (await w.timelineOf(DAY)).filter((item) => item.kind === "event");
+    expect(events.map((event) => event.id)).toEqual(timelineEvents.map((item) => item.id));
   });
 
   it("answers an empty list for a day without events, and no events key for a week, month, quarter or year", async () => {
@@ -427,5 +459,166 @@ describe("journal day events (issue #1721)", () => {
       const text = JSON.stringify(await own.w.readPeriod("day", DAY));
       for (const id of [foreign.event, foreign.project, foreign.transcript]) expect(text).not.toContain(id);
     }
+  });
+
+  it("lists a person with a birthday on 16 October in the birthdays of 2026-10-16 with the name and the Birthdays calendar, and not in events", async () => {
+    const w = world(await newTenant());
+    const fixture = await seedFixtureDay(w);
+    const person = await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
+    const calendarId = await w.birthdaysCalendarId();
+
+    const body = dayResponseSchema.merge(birthdaysResponseSchema).parse(await w.readPeriod("day", DAY));
+
+    expect(body.birthdays).toEqual([
+      {
+        id: `birthday:${person}:2026`,
+        personId: person,
+        personName: "Jana Kovářová",
+        title: expect.stringContaining("Jana"),
+        date: DAY,
+        calendarId,
+      },
+    ]);
+    // The title is the timeline's own, so it is not worded a second time here.
+    const timelineBirthday = (
+      await w.inTenant(() =>
+        withTransaction(dataPool, (client) => readCalendarTimeline(client, { from: DAY, to: DAY, shape: "full" })),
+      )
+    ).items.find((item) => item.kind === "birthday");
+    expect(timelineBirthday?.title).toBe(body.birthdays[0]?.title);
+    expect(body.events.map((event) => event.id)).toEqual([
+      fixture.conference,
+      fixture.standup,
+      fixture.meeting,
+      fixture.lunch,
+      fixture.focus,
+    ]);
+    expect(body.events.map((event) => event.id)).not.toContain(person);
+  });
+
+  it("lists a person born on 29 February in the birthdays of 2027-02-28 and not of 2027-03-01", async () => {
+    const w = world(await newTenant());
+    const person = await w.create("people", { name: "Eva Leapová", birthday: "1992-02-29" });
+
+    expect((await w.birthdays("2027-02-28")).map((birthday) => [birthday.id, birthday.date])).toEqual([
+      [`birthday:${person}:2027`, "2027-02-28"],
+    ]);
+    expect(await w.birthdays("2027-03-01")).toEqual([]);
+  });
+
+  it("answers an empty birthdays array for a day without a birthday, also when the tenant has people and birthdays on other days", async () => {
+    const w = world(await newTenant());
+    expect(await w.birthdays(DAY)).toEqual([]);
+    await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-17" });
+    await w.create("people", { name: "Petr Bez" });
+
+    expect(await w.birthdays(DAY)).toEqual([]);
+    expect(await w.birthdays("2026-10-17")).toHaveLength(1);
+  });
+
+  it("leaves a trashed person out of the birthdays", async () => {
+    const w = world(await newTenant());
+    const trashed = await w.create("people", { name: "Trashed Person", birthday: "1990-10-16" });
+    const live = await w.create("people", { name: "Live Person", birthday: "1985-10-16" });
+    await w.trash("people", trashed);
+
+    expect((await w.birthdays(DAY)).map((birthday) => birthday.personId)).toEqual([live]);
+  });
+
+  it("keeps a birthday with no Birthdays calendar in the list, with a null calendarId", async () => {
+    const w = world(await newTenant());
+    const person = await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
+    const calendarId = await w.birthdaysCalendarId();
+    await w.trashCalendarWithoutHooks(calendarId);
+
+    expect((await w.birthdays(DAY)).map((birthday) => [birthday.personId, birthday.calendarId])).toEqual([
+      [person, null],
+    ]);
+  });
+
+  it("lists a public holiday in neither events nor birthdays", async () => {
+    const w = world(await newTenant());
+    const holiday = "2026-10-28";
+    const person = await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-28" });
+    const event = await w.create("events", { name: "Concert", date: holiday, timeFrom: "19:00" });
+
+    const body = dayResponseSchema.merge(birthdaysResponseSchema).parse(await w.readPeriod("day", holiday));
+
+    // The timeline has the holiday on the day, so its absence is the Journal's choice of kind.
+    expect(await w.timelineOf(holiday)).toContainEqual({ id: `holiday:cz:${holiday}`, kind: "holiday" });
+    expect(body.events.map((entry) => entry.id)).toEqual([event]);
+    expect(body.birthdays.map((entry) => entry.personId)).toEqual([person]);
+    expect(JSON.stringify(body)).not.toContain("holiday:cz");
+  });
+
+  it("reads the timeline once for events and birthdays together and sends no statement of its own for the birthdays", async () => {
+    const w = world(await newTenant());
+    const birthdaysSource = CALENDAR_TIMELINE_SOURCES.find((source) => source.id === "birthdays");
+    if (!birthdaysSource) throw new Error("No birthdays source");
+    await w.create("events", { name: "Meeting", date: DAY, timeFrom: "10:00" });
+    await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
+    await w.create("people", { name: "Petr Novák", birthday: "1991-10-17" });
+    for (let index = 0; index < 4; index += 1) {
+      await w.create("people", { name: `Person ${index}`, birthday: `198${index}-10-16` });
+    }
+
+    /** The statements one day read sends, and the statements one standalone timeline read for the day sends. */
+    async function statementsOf(day: string) {
+      const dayRead = observed(dataPool);
+      await w.readPeriod("day", day, dayRead.pool);
+      const timelineRead = observed(dataPool);
+      await w.inTenant(() =>
+        withTransaction(timelineRead.pool, (client) =>
+          readCalendarTimeline(client, { from: day, to: day, shape: "full" }),
+        ),
+      );
+      // What the day read sends beyond the timeline: each statement of the timeline read removed once.
+      const own = [...dayRead.statements];
+      for (const statement of timelineRead.statements) {
+        const index = own.indexOf(statement);
+        if (index === -1) throw new Error(`The day read did not send: ${statement}`);
+        own.splice(index, 1);
+      }
+      return { own, total: dayRead.statements.length };
+    }
+
+    // Restored by `vi.restoreAllMocks()` in `afterEach`.
+    const readItems = vi.spyOn(birthdaysSource, "readItems");
+    const withBirthdays = await statementsOf(DAY);
+    const oneBirthday = await statementsOf("2026-10-17");
+    const noBirthday = await statementsOf("2026-10-18");
+
+    // Three days, each read once as a Journal day and once as a standalone timeline: six calls, so the day read calls the source once.
+    expect(readItems).toHaveBeenCalledTimes(6);
+    expect(withBirthdays.own).toEqual(noBirthday.own);
+    expect(oneBirthday.own).toEqual(noBirthday.own);
+    // Five birthdays cost the same as one: the timeline sends no statement per person.
+    expect(withBirthdays.total).toBe(oneBirthday.total);
+  });
+
+  it("answers no birthdays key for a week, month, quarter or year", async () => {
+    const w = world(await newTenant());
+    await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
+
+    for (const [type, period] of [
+      ["week", "2026-W42"],
+      ["month", "2026-10"],
+      ["quarter", "2026-Q4"],
+      ["year", "2026"],
+    ] as const) {
+      expect(await w.readPeriod(type, period), type).not.toHaveProperty("birthdays");
+    }
+  });
+
+  it("never answers another tenant's birthdays", async () => {
+    const a = world(await newTenant());
+    const b = world(await newTenant());
+    const personA = await a.create("people", { name: "Person A", birthday: "1990-10-16" });
+    const personB = await b.create("people", { name: "Person B", birthday: "1985-10-16" });
+
+    expect((await a.birthdays(DAY)).map((birthday) => birthday.personId)).toEqual([personA]);
+    expect((await b.birthdays(DAY)).map((birthday) => birthday.personId)).toEqual([personB]);
+    expect(JSON.stringify(await a.readPeriod("day", DAY))).not.toContain(personB);
+    expect(JSON.stringify(await b.readPeriod("day", DAY))).not.toContain(personA);
   });
 });

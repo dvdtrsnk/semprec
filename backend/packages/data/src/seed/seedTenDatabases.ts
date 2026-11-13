@@ -31,6 +31,7 @@ import { ensureUnplannedArea } from "./seedUnplannedArea.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
+import { createTasksTodayView } from "../tasks/todayView.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
@@ -243,6 +244,11 @@ export async function seedTenDatabasesInTransaction(
     // Issue #1660: derived from the person's past Events, Emails and Transcripts, written only by
     // `people/lastContact.ts`'s recompute; populated installs get it from the People lastContact cutover.
     { key: "lastContact", name: "Last contact", type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID },
+    // Issue #1795: the calendar's birthday source reads the month and day. A person whose year is unknown stores
+    // a placeholder leap year with `birthdayYearKnown` false; populated installs get both from the People
+    // birthday cutover.
+    { key: "birthday", name: "Birthday", type: "date", owner: "user" },
+    { key: "birthdayYearKnown", name: "Year known", type: "checkbox", owner: "user" },
   ]);
 
   const files = await createDb(client, FILES_MODULE_ID);
@@ -294,6 +300,9 @@ export async function seedTenDatabasesInTransaction(
     // a populated tenant gets the same two definitions from `calendar/eventsIcalIdentityCutoverMigration.ts`.
     { key: "icalUid", name: "iCalendar UID", type: "text", owner: "system", locked: true },
     { key: "icalSequence", name: "iCalendar sequence", type: "number", owner: "system", locked: true },
+    // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`; a populated
+    // tenant gets the same definition from `calendar/eventsRecurrenceCutoverMigration.ts`.
+    { key: "recurrence", name: "Recurrence", type: "json", owner: "user" },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);
@@ -724,6 +733,8 @@ export async function seedTenDatabasesInTransaction(
       viewTypeRegistry,
     );
   }
+  // Issue #1798: the Today system view, after the properties and relations its filter names exist (phases 1 and 2).
+  await createTasksTodayView(client, tasks.id, viewTypeRegistry);
 
   return all;
 }

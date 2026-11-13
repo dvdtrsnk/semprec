@@ -15,6 +15,7 @@ import {
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
 import { logger } from "../logger.js";
+import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
 import { createCalendarTimelineRouteHandler } from "../timelineRouteHandler.js";
 
 let adminPool: Pool;
@@ -120,6 +121,8 @@ describe("GET /api/calendar/timeline (issue #1717)", () => {
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await runInTenant(tenantId, () => seedSystem(dataPool));
+    // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events and Tasks.
+    await hideSleepInCalendar(dataPool, tenantId);
   });
 
   afterEach(() => {

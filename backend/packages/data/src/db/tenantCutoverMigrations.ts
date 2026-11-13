@@ -52,7 +52,10 @@ import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutove
 import { runMeetingNotesBackfillCutoverMigration } from "../transcription/meetingNotesBackfillCutoverMigration.js";
 import { runSleepModuleCutoverMigration } from "../sleep/sleepModuleCutoverMigration.js";
 import { runLibraryCoverOverrideCutoverMigration } from "../library/libraryCoverOverrideCutoverMigration.js";
+import { runPeopleBirthdayCutoverMigration } from "../calendar/peopleBirthdayCutoverMigration.js";
 import { runSensitiveDatabasesCutoverMigration } from "../seed/sensitiveDatabasesCutoverMigration.js";
+import { runTasksTodayViewCutoverMigration } from "../tasks/todayViewCutoverMigration.js";
+import { runEventsRecurrenceCutoverMigration } from "../calendar/eventsRecurrenceCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -128,10 +131,20 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // Issue #1793: the user-owned cover properties of Books and Movies. It needs no other step's result and stands
     // after the library steps above, which created and upgraded those schemas, before the area-note cutover.
     await runLibraryCoverOverrideCutoverMigration(pool);
+    // Issue #1795: the People birthday properties for a tenant seeded before them. It needs no other step's result
+    // and stands after the step of #1793, which it waits for, before the area-note cutover that stays last.
+    await runPeopleBirthdayCutoverMigration(pool);
     // Issue #1808: marks Health records (and any sleep database a tenant already has) sensitive. The sleep
     // cutover above creates the sleep databases of a tenant seeded before them already flagged, so this step
     // only changes rows that existed without the flag.
     await runSensitiveDatabasesCutoverMigration(pool);
+    // Issue #1798: the Today view of Tasks for a tenant seeded before it. Its filter names properties and relations
+    // (`effectiveDate`, `hiddenUntil`, `completedOn`, `completedInEvent`) that the Tasks schema cutover above (#1540)
+    // creates; the step stands before the area-note cutover that stays last.
+    await runTasksTodayViewCutoverMigration(pool);
+    // Issue gh-1817: the Events `recurrence` property. It needs no other step's result and stands after the
+    // entry of issue #1808, a blocker of that issue, before the area-note cutover that stays last.
+    await runEventsRecurrenceCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

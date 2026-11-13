@@ -137,8 +137,9 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     return { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } };
   }
 
+  /** The create-Event envelope the match step proposes: the recording's date in the tenant zone, date-only. */
   function createEvent(name = "Weekly sync"): ProposalEnvelope {
-    return { entityKind: "database", target: eventsId, properties: { name, type: "meeting", date: RECORDING_START } };
+    return { entityKind: "database", target: eventsId, properties: { name, type: "meeting", date: "2024-03-01" } };
   }
 
   /** Every Transcripts <-> Events edge, as `{ transcriptId, eventId }` pairs. */

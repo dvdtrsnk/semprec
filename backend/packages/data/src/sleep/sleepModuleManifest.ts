@@ -1,6 +1,8 @@
 import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 
+export { sleepNightsGet } from "./sleepRouteHandlers.js";
+
 /**
  * The descriptors of the three sleep databases (issue #1776). None declares an overview or a switcher
  * position, so each resolves `clientVisible` false and is in neither client list.
@@ -16,7 +18,8 @@ export const SLEEP_DATABASE_DESCRIPTORS = {
 /**
  * Manifest of the sleep module (issue #1776): three system databases seeded by `seed/seedSleepModule.ts` and
  * owned by one system project. The labels of the databases, of their properties and options, and the names
- * of the two seeded plans are in `i18n/` beside this file.
+ * of the two seeded plans are in `i18n/` beside this file. Its one custom route is `GET /api/sleep/nights`
+ * (issue gh-1809), `sleepRouteHandlers.ts`.
  */
 export const manifest: ModuleManifest = {
   id: "sleep",
@@ -27,4 +30,15 @@ export const manifest: ModuleManifest = {
   databases: [SLEEP_DATABASE_DESCRIPTORS.settings, SLEEP_DATABASE_DESCRIPTORS.plans, SLEEP_DATABASE_DESCRIPTORS.nights],
   capabilities: [],
   agentTools: [],
+  customRoutes: [
+    {
+      name: "sleepNights",
+      method: "GET",
+      path: "/api/sleep/nights",
+      handlerExport: "sleepNightsGet",
+      // The response aggregates the settings, the plans, the night exceptions and the tenant's time zone into
+      // resolved nights; it is not an item of any database, so the generic item reads cannot express it.
+      justification: "transactional-semantics",
+    },
+  ],
 };

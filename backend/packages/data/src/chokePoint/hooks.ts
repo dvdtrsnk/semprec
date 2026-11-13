@@ -12,6 +12,8 @@
 // and docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
 // and, for the purge registry, docs/adr/2026-11-10-item-purge-domain-hooks.md
 // and, for the update pre-lock registry, docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md
+// and, for the delete and restore pre-lock registries,
+// docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md
 // and, for the delete approval guard registry,
 // docs/adr/2026-11-11-a-mailboxes-item-is-trashed-only-by-the-system-writer.md
 import type { PoolClient } from "pg";
@@ -86,6 +88,28 @@ export interface ItemUpdatePreLockHookContext {
  * docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md.
  */
 export type ItemUpdatePreLockHook = (context: ItemUpdatePreLockHookContext) => Promise<void>;
+
+/**
+ * Context of an item delete or restore pre-lock hook: one trash or restore about to start, before it has locked or
+ * changed any row. `itemId` is the item the caller names, the root of the cascade.
+ */
+export interface ItemTrashPreLockHookContext {
+  client: PoolClient;
+  /** The database of the item the caller names. */
+  database: DatabaseRow;
+  itemId: string;
+}
+
+/**
+ * Takes a lock that must be held before the trash cascade of `itemDeleteWithClient` locks the root row, so every
+ * writer of a module orders its locks the same way. It changes nothing and returns nothing; a throw rolls the
+ * delete back. It runs for the root the caller names only, never for a row the cascade reaches later. See
+ * docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md.
+ */
+export type ItemDeletePreLockHook = (context: ItemTrashPreLockHookContext) => Promise<void>;
+
+/** The restore counterpart of `ItemDeletePreLockHook`, run by `restoreItemWithClient` before it locks the root row. */
+export type ItemRestorePreLockHook = (context: ItemTrashPreLockHookContext) => Promise<void>;
 
 /**
  * Context of an item delete hook (issue #1601): one row the trash cascade of `itemDeleteWithClient`
@@ -264,6 +288,10 @@ const activeChangedEdges = new WeakMap<PoolClient, Set<string>>();
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
 /** Keyed by owning module id; each module's pre-lock hooks keep their registration order. */
 const itemUpdatePreLockHooks = new Map<string, ItemUpdatePreLockHook[]>();
+/** Keyed by owning module id; each module's delete pre-lock hooks keep their registration order. */
+const itemDeletePreLockHooks = new Map<string, ItemDeletePreLockHook[]>();
+/** Keyed by owning module id; each module's restore pre-lock hooks keep their registration order. */
+const itemRestorePreLockHooks = new Map<string, ItemRestorePreLockHook[]>();
 const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
 
 export interface ItemUpdateCommand {
@@ -357,6 +385,23 @@ export function registerItemUpdatePreLockHook(moduleId: string, hook: ItemUpdate
   const registered = itemUpdatePreLockHooks.get(moduleId) ?? [];
   if (registered.includes(hook)) return;
   itemUpdatePreLockHooks.set(moduleId, [...registered, hook]);
+}
+
+/**
+ * Attaches a delete pre-lock hook to one owning module. The caller runs it only for a database whose
+ * `ownerModuleId` is `moduleId`. Registering the same `(moduleId, hook)` twice is a no-op.
+ */
+export function registerItemDeletePreLockHook(moduleId: string, hook: ItemDeletePreLockHook): void {
+  const registered = itemDeletePreLockHooks.get(moduleId) ?? [];
+  if (registered.includes(hook)) return;
+  itemDeletePreLockHooks.set(moduleId, [...registered, hook]);
+}
+
+/** Attaches a restore pre-lock hook to one owning module; see `registerItemDeletePreLockHook`. */
+export function registerItemRestorePreLockHook(moduleId: string, hook: ItemRestorePreLockHook): void {
+  const registered = itemRestorePreLockHooks.get(moduleId) ?? [];
+  if (registered.includes(hook)) return;
+  itemRestorePreLockHooks.set(moduleId, [...registered, hook]);
 }
 
 /** Registering the same function twice is a no-op — a hook module imported from more than one place still runs once. */
@@ -535,6 +580,31 @@ export async function runItemUpdatePreLockHooks(
   }
 }
 
+/**
+ * Runs a module's delete pre-lock hooks sequentially, in registration order, inside the caller's transaction.
+ * `itemDeleteWithClient` calls it before the first lock on the item it was asked to trash, and only for a module
+ * that has one. The first rejection propagates and rolls the delete back.
+ */
+export async function runItemDeletePreLockHooks(moduleId: string, context: ItemTrashPreLockHookContext): Promise<void> {
+  for (const hook of itemDeletePreLockHooks.get(moduleId) ?? []) {
+    await hook(context);
+  }
+}
+
+/**
+ * Runs a module's restore pre-lock hooks sequentially, in registration order, inside the caller's transaction.
+ * `restoreItemWithClient` calls it before the first lock on the item it was asked to restore, and only for a
+ * module that has one. The first rejection propagates and rolls the restore back.
+ */
+export async function runItemRestorePreLockHooks(
+  moduleId: string,
+  context: ItemTrashPreLockHookContext,
+): Promise<void> {
+  for (const hook of itemRestorePreLockHooks.get(moduleId) ?? []) {
+    await hook(context);
+  }
+}
+
 /** Test-only reset of every registry — guarded so it cannot run against a real process's hooks. */
 export function clearHooksForTests(): void {
   if (process.env.NODE_ENV !== "test") {
@@ -551,6 +621,8 @@ export function clearHooksForTests(): void {
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
   itemUpdatePreLockHooks.clear();
+  itemDeletePreLockHooks.clear();
+  itemRestorePreLockHooks.clear();
   itemPreWritePreparations.clear();
   itemUpdateCommands.clear();
   itemPatchApprovalContributions.clear();

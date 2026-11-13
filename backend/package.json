@@ -17,8 +17,8 @@
     "check:write-safety": "node ../.github/scripts/check-write-safety.mjs",
     "test:repo-scripts": "node ../.github/scripts/run-repo-script-tests.mjs",
     "migrate": "pnpm --filter @semprec/data run build && node packages/data/dist/db/runMigrationsCli.js",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js .",
+    "lint:fix": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js . --fix",
     "format": "prettier --write . --ignore-path ../.prettierignore",
     "format:check": "prettier --check . --ignore-path ../.prettierignore",
     "verify": "pnpm run lint && pnpm run format:check && pnpm -r run build && pnpm run test:unit && pnpm run check:pi-import-paths && pnpm --filter @semprec/data run check-migration-numbering && pnpm run check:write-safety && pnpm run test:repo-scripts && pnpm run check:boundaries && pnpm run test:integration && pnpm run test:e2e"

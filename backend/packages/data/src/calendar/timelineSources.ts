@@ -1,6 +1,9 @@
 import type { PoolClient } from "pg";
 import type { WallClock } from "../calendarTime.js";
+import { readBirthdayTimelineItems } from "./timelineBirthdaySource.js";
+import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
+import { readSleepTimelineItems } from "./timelineSleepSource.js";
 
 /** One entry of the calendar timeline in its full shape (issue #1717). */
 export interface CalendarTimelineItem {
@@ -54,6 +57,80 @@ export interface CalendarTimelineItem {
   readOnly: boolean;
 }
 
+/**
+ * A person's birthday in one year (issue #1800), derived on read from `People.birthday`: it is not a stored
+ * row, so its `id` is not an item id and the item routes refuse it. Only the month and day of the stored
+ * birthday matter; `date` is that day in the year of the entry (28 February for a 29 February in a year that
+ * is not a leap year).
+ */
+export interface CalendarBirthdayTimelineItem {
+  kind: "birthday";
+  /** `birthday:<personId>:<year>`. */
+  id: string;
+  personId: string;
+  /** The person's whole name; `title` carries the given name. */
+  personName: string;
+  /** The `calendar.birthday.title` template of the tenant user's language with the person's given name. */
+  title: string;
+  date: string;
+  allDay: true;
+  /** The live Birthdays calendar; `null` when the tenant has none. */
+  calendarId: string | null;
+  readOnly: true;
+}
+
+/**
+ * A Czech public holiday (issue #1804), computed by `czechPublicHolidays` and not stored: its `id` is not an
+ * item id, so the item routes refuse it.
+ */
+export interface CalendarHolidayTimelineItem {
+  kind: "holiday";
+  /** `holiday:cz:<YYYY-MM-DD>`. */
+  id: string;
+  /** The `calendar.holiday.<key>` entry of the tenant user's language. */
+  title: string;
+  date: string;
+  allDay: true;
+  /** The live `holidaysCz` calendar; `null` when the tenant has none. */
+  calendarId: string | null;
+  readOnly: true;
+}
+
+/**
+ * One planned night of sleep (issue #1806), derived on read from the sleep plans and night exceptions by
+ * `resolveSleepNights` and not stored: its `id` is not an item id. It is not read-only: the night is edited on
+ * its own. A night that crosses midnight is one entry; `night` is the calendar date of its evening.
+ */
+export interface CalendarSleepTimelineItem {
+  kind: "sleep";
+  /** `sleep:<night>`. */
+  id: string;
+  night: string;
+  /** The plan the night follows; `null` for a night that only has an exception. */
+  planId: string | null;
+  /** `HH:MM`. */
+  bedTime: string;
+  /** `HH:MM`. */
+  wakeTime: string;
+  alarm: boolean;
+  /** Whether an exception overrides a field of the night. */
+  changed: boolean;
+  /** The bedtime instant as an ISO string with the tenant zone's offset. */
+  bedAt: string;
+  /** The wake-up instant, rendered like `bedAt`. */
+  wakeAt: string;
+  /** `bedAt` minus the reminder lead time; `null` when the reminder is off. */
+  prepReminderAt: string | null;
+  readOnly: false;
+}
+
+/** An entry that is not a stored row: the shape of each derived `kind` is added here by the source that returns it. */
+export type CalendarDerivedTimelineItem =
+  CalendarBirthdayTimelineItem | CalendarHolidayTimelineItem | CalendarSleepTimelineItem;
+
+/** Everything a source may return: a stored Event or Task, or a derived entry. `kind` tells them apart. */
+export type CalendarTimelineEntry = CalendarTimelineItem | CalendarDerivedTimelineItem;
+
 /** What every source of one timeline read is given: the requested range and the tenant's zone, day and time. */
 export interface CalendarTimelineContext {
   /** The first day of the range, `YYYY-MM-DD`. */
@@ -68,10 +145,10 @@ export interface CalendarTimelineContext {
   now: WallClock;
 }
 
-/** One source of timeline items: it returns the items it has for the range of `context`. */
+/** One source of timeline entries: it returns the entries it has for the range of `context`. */
 export interface CalendarTimelineSource {
   id: string;
-  readItems(client: PoolClient, context: CalendarTimelineContext): Promise<CalendarTimelineItem[]>;
+  readItems(client: PoolClient, context: CalendarTimelineContext): Promise<CalendarTimelineEntry[]>;
 }
 
 /**
@@ -83,4 +160,7 @@ export interface CalendarTimelineSource {
 export const CALENDAR_TIMELINE_SOURCES: readonly CalendarTimelineSource[] = [
   { id: "events", readItems: readEventTimelineItems },
   { id: "tasks", readItems: readTaskTimelineItems },
+  { id: "birthdays", readItems: readBirthdayTimelineItems },
+  { id: "holidays", readItems: readHolidayTimelineItems },
+  { id: "sleep", readItems: readSleepTimelineItems },
 ];

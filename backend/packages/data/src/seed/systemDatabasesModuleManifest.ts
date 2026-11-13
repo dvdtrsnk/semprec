@@ -27,6 +27,7 @@ export {
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
 export { backfillTaskEffectiveDate } from "../tasks/backfillTaskEffectiveDate.js";
+export { convertEventDateToWallClock } from "../calendar/eventDateMigration.js";
 export {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
@@ -38,6 +39,7 @@ export {
   createTaskHostEventRemoveRouteHandler,
   createTaskHostEventsClearRouteHandler,
 } from "../tasks/taskHostEventRouteHandlers.js";
+export { createEventTasksRouteHandler } from "../tasks/eventTasksRouteHandler.js";
 export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
@@ -63,6 +65,7 @@ export {
   createTranscriptSummariesRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 export { createListEventPeopleRouteHandler } from "../calendar/eventParticipantsRouteHandlers.js";
+export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -376,6 +379,16 @@ export const manifest: ModuleManifest = {
       toVersion: "1.3.0",
       converterExport: "backfillTaskEffectiveDate",
     },
+    // Issue gh-1797: an Event stored with a time of day inside `date` gets the wall-clock `date`, `timeFrom`, `timeTo`
+    // and `time` that new Events have. Events have their own version series, separate from Tasks; this is the first
+    // entry of it, placed after the Tasks entries above. The manifest `version` above was already past 1.1.0 when this
+    // transition was added and is not lowered for it.
+    {
+      databaseKey: EVENTS_MODULE_ID,
+      fromVersion: "1.0.0",
+      toVersion: "1.1.0",
+      converterExport: "convertEventDateToWallClock",
+    },
   ],
   linkRules: [
     // A file's companies are the union of its projects' companies (issue #1653).
@@ -614,6 +627,23 @@ export const manifest: ModuleManifest = {
       // `people` edges and their metadata with each person's name, relationship and addresses, which no
       // generic item read returns together.
       justification: "single-consumer-read",
+    },
+    {
+      name: "listEventTasks",
+      method: "GET",
+      path: "/api/events/:id/tasks",
+      handlerExport: "createEventTasksRouteHandler",
+      // Shaped for exactly one consumer, an Event's task rows (issue #1801): the tasks that sit in the Event, each with
+      // its state in relation to this Event, and the open and total counts, which no generic read returns.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "duplicateCalendarItem",
+      method: "POST",
+      path: "/api/calendar/items/:id/duplicate",
+      handlerExport: "createDuplicateCalendarItemRouteHandler",
+      // The copy and its edges commit together under the source's row lock, with the request's idempotency key (issue gh-1796).
+      justification: "transactional-semantics",
     },
     {
       name: "areaOverview",

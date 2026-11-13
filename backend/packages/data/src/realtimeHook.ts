@@ -25,6 +25,10 @@ import type { CreatedBy } from "./types.js";
  * finished executing); the client refetches it over REST. Its `userId` is the owner of the request
  * (the actor user of its run), and `@semprec/realtime` delivers the frame to that user's sockets
  * only, never to the rest of the tenant.
+ *
+ * `scope: "mailThread"` names one mail thread (a group of Emails items) that changed, for example
+ * because a message arrived in it; the client refetches the thread, the mailbox counts and the overview.
+ * Without a `userId` it reaches every socket of the publisher's tenant, as the other scopes do.
  */
 export type InvalidationEvent =
   | {
@@ -44,7 +48,8 @@ export type InvalidationEvent =
       userId?: string;
     }
   | { scope: "schema"; databaseId: string; userId?: string }
-  | { scope: "approvalRequest"; approvalRequestId: string; userId?: string };
+  | { scope: "approvalRequest"; approvalRequestId: string; userId?: string }
+  | { scope: "mailThread"; threadId: string; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;
 
@@ -203,4 +208,30 @@ export function setSempThreadInvalidationHook(next: SempThreadInvalidationHook):
  */
 export function publishSempThreadInvalidation(client: PoolClient, tenantId: string, threadId: string): void {
   runAfterCommit(client, () => sempThreadInvalidationHook({ tenantId, threadId }));
+}
+
+/**
+ * Fired after the commit of a write that changed one card of the Processing proposals stack (a
+ * proposal created, rewritten or closed by a decision). `op` is `closed` when the card left the
+ * stack, `created` for a new card and `updated` otherwise. It names the card only, never its
+ * content: `@semprec/realtime` delivers it to the sockets of the publisher's tenant, and a client
+ * re-reads the card list and its count. `userId`, when present, only narrows delivery to that
+ * user's sockets inside the tenant.
+ */
+export interface InboxCardsInvalidationEvent {
+  op: "created" | "updated" | "closed";
+  cardId: string;
+  userId?: string;
+}
+
+export type InboxCardsInvalidationHook = (event: InboxCardsInvalidationEvent) => void;
+
+let inboxCardsInvalidationHook: InboxCardsInvalidationHook = () => {};
+
+export function setInboxCardsInvalidationHook(next: InboxCardsInvalidationHook): void {
+  inboxCardsInvalidationHook = next;
+}
+
+export function notifyInboxCardsInvalidation(event: InboxCardsInvalidationEvent): void {
+  inboxCardsInvalidationHook(event);
 }

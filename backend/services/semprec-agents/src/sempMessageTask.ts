@@ -27,6 +27,7 @@ import type { GatewayModel } from "./modelComposition.js";
 import { createSempHistoryReconstruction } from "./sempHistoryReconstruction.js";
 import { logger } from "./logger.js";
 import { expandSempRefs } from "./refExpansion.js";
+import { closeTurnReadAllowances, openTurnReadAllowances } from "./sempTurnReadAllowances.js";
 
 function outcomeExcerpt(value: unknown): string {
   const serialized = (JSON.stringify(value) ?? "null").replaceAll("<", "\\u003c");
@@ -66,13 +67,14 @@ export function createSempMessageTask(
   inFlight: InFlightAgentRuns,
   roots?: { files: BlobStorageWriter; mailAttachments: BlobStorageWriter },
 ): AgentQueueTaskHandler {
+  const resolveProjectItemId = () =>
+    withTransaction(pool, async (client) => {
+      const inbox = await getDatabaseByModuleId(client, "inbox");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      return inbox.ownerProjectItemId;
+    });
   const conversation = new SempConversation(pool, {
-    resolveProjectItemId: () =>
-      withTransaction(pool, async (client) => {
-        const inbox = await getDatabaseByModuleId(client, "inbox");
-        if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
-        return inbox.ownerProjectItemId;
-      }),
+    resolveProjectItemId,
     createAgentSessionForRun: (run, current) => createAgentSessionFactoryForRun(pool, registry, gateway, run, current),
     reconstructHistory: createSempHistoryReconstruction(roots),
   });
@@ -118,7 +120,12 @@ export function createSempMessageTask(
           try {
             const turn = claimed.turn;
             if (!turn || (turn.text === null && !turn.outcome)) throw new Error("Semp source message is unavailable");
-            const expanded = await expandSempRefs(pool, turn.outcome ? [] : turn.context, roots, signal);
+            const storedRefs = turn.outcome ? [] : turn.context;
+            // Refs are accepted on chat threads only, whose run belongs to the Semprec project: the project whose
+            // reach the related items of the refs are read for.
+            const agentProjectItemId =
+              Array.isArray(storedRefs) && storedRefs.length > 0 ? await resolveProjectItemId() : undefined;
+            const expanded = await expandSempRefs(pool, storedRefs, roots, signal, agentProjectItemId);
             const rejected = turn.outcome?.kind === "rejected";
             await ensureFresh(rejected ? null : claimed.frontier, rejected);
             let thread: SempThread;
@@ -160,9 +167,10 @@ export function createSempMessageTask(
                 },
                 onTurnStart: async (value) => {
                   turnState.start = value;
-                  await withTransaction(pool, (client) =>
-                    startSempMessageTurn(client, assistantMessageId, value.agentRunId, value.firstEventId),
-                  );
+                  await withTransaction(pool, async (client) => {
+                    await openTurnReadAllowances(client, value.agentRunId, storedRefs);
+                    await startSempMessageTurn(client, assistantMessageId, value.agentRunId, value.firstEventId);
+                  });
                 },
               });
             } catch (error) {
@@ -179,8 +187,10 @@ export function createSempMessageTask(
               }
               throw error;
             }
-            if (rejected) await ensureFresh(null, true);
             const start = turnState.start;
+            // The model turn is over: the attached items stop being readable before the message is completed.
+            if (start) await closeTurnReadAllowances(pool, start.agentRunId);
+            if (rejected) await ensureFresh(null, true);
             if (!result.ok || !start) throw new Error("Semp turn did not complete");
             const events = await listAgentRunEventsAfter(pool, start.agentRunId, start.firstEventId);
             const texts = events.flatMap((event) => {
@@ -209,6 +219,17 @@ export function createSempMessageTask(
             if (!token) throw new Error("Completed Semp message disappeared");
             conversation.markCompleted(threadId, token);
           } catch (error) {
+            // Failed or cancelled: the attached items stop being readable whatever else goes wrong below. A cleanup
+            // failure is kept next to the turn error and reported once the error state is stored.
+            const allowanceCleanupErrors: unknown[] = [];
+            const failedStart = turnState.start;
+            if (failedStart) {
+              try {
+                await closeTurnReadAllowances(pool, failedStart.agentRunId);
+              } catch (cleanupError) {
+                allowanceCleanupErrors.push(cleanupError);
+              }
+            }
             try {
               await withTransaction(pool, async (client) => {
                 if (
@@ -222,11 +243,25 @@ export function createSempMessageTask(
                 publishSempThreadInvalidation(client, scope.tenantId, threadId);
               });
             } catch (persistenceError) {
-              throw new AggregateError([error, persistenceError], "Semp turn and error persistence failed", {
-                // The turn error remains primary; persistenceError is retained in the aggregate.
-                // eslint-disable-next-line preserve-caught-error
-                cause: error,
-              });
+              throw new AggregateError(
+                [error, persistenceError, ...allowanceCleanupErrors],
+                "Semp turn and error persistence failed",
+                {
+                  // The turn error remains primary; persistenceError is retained in the aggregate.
+                  // eslint-disable-next-line preserve-caught-error
+                  cause: error,
+                },
+              );
+            }
+            if (allowanceCleanupErrors.length > 0) {
+              throw new AggregateError(
+                [error, ...allowanceCleanupErrors],
+                "Semp turn and read allowance cleanup failed",
+                {
+                  // The turn error remains primary; the cleanup errors are retained in the aggregate.
+                  cause: error,
+                },
+              );
             }
             if (runPersistenceFailed || freshnessFailed) throw error;
             logger.warn({ threadId, assistantMessageId }, "Semp turn failed");

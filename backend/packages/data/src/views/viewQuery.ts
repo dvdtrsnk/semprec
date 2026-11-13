@@ -50,6 +50,11 @@ export interface QueryViewOptions {
   now?: Date;
   /** The caller's `users.locale`, choosing the text-sort collation (`cs` is Czech, anything else or absent is neutral). */
   locale?: string;
+  /**
+   * The databases whose items a curated view's page, cursor and `totalCount` leave out: the ones an agent's project may
+   * not read (issue #1810). Set by the choke point, never read from a request. A filtered view is guarded by its database.
+   */
+  excludeDatabaseIds?: ReadonlySet<string>;
 }
 
 export interface QueryViewResult {
@@ -275,7 +280,7 @@ async function queryCuratedView(
   let page: ViewItemRow[];
   let hasMore: boolean;
   if (options.includeDeleted) {
-    const all = await viewItemsStore.listViewItems(client, view.id);
+    const all = await viewItemsStore.listViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds });
     const afterCursor = cursorPosition !== undefined ? all.filter((m) => m.position > cursorPosition) : all;
     hasMore = afterCursor.length > limit;
     page = afterCursor.slice(0, limit);
@@ -283,6 +288,7 @@ async function queryCuratedView(
     const afterCursor = await viewItemsStore.listLiveViewItemsAfter(client, view.id, {
       afterPosition: cursorPosition ?? null,
       limit: limit + 1,
+      excludeDatabaseIds: options.excludeDatabaseIds,
     });
     hasMore = afterCursor.length > limit;
     page = afterCursor.slice(0, limit);
@@ -305,8 +311,8 @@ async function queryCuratedView(
   };
   if (options.includeCount) {
     result.totalCount = options.includeDeleted
-      ? (await viewItemsStore.listViewItems(client, view.id)).length
-      : await viewItemsStore.countLiveViewItems(client, view.id);
+      ? (await viewItemsStore.listViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds })).length
+      : await viewItemsStore.countLiveViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds });
   }
   return result;
 }
@@ -436,6 +442,8 @@ export async function queryViewItems(
   client: PoolClient,
   viewId: string,
   input: ViewQueryInput,
+  /** See `QueryViewOptions.excludeDatabaseIds`; only a curated view reads it. */
+  excludeDatabaseIds?: ReadonlySet<string>,
 ): Promise<QueryViewResult> {
   const view = await viewsStore.getView(client, viewId);
   if (!view) throw new NotFoundError(`View ${viewId} not found`);
@@ -451,7 +459,7 @@ export async function queryViewItems(
       });
     }
     const cursor = parseCursorInput(input.cursor, false);
-    return queryCuratedView(client, view, { limit, cursor, includeDeleted, includeCount });
+    return queryCuratedView(client, view, { limit, cursor, includeDeleted, includeCount, excludeDatabaseIds });
   }
 
   const config = parseViewConfig(view.config);

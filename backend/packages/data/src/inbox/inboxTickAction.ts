@@ -35,7 +35,8 @@ export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./p
 import {
   assertValidEnvelopeRelations,
   assertValidV2PageContent,
-  assertWritableProposalPropertyKeys,
+  assertValidEnvelopeProperties,
+  assertValidStepProperties,
   requireProposalPageTarget,
 } from "./proposalEnvelopeValidation.js";
 import {
@@ -62,18 +63,18 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { computeInboxFingerprintV2, isFingerprintCurrent } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
+import { linkSourceInboxRelation } from "./inboxCardSourceLink.js";
+import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { isSerializationFailure, isTickWriteTransaction } from "./tickTransaction.js";
 import { withTickTransaction, withTickWriteTransaction } from "./tickTransaction.js";
 import { tryLockInboxType, resolveBoundRecognition } from "./inboxSourceGuard.js";
@@ -82,10 +83,6 @@ import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
 export { selectActiveSteps } from "./proposalStepGraph.js";
-
-const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
-  ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
-};
 
 const logger: Logger = createLogger("inbox-tick");
 
@@ -219,7 +216,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
           property,
         ]),
       );
-      assertWritableProposalPropertyKeys(properties, byKey, database.id);
+      assertValidStepProperties(properties, byKey, database.id, null);
       await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
     });
     return database;
@@ -243,7 +240,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
   await withStepRef(step.ref, async () => {
     const databaseProperties = await propertiesStore.listPropertiesByDatabase(client, database.id);
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
-    assertWritableProposalPropertyKeys(properties, byKey, database.id);
+    assertValidStepProperties(properties, byKey, database.id, item.properties);
     if (step.op === "update") {
       // The tenant zone the preparation needs, read and validated in this transaction; an invalid stored zone
       // propagates instead of refusing the proposal (readProposalTimezone).
@@ -359,7 +356,7 @@ export async function assertValidProposalEnvelope(
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
     const byKey = new Map(targetProperties.map((property) => [property.key, property]));
-    assertWritableProposalPropertyKeys(envelope.properties, byKey, targetDatabase.id);
+    assertValidEnvelopeProperties(envelope, byKey, targetDatabase.id);
     if (envelope.relations !== undefined) {
       await assertValidEnvelopeRelations(client, targetDatabase.id, byKey, envelope.relations);
     }
@@ -416,29 +413,6 @@ export async function assertValidProposalEnvelope(
     });
   }
   return null;
-}
-
-/** Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. */
-async function linkSourceInboxRelation(
-  client: PoolClient,
-  config: SemprecTickActionConfig,
-  proposalId: string,
-  sourceItemId: string,
-): Promise<void> {
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
-    client,
-    config.processingProposalsDatabaseId,
-    "sourceInbox",
-  );
-  if (!sourceInboxProperty)
-    throw new Error(
-      `Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`,
-    );
-  await createRelationWithClient(
-    client,
-    { relationPropertyId: sourceInboxProperty.id, callerItemId: proposalId, targetItemId: sourceItemId },
-    PROCESSING_PROPOSALS_RELATION_CONTEXT,
-  );
 }
 
 /**
@@ -499,6 +473,7 @@ async function writeNeedsClarification(
         ],
       },
     );
+    publishInboxCardChange(client, locked.id, "updated");
     await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
     return;
   }
@@ -532,6 +507,7 @@ async function writeNeedsClarification(
     },
   );
   await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
+  publishInboxCardChange(client, proposal.id, "created");
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
 
@@ -625,6 +601,7 @@ async function invalidateProposalForDeletedSource(
     },
     { allowedSystemKeys: [...RECOGNITION_CARD_KEYS, "status", "invalidReason", "history"] },
   );
+  publishInboxCardChange(client, locked.id, "updated");
 }
 
 /**
@@ -674,7 +651,7 @@ async function reopenRestoredSourceProposal(
     return findExistingProposal(client, config, sourceItemId);
   }
 
-  return updateItemWithClient(
+  const reopened = await updateItemWithClient(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
@@ -693,6 +670,8 @@ async function reopenRestoredSourceProposal(
     },
     { allowedSystemKeys: [...RECOGNITION_CARD_KEYS, "status", "invalidReason", "history"] },
   );
+  publishInboxCardChange(client, reopened.id, "updated");
+  return reopened;
 }
 
 /**
@@ -854,6 +833,7 @@ async function reviseProposal(
       ],
     },
   );
+  publishInboxCardChange(client, locked.id, "updated");
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
 
@@ -975,6 +955,7 @@ async function writeTickResult(
   );
 
   await linkSourceInboxRelation(client, config, proposal.id, item.id);
+  publishInboxCardChange(client, proposal.id, "created");
   await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 }
 
@@ -1016,6 +997,7 @@ async function writeComputeFailure(
       },
       { allowedSystemKeys: ["fingerprint", "status", "history"] },
     );
+    publishInboxCardChange(client, locked.id, "updated");
   } else {
     const history = appendHistoryEntry([], message);
     const proposal = await createItemWithClient(
@@ -1027,6 +1009,7 @@ async function writeComputeFailure(
       { allowedSystemKeys: ["kind", "fingerprint", "history", "status"] },
     );
     await linkSourceInboxRelation(client, config, proposal.id, item.id);
+    publishInboxCardChange(client, proposal.id, "created");
   }
   await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 }

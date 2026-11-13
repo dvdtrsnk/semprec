@@ -208,6 +208,87 @@ describe("view routes (issue #155)", () => {
     });
   });
 
+  describe("the Today system view (issue #1798)", () => {
+    /** The seeded Today view of the Tasks database, found by its `systemKey` as a client finds it. */
+    async function todayViewId(): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT v.id FROM views v JOIN databases d ON d.id = v.database_id
+         WHERE d.owner_module_id = 'tasks' AND v.config->>'systemKey' = 'today'`,
+      );
+      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one Today view, found ${rows.length}`);
+      return rows[0].id;
+    }
+
+    it("refuses a human PATCH with 403 system_owned and leaves the view as it was", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const id = await todayViewId();
+      const before = await chokePoint.getView(id);
+
+      const res = await fetch(`${baseUrl}/api/views/${id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ name: "Renamed", config: { sort: [] } }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "owner_violation", details: { viewId: id, reason: "system_owned" } },
+      });
+      expect(await chokePoint.getView(id)).toEqual(before);
+    });
+
+    it("refuses a human DELETE with 403 system_owned and keeps the view", async () => {
+      const headers = await authHeader();
+      const id = await todayViewId();
+
+      const res = await fetch(`${baseUrl}/api/views/${id}`, { method: "DELETE", headers });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "owner_violation", details: { viewId: id, reason: "system_owned" } },
+      });
+      expect(await chokePoint.getView(id)).not.toBeNull();
+    });
+
+    it("refuses a human POST that sets config.systemKey with 403 system_key_reserved and stores no view", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const database = await chokePoint.createDatabase({ name: "D" });
+
+      const res = await fetch(`${baseUrl}/api/databases/${database.id}/views`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "table", name: "Forged", config: { systemKey: "today" } }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "owner_violation", details: { field: "config.systemKey", reason: "system_key_reserved" } },
+      });
+      expect(await chokePoint.listViewsByDatabase(database.id)).toEqual([]);
+    });
+
+    it("refuses a human PATCH that sets config.systemKey on its own view and leaves the view editable", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const database = await chokePoint.createDatabase({ name: "D" });
+      const own = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Own" });
+
+      const res = await fetch(`${baseUrl}/api/views/${own.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ config: { systemKey: "x" } }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "owner_violation", details: { field: "config.systemKey", reason: "system_key_reserved" } },
+      });
+      expect((await chokePoint.getView(own.id))?.config).toEqual(own.config);
+
+      const renamed = await fetch(`${baseUrl}/api/views/${own.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ name: "Renamed" }),
+      });
+      expect(renamed.status).toBe(200);
+    });
+  });
+
   describe("curated view membership", () => {
     async function makeCuratedView() {
       return chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });

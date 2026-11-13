@@ -22,6 +22,7 @@ import {
 } from "../../testSupport/testDb.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { logger } from "../logger.js";
+import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
 import { readCalendarTimeline } from "../timelineRead.js";
 import { CALENDAR_TIMELINE_SOURCES, type CalendarTimelineItem } from "../timelineSources.js";
 
@@ -68,6 +69,8 @@ async function newTenant(locale: string | null = "cs"): Promise<string> {
     await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale });
   }
   await runInTenant(tenantId, () => seedSystem(dataPool));
+  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events and Tasks.
+  await hideSleepInCalendar(dataPool, tenantId);
   return tenantId;
 }
 
@@ -212,8 +215,15 @@ function world(tenantId: string) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(dataPool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /** The full-shape items of a range, each checked to carry exactly the documented fields. */
-  const items = async (from: string, to: string = from) => z.array(fullItemSchema).parse((await read(from, to)).items);
+  /**
+   * The stored Events and Tasks of a range, each checked to carry exactly the documented fields. The derived
+   * entries of the birthday and holiday sources (issues #1800 and #1804) have their own tests; a range of these
+   * tests can hold a public holiday.
+   */
+  const items = async (from: string, to: string = from) =>
+    z
+      .array(fullItemSchema)
+      .parse((await read(from, to)).items.filter((item) => item.kind === "event" || item.kind === "task"));
 
   return {
     databaseId,
@@ -1014,8 +1024,8 @@ describe("calendar timeline read (issue #1717)", () => {
     expect(busy.statements.length).toBe(quiet.statements.length);
   });
 
-  it("lists the core sources as events, then tasks", () => {
-    expect(CALENDAR_TIMELINE_SOURCES.map((source) => source.id)).toEqual(["events", "tasks"]);
+  it("lists the core sources as events, then tasks, before the derived sources", () => {
+    expect(CALENDAR_TIMELINE_SOURCES.slice(0, 2).map((source) => source.id)).toEqual(["events", "tasks"]);
   });
 
   it("merges whatever a listed source returns, in the timeline's order, and gives it the shared context", async () => {

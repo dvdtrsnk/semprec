@@ -7,6 +7,7 @@ import {
   setNotificationReadStateHook,
   setSessionRevokedHook,
   setSempThreadInvalidationHook,
+  setInboxCardsInvalidationHook,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
 import { runInTenant } from "@semprec/shared";
@@ -65,6 +66,11 @@ export function wireRealtimeHooks(pool: Pool): void {
     const message = { type: "invalidation", scope: "sempThread", threadId: event.threadId } as const;
     runInTenant(event.tenantId, () => publishRealtimeMessage(pool, message)).catch((err: unknown) => {
       logger.error({ err }, "Failed to publish sempThread invalidation realtime message");
+    });
+  });
+  setInboxCardsInvalidationHook((event) => {
+    publishRealtimeMessage(pool, { type: "invalidation", scope: "inboxCards", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish inboxCards invalidation realtime message");
     });
   });
   setAgentRunEventHook(enqueueAgentRunEvent);

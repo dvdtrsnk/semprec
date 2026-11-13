@@ -6,6 +6,7 @@
 // Constrained by:
 // - docs/adr/2026-09-10-agent-identity-verified-against-projects-items.md
 // - docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md
+// - docs/adr/2026-11-13-a-view-system-key-is-unique-per-database-and-written-by-the-system-alone.md
 import type { PoolClient } from "pg";
 import { ForbiddenError } from "../errors.js";
 import type { CreatedBy, ViewRow } from "../types.js";
@@ -29,6 +30,23 @@ function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
   return new ForbiddenError(
     `View ${view.id} write rejected by owner_violation: ${reason}`,
     { field: "creatorProjectItemId", viewId: view.id, reason },
+    "owner_violation",
+  );
+}
+
+/**
+ * `config.systemKey` is written by the system alone (issue #1798): a view that carries it is read-only for every actor
+ * (`assertViewWritable`), so a key set by a client would mint a view nobody can edit or delete again, and a key chosen
+ * ahead of a seed or cutover would take the `(database_id, systemKey)` slot of a system view. The choke-point entry
+ * points (`createView`, `patchView`) therefore refuse a config that has the key unless the actor is `system`; the seeds
+ * and cutovers create their system views through `viewsStore.createView` directly. The generic application service maps
+ * every caller to `user` or `ai_agent`. Presence is the test, not the value, as in `assertViewWritable`.
+ */
+export function assertSystemKeyWritable(config: Record<string, unknown> | undefined, actor: Actor): void {
+  if (actor.type === "system" || config === undefined || !Object.hasOwn(config, "systemKey")) return;
+  throw new ForbiddenError(
+    "config.systemKey is reserved for system views and cannot be set by a client",
+    { field: "config.systemKey", reason: "system_key_reserved" },
     "owner_violation",
   );
 }
@@ -68,8 +86,13 @@ export async function assertAuthenticatedAgentIdentity(client: PoolClient, actor
   }
 }
 
-/** Shared by patch/delete on a view and every write to its `view_items` membership. A no-op for a 'user'/'system' actor — only an agent write is ownership-checked here. */
+/**
+ * Shared by patch/delete on a view and every write to its `view_items` membership. A view whose config carries a
+ * `systemKey` (issue #1798) is refused for every actor, human or agent, as `system_owned`. Any other view is only
+ * ownership-checked for an agent write; a 'user'/'system' actor passes.
+ */
 export function assertViewWritable(view: ViewRow, actor: Actor): void {
+  if (Object.hasOwn(view.config, "systemKey")) throw ownerViolation(view, "system_owned");
   if (actor.type !== "ai_agent") return;
   switch (view.createdBy) {
     case "system":

@@ -112,6 +112,17 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
           ? { type: "invalidate", scope: "approvalRequest", approvalRequestId }
           : null;
       }
+      if (parsed.scope === "mailThread") {
+        const { threadId } = parsed;
+        return typeof threadId === "string" ? { type: "invalidate", scope: "mailThread", threadId } : null;
+      }
+      if (parsed.scope === "inboxCards") {
+        const { op, cardId } = parsed;
+        if (!(op === "created" || op === "updated" || op === "closed")) return null;
+        return typeof cardId === "string" && UUID_PATTERN.test(cardId)
+          ? { type: "invalidate", scope: "inboxCards", op, cardId }
+          : null;
+      }
       return null;
     }
     case "notification": {

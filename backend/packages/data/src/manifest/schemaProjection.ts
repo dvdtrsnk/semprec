@@ -9,6 +9,7 @@ import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
 import { getCalendarClock } from "../calendarTime.js";
+import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { createCollectionMetadataResolver } from "./collectionMetadata.js";
 import type { SortSpec } from "../views/sortSpec.js";
 import {
@@ -110,6 +111,11 @@ export interface GenerateSchemaProjectionOptions {
   grantedCapabilities?: ReadonlySet<string>;
   /** The instant `tenant.today` is computed for; defaults to the current time. A test seam for the clock. */
   now?: Date;
+  /**
+   * The Projects item of the agent the projection is made for (issue #1810): the databases its project may not
+   * read are left out. Absent for a person, who sees every database.
+   */
+  agentProjectItemId?: string;
 }
 
 type DatabaseViewHints = Pick<
@@ -176,7 +182,11 @@ export async function generateSchemaProjection(
     (await moduleRegistry.getDatabases()).map((descriptor) => [descriptor.key, descriptor]),
   );
 
-  const databaseRows = await listAllDatabases(client);
+  const unreadableDatabaseIds =
+    options.agentProjectItemId === undefined
+      ? undefined
+      : await listUnreadableDatabaseIds(client, options.agentProjectItemId);
+  const databaseRows = (await listAllDatabases(client)).filter((db) => !unreadableDatabaseIds?.has(db.id));
   // One batch query for every database's properties (issue #147 review: the naive per-database
   // loop was an N+1 that grows unboundedly with the number of databases in a deployment).
   const propertiesByDatabaseId = await listPropertiesByDatabases(

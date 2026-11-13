@@ -32,6 +32,8 @@ import {
   registerItemPatchApprovalContribution,
   registerItemUpdateHook,
   registerItemUpdatePreLockHook,
+  registerItemDeletePreLockHook,
+  registerItemRestorePreLockHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
   registerRelationEdgeChangedHook,
@@ -54,6 +56,7 @@ import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID 
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
+import { eventRecurrenceItemCreateHook, eventRecurrenceItemUpdateHook } from "./calendar/eventRecurrenceHook.js";
 import {
   eventReminderValuesItemCreateHook,
   eventReminderValuesItemUpdateHook,
@@ -65,12 +68,20 @@ import {
   calendarItemUpdateHook,
   calendarItemUpdatePreLockHook,
 } from "./calendar/calendarRowHooks.js";
+import { personBirthdayItemCreateHook, personBirthdayItemUpdateHook } from "./calendar/personBirthdayHook.js";
+import {
+  calendarItemDeleteHook,
+  calendarItemDeletePreLockHook,
+  calendarItemRestoreHook,
+  calendarItemRestorePreLockHook,
+} from "./calendar/calendarTrashHooks.js";
 import { CALENDARS_MODULE_ID } from "./seed/calendarsKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { taskSourceEventLinkDetachEdgeChangedHook } from "./tasks/taskSourceEventLinkDetach.js";
 import { taskHostEventEdgeChangedHook, taskHostEventScheduleItemUpdateHook } from "./tasks/taskHostEventHooks.js";
 import { taskCompletedInEventHook } from "./tasks/taskCompletedInEventHook.js";
+import { eventHostedTasksDeleteHook, eventHostedTasksRestoreHook } from "./tasks/eventHostedTasksHooks.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
@@ -115,6 +126,7 @@ import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValu
 import { hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
 import { mailboxItemRestoreHook } from "./mail/mailboxRestoreHook.js";
 import {
+  keepWakeDaysInOnePlan,
   prepareSleepWrite,
   sleepItemCreateHook,
   sleepItemUpdateHook,
@@ -152,6 +164,9 @@ registerItemPreWriteTransform(EVENTS_MODULE_ID, eventIcalIdentityTransform, prep
 // Events: the date and time rules judge what the transforms above stored (issue #1663).
 registerItemCreateHook(eventValidationItemCreateHook);
 registerItemUpdateHook(eventValidationItemUpdateHook);
+// Issue gh-1817: a written Events `recurrence` must be a fixed rule.
+registerItemCreateHook(eventRecurrenceItemCreateHook);
+registerItemUpdateHook(eventRecurrenceItemUpdateHook);
 registerItemCreateHook(blobReferenceItemCreateHook);
 registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);
@@ -274,6 +289,18 @@ registerItemUpdateHook(calendarItemUpdateHook);
 // An update that names `isDefault` takes the lock of the default mark before it locks the calendar's row.
 registerItemUpdatePreLockHook(CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook);
 
+// Issue #1795: a person's `birthday` is empty or a real calendar date.
+registerItemCreateHook(personBirthdayItemCreateHook);
+registerItemUpdateHook(personBirthdayItemUpdateHook);
+// Issue gh-1803: a calendar cannot be deleted when it is a system or subscription calendar or the last own one, the
+// default mark moves to another own calendar, and the live Events of the calendar are trashed with it; a restore
+// brings back the Events of the calendar's deletion epoch.
+registerItemDeleteHook(calendarItemDeleteHook);
+registerItemRestoreHook(calendarItemRestoreHook);
+// A delete or a restore of a calendar takes the lock of the default mark before it locks the calendar's row.
+registerItemDeletePreLockHook(CALENDARS_MODULE_ID, calendarItemDeletePreLockHook);
+registerItemRestorePreLockHook(CALENDARS_MODULE_ID, calendarItemRestorePreLockHook);
+
 // Issue gh-1784: the sleep databases store times as HH:MM, hold valid values, and allow one settings item and one
 // exception per night.
 for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHTS_MODULE_ID]) {
@@ -281,6 +308,9 @@ for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_N
 }
 registerItemCreateHook(sleepItemCreateHook);
 registerItemUpdateHook(sleepItemUpdateHook);
+// Issue gh-1799: a wake day is in at most one plan; the hooks run after the validation hooks above.
+registerItemCreateHook(keepWakeDaysInOnePlan);
+registerItemUpdateHook(keepWakeDaysInOnePlan);
 
 // Issue #1780: a task's `hiddenUntil` and `effectiveDate` follow its host-event edges and those Events' dates and
 // times. The third trigger, the task's own `date` and its create, is the Tasks transform registered above.
@@ -290,3 +320,9 @@ registerItemUpdateHook(taskHostEventScheduleItemUpdateHook);
 // Issue #1781: a task set to `done` before the end of its last host event is completed in that event; setting it
 // back to `notDone` or `wontDo` removes the edge. After the host state hooks of issue #1780 and the recurrence advance.
 registerItemUpdateHook(taskCompletedInEventHook);
+
+// Issue #1819: trashing an Event returns the tasks it hosts to their day (the edges stay); restoring it does not
+// link them again and removes the edges, locking the tasks first. After the host state hooks of issue #1780, which the
+// recomputations use. Recorded in docs/adr/2026-11-13-event-trash-and-restore-write-the-tasks-they-host.md.
+registerItemDeleteHook(eventHostedTasksDeleteHook);
+registerItemRestoreHook(eventHostedTasksRestoreHook);

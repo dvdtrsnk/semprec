@@ -13,6 +13,7 @@ import { createCollectionMetadataResolver, type CollectionMetadataResolver } fro
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
 import type { ItemRow } from "../types.js";
+import type { ExpandedRelationTarget, ItemRelationTarget } from "@semprec/shared";
 let admin: Pool;
 let pool: Pool;
 let cp: ChokePoint;
@@ -35,6 +36,10 @@ async function link(item: ItemRow, key: string, target: ItemRow, metadata?: Reco
     targetItemId: target.id,
     metadata,
   });
+}
+/** The target when its database was readable, `undefined` for a hidden one or none. */
+function expandedTarget(target: ItemRelationTarget | undefined): ExpandedRelationTarget | undefined {
+  return target !== undefined && !("hidden" in target) ? target : undefined;
 }
 async function expand(items: ItemRow[], relations: Record<string, string[]> | true) {
   return withTransaction(pool, (client) => expandItemRelations(client, items, { relations, resolver }));
@@ -148,7 +153,7 @@ describe("batched relation expansion", () => {
           blobs: { cover: { blobId: blob.id, mimeType: "image/png", byteSize: 15, filename: "cover.png" } },
         },
       ]);
-      expect(result?.relations?.targets?.[0]?.blobs).not.toHaveProperty("attachment");
+      expect(expandedTarget(result?.relations?.targets?.[0])?.blobs).not.toHaveProperty("attachment");
       const [withAttachment] = await expand([a], { targets: ["attachment"] });
       expect(withAttachment?.relations?.targets).toMatchObject([
         {
@@ -157,7 +162,7 @@ describe("batched relation expansion", () => {
           blobs: { attachment: { blobId: attachment.id, mimeType: "application/pdf", byteSize: 19, filename: null } },
         },
       ]);
-      expect(withAttachment?.relations?.targets?.[0]?.blobs).not.toHaveProperty("cover");
+      expect(expandedTarget(withAttachment?.relations?.targets?.[0])?.blobs).not.toHaveProperty("cover");
       expect((await expand([a], { targets: [] }))[0]?.relations?.targets?.[0]).not.toHaveProperty("blobs");
       await cp.archiveDatabase(target.id);
       expect((await expand([a], { targets: [] }))[0]?.relations?.targets).toEqual([]);
@@ -363,11 +368,11 @@ describe("batched relation expansion", () => {
       }
       const [result] = await expand([a], { targets: ["file"] });
       expect(result?.relations?.targets).toHaveLength(2);
-      for (const target of result?.relations?.targets ?? []) {
-        expect(target.properties).toHaveProperty("file");
+      for (const target of (result?.relations?.targets ?? []).map(expandedTarget)) {
+        expect(target?.properties).toHaveProperty("file");
         expect(target).not.toHaveProperty("blobs");
       }
-      expect((result?.relations?.targets ?? []).map((target) => target.properties?.file)).toEqual(
+      expect((result?.relations?.targets ?? []).map((target) => expandedTarget(target)?.properties?.file)).toEqual(
         expect.arrayContaining([{ blobId: foreignBlob.id }, { blobId: missingBlobId }]),
       );
     });

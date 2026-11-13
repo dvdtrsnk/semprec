@@ -43,6 +43,14 @@ export type RealtimeMessage =
     }
   | { type: "invalidation"; scope: "sempThread"; threadId: string }
   | { type: "invalidation"; scope: "approvalRequest"; approvalRequestId: string; userId?: string }
+  | { type: "invalidation"; scope: "mailThread"; threadId: string; userId?: string }
+  | {
+      type: "invalidation";
+      scope: "inboxCards";
+      op: "created" | "updated" | "closed";
+      cardId: string;
+      userId?: string;
+    }
   | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
   | { type: "agent_run_event"; agentRunId: string; eventId: string }
   | { type: "notification_created"; userId: string; notificationId: string }
@@ -235,6 +243,19 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
           approvalRequestId: value.approvalRequestId,
           userId: value.userId,
         };
+      }
+      if (value.scope === "mailThread") {
+        if (!isUuid(value.threadId) || !(value.userId === undefined || isUuid(value.userId))) return null;
+        return { type: "invalidation", scope: "mailThread", threadId: value.threadId, userId: value.userId };
+      }
+      if (value.scope === "inboxCards") {
+        if (
+          !(value.op === "created" || value.op === "updated" || value.op === "closed") ||
+          !isUuid(value.cardId) ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return { type: "invalidation", scope: "inboxCards", op: value.op, cardId: value.cardId, userId: value.userId };
       }
       return null;
     }

@@ -118,7 +118,7 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
     case "view.delete":
       return { operation, input: input as { viewId: string }, actor };
     case "item.delete":
-      return { operation, input: input as { itemId: string } };
+      return { operation, input: input as { itemId: string }, agentProjectItemId: actor.agentProjectItemId };
     case "item.patch":
       return { operation, input: input as InputByOperation["item.patch"] };
     case "relation.put":
@@ -132,9 +132,14 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
       return {
         operation,
         input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string },
+        agentProjectItemId: actor.agentProjectItemId,
       };
     case "link.unlink":
-      return { operation, input: input as InputByOperation["link.unlink"] };
+      return {
+        operation,
+        input: input as InputByOperation["link.unlink"],
+        agentProjectItemId: actor.agentProjectItemId,
+      };
   }
 }
 

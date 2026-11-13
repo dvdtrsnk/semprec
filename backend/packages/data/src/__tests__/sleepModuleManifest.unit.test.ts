@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 
 const SLEEP_DATABASE_KEYS = ["sleepSettings", "sleepPlans", "sleepNights"];
 
@@ -76,5 +77,13 @@ describe("sleep module manifest (issue #1776)", () => {
     for (const catalog of [catalogs.cs, catalogs.en]) {
       for (const label of Object.values(catalog)) expect(label.trim()).not.toBe("");
     }
+  });
+
+  it("mounts GET /api/sleep/nights as its one custom route, resolved to the handler factory (issue gh-1809)", async () => {
+    const registry = await loadFullModuleRegistry();
+
+    expect((await registry.getCustomRouteDefinitions()).filter((route) => route.moduleId === "sleep")).toEqual([
+      { moduleId: "sleep", name: "sleepNights", method: "GET", path: "/api/sleep/nights", handler: sleepNightsGet },
+    ]);
   });
 });

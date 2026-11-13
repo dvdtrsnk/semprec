@@ -132,6 +132,10 @@ function rejectUpgrade(socket: Duplex): void {
  *   of the envelope's tenant, best effort and without replay.
  * - `invalidation` with `scope: "approvalRequest"` sends a thin frame naming the request only to the
  *   sockets of the owner it names inside the envelope's tenant; a message without an owner is dropped.
+ * - `invalidation` with `scope: "mailThread"` sends a thin frame naming the thread to every socket of the
+ *   envelope's tenant, narrowed to one user's sockets when the message names one.
+ * - `invalidation` with `scope: "inboxCards"` sends a thin frame naming the card and the operation to
+ *   every socket of the envelope's tenant, narrowed to one user's sockets when the message names one.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -436,6 +440,22 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
             sendToTenant(
               tenantId,
               { type: "invalidate", scope: "approvalRequest", approvalRequestId: parsed.approvalRequestId },
+              parsed.userId,
+            );
+            return;
+          }
+          if (parsed.scope === "mailThread") {
+            sendToTenant(
+              tenantId,
+              { type: "invalidate", scope: "mailThread", threadId: parsed.threadId },
+              parsed.userId,
+            );
+            return;
+          }
+          if (parsed.scope === "inboxCards") {
+            sendToTenant(
+              tenantId,
+              { type: "invalidate", scope: "inboxCards", op: parsed.op, cardId: parsed.cardId },
               parsed.userId,
             );
             return;

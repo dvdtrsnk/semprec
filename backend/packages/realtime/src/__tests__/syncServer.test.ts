@@ -811,6 +811,217 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     clientA.close();
   });
 
+  it("delivers a mailThread invalidation to every socket of the envelope's tenant and to no other tenant's socket (issue #1816)", async () => {
+    const otherTenant = await createTestTenant(pool);
+    const first = await createTestUser();
+    const second = await createTestUser();
+    identityByToken.set("first", { tenantId: getTenantZeroId(), userId: first, sessionId: "session-first" });
+    identityByToken.set("second", { tenantId: getTenantZeroId(), userId: second, sessionId: "session-second" });
+    // A socket of another tenant that carries the first user's id still belongs to another tenant.
+    identityByToken.set("foreign", { tenantId: otherTenant, userId: first, sessionId: "session-foreign" });
+    const firstClient = await connect("first");
+    const secondClient = await connect("second");
+    const foreignClient = await connect("foreign");
+    const firstFrames: string[] = [];
+    const secondFrames: string[] = [];
+    const foreignFrames: string[] = [];
+    firstClient.on("message", (d) => firstFrames.push(messageText(d)));
+    secondClient.on("message", (d) => secondFrames.push(messageText(d)));
+    foreignClient.on("message", (d) => foreignFrames.push(messageText(d)));
+
+    const threadId = randomUUID();
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "mailThread",
+      threadId,
+      // Mail content riding on the message is never forwarded.
+      subject: "private subject",
+    });
+    await waitUntil(() => firstFrames.length > 0 && secondFrames.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const expected = { type: "invalidate", scope: "mailThread", threadId };
+    expect(firstFrames.map((text) => JSON.parse(text))).toEqual([expected]);
+    expect(secondFrames.map((text) => JSON.parse(text))).toEqual([expected]);
+    expect(foreignFrames).toEqual([]);
+
+    firstClient.close();
+    secondClient.close();
+    foreignClient.close();
+  });
+
+  it("narrows a mailThread invalidation that names a user to that user's sockets inside the tenant (issue #1816)", async () => {
+    const otherTenant = await createTestTenant(pool);
+    const target = await createTestUser();
+    const peer = await createTestUser();
+    identityByToken.set("target", { tenantId: getTenantZeroId(), userId: target, sessionId: "session-target" });
+    identityByToken.set("peer", { tenantId: getTenantZeroId(), userId: peer, sessionId: "session-peer" });
+    identityByToken.set("foreign", { tenantId: otherTenant, userId: target, sessionId: "session-foreign" });
+    const targetClient = await connect("target");
+    const peerClient = await connect("peer");
+    const foreignClient = await connect("foreign");
+    const targetFrames: string[] = [];
+    const others: string[] = [];
+    targetClient.on("message", (d) => targetFrames.push(messageText(d)));
+    peerClient.on("message", (d) => others.push(messageText(d)));
+    foreignClient.on("message", (d) => others.push(messageText(d)));
+
+    const threadId = randomUUID();
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "mailThread",
+      threadId,
+      userId: target,
+    });
+    await waitUntil(() => targetFrames.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(targetFrames.map((text) => JSON.parse(text))).toEqual([
+      { type: "invalidate", scope: "mailThread", threadId },
+    ]);
+    expect(others).toEqual([]);
+
+    targetClient.close();
+    peerClient.close();
+    foreignClient.close();
+  });
+
+  it("drops a mailThread invalidation with a non-UUID thread id without reaching any socket (issue #1816)", async () => {
+    const user = await createTestUser();
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: user, sessionId: "session-a" });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+
+    const valid = { type: "invalidation", scope: "mailThread", threadId: randomUUID() };
+    for (const malformed of [
+      { threadId: "not-a-uuid" },
+      { threadId: undefined },
+      { threadId: 7 },
+      { userId: "not-a-uuid" },
+    ]) {
+      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), { ...valid, ...malformed });
+    }
+    // A valid message behind the malformed ones proves they were handled first and sent nothing.
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), valid);
+    await waitUntil(() => received.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received.map((text) => JSON.parse(text))).toEqual([
+      { type: "invalidate", scope: "mailThread", threadId: valid.threadId },
+    ]);
+
+    clientA.close();
+  });
+
+  it("delivers an inboxCards invalidation to every socket of the envelope's tenant and to no other tenant's socket (issue #1811)", async () => {
+    const otherTenant = await createTestTenant(pool);
+    const first = await createTestUser();
+    const second = await createTestUser();
+    identityByToken.set("first", { tenantId: getTenantZeroId(), userId: first, sessionId: "session-first" });
+    identityByToken.set("second", { tenantId: getTenantZeroId(), userId: second, sessionId: "session-second" });
+    // A socket of another tenant that carries the first user's id still belongs to another tenant.
+    identityByToken.set("foreign", { tenantId: otherTenant, userId: first, sessionId: "session-foreign" });
+    const firstClient = await connect("first");
+    const secondClient = await connect("second");
+    const foreignClient = await connect("foreign");
+    const firstFrames: string[] = [];
+    const secondFrames: string[] = [];
+    const foreignFrames: string[] = [];
+    firstClient.on("message", (d) => firstFrames.push(messageText(d)));
+    secondClient.on("message", (d) => secondFrames.push(messageText(d)));
+    foreignClient.on("message", (d) => foreignFrames.push(messageText(d)));
+
+    const cardId = randomUUID();
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "inboxCards",
+      op: "closed",
+      cardId,
+      // Card content riding on the message is never forwarded.
+      proposal: { entityKind: "database" },
+      status: "confirmed",
+    });
+    await waitUntil(() => firstFrames.length > 0 && secondFrames.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const expected = { type: "invalidate", scope: "inboxCards", op: "closed", cardId };
+    expect(firstFrames.map((text) => JSON.parse(text))).toEqual([expected]);
+    expect(secondFrames.map((text) => JSON.parse(text))).toEqual([expected]);
+    expect(foreignFrames).toEqual([]);
+
+    firstClient.close();
+    secondClient.close();
+    foreignClient.close();
+  });
+
+  it.each(["created", "updated", "closed"] as const)(
+    "narrows an inboxCards %s invalidation that names a user to that user's sockets inside the tenant (issue #1811)",
+    async (op) => {
+      const otherTenant = await createTestTenant(pool);
+      const target = await createTestUser();
+      const peer = await createTestUser();
+      identityByToken.set("target", { tenantId: getTenantZeroId(), userId: target, sessionId: "session-target" });
+      identityByToken.set("peer", { tenantId: getTenantZeroId(), userId: peer, sessionId: "session-peer" });
+      identityByToken.set("foreign", { tenantId: otherTenant, userId: target, sessionId: "session-foreign" });
+      const targetClient = await connect("target");
+      const peerClient = await connect("peer");
+      const foreignClient = await connect("foreign");
+      const targetFrames: string[] = [];
+      const others: string[] = [];
+      targetClient.on("message", (d) => targetFrames.push(messageText(d)));
+      peerClient.on("message", (d) => others.push(messageText(d)));
+      foreignClient.on("message", (d) => others.push(messageText(d)));
+
+      const cardId = randomUUID();
+      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+        type: "invalidation",
+        scope: "inboxCards",
+        op,
+        cardId,
+        userId: target,
+      });
+      await waitUntil(() => targetFrames.length > 0);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(targetFrames.map((text) => JSON.parse(text))).toEqual([
+        { type: "invalidate", scope: "inboxCards", op, cardId },
+      ]);
+      expect(others).toEqual([]);
+
+      targetClient.close();
+      peerClient.close();
+      foreignClient.close();
+    },
+  );
+
+  it("drops a malformed inboxCards invalidation without reaching any socket (issue #1811)", async () => {
+    const user = await createTestUser();
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: user, sessionId: "session-a" });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+
+    const valid = { type: "invalidation", scope: "inboxCards", op: "updated", cardId: randomUUID() };
+    for (const malformed of [
+      { op: "deleted" },
+      { op: undefined },
+      { cardId: "not-a-uuid" },
+      { cardId: undefined },
+      { userId: "not-a-uuid" },
+    ]) {
+      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), { ...valid, ...malformed });
+    }
+    // A valid message behind the malformed ones proves they were handled first and sent nothing.
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), valid);
+    await waitUntil(() => received.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received.map((text) => JSON.parse(text))).toEqual([
+      { type: "invalidate", scope: "inboxCards", op: "updated", cardId: valid.cardId },
+    ]);
+
+    clientA.close();
+  });
+
   it("closes a session_revoked socket only when the envelope's tenant matches the socket's tenant", async () => {
     const otherTenant = await createTestTenant(pool);
     identityByToken.set("t", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-t" });

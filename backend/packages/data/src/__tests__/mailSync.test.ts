@@ -38,6 +38,7 @@ import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailI
 import { resolveThreadId } from "../mail/threading.js";
 import { recordDesiredMailMessageMove, listPendingMoves } from "../mail/mailMessageMoveSyncStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import {
   getMailMessageMetaByItemId,
   getMailMessageMetaByMailboxAndMessageId,
@@ -618,6 +619,135 @@ describe("message ingest dedup (issue #26)", () => {
       expect(rows[0].is_bulk).toBe(true);
     },
   );
+});
+
+describe("mail thread invalidation on ingest (issue #1816)", () => {
+  let events: InvalidationEvent[];
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    events = [];
+    setInvalidationHook((event) => {
+      if (event.scope === "mailThread") events.push(event);
+    });
+  });
+
+  afterEach(() => {
+    setInvalidationHook(() => {});
+  });
+
+  async function ingestFixture() {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const properties = await chokePoint.listProperties(emailsId);
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
+    );
+    return (messageId: string, overrides: Partial<Parameters<typeof ingestEmailMessage>[1]> = {}) => ({
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId: properties.find((p) => p.key === "folder")!.id,
+      attachmentsRelationPropertyId: properties.find((p) => p.key === "attachments")!.id,
+      folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
+      messageId,
+      envelope: {},
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      ...overrides,
+    });
+  }
+
+  async function threadIdOf(itemId: string): Promise<string> {
+    const { rows } = await pool.query<{ thread_id: string }>(
+      "SELECT thread_id FROM mail_message_meta WHERE item_id = $1",
+      [itemId],
+    );
+    if (!rows[0]) throw new Error("Expected the ingested message to have a thread");
+    return rows[0].thread_id;
+  }
+
+  tenantIt("announces the thread of a new message once, for the whole tenant, and only after the commit", async () => {
+    const input = await ingestFixture();
+    let announcedInside: InvalidationEvent[] = [];
+
+    const result = await withTransaction(pool, async (client) => {
+      const ingested = await ingestEmailMessage(client, input("<new@x>"));
+      announcedInside = [...events];
+      return ingested;
+    });
+
+    expect(result.created).toBe(true);
+    expect(announcedInside).toEqual([]);
+    expect(events).toEqual([{ scope: "mailThread", threadId: await threadIdOf(result.itemId) }]);
+    expect(events[0]).not.toHaveProperty("userId");
+  });
+
+  tenantIt("announces nothing when the ingest transaction rolls back", async () => {
+    const input = await ingestFixture();
+
+    await expect(
+      withTransaction(pool, async (client) => {
+        await ingestEmailMessage(client, input("<rolled-back@x>"));
+        throw new Error("force rollback");
+      }),
+    ).rejects.toThrow("force rollback");
+
+    expect(events).toEqual([]);
+    const { rows } = await pool.query("SELECT 1 FROM mail_message_meta WHERE message_id = '<rolled-back@x>'");
+    expect(rows).toHaveLength(0);
+  });
+
+  tenantIt("announces nothing when the message was ingested before", async () => {
+    const input = await ingestFixture();
+    await withTransaction(pool, (client) => ingestEmailMessage(client, input("<again@x>")));
+    events.length = 0;
+
+    const again = await withTransaction(pool, (client) => ingestEmailMessage(client, input("<again@x>")));
+
+    expect(again.created).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  tenantIt("announces the shared thread once for each new message of a conversation", async () => {
+    const input = await ingestFixture();
+
+    const first = await withTransaction(pool, (client) => ingestEmailMessage(client, input("<root@x>")));
+    const reply = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, input("<reply@x>", { inReplyTo: "<root@x>" })),
+    );
+
+    const threadId = await threadIdOf(first.itemId);
+    expect(await threadIdOf(reply.itemId)).toBe(threadId);
+    expect(events).toEqual([
+      { scope: "mailThread", threadId },
+      { scope: "mailThread", threadId },
+    ]);
+  });
+
+  tenantIt("announces nothing for a message that converged onto another through the provider id", async () => {
+    const input = await ingestFixture();
+    const winner = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, input("<winner@x>", { providerMessageId: "same-provider-id" })),
+    );
+    events.length = 0;
+
+    const loser = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, input("<loser@x>", { providerMessageId: "same-provider-id" })),
+    );
+
+    expect(loser).toEqual({ itemId: winner.itemId, created: false });
+    expect(events).toEqual([]);
+  });
 });
 
 describe("per-mailbox message identity (issue #674)", () => {

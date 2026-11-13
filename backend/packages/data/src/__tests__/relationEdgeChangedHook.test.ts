@@ -2,7 +2,13 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestProjectItem,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import {
@@ -66,10 +72,12 @@ describe("relation edge changed hooks", () => {
     runInTenant(tenant, async () => {
       await withTransaction(pool, (client) => assertRelationCreatableWithClient(client, input));
       expect(calls).toHaveLength(0);
+      // The data layer checks the agent's project against the database of every edge (issue gh-1810), and the
+      // project id is a uuid. The databases here are user-created, which stay open to a project without a grant.
       const writer = {
         writerKind: "agent" as const,
         agentRunId: "run",
-        agentProjectItemId: "project",
+        agentProjectItemId: await createTestProjectItem(pool),
         onBehalfOfUserId: "user",
       };
       const edge = await cp.createRelation({ ...input, metadata: { value: 1 } }, writer);

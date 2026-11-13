@@ -45,6 +45,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "approval request count": "services/semprec-api/src/approvalRequestsHandler.ts",
   "mcp json-rpc endpoint": "services/semprec-api/src/mcp/mcpHandler.ts",
   "agent run detail": "services/semprec-api/src/agentRunHandler.ts",
+  "agent run steps": "services/semprec-api/src/agentRunHandler.ts",
   "mint mcp run credential": "services/semprec-api/src/agentRunHandler.ts",
   "unread notifications": "services/semprec-api/src/notificationsHandler.ts",
   "resolved notifications": "services/semprec-api/src/notificationsHandler.ts",
@@ -165,11 +166,14 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "task series edit": "packages/data/src/tasks/taskSeriesRoutes.ts",
   "task recurrence clear": "packages/data/src/tasks/taskRecurrenceRoutes.ts",
   "calendar timeline": "packages/data/src/calendar/timelineRouteHandler.ts",
+  "calendar item duplicate": "packages/data/src/calendar/duplicateCalendarItemRouteHandler.ts",
+  "calendar cancellation impact": "packages/data/src/calendar/cancellationImpactRouteHandler.ts",
   "task occurrence materialize": "packages/data/src/tasks/taskOccurrenceRoutes.ts",
   "task host event put": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host event remove": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host events clear": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "event people": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
+  "event tasks": "packages/data/src/tasks/eventTasksRouteHandler.ts",
   "area overview": "packages/data/src/areas/areaOverviewRouteHandler.ts",
   "transcript action item task create": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript action item task remove": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
@@ -177,6 +181,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "transcript speaker assign": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript speaker candidates": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "library automation retry": "packages/data/src/library/libraryAutomationRouteHandlers.ts",
+  "sleep nights": "packages/data/src/sleep/sleepRouteHandlers.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

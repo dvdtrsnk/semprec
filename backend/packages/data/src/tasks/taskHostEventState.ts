@@ -15,6 +15,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
+import type { ItemRow } from "../types.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { firstPlannedDay } from "./taskSinceRule.js";
 
@@ -111,9 +112,27 @@ function readWallClock(value: unknown): string | null {
 }
 
 /** `addedAt` ascending; two edges with the same `addedAt` are ordered by event id, so the order is total. */
-function byAddedAtThenEventId(a: TaskHostEvent, b: TaskHostEvent): number {
+export function byAddedAtThenEventId(a: TaskHostEvent, b: TaskHostEvent): number {
   if (a.addedAt !== b.addedAt) return a.addedAt < b.addedAt ? -1 : 1;
   return a.eventId < b.eventId ? -1 : 1;
+}
+
+/** The `addedAt` of a host event edge's metadata; `""` for an edge that stores no valid one. */
+export function readHostEventAddedAt(metadata: unknown): string {
+  const parsed = hostEventMetadataSchema.safeParse(metadata);
+  return parsed.success ? parsed.data.addedAt : "";
+}
+
+/** An Event item read as a host event, with its dates and times as stored (see `readLiveHostEvents`). */
+export function toTaskHostEvent(event: ItemRow, addedAt: string): TaskHostEvent {
+  return {
+    eventId: event.id,
+    addedAt,
+    date: readCalendarDate(event.properties.date),
+    endDate: readCalendarDate(event.properties.endDate),
+    timeFrom: readWallClock(event.properties.timeFrom),
+    timeTo: readWallClock(event.properties.timeTo),
+  };
 }
 
 /**
@@ -129,22 +148,10 @@ export async function readLiveHostEvents(
 ): Promise<TaskHostEvent[]> {
   const edges = await relationsStore.listRelationsForItem(client, relation.definitionId, taskId);
   const addedAtByEvent = new Map(
-    edges.map((edge) => {
-      const metadata = hostEventMetadataSchema.safeParse(edge.metadata);
-      return [relationsStore.otherSide(edge, taskId), metadata.success ? metadata.data.addedAt : ""] as const;
-    }),
+    edges.map((edge) => [relationsStore.otherSide(edge, taskId), readHostEventAddedAt(edge.metadata)] as const),
   );
   const events = await itemsStore.getItemsByIds(client, [...addedAtByEvent.keys()]);
-  return events
-    .map((event): TaskHostEvent => ({
-      eventId: event.id,
-      addedAt: addedAtByEvent.get(event.id) ?? "",
-      date: readCalendarDate(event.properties.date),
-      endDate: readCalendarDate(event.properties.endDate),
-      timeFrom: readWallClock(event.properties.timeFrom),
-      timeTo: readWallClock(event.properties.timeTo),
-    }))
-    .sort(byAddedAtThenEventId);
+  return events.map((event) => toTaskHostEvent(event, addedAtByEvent.get(event.id) ?? "")).sort(byAddedAtThenEventId);
 }
 
 /** A stored string property, with `""` and a missing value both read as empty. */

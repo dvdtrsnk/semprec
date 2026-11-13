@@ -168,6 +168,11 @@ export async function createView(
     if (isUniqueViolation(err, "views_one_default_per_db")) {
       throw new ConflictError(`Database ${input.databaseId} already has a default view`, { field: "isDefault" });
     }
+    if (isUniqueViolation(err, "views_database_system_key_uq")) {
+      throw new ConflictError(`Database ${input.databaseId} already has a view with this systemKey`, {
+        field: "config.systemKey",
+      });
+    }
     throw err;
   }
 }
@@ -254,6 +259,11 @@ export async function patchView(
   } catch (err) {
     if (isUniqueViolation(err, "views_one_default_per_db")) {
       throw new ConflictError(`Database ${view.databaseId} already has a default view`, { field: "isDefault" });
+    }
+    if (isUniqueViolation(err, "views_database_system_key_uq")) {
+      throw new ConflictError(`Database ${view.databaseId} already has a view with this systemKey`, {
+        field: "config.systemKey",
+      });
     }
     throw err;
   }

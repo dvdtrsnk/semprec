@@ -19,5 +19,19 @@
   "seed.calendars.birthdays.name": "Narozeniny",
   "seed.calendars.tasks.name": "Úkoly",
   "seed.calendars.sleep.name": "Spánek",
-  "seed.calendars.holidaysCz.name": "Státní svátky - Česko"
+  "seed.calendars.holidaysCz.name": "Státní svátky - Česko",
+  "calendar.birthday.title": "Narozeniny – {name}",
+  "calendar.holiday.newYear": "Nový rok",
+  "calendar.holiday.goodFriday": "Velký pátek",
+  "calendar.holiday.easterMonday": "Velikonoční pondělí",
+  "calendar.holiday.labourDay": "Svátek práce",
+  "calendar.holiday.victoryDay": "Den vítězství",
+  "calendar.holiday.cyrilAndMethodius": "Den slovanských věrozvěstů Cyrila a Metoděje",
+  "calendar.holiday.janHus": "Den upálení mistra Jana Husa",
+  "calendar.holiday.statehood": "Den české státnosti",
+  "calendar.holiday.independence": "Den vzniku samostatného československého státu",
+  "calendar.holiday.freedomAndDemocracy": "Den boje za svobodu a demokracii",
+  "calendar.holiday.christmasEve": "Štědrý den",
+  "calendar.holiday.christmasDay": "1. svátek vánoční",
+  "calendar.holiday.boxingDay": "2. svátek vánoční"
 }

@@ -179,6 +179,65 @@ describe("parseRealtimeMessage (issue #163)", () => {
     ])
       expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
   });
+  it("validates a mailThread invalidation (issue #1816)", () => {
+    const valid = { type: "invalidation", scope: "mailThread", threadId: DOC_ID, userId: RUN_ID };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The user is optional: without one the thread is announced to the whole tenant.
+    const { userId: _userId, ...withoutUser } = valid;
+    expect(parseRealtimeMessage(withoutUser)).toEqual(withoutUser);
+  });
+  it("drops a mailThread invalidation whose thread id is not a UUID (issue #1816)", () => {
+    const valid = { type: "invalidation", scope: "mailThread", threadId: DOC_ID };
+    for (const malformed of [
+      { threadId: "not-a-uuid" },
+      { threadId: "" },
+      { threadId: undefined },
+      { threadId: null },
+      { threadId: 7 },
+      { userId: "not-a-uuid" },
+      { userId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
+  it.each(["created", "updated", "closed"] as const)("validates an inboxCards %s invalidation (issue #1811)", (op) => {
+    const valid = { type: "invalidation", scope: "inboxCards", op, cardId: DOC_ID, userId: RUN_ID };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The user is optional: it only narrows delivery inside the tenant.
+    const { userId: _userId, ...withoutUser } = valid;
+    expect(parseRealtimeMessage(withoutUser)).toEqual(withoutUser);
+  });
+  it("drops a malformed inboxCards invalidation (issue #1811)", () => {
+    const valid = { type: "invalidation", scope: "inboxCards", op: "closed", cardId: DOC_ID, userId: RUN_ID };
+    for (const malformed of [
+      { op: "deleted" },
+      { op: undefined },
+      { op: 1 },
+      { cardId: "not-a-uuid" },
+      { cardId: undefined },
+      { cardId: 7 },
+      { userId: "not-a-uuid" },
+      { userId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
+  it("carries no card content in a parsed inboxCards invalidation (issue #1811)", () => {
+    const parsed = parseRealtimeMessage({
+      type: "invalidation",
+      scope: "inboxCards",
+      op: "updated",
+      cardId: DOC_ID,
+      status: "proposed",
+      proposal: { entityKind: "database" },
+      history: [{ message: "private" }],
+    });
+    expect(parsed).toEqual({
+      type: "invalidation",
+      scope: "inboxCards",
+      op: "updated",
+      cardId: DOC_ID,
+      userId: undefined,
+    });
+  });
   it("rejects an agent-run reference with a malformed eventId", () => {
     expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });

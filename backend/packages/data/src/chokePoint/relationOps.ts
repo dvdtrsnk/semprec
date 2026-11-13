@@ -43,6 +43,7 @@ import {
 } from "./relationEdgeContext.js";
 import { runRelationEdgeChangedHooks, runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 
 import { requireApprovalForInsertedEdgeLinks, requireApprovalForReplacedEdgeLinks } from "./valueLinkApproval.js";
 import { breakValueLinksForRelationEdge, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
@@ -142,13 +143,25 @@ async function assertRelationEndpointsValid(
   await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
 }
 
-/** The edge context and the guards every edge write shares: both databases unarchived and the caller's relation property writable by this caller. */
+/** An edge joins two databases, so an agent's project needs `write` access to both of them (issue #1810). */
+async function assertWriterRelationAccess(
+  client: PoolClient,
+  writer: WriterIdentity,
+  edgeContext: RelationEdgeContext,
+): Promise<void> {
+  await assertWriterDatabaseAccess(client, writer, edgeContext.property.databaseId, "write");
+  await assertWriterDatabaseAccess(client, writer, edgeContext.targetDatabaseId, "write");
+}
+
+/** The edge context and the guards every edge write shares: the writer's access to both databases, both databases unarchived and the caller's relation property writable by this caller. */
 async function loadWritableRelationEdgeContext(
   client: PoolClient,
   relationPropertyId: string,
   context: SystemRelationWriteContext | undefined,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdgeContext> {
   const edgeContext = await loadRelationEdgeContext(client, relationPropertyId);
+  await assertWriterRelationAccess(client, writer, edgeContext);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   return edgeContext;
@@ -160,8 +173,9 @@ async function loadCreatableRelationEdgeContext(
   input: CreateRelationInput,
   context: SystemRelationWriteContext | undefined,
   mutation = false,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdgeContext> {
-  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context, writer);
   if (mutation && isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
   await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
@@ -243,7 +257,7 @@ export async function assertRelationTargetLinkableWithClient(
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<void> {
-  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context, writer);
   const field = edgeContext.property.key;
 
   if (input.callerItemId !== undefined) {
@@ -314,7 +328,7 @@ export async function assertRelationCreatableWithClient(
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<void> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, false, writer);
   await runRelationEdgeWriteHooks({
     client,
     edgeContext,
@@ -342,7 +356,7 @@ export async function createRelationWithClient(
   actingUserId?: string,
   options: CreateRelationOptions = {},
 ): Promise<RelationEdge> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true, writer);
   const hooks = (lockMode?: "nowait") =>
     runRelationEdgeWriteHooks({
       client,
@@ -405,7 +419,7 @@ export async function createRelationIfAbsentWithClient(
   writer: WriterIdentity = SYSTEM_WRITER,
   actingUserId?: string,
 ): Promise<{ edge: RelationEdge; inserted: boolean }> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true, writer);
   const hooks = (lockMode?: "nowait") =>
     runRelationEdgeWriteHooks({
       client,
@@ -467,6 +481,7 @@ export async function updateRelationWithClient(
   actingUserId?: string,
 ): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertWriterRelationAccess(client, writer, edgeContext);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   if (isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
@@ -672,7 +687,7 @@ export async function setRelationWithClient(
     callerItemId: input.callerItemId.toLowerCase(),
     targetItemId: input.targetItemId?.toLowerCase() ?? null,
   };
-  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, undefined);
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, undefined, writer);
   const sideA = edgeContext.reldef.propertyIdA === input.relationPropertyId;
   if (
     edgeContext.reldef.cardinality !== "one_to_one" &&
@@ -702,7 +717,13 @@ export async function setRelationWithClient(
     return existing;
   }
   if (existing && oldTarget !== null && input.targetItemId !== null) {
-    await loadCreatableRelationEdgeContext(client, { ...input, targetItemId: input.targetItemId }, undefined, true);
+    await loadCreatableRelationEdgeContext(
+      client,
+      { ...input, targetItemId: input.targetItemId },
+      undefined,
+      true,
+      writer,
+    );
   }
   if (existing && oldTarget !== null) {
     // Replacing or clearing an edge changes the value a link may feed: an agent under a run asks for approval
@@ -749,6 +770,7 @@ export async function deleteRelationWithClient(
   actingUserId?: string,
 ): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertWriterRelationAccess(client, writer, edgeContext);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   if (isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);

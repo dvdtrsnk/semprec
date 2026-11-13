@@ -203,6 +203,62 @@ export async function getHeartbeatForProject(
 }
 
 /**
+ * The condition of the tenant-wide heartbeat reads of a Semp chat run (issue #2018), over `project_heartbeats h`;
+ * `$1` is the calling run's project. A heartbeat is left out when its project holds a `read` or `write` grant on
+ * a database flagged `sensitive` and the calling project holds none on that database: the heartbeat's run
+ * results could reveal that data. A `none` row is a refusal, not a grant, so it neither excludes a heartbeat
+ * nor lets a caller through. The grant model is `agent_database_grants` (issue #1810); a grant on a database
+ * that is not sensitive is not counted. The decision and its semantics are recorded in
+ * docs/adr/2026-11-13-a-semp-chat-run-reads-the-heartbeats-of-every-project.md.
+ */
+const SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION = `NOT EXISTS (
+  SELECT 1 FROM agent_database_grants own_grant
+  JOIN databases d ON d.id = own_grant.database_id AND d.sensitive
+  WHERE own_grant.project_item_id = h.project_item_id AND own_grant.access IN ('read', 'write')
+    AND NOT EXISTS (
+      SELECT 1 FROM agent_database_grants caller_grant
+      WHERE caller_grant.project_item_id = $1 AND caller_grant.database_id = own_grant.database_id
+        AND caller_grant.access IN ('read', 'write')))`;
+
+/**
+ * The heartbeats of every project of the tenant that a Semp chat run whose project is `callingProjectItemId` may
+ * read (issue #2018), oldest first: all of them except those of a project with a sensitive-database grant the
+ * calling project lacks (`SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION`). Like `listHeartbeatsByProject`, a rule whose
+ * kind's module was deactivated still lists. Tenant isolation is the row-level security of `project_heartbeats`.
+ */
+export async function listHeartbeatsVisibleToChatRun(
+  client: Pool | PoolClient,
+  callingProjectItemId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow[]> {
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `SELECT ${COLUMNS} FROM project_heartbeats h
+     WHERE ${SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION}
+     ORDER BY h.created_at ASC`,
+    [callingProjectItemId],
+  );
+  return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
+}
+
+/**
+ * One heartbeat by id from the set `listHeartbeatsVisibleToChatRun` returns, in one statement: an id that is
+ * unknown, belongs to another tenant or is excluded by the sensitive rule gives the same `null` (issue #2018).
+ */
+export async function getHeartbeatVisibleToChatRun(
+  client: Pool | PoolClient,
+  callingProjectItemId: string,
+  heartbeatId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `SELECT ${COLUMNS} FROM project_heartbeats h
+     WHERE h.id = $2 AND ${SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION}`,
+    [callingProjectItemId, heartbeatId],
+  );
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
  * The manual-fire lookup (issue #1453): the heartbeat by id, scoped to one project when
  * `projectItemId` is given and to the tenant alone when it is `null`, row-locked with
  * `FOR UPDATE`. The lock is what makes the enabled check and the enqueue that follow it in the

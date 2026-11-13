@@ -28,6 +28,7 @@ import {
   rejectProposalWithClient,
   reviseProposalWithClient,
 } from "../../inbox/proposalActions.js";
+import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
 import { peopleLastContactJobKey } from "../../people/lastContact.js";
 import { transcriptSpeakerCardContextSchema } from "../transcriptSpeakerCardContext.js";
@@ -430,6 +431,28 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect(await propose([{ speaker: "SPEAKER_01", personId: bobId, reason: "Named." }])).toEqual([]);
       expect(await speakerCards()).toHaveLength(2);
+    });
+
+    it("announces each new card once and nothing for a repeated run (issue #1811)", async () => {
+      await linkEvent();
+      const events: InboxCardsInvalidationEvent[] = [];
+      setInboxCardsInvalidationHook((event) => events.push(event));
+      try {
+        await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
+        const cardIds = (await speakerCards()).length;
+        expect(events).toHaveLength(cardIds);
+        const announced = events.splice(0);
+        expect(announced.every((event) => event.op === "created" && event.userId === undefined)).toBe(true);
+        const stored = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'processingProposals')",
+        );
+        expect(announced.map((event) => event.cardId).sort()).toEqual(stored.rows.map((row) => row.id).sort());
+
+        expect(await propose([{ speaker: "SPEAKER_01", personId: bobId, reason: "Named." }])).toEqual([]);
+        expect(events).toEqual([]);
+      } finally {
+        setInboxCardsInvalidationHook(() => {});
+      }
     });
 
     it("asks for unmapped speakers when there is no linked Event", async () => {

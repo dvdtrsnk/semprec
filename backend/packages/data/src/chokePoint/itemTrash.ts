@@ -6,13 +6,20 @@
 // docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md,
 // docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md,
 // docs/adr/2026-11-10-item-purge-domain-hooks.md,
-// docs/adr/2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch.md
+// docs/adr/2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch.md,
+// docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
-import { runItemDeleteHooks, runItemPurgeHooks, runItemRestoreHooks } from "./hooks.js";
+import {
+  runItemDeleteHooks,
+  runItemDeletePreLockHooks,
+  runItemPurgeHooks,
+  runItemRestoreHooks,
+  runItemRestorePreLockHooks,
+} from "./hooks.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
@@ -22,7 +29,7 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
-import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { FILES_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { deleteRecordingRequestForFile } from "../transcription/recordingIntake.js";
 import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
@@ -33,6 +40,9 @@ import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
 import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
 import type { WriterIdentity } from "./writerKind.js";
+import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { assertWriterCascadeAccess, collectItemSubtree } from "./itemSubtreeAccess.js";
+import { deleteAgentDatabaseGrantsForProject } from "../agentGrants/agentDatabaseGrantsStore.js";
 
 /** The writer fields every delete and restore hook receives; `system` when the caller supplied none. */
 function hookWriterFields(writer: WriterIdentity | undefined, actingUserId: string | undefined) {
@@ -67,6 +77,10 @@ const EXACT_TRASH_EPOCH_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
  * delete, inside this transaction; a row already in the trash runs none, and a repeat delete of a
  * trashed root returns it without running any. A hook's rejection rolls the whole cascade back.
  *
+ * Before it locks the root row, the call runs the delete pre-lock hooks of the root's owning module, for the root
+ * the caller names only. A hook there takes the lock that has to stand in front of the row, so a writer that takes
+ * the module's lock first and the row second cannot wait for this call.
+ *
  * `options.deletedAtExact` (issue gh-2029) makes the cascade join the trash epoch of an item trashed
  * earlier: every row this call soft-deletes gets that `deleted_at` instead of this transaction's
  * `now()`. A value that is not UTC text with six fraction digits is refused before anything is written.
@@ -87,7 +101,13 @@ export async function itemDeleteWithClient(
   if (options.deletedAtExact !== undefined && !EXACT_TRASH_EPOCH_RE.test(options.deletedAtExact)) {
     throw new Error("deletedAtExact must be UTC text with six fraction digits (YYYY-MM-DDTHH:MI:SS.ffffffZ)");
   }
-  await assertDatabaseNotArchived(client, databaseId);
+  await assertWriterDatabaseAccess(client, options.writer, databaseId, "write");
+  const rootDatabase = await assertDatabaseNotArchived(client, databaseId);
+  // The owning module's locks come before the first lock on the trashed row: see
+  // docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md.
+  if (rootDatabase.ownerModuleId !== null) {
+    await runItemDeletePreLockHooks(rootDatabase.ownerModuleId, { client, database: rootDatabase, itemId });
+  }
   const before = await itemsStore.lockItemById(client, databaseId, itemId);
   if (!before) return null;
   if (before.properties.systemActive === true) {
@@ -98,6 +118,7 @@ export async function itemDeleteWithClient(
   if (before.deletedAt) return before;
 
   const subtree = await collectItemSubtree(client, before);
+  await assertWriterCascadeAccess(client, options.writer, databaseId, subtree);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
   const writerFields = hookWriterFields(options.writer, options.actingUserId);
@@ -181,7 +202,8 @@ async function lockCascadeEpochRowIds(
  * (issue #1604), and runs the item restore hooks (issue #1601) right after its restore; a skipped
  * row runs none, and a restore of a live root returns it without running any. A hook's rejection
  * rolls the whole cascade back. Each hook also receives the epoch at full precision
- * (`deletedAtExact`) and this call's `queueAffinity`. Exported for a domain restore hook that
+ * (`deletedAtExact`) and this call's `queueAffinity`. Before it locks the root row, the call runs the restore
+ * pre-lock hooks of the root's owning module, as the delete does. Exported for a domain restore hook that
  * restores a related item in the same transaction (issue #1642); it is not part of the package's
  * public barrel.
  */
@@ -194,7 +216,12 @@ export async function restoreItemWithClient(
   /** Passed to every restore hook; `system` when absent. */
   writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
-  await assertDatabaseNotArchived(client, databaseId);
+  await assertWriterDatabaseAccess(client, writer, databaseId, "write");
+  const rootDatabase = await assertDatabaseNotArchived(client, databaseId);
+  // The owning module's locks come before the first lock on the restored row, as on the delete side.
+  if (rootDatabase.ownerModuleId !== null) {
+    await runItemRestorePreLockHooks(rootDatabase.ownerModuleId, { client, database: rootDatabase, itemId });
+  }
   // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
   // restores of the same item can both read `deletedAt` as set, both proceed, and the
   // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
@@ -205,6 +232,7 @@ export async function restoreItemWithClient(
   const cascadeEpoch = before.deletedAt;
 
   const subtree = await collectItemSubtree(client, before);
+  await assertWriterCascadeAccess(client, writer, databaseId, subtree);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
   const epoch = await lockCascadeEpochRowIds(client, before, subtree);
 
@@ -243,48 +271,6 @@ export async function restoreItemWithClient(
   return rootResult;
 }
 
-/**
- * Walks down from an already-fetched page item to every row nested underneath it — the inline
- * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
- * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
- * #156) can act on the whole subtree in one transaction instead of just the one row named by the
- * caller. Root-first order, BFS by level, root included as given (its `deletedAt` reflects the
- * state the caller read it in, before this transaction's own writes). Guards against a
- * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
- * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
- * stops the traversal instead of hanging it. `include`, when given, filters the walk: a row for
- * which it returns `false` is neither collected nor descended into, so everything nested under it
- * is excluded too. The root is always included regardless of `include`.
- */
-async function collectItemSubtree(
-  client: PoolClient,
-  root: ItemRow,
-  include?: (row: ItemRow) => boolean,
-): Promise<ItemRow[]> {
-  const subtree: ItemRow[] = [root];
-  const visitedDatabaseIds = new Set<string>();
-  let frontier = [root.id];
-
-  while (frontier.length > 0) {
-    const nextFrontier: string[] = [];
-    for (const parentItemId of frontier) {
-      const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
-      for (const database of childDatabases) {
-        if (visitedDatabaseIds.has(database.id)) continue;
-        visitedDatabaseIds.add(database.id);
-        const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
-        for (const row of rows) {
-          if (include && !include(row)) continue;
-          subtree.push(row);
-          nextFrontier.push(row.id);
-        }
-      }
-    }
-    frontier = nextFrontier;
-  }
-  return subtree;
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `properties.file.blobId` of a Files item when it is a UUID string, otherwise null — read off JSONB, so every level is checked. */
@@ -315,8 +301,8 @@ function derivedBlobIds(row: ItemRow): string[] {
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
  * automation state, origin and search-index row, its Inbox attachment rows (issue #1564), its
- * value links and the value-link sources naming it (issue #1656), and the action item states of a
- * transcript (issue #1754).
+ * value links and the value-link sources naming it (issue #1656), the action item states of a
+ * transcript (issue #1754) and the per-database grants of an agent's project (issue #1810).
  * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
  * the blob checks below rely on the row already being gone.
  *
@@ -361,6 +347,8 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
   const database = await databasesStore.getDatabase(client, row.databaseId);
   if (database?.system && database.ownerModuleId === FILES_MODULE_ID)
     await deleteRecordingRequestForFile(client, row.id);
+  if (database?.system && database.ownerModuleId === PROJECTS_MODULE_ID)
+    await deleteAgentDatabaseGrantsForProject(client, row.id);
   await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
   await client.query(
