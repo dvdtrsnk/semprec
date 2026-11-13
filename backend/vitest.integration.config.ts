@@ -41,8 +41,10 @@ export default defineConfig({
     // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
     // Relay's output limit and hide real failures. Preserve developer overrides.
     env: { LOG_LEVEL: process.env.LOG_LEVEL ?? "error" },
-    // Embedded Postgres cold-starts (initdb + start) take real wall-clock time.
-    testTimeout: 30_000,
+    // Embedded Postgres cold-starts (initdb + start) take real wall-clock time, and the heaviest cutover
+    // and fan-out cases take 10 to 20 s alone on a developer machine; on a hosted runner that is more
+    // than the former 30 s (observed on PR2057, PR2059, PR2060 and PR2062).
+    testTimeout: 60_000,
     hookTimeout: 60_000,
     fileParallelism: false,
   },
