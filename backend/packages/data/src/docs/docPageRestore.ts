@@ -14,12 +14,15 @@ import { resolveDocHistoryRetentionDays } from "./docHistoryConfig.js";
 import { assertDocVersionReadable, openDocVersionAtWithClient } from "./docHistory.js";
 import { DEFAULT_COMPACTION_THRESHOLD, mutateDocWithClient } from "./docPersistence.js";
 import * as docsStore from "./docsStore.js";
+import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 import type { DocRow } from "../types.js";
 
 /** The approval-gated check of `page.restoreVersion`, shaped like the choke point's own destructive checks (issue #1617). */
 export interface PageRestoreCheck {
   operation: "page.restoreVersion";
   input: { itemId: string; at: string };
+  /** The agent's project: its `write` access to the database that owns the page is checked first (issue #1844). */
+  agentProjectItemId?: string;
 }
 
 /**
@@ -45,7 +48,8 @@ async function lockDocument(client: PoolClient, docId: string): Promise<void> {
 }
 
 /**
- * The approval snapshot of a restore: the page's identity and its last recorded edit. It checks the
+ * The approval snapshot of a restore: the page's identity and its last recorded edit. For an agent it first requires
+ * write access to the database that owns the page. It checks the
  * same preconditions the restore checks (a live page, a future or unretained `at`) without replaying
  * history, and it never writes. The document lock is taken before the last-edit values are read, so
  * an edit cannot commit between this read and a restore in the same transaction.
@@ -54,6 +58,7 @@ export async function computePageRestoreProjection(
   client: PoolClient,
   check: PageRestoreCheck,
 ): Promise<DestructiveResourceProjection> {
+  await assertAgentPageAccess(client, check.agentProjectItemId, check.input.itemId, "write");
   const { id: docId } = await requirePageDoc(client, check.input.itemId);
   await lockDocument(client, docId);
   const doc = await requirePageDoc(client, check.input.itemId);

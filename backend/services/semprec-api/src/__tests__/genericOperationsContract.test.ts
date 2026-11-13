@@ -43,8 +43,10 @@ import {
   type PropertyRow,
   type ViewRow,
 } from "@semprec/data";
+import { createGenericApplicationService } from "@semprec/application";
 import { GENERIC_OPERATION_NAMES, runAsSystem, runInTenant, type GenericOperationName } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { dispatchGenericOperation, restActor } from "../adapter/genericBinding.js";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
@@ -528,6 +530,53 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       throw new Error("Missing docId");
     const summary: unknown = await read.json();
     expect(summary).toMatchObject({ docId: body.docId });
+  },
+  // The REST equivalent of this operation is the lazy-creating route of issue #1541, not a new route.
+  "page.ensureJournalPeriod": async (_fx, headers, baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/journal/periods/week/2026-W42/doc`, { method: "PUT", headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      itemId: expect.any(String),
+      docId: expect.any(String),
+      period: "2026-W42",
+      range: { from: "2026-10-12", to: "2026-10-18" },
+    });
+  },
+  // The operation has no REST route: a merge action in the app is out of scope of issue #2017. The case dispatches the
+  // binding as a person's REST session, the way a route would, over a period with two live entries.
+  "page.mergeJournalDuplicates": async () => {
+    const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+    if (!journal) throw new Error("Journal database is not seeded");
+    // A state the lazy creation never produces (it reuses the live entry of a period), so the fixture creates both entries directly.
+    const entry = () =>
+      withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: journal.id, properties: { name: "\u{1F4D3} 2026-10-16", type: "day", period: "2026-10-16" } },
+          { allowedSystemKeys: ["name", "type", "period"] },
+        ),
+      );
+    const survivor = await entry();
+    const duplicate = await entry();
+    const service = createGenericApplicationService(pool, {
+      resolve: () => ({
+        icon: null,
+        color: null,
+        overviewOrder: null,
+        switcherOrder: null,
+        clientVisible: true,
+        overviewHidden: false,
+      }),
+      collectionFilter: () => undefined,
+      overviewHideable: () => false,
+    });
+    const merged = await dispatchGenericOperation(service, "page.mergeJournalDuplicates", restActor(randomUUID()), {
+      type: "day",
+      period: "2026-10-16",
+    });
+    expect(merged).toEqual({ survivorId: survivor.id, mergedItemId: duplicate.id });
+    expect((await chokePoint.findItemIncludingDeleted(duplicate.id))?.deletedAt).not.toBeNull();
+    expect(await chokePoint.findItem(survivor.id)).not.toBeNull();
   },
   "page.createSubpage": async (fx, headers, baseUrl) => {
     const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/subpages`, {

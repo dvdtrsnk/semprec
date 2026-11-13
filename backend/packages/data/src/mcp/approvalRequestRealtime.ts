@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { publishAgentRunInvalidation } from "../agentRuns/agentRunInvalidation.js";
 import { requireManagedTransaction, requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { notifyInvalidation, publishSempThreadInvalidation } from "../realtimeHook.js";
 import {
@@ -10,6 +11,7 @@ import {
 /**
  * Announces, once the transaction on `client` has committed, that `request` changed: one
  * `approvalRequest` invalidation addressed to the owner of the request (the actor user of its run),
+ * the `agentRuns` invalidation of the run (its display status derives from its pending approvals),
  * and, when the run belongs to a Semp thread, the `sempThread` invalidation of that thread. A
  * rollback announces nothing. Call it in the transaction of the write that changed the request,
  * and only when that write changed a row.
@@ -27,6 +29,7 @@ export async function publishApprovalRequestChange(
   runAfterCommit(client, () =>
     notifyInvalidation({ scope: "approvalRequest", approvalRequestId: request.id, userId: run.actor_user_id }),
   );
+  await publishAgentRunInvalidation(client, request.agentRunId);
   if (run.thread_id !== null) publishSempThreadInvalidation(client, run.tenant_id, run.thread_id);
 }
 

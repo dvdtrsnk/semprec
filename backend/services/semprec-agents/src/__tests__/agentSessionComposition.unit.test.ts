@@ -846,6 +846,17 @@ describe("agent-only approval reason (issue #1420)", () => {
     }
   });
 
+  it("writes the sensitive mark into the generic tool result details when the operation reported it (issue #1827)", async () => {
+    fixtures.structured = { sensitive: true };
+    try {
+      const { results } = await runCalls({ itemId: "item-1" });
+      const details = (JSON.parse(results[0]!) as { result: { details: unknown } }).result.details;
+      expect(details).toEqual({ error: false, sensitive: true });
+    } finally {
+      fixtures.structured = {};
+    }
+  });
+
   it("writes neither field when the operation reported none", async () => {
     const { results } = await runCalls({ itemId: "item-1" });
     const details = (JSON.parse(results[0]!) as { result: { details: unknown } }).result.details;

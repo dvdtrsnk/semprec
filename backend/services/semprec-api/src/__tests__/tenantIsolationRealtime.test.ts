@@ -9,6 +9,10 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import * as Y from "yjs";
 import {
   createAgentRun,
+  finishAgentRun,
+  raiseProblem,
+  setProjectMcpGrantForAgentPage,
+  upsertMcpToolRegistration,
   createPendingApprovalRequest,
   createPendingApprovalRequestAndPublish,
   createSempChatThread,
@@ -840,8 +844,11 @@ async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
 }
 
 /** One run of `fixture`'s user in its tenant, on a fresh Semp chat thread. */
-async function createRunOnThread(fixture: TenantFixture): Promise<{ runId: string; threadId: string }> {
-  return runInTenant(fixture.tenantId, async () => {
+async function createRunOnThread(
+  fixture: TenantFixture,
+  sockets: readonly TestSocket[],
+): Promise<{ runId: string; threadId: string }> {
+  const created = await runInTenant(fixture.tenantId, async () => {
     const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
     const run = await createAgentRun(pool, {
       triggeredBy: "user",
@@ -851,6 +858,67 @@ async function createRunOnThread(fixture: TenantFixture): Promise<{ runId: strin
     });
     return { runId: run.id, threadId };
   });
+  // The creation of the run is itself announced to its actor (issue #1863); consuming it keeps the frames a
+  // test looks at afterwards to the ones it caused.
+  await Promise.all(sockets.map((socket) => socket.nextMatching(isAgentRunsFrame(created.runId))));
+  return created;
+}
+
+function isProjectAgentFrame(projectItemId?: string): (frame: Frame) => boolean {
+  return (frame) =>
+    frame.kind === "text" &&
+    frame.type === "invalidate" &&
+    frame.body.scope === "projectAgent" &&
+    (projectItemId === undefined || frame.body.projectItemId === projectItemId);
+}
+
+/** Toggles a tool grant of `projectItemId` in `tenantId` through the runtime role, rolling the transaction back on request. */
+async function grantToolIn(tenantId: string, projectItemId: string, rollBack = false): Promise<void> {
+  await runInTenant(tenantId, async () => {
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: randomUUID(),
+      toolName: "search_web",
+      toolSchema: {},
+    });
+    await withTransaction(pool, async (client) => {
+      await setProjectMcpGrantForAgentPage(client, {
+        projectItemId,
+        mcpToolRegistrationId: registration.id,
+        granted: true,
+      });
+      if (rollBack) throw new Error("rollback projectAgent announcement");
+    });
+  });
+}
+
+function isSempStatusFrame(): (frame: Frame) => boolean {
+  return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "sempStatus";
+}
+
+/** Raises a Semp problem for `fixture`'s user in its tenant through the runtime role, rolling back on request. */
+async function raiseProblemIn(fixture: TenantFixture, rollBack = false): Promise<void> {
+  await runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      await raiseProblem(client, {
+        userId: fixture.userId,
+        category: "mail",
+        kind: "mailSyncFailed",
+        severity: "warning",
+        sourceTable: "mail_account_sync_state",
+        sourceId: randomUUID(),
+        dedupeKey: `mail:sync:${randomUUID()}`,
+      });
+      if (rollBack) throw new Error("rollback sempStatus announcement");
+    }),
+  );
+}
+
+function isAgentRunsFrame(agentRunId?: string): (frame: Frame) => boolean {
+  return (frame) =>
+    frame.kind === "text" &&
+    frame.type === "invalidate" &&
+    frame.body.scope === "agentRuns" &&
+    (agentRunId === undefined || frame.body.agentRunId === agentRunId);
 }
 
 function pendingApprovalInput(agentRunId: string) {
@@ -864,22 +932,25 @@ function pendingApprovalInput(agentRunId: string) {
 }
 
 /**
- * Every socket in `sockets` receives the approval request invalidation and the Semp thread invalidation paired with
- * it. The two are published over separate connections, so they may arrive in either order.
+ * Every socket in `sockets` receives the approval request invalidation, the agent run invalidation and the Semp
+ * thread invalidation paired with it. They are published over separate connections, so they may arrive in any order.
+ * The run was created before (`createRunOnThread` consumed that announcement), and its project is null.
  */
 async function expectRequestAndThreadInvalidations(
   sockets: readonly TestSocket[],
   approvalRequestId: string,
   threadId: string,
+  agentRunId: string,
 ): Promise<void> {
   await Promise.all(
     sockets.map(async (socket) => {
-      const pending = new Set(["approvalRequest", "sempThread"]);
+      const pending = new Set(["approvalRequest", "sempThread", "agentRuns"]);
       while (pending.size > 0) {
         const frame = await socket.next();
         if (frame.kind !== "text" || frame.type !== "invalidate") continue;
         if (matches(frame.body, { scope: "approvalRequest", approvalRequestId })) pending.delete("approvalRequest");
         if (matches(frame.body, { scope: "sempThread", threadId })) pending.delete("sempThread");
+        if (matches(frame.body, { scope: "agentRuns", agentRunId, projectItemId: null })) pending.delete("agentRuns");
       }
     }),
   );
@@ -950,19 +1021,126 @@ const notifyCases = {
         expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
         return ["invalidate"];
       },
+      "agentRuns scope, from the creation and the close of A's run, once each to both of A's sockets and not to B1":
+        async () => {
+          const run = await runInTenant(tenantA.tenantId, () =>
+            createAgentRun(pool, { triggeredBy: "user", task: "private task", userId: tenantA.userId }),
+          );
+          const expected = { type: "invalidate", scope: "agentRuns", projectItemId: null, agentRunId: run.id };
+          const created = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isAgentRunsFrame(run.id))));
+          for (const frame of created) {
+            expect(frame).toMatchObject({ kind: "text", body: expected });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual([
+              "agentRunId",
+              "projectItemId",
+              "scope",
+              "type",
+            ]);
+          }
+          await runInTenant(tenantA.tenantId, () => finishAgentRun(pool, run.id, "done", "private result"));
+          const closed = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isAgentRunsFrame(run.id))));
+          for (const frame of closed) expect(frame).toMatchObject({ kind: "text", body: expected });
+          // One sentinel reaches both of A's sockets; nothing about the run arrived before it a third time.
+          const sentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isAgentRunsFrame())).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "projectAgent scope, from a tool grant of A's project, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
+        async () => {
+          const projectItemId = randomUUID();
+          await expect(grantToolIn(tenantA.tenantId, projectItemId, true)).rejects.toThrow(
+            "rollback projectAgent announcement",
+          );
+          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isProjectAgentFrame())).toEqual([]);
+          }
+
+          await grantToolIn(tenantA.tenantId, projectItemId);
+          const frames = await Promise.all(
+            [a1, a2].map((socket) => socket.nextMatching(isProjectAgentFrame(projectItemId))),
+          );
+          for (const frame of frames) {
+            expect(frame).toMatchObject({
+              kind: "text",
+              body: { type: "invalidate", scope: "projectAgent", projectItemId },
+            });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual([
+              "projectItemId",
+              "scope",
+              "type",
+            ]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "projectAgent scope, from a tool grant of B's project, which reaches B1 only": async () => {
+        const projectItemId = randomUUID();
+        await grantToolIn(tenantB.tenantId, projectItemId);
+
+        await b1.nextMatching(isProjectAgentFrame(projectItemId));
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "sempStatus scope, from a problem raised in A, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
+        async () => {
+          await expect(raiseProblemIn(tenantA, true)).rejects.toThrow("rollback sempStatus announcement");
+          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isSempStatusFrame())).toEqual([]);
+          }
+
+          await raiseProblemIn(tenantA);
+          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isSempStatusFrame())));
+          for (const frame of frames) {
+            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "sempStatus" } });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+          }
+          const sentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isSempStatusFrame())).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "sempStatus scope, from a problem raised in B, which reaches B1 only": async () => {
+        await raiseProblemIn(tenantB);
+
+        await b1.nextMatching(isSempStatusFrame());
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "agentRuns scope, from the creation of B's run, which reaches B1 only": async () => {
+        const run = await runInTenant(tenantB.tenantId, () =>
+          createAgentRun(pool, { triggeredBy: "user", task: "private task", userId: tenantB.userId }),
+        );
+
+        await b1.nextMatching(isAgentRunsFrame(run.id));
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
       "approvalRequest scope, from the creation of a request on A's run with a thread": async () => {
-        const { runId, threadId } = await createRunOnThread(tenantA);
+        const { runId, threadId } = await createRunOnThread(tenantA, [a1, a2]);
         const request = await runInTenant(tenantA.tenantId, () =>
           withTransaction(pool, (client) =>
             createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
           ),
         );
-        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId);
+        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId, runId);
         await expectNothingReceived(b1, tenantB.tenantId);
         return ["invalidate"];
       },
       "approvalRequest scope, from the decision of A's user on a request": async () => {
-        const { runId, threadId } = await createRunOnThread(tenantA);
+        const { runId, threadId } = await createRunOnThread(tenantA, [a1, a2]);
         const request = await runInTenant(tenantA.tenantId, () =>
           createPendingApprovalRequest(pool, pendingApprovalInput(runId)),
         );
@@ -976,7 +1154,7 @@ const notifyCases = {
           ),
         );
         expect(decided?.outcome).toBe("decided");
-        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId);
+        await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId, runId);
         await expectNothingReceived(b1, tenantB.tenantId);
         return ["invalidate"];
       },
@@ -1441,7 +1619,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
   });
 
   it("publishes committed approval request invalidations only to the owner's tenant and suppresses rolled-back ones", async () => {
-    const runA = await createRunOnThread(tenantA);
+    const runA = await createRunOnThread(tenantA, [a1, a2]);
     await expect(
       runInTenant(tenantA.tenantId, () =>
         withTransaction(pool, async (client) => {
@@ -1457,13 +1635,13 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     ]);
     await expectNothingReceived(b1, tenantB.tenantId);
 
-    const runB = await createRunOnThread(tenantB);
+    const runB = await createRunOnThread(tenantB, [b1]);
     const requestB = await runInTenant(tenantB.tenantId, () =>
       withTransaction(pool, (client) =>
         createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runB.runId)),
       ),
     );
-    await expectRequestAndThreadInvalidations([b1], requestB.id, runB.threadId);
+    await expectRequestAndThreadInvalidations([b1], requestB.id, runB.threadId, runB.runId);
     const foreignSentinel = await publishSentinel(tenantA.tenantId);
     expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
       [],

@@ -120,6 +120,8 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
+  // A sleep night is virtual: its date is validated by the ref schema and no row has to exist for it.
+  for (const [index, ref] of refs.entries()) if (ref.kind === "sleepNight") valid.add(index);
   const seen = new Set<string>();
   return refs.filter((ref, index) => {
     if (!valid.has(index)) throw new ValidationError("Invalid reference", { field: `context[${index}]` });

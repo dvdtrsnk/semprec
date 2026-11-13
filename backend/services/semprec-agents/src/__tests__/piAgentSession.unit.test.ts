@@ -617,6 +617,45 @@ describe("tool event metadata", () => {
     );
   });
 
+  it("names the operation and targets of each generic-operation call on the assistant message that precedes it (issue #2001)", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("item_patch", { itemId: "item-1", value: "secret" }, { id: "call-patch" }),
+          fauxToolCall("item_create", { databaseId: "db-1", value: "secret" }, { id: "call-create" }),
+          fauxToolCall("item_patch", {}, { id: "call-bare" }),
+          fauxToolCall("echo", { value: "hi", itemId: "item-2" }, { id: "call-other" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const anyTool = (name: string): AgentTool => ({
+      ...echoTool([]),
+      name,
+      parameters: Type.Any(),
+    });
+    const session = createPiAgentSessionFactory({
+      model,
+      streamFn,
+      tools: [anyTool("item_patch"), anyTool("item_create"), anyTool("echo")],
+      toolEventMetadata: new Map<string, ToolEventMetadata>([
+        ["item_patch", { operation: "item.patch" }],
+        ["item_create", { operation: "item.create" }],
+      ]),
+      systemPrompt: "base",
+    })({ task: "run" });
+    const messages = await collect(session.messages());
+    const [first, last] = messages.filter((message) => message.kind === "message");
+    expect(first?.toolCallTargets).toEqual([
+      { toolCallId: "call-patch", operation: "item.patch", targetItemId: "item-1" },
+      { toolCallId: "call-create", operation: "item.create", targetDatabaseId: "db-1" },
+      { toolCallId: "call-bare", operation: "item.patch" },
+    ]);
+    expect(last).not.toHaveProperty("toolCallTargets");
+  });
+
   it("matches distinct target fields by call id and never derives ids from result text", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([

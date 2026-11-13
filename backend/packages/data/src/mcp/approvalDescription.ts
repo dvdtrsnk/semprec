@@ -19,6 +19,8 @@
 //   approval.viewDelete       {viewName, databaseName}
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
+//   approval.pageReplace      {itemName, databaseKey, databaseName}   (issue #1844; the new Markdown is an argument value, so it is not in the description)
+//   approval.journalMerge     {periodType, period, survivorName, mergedName}   (issue #2017; the stored titles of the two entries, `null` when the period has no two live entries; no page content)
 //   approval.mcpInvoke        {serverName, toolName}
 //   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
 //   approval.changesSeries    {taskName, fromRule, toRule}
@@ -27,6 +29,8 @@
 import type { PoolClient } from "pg";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
 import type { PageRestoreCheck } from "../docs/docPageRestore.js";
+import type { PageReplaceCheck } from "../docs/pageReplaceApproval.js";
+import type { JournalMergeCheck } from "../journal/journalMergeApproval.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -87,11 +91,17 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
  */
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
-  check: DestructiveOperationCheck | PageRestoreCheck,
+  check: DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | JournalMergeCheck,
   currentResource?: unknown,
   valueLinks?: BreakingValueLinks,
 ): Promise<ApprovalDescription> {
-  if (check.operation === "page.restoreVersion" || valueLinks === undefined || valueLinks.links.length === 0) {
+  if (
+    check.operation === "page.restoreVersion" ||
+    check.operation === "page.replace" ||
+    check.operation === "page.mergeJournalDuplicates" ||
+    valueLinks === undefined ||
+    valueLinks.links.length === 0
+  ) {
     if (check.operation === "link.unlink") throw new Error("A link.unlink request is described by the link it ends");
     return buildOperationDescription(client, check, currentResource);
   }
@@ -116,7 +126,11 @@ function hasModuleDescription(currentResource: unknown): boolean {
 
 async function buildOperationDescription(
   client: PoolClient,
-  check: Exclude<DestructiveOperationCheck, { operation: "link.unlink" }> | PageRestoreCheck,
+  check:
+    | Exclude<DestructiveOperationCheck, { operation: "link.unlink" }>
+    | PageRestoreCheck
+    | PageReplaceCheck
+    | JournalMergeCheck,
   currentResource?: unknown,
 ): Promise<ApprovalDescription> {
   if (typeof currentResource === "object" && currentResource !== null && "approvalDescription" in currentResource) {
@@ -198,6 +212,21 @@ async function buildOperationDescription(
         },
       };
     }
+    case "page.replace": {
+      const item = await requireItem(client, check.input.itemId);
+      const database = await requireDatabase(client, item.databaseId);
+      return {
+        key: "approval.pageReplace",
+        params: {
+          itemName: await nameOf(client, item),
+          databaseKey: database.key,
+          databaseName: databaseDisplayName(database),
+        },
+      };
+    }
+    case "page.mergeJournalDuplicates":
+      // Described by its projection, which read the two entries' titles (`computeJournalMergeProjection`).
+      throw new Error("A page.mergeJournalDuplicates request is described by its projection");
     case "item.delete": {
       const item = await requireItem(client, check.input.itemId);
       const database = await requireDatabase(client, item.databaseId);

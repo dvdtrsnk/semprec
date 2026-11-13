@@ -16,7 +16,26 @@ export interface AgentImage {
   mimeType: string;
 }
 
-/** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
+/**
+ * What a session knows about one tool call of an assistant `message` before the call starts (issue #2001): the id of
+ * its `toolCall` block, the generic operation its tool name maps to and the databases and items its arguments name.
+ * A session that maps tool names to operations carries these on its `message` events as `toolCallTargets`, so the
+ * block can be stored redacted when its operation is a content-bearing write to a sensitive database.
+ */
+export interface ToolCallTarget {
+  toolCallId: string;
+  operation: string;
+  targetDatabaseId?: string;
+  targetItemId?: string;
+}
+
+/**
+ * The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload` — except a
+ * `tool_result` of a sensitive database (issue #1827) and, in the turn of such a result or for a content-bearing
+ * write to a sensitive database, tool call arguments and assistant messages (issue #2001), which are stored
+ * redacted (`createSensitiveTurnRedactor`). An assistant `message` may carry `toolCallTargets`
+ * (`ToolCallTarget[]`); they steer that redaction and are never stored.
+ */
 export interface AgentMessage {
   kind: AgentMessageKind;
   [key: string]: unknown;

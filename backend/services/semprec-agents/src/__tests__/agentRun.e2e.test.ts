@@ -437,6 +437,97 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     }
   });
 
+  it("stores a sensitive item.get result redacted, hands the running turn the real one and resumes a restarted conversation from the marker (issue #1827)", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const { rows: databases } = await pool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = 'sleepNights'",
+    );
+    const nights = databases[0];
+    if (!nights) throw new Error("Missing sleepNights database");
+    // A fixture writes the decision directly: the user-only admin store is not exported from `@semprec/data`.
+    await pool.query(
+      "INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, 'read')",
+      [projectItemId, nights.id],
+    );
+    const night = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: nights.id,
+        properties: { night: "2026-11-01", bedTime: "23:15", wakeTime: "06:40", alarm: true },
+      }),
+    );
+    const threads = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const thread = { kind: "chat" as const, threadId: threads.rows[0]!.id };
+    let liveContext = "";
+    let resumedContext = "";
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("item_get", { itemId: night.id }, { id: "read-night" })], {
+        stopReason: "toolUse",
+      }),
+      (context) => {
+        liveContext = JSON.stringify(context.messages);
+        return fauxAssistantMessage("I read the night");
+      },
+      (context) => {
+        resumedContext = JSON.stringify(context.messages);
+        return fauxAssistantMessage("continued");
+      },
+    ]);
+    const conversationFor = (reconstructHistory?: ReturnType<typeof createReconstructConversationHistory>) =>
+      new SempConversation(pool, {
+        resolveProjectItemId: async () => projectItemId,
+        createAgentSessionForRun: (run) => createAgentSessionFactoryForRun(pool, registry, fauxGateway, run),
+        ...(reconstructHistory ? { reconstructHistory } : {}),
+      });
+    let runId = "";
+    const first = conversationFor();
+    try {
+      await runInTenant(getTenantZeroId(), () =>
+        first.send("how did I sleep?", thread, {
+          onTurnStart: ({ agentRunId }) => {
+            runId = agentRunId;
+          },
+        }),
+      );
+    } finally {
+      first.clear();
+    }
+
+    const events = await runEvents(runId);
+    const stored = events.find((event) => event.kind === "tool_result");
+    expect(stored?.payload).toMatchObject({
+      toolCallId: "read-night",
+      operation: "item.get",
+      isError: false,
+      result: { content: [{ type: "text", text: "[redacted: sensitive]" }], details: { error: false } },
+    });
+    expect(Object.hasOwn(resultDetails(stored?.payload), "sensitive")).toBe(false);
+    for (const value of ["23:15", "06:40"]) expect(JSON.stringify(events)).not.toContain(value);
+    // The running turn read the real item.
+    expect(liveContext).toContain("23:15");
+
+    const restarted = conversationFor(
+      createReconstructConversationHistory({
+        estimateContextTokens: (messages) => messages.length,
+        shouldCompact: () => false,
+        prepareCompaction: (entries) => entries,
+        compact: () => {
+          throw new Error("unexpected compaction");
+        },
+        contextWindow: 1_000_000,
+        settings: {},
+      }),
+    );
+    try {
+      await runInTenant(getTenantZeroId(), () => restarted.send("and the night before?", thread));
+    } finally {
+      restarted.clear();
+    }
+    expect(resumedContext).toContain("[redacted: sensitive]");
+    expect(resumedContext).toContain("read-night");
+    for (const value of ["23:15", "06:40"]) expect(resumedContext).not.toContain(value);
+  });
+
   it("binds tools invoked on wake and continuation to the conversation run", async () => {
     const projectItemId = await seededSemprecProjectItemId();
     const chokePoint = createChokePoint(pool);

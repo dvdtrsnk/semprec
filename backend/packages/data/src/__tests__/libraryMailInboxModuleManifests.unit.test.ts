@@ -83,7 +83,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getMigrations()).toEqual([{ moduleId: "library", migration: "0005_library_module.sql" }]);
   });
 
-  it("declares the automation retry route of Books and Movies with a handler that resolves", async () => {
+  it("declares the automation retry route and the three cover candidate routes with handlers that resolve", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(LIBRARY_PATH);
 
@@ -95,8 +95,26 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
         method: "POST",
         path: "/api/items/:id/automation/retry",
       },
+      {
+        moduleId: "library",
+        name: "libraryCoverCandidatesList",
+        method: "GET",
+        path: "/api/items/:id/cover-candidates",
+      },
+      {
+        moduleId: "library",
+        name: "libraryCoverCandidatesRefresh",
+        method: "POST",
+        path: "/api/items/:id/cover-candidates/refresh",
+      },
+      {
+        moduleId: "library",
+        name: "libraryCoverCandidateSelect",
+        method: "POST",
+        path: "/api/items/:id/cover-candidates/:index/select",
+      },
     ]);
-    expect(typeof routes[0]?.handler).toBe("function");
+    expect(routes.map((route) => typeof route.handler)).toEqual(["function", "function", "function", "function"]);
   });
 
   it("loads the mail sync manifest with Mailboxes/Folders/Emails, its own heartbeat actions, and the per-mailbox worker", async () => {

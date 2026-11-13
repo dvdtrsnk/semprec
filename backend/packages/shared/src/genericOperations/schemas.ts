@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 46-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765), extracted from #37's
+ * Strict Zod input schemas for the 48-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -508,6 +508,37 @@ export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 
+/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
+const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
+
+/**
+ * Turns a Journal period (type `type`, named by its canonical `period` key such as `2026-W42` or by any calendar
+ * `date` inside it) into its Journal entry and page, created when missing (issue #1861). Exactly one of `date` and
+ * `period` is given. Whether `period` is a canonical key of that type is decided by the operation, not by this schema.
+ */
+export const PageEnsureJournalPeriodInputSchema = z
+  .object({
+    type: z.enum(JOURNAL_PERIOD_TYPE_VALUES),
+    date: z.iso.date().optional(),
+    period: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.date === undefined) === (value.period === undefined)) {
+      ctx.addIssue({ code: "custom", path: ["date"], message: "Exactly one of date and period is required" });
+    }
+  });
+export type PageEnsureJournalPeriodInput = z.infer<typeof PageEnsureJournalPeriodInputSchema>;
+
+/**
+ * Merges the duplicate Journal entries of one period (issue #2017). `type` is one of the Journal period types;
+ * whether `period` is a canonical key of that type is decided by the operation, not by this schema.
+ */
+export const PageMergeJournalDuplicatesInputSchema = z
+  .object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) })
+  .strict();
+export type PageMergeJournalDuplicatesInput = z.infer<typeof PageMergeJournalDuplicatesInputSchema>;
+
 export const PageGetInputSchema = z
   .object({
     itemId: canonicalUuid,
@@ -517,9 +548,6 @@ export const PageGetInputSchema = z
   })
   .strict();
 export type PageGetInput = z.infer<typeof PageGetInputSchema>;
-
-/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
-const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
 
 /** Most blocks one conversion may name; it bounds the Pages items and documents one transaction creates. */
 const PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS = 200;
@@ -636,7 +664,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 46 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 48 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -676,6 +704,8 @@ export interface InputByOperation {
   "link.relink": ValueLinkInput;
   "page.get": PageGetInput;
   "page.ensure": PageEnsureInput;
+  "page.ensureJournalPeriod": PageEnsureJournalPeriodInput;
+  "page.mergeJournalDuplicates": PageMergeJournalDuplicatesInput;
   "page.createSubpage": PageCreateSubpageInput;
   "page.insert": PageInsertInput;
   "page.replace": PageReplaceInput;

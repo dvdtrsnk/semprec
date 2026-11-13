@@ -125,7 +125,9 @@ export function createSempMessageTask(
             // reach the related items of the refs are read for.
             const agentProjectItemId =
               Array.isArray(storedRefs) && storedRefs.length > 0 ? await resolveProjectItemId() : undefined;
-            const expanded = await expandSempRefs(pool, storedRefs, roots, signal, agentProjectItemId);
+            const expanded = await expandSempRefs(pool, storedRefs, roots, signal, agentProjectItemId, {
+              attachedThisTurn: true,
+            });
             const rejected = turn.outcome?.kind === "rejected";
             await ensureFresh(rejected ? null : claimed.frontier, rejected);
             let thread: SempThread;

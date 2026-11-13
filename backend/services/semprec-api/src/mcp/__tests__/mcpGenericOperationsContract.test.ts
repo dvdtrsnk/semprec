@@ -169,6 +169,8 @@ interface Fixtures {
   singleRelationProperty: PropertyRow;
   /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
   subpageItemId?: string;
+  /** The version token of `itemA`'s page, present only after the `prepare` of `page.replace`. */
+  pageEtag?: string;
 }
 
 /**
@@ -446,18 +448,28 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.ensure": { tool: (fx) => ({ name: "semprec.page.ensure", arguments: { itemId: fx.itemA.id } }) },
+  "page.ensureJournalPeriod": {
+    tool: () => ({ name: "semprec.page.ensureJournalPeriod", arguments: { type: "week", date: "2026-10-16" } }),
+  },
+  // The period has no duplicate, so a human session gets `{ merged: false }` and a run credential is held for approval (issue #2017).
+  "page.mergeJournalDuplicates": {
+    tool: () => ({ name: "semprec.page.mergeJournalDuplicates", arguments: { type: "day", period: "2026-10-16" } }),
+  },
   "page.insert": {
     tool: (fx) => ({
       name: "semprec.page.insert",
       arguments: { itemId: fx.itemA.id, placement: "end", markdown: "Contract text" },
     }),
   },
-  // REST-only (issue #1765): both actors are refused it as an unknown tool, with valid arguments.
+  // Destructive for a run credential (issue #1844): held for approval with the version token the page has now.
   "page.replace": {
     tool: (fx) => ({
       name: "semprec.page.replace",
-      arguments: { itemId: fx.itemA.id, markdown: "Contract replacement", expectedEtag: "A".repeat(43) },
+      arguments: { itemId: fx.itemA.id, markdown: "Contract replacement", expectedEtag: fx.pageEtag },
     }),
+    prepare: async (fx) => {
+      fx.pageEtag = (await createDocStore(pool).readPageMarkdown(fx.itemA.id)).etag;
+    },
   },
   "page.createSubpage": {
     tool: (fx) => ({
@@ -617,6 +629,90 @@ describe("generic operation MCP contract (issue #220)", () => {
       content(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
     ).toMatchObject(first);
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fx.itemA.id])).rows).toHaveLength(1);
+  });
+
+  it("writes a summary into the Journal week of a date through a run credential: the semprec.-prefixed name of page.ensureJournalPeriod, then page.insert authored ai_agent (issue #1861)", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const projectItemId = await createProjectItem();
+    const headers = await credentialHeader(projectItemId, ["core.item.write"]);
+    const listed = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(JSON.stringify(await listed.json())).toContain('"semprec.page.ensureJournalPeriod"');
+
+    const ensured = await rpc(baseUrl, headers, "semprec.page.ensureJournalPeriod", {
+      type: "week",
+      date: "2026-10-16",
+    });
+    expect(ensured.error).toBeUndefined();
+    const text = ensured.result?.content[0]?.text;
+    if (!text) throw new Error("Missing MCP output");
+    const week = z.object({ itemId: z.string(), period: z.literal("2026-W42") }).parse(JSON.parse(text));
+    const inserted = await rpc(baseUrl, headers, "semprec.page.insert", {
+      itemId: week.itemId,
+      placement: "end",
+      markdown: "Sprint summary",
+    });
+    expect(inserted.error).toBeUndefined();
+    const authors = await pool.query<{ created_by: string }>(
+      `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+      [week.itemId],
+    );
+    expect(authors.rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
+    const approvals = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM approval_requests`);
+    expect(approvals.rows[0]?.n).toBe(0);
+  });
+
+  it("holds semprec.page.mergeJournalDuplicates for a day with two live entries for approval through a run credential, with the same operation as the AgentTool name, and merges nothing (issue #2017)", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+    if (!journal) throw new Error("Journal not seeded");
+    // Two live entries of one period are a state the lazy creation never produces, so the fixture creates them directly.
+    const entries: string[] = [];
+    for (let n = 0; n < 2; n += 1) {
+      const created = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: journal.id, properties: { name: "\u{1F4D3} 2037-05-02", type: "day", period: "2037-05-02" } },
+          { allowedSystemKeys: ["name", "type", "period"] },
+        ),
+      );
+      entries.push(created.id);
+    }
+    const projectItemId = await createProjectItem();
+    const headers = await credentialHeader(projectItemId, ["core.item.write"]);
+
+    const body = await rpc(baseUrl, headers, "semprec.page.mergeJournalDuplicates", {
+      type: "day",
+      period: "2037-05-02",
+    });
+
+    expect(body.error?.code).toBe(-32001);
+    const requests = await pool.query<{ tool_name: string; status: string; payload: { operationName?: string } }>(
+      `SELECT tool_name, status, payload FROM approval_requests`,
+    );
+    // The request names the catalog operation, which is the name the AgentTool adapter queues it under.
+    expect(requests.rows).toEqual([
+      {
+        tool_name: "page.mergeJournalDuplicates",
+        status: "pending",
+        payload: expect.objectContaining({ operationName: "page.mergeJournalDuplicates" }),
+      },
+    ]);
+    const live = await pool.query<{ id: string }>(
+      `SELECT id FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
+      [entries],
+    );
+    expect(live.rows.map((row) => row.id).sort()).toEqual([...entries].sort());
+    const refused = await rpc(baseUrl, headers, "semprec.page.mergeJournalDuplicates", {
+      type: "day",
+      period: "2026-02-30",
+    });
+    expect(refused.error).toMatchObject({ code: -32602, data: { field: "period" } });
   });
 
   it("creates a subpage under a Journal day that has no entry yet, in one call", async () => {

@@ -1,8 +1,9 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { ChokePoint, CollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import {
   ApprovalRequiredError,
   ChokePointError,
+  createChokePoint,
   generatePermissionManifest,
   getAgentRun,
   readItemPatchChangeMetadata,
@@ -17,6 +18,7 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
+import { logger } from "../../logger.js";
 import type { ToolResultChange } from "../../toolEventPayload.js";
 
 /** Shaped like a pi-agent-core `tool_result` payload — the same local approximation `heartbeatAgentTools.ts`'s `HeartbeatAgentToolResult` uses. */
@@ -27,6 +29,11 @@ export interface GenericOperationAgentToolResult {
   approvalRequestId?: string;
   /** Per-property changes of a successful `item.patch`. */
   changes?: ToolResultChange[];
+  /**
+   * Set (issue #1827) when a content-bearing operation answered with content of a sensitive database: the
+   * run history stores such a result redacted (`sensitiveToolResult.ts`). The result itself is unchanged.
+   */
+  sensitive?: true;
 }
 
 /** Longest string a `changes` entry stores for a `before` or `after` value. */
@@ -68,6 +75,163 @@ function buildPatchChanges(output: unknown, args: unknown): ToolResultChange[] |
       after: boundValue(patched[key]),
     };
   });
+}
+
+/** The operations whose answer carries item content (issue #1827); every other operation answers with structure or ids. */
+const CONTENT_BEARING_OPERATIONS: ReadonlySet<GenericOperationName> = new Set<GenericOperationName>([
+  "item.get",
+  "item.create",
+  "item.patch",
+  "item.delete",
+  "item.restore",
+  "database.query",
+  "view.query",
+]);
+
+/** The databases whose content an answer carries; `unresolved` when some content cannot be tied to a database. */
+interface AnswerDatabases {
+  ids: Set<string>;
+  unresolved: boolean;
+}
+
+/** The target database of each relation property of one database, by property key (`undefined` when the config names none). */
+async function relationTargetDatabases(
+  chokePoint: ChokePoint,
+  databaseId: string,
+): Promise<Map<string, string | undefined>> {
+  const targets = new Map<string, string | undefined>();
+  for (const property of await chokePoint.listProperties(databaseId)) {
+    if (property.type !== "relation") continue;
+    const target = property.config.targetDatabaseId;
+    targets.set(property.key, typeof target === "string" ? target : undefined);
+  }
+  return targets;
+}
+
+/**
+ * The databases whose content an answer carries (issue #1827): the database of each item it answered with
+ * (the item itself, or every item of a page), the database of each relation target expanded inside such an
+ * item (`include.relations`; a target the agent may not read is only `{ id, hidden: true }` and carries no
+ * content), and the target database of each relation property projected on such a target, whose targets come
+ * as reduced entries without a database id. Content that names no database, or a projected relation property
+ * of no known target database, is `unresolved`.
+ */
+async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise<AnswerDatabases> {
+  const answer: AnswerDatabases = { ids: new Set(), unresolved: false };
+  if (!isRecord(output)) return answer;
+  const items: unknown[] = Array.isArray(output.items) ? output.items : [output];
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    if (typeof item.databaseId === "string") answer.ids.add(item.databaseId);
+    if (item.relations === undefined) continue;
+    if (!isRecord(item.relations)) {
+      answer.unresolved = true;
+      continue;
+    }
+    for (const targets of Object.values(item.relations)) {
+      if (!Array.isArray(targets)) {
+        answer.unresolved = true;
+        continue;
+      }
+      for (const target of targets) {
+        if (!isRecord(target)) {
+          answer.unresolved = true;
+        } else if (target.hidden === true) {
+          continue;
+        } else if (typeof target.databaseId !== "string") {
+          answer.unresolved = true;
+        } else {
+          answer.ids.add(target.databaseId);
+          await addProjectedRelationDatabases(chokePoint, target.databaseId, target.properties, answer);
+        }
+      }
+    }
+  }
+  return answer;
+}
+
+/** Adds the target database of every relation property of `databaseId` that `properties` carries an entry with content for. */
+async function addProjectedRelationDatabases(
+  chokePoint: ChokePoint,
+  databaseId: string,
+  properties: unknown,
+  answer: AnswerDatabases,
+): Promise<void> {
+  if (!isRecord(properties)) return;
+  const withContent = Object.entries(properties).filter(
+    ([, value]) => Array.isArray(value) && value.some((entry) => isRecord(entry) && entry.hidden !== true),
+  );
+  if (withContent.length === 0) return;
+  const relationTargets = await relationTargetDatabases(chokePoint, databaseId);
+  for (const [key] of withContent) {
+    if (!relationTargets.has(key)) continue;
+    const targetDatabaseId = relationTargets.get(key);
+    if (targetDatabaseId === undefined) answer.unresolved = true;
+    else answer.ids.add(targetDatabaseId);
+  }
+}
+
+/** The database a `database.query` or `view.query` asked about; a curated view belongs to none. */
+async function queriedDatabaseId(
+  chokePoint: ChokePoint,
+  operation: GenericOperationName,
+  args: unknown,
+): Promise<string | undefined> {
+  if (!isRecord(args)) return undefined;
+  if (operation === "database.query") return typeof args.databaseId === "string" ? args.databaseId : undefined;
+  if (operation === "view.query" && typeof args.viewId === "string") {
+    return (await chokePoint.getView(args.viewId))?.databaseId ?? undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Whether the answer of a successful call is content of a sensitive database (issue #1827): the
+ * operation is content-bearing and a database it answered with, queried or expanded through
+ * `include.relations` (`answerDatabases`) has `sensitive = true`.
+ * The flag is read through the choke point when the call has answered, in the caller's tenant scope. A
+ * database id that resolves to no database, or content that names no database, counts as sensitive, so
+ * the answer is never stored in full on a doubt.
+ */
+async function isSensitiveAnswer(
+  chokePoint: ChokePoint,
+  operation: GenericOperationName,
+  args: unknown,
+  output: unknown,
+): Promise<boolean> {
+  if (!CONTENT_BEARING_OPERATIONS.has(operation)) return false;
+  const queried = await queriedDatabaseId(chokePoint, operation, args);
+  const answer = await answerDatabases(chokePoint, output);
+  if (answer.unresolved) return true;
+  if (queried !== undefined) answer.ids.add(queried);
+  for (const databaseId of answer.ids) {
+    const database = await chokePoint.getDatabase(databaseId);
+    if (database === null || database.sensitive) return true;
+  }
+  return false;
+}
+
+/**
+ * `isSensitiveAnswer` for a call that already succeeded: when the flag cannot be read, the call is not
+ * reported as failed (an `item.patch` has committed) and the answer is treated as sensitive. The log
+ * line names the operation, the run and the error class, never the answer.
+ */
+async function markSensitiveAnswer(
+  chokePoint: ChokePoint,
+  operation: GenericOperationName,
+  args: unknown,
+  output: unknown,
+  currentRunId: string,
+): Promise<boolean> {
+  try {
+    return await isSensitiveAnswer(chokePoint, operation, args, output);
+  } catch (err) {
+    logger.error(
+      { operation, agentRunId: currentRunId, errorName: err instanceof Error ? err.name : typeof err },
+      "Could not read whether an agent tool answer is sensitive; treating it as sensitive",
+    );
+    return true;
+  }
 }
 
 export type GenericOperationAgentTool = (
@@ -134,6 +298,7 @@ function toolResultFromError(err: unknown, operation: GenericOperationName): Gen
 
 function createTool(
   gateway: GenericOperationGateway,
+  chokePoint: ChokePoint,
   pool: Pool,
   moduleRegistry: ModuleRegistry | undefined,
   operation: GenericOperationName,
@@ -146,7 +311,13 @@ function createTool(
       }
       const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {}, options);
       const changes = operation === "item.patch" ? buildPatchChanges(output, args) : undefined;
-      return { error: false, result: JSON.stringify(output), ...(changes ? { changes } : {}) };
+      const sensitive = await markSensitiveAnswer(chokePoint, operation, args, output, currentRunId);
+      return {
+        error: false,
+        result: JSON.stringify(output),
+        ...(changes ? { changes } : {}),
+        ...(sensitive ? { sensitive: true as const } : {}),
+      };
     } catch (err) {
       return toolResultFromError(err, operation);
     }
@@ -178,9 +349,10 @@ export function createGenericOperationAgentTools(
   resolver: CollectionMetadataResolver,
 ): Record<GenericOperationName, GenericOperationAgentTool> {
   const gateway = createGenericOperationGateway(pool, resolver);
+  const chokePoint = createChokePoint(pool);
   const tools = {} as Record<GenericOperationName, GenericOperationAgentTool>;
   for (const operation of GENERIC_OPERATION_NAMES) {
-    tools[operation] = createTool(gateway, pool, moduleRegistry, operation);
+    tools[operation] = createTool(gateway, chokePoint, pool, moduleRegistry, operation);
   }
   return tools;
 }

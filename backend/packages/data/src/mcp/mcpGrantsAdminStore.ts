@@ -6,6 +6,7 @@ import {
   type McpToolRegistration,
   type McpToolRegistrationRow,
 } from "./mcpToolRegistrationsStore.js";
+import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInvalidation.js";
 import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcpProjectGrantsStore.js";
 
 /**
@@ -103,7 +104,10 @@ export interface SetProjectMcpGrantInput {
   granted: boolean;
 }
 
-/** User-only mutation: grants or revokes a project's ability to invoke one registered tool. */
+/**
+ * User-only mutation: grants or revokes a project's ability to invoke one registered tool, and
+ * announces the change of the project's agent setup once the write has committed.
+ */
 export async function setProjectMcpGrant(client: Queryable, input: SetProjectMcpGrantInput): Promise<ProjectMcpGrant> {
   const { rows } = await client.query<ProjectMcpGrantRow>(
     // FK checks bypass RLS. Resolve and lock the registration through RLS in this same
@@ -121,5 +125,7 @@ export async function setProjectMcpGrant(client: Queryable, input: SetProjectMcp
   if (rows.length === 0) {
     throw new NotFoundError(`No mcp_tool_registrations row with id '${input.mcpToolRegistrationId}'`);
   }
-  return rowToGrant(requireSingleRow(rows, "project_mcp_grants upsert RETURNING"));
+  const grant = rowToGrant(requireSingleRow(rows, "project_mcp_grants upsert RETURNING"));
+  publishProjectAgentInvalidation(client, grant.projectItemId);
+  return grant;
 }

@@ -718,14 +718,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       });
       try {
         const granted = await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver);
-        const excluded = [
-          "page.get",
-          "page.ensure",
-          "page.restoreVersion",
-          "page.insert",
-          "page.changes",
-          ...REST_ONLY_OPERATION_NAMES,
-        ];
+        const excluded: readonly string[] = REST_ONLY_OPERATION_NAMES;
         expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
         for (const name of excluded) expect(granted).not.toContain(name);
         expect(seen?.has("owned.read")).toBe(false);
@@ -751,22 +744,18 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(granted).toEqual([]);
     });
 
-    it("returns all operations except page operations and the REST-only ones under the project grant policy", async () => {
+    it("returns all operations except the REST-only ones under the project grant policy, the page operations included (issue #1844)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check tools" });
 
       const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
-      const excluded = [
-        "page.get",
-        "page.ensure",
-        "page.restoreVersion",
-        "page.insert",
-        "page.changes",
-        ...REST_ONLY_OPERATION_NAMES,
-      ];
+      const excluded: readonly string[] = REST_ONLY_OPERATION_NAMES;
       expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].filter((name) => !excluded.includes(name)).sort());
       for (const name of excluded) expect(granted).not.toContain(name);
+      for (const name of GENERIC_OPERATION_NAMES.filter((operation) => operation.startsWith("page."))) {
+        expect(granted).toContain(name);
+      }
     });
   });
 });

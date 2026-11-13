@@ -8,6 +8,8 @@ import {
   PageRestoreVersionInputSchema,
   PageGetInputSchema,
   PageEnsureInputSchema,
+  PageEnsureJournalPeriodInputSchema,
+  PageMergeJournalDuplicatesInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
   PageReplaceInputSchema,
@@ -64,7 +66,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 46 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 48 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -77,6 +79,14 @@ export type GenericOperationBindings = {
  */
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },
+  "page.ensureJournalPeriod": {
+    input: PageEnsureJournalPeriodInputSchema,
+    invoke: (service, actor, input) => service.ensureJournalPeriod(actor, input),
+  },
+  "page.mergeJournalDuplicates": {
+    input: PageMergeJournalDuplicatesInputSchema,
+    invoke: (service, actor, input) => service.mergeJournalDuplicates(actor, input),
+  },
   "page.insert": { input: PageInsertInputSchema, invoke: (service, actor, input) => service.insertPage(actor, input) },
   "page.replace": {
     input: PageReplaceInputSchema,

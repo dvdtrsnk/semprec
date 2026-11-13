@@ -27,6 +27,7 @@ import { assertItemLinksExist } from "./assertItemLinksExist.js";
 import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc } from "./docsStore.js";
 import { lockLiveItem } from "./lockLiveItem.js";
+import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 import { planBlockDiff, type BlockDiff } from "./pageBlockDiff.js";
 import { renamePageWithClient } from "./pageOperations.js";
 import { lockLiveChildPageIds, repointTrashedPagePositions } from "./pageTrash.js";
@@ -42,6 +43,11 @@ export function docEtag(doc: Y.Doc): string {
   return createHash("sha256")
     .update(Y.encodeSnapshot(Y.snapshot(doc)))
     .digest("base64url");
+}
+
+/** The refusal of an item whose document is not a page (a canvas): it cannot host one. */
+function notAPageHost(): ValidationError {
+  return new ValidationError("This item cannot host a page", { field: "itemId", reason: "not_a_page_host" });
 }
 
 export interface PageMarkdownRead {
@@ -61,9 +67,7 @@ export interface PageMarkdownRead {
  */
 export async function readPageMarkdown(client: PoolClient, itemId: string): Promise<PageMarkdownRead> {
   const row = await getDocByItemId(client, itemId);
-  if (row && row.kind !== "page") {
-    throw new ValidationError("This item cannot host a page", { field: "itemId", reason: "not_a_page_host" });
-  }
+  if (row && row.kind !== "page") throw notAPageHost();
   const doc = row ? await loadDocWithClient(client, row.id) : new Y.Doc();
   try {
     const blocks = readPageBlocks(doc);
@@ -316,7 +320,8 @@ export interface ReplacePageMarkdownInput {
   origin: CreatedBy;
   /** Who trashes the subpages whose links vanished, passed to the choke point's trash and its hooks. */
   writer: WriterIdentity;
-  actingUserId: string;
+  /** The user the trashed subpages are deleted for, passed to the choke point's trash; absent when no user is acting. */
+  actingUserId?: string | undefined;
 }
 
 export interface ReplacePageMarkdownResult {
@@ -329,6 +334,17 @@ export interface ReplacePageMarkdownResult {
 /** The refusal of a page link block of a replacement body, for the block at `index`: `field` is the block field at fault. */
 function pageLinkRefused(index: number, field: "pageId" | "text", reason: string): ValidationError {
   return new ValidationError("Invalid Markdown", { field: "markdown", path: `block ${index + 1}: ${field}`, reason });
+}
+
+/** Refuses a `page` block of a replacement body that names anything but a live subpage of the host, `ValidationError` on `markdown`. */
+function assertPageLinksNameSubpages(
+  blocks: ReadonlyArray<{ type: string; pageId?: string | null }>,
+  liveSubpageIds: ReadonlySet<string>,
+): void {
+  for (const [index, block] of blocks.entries()) {
+    if (block.type !== "page") continue;
+    if (!liveSubpageIds.has(block.pageId ?? "")) throw pageLinkRefused(index, "pageId", "page_link_invalid");
+  }
 }
 
 /**
@@ -425,6 +441,9 @@ function realBlocks(ydoc: Y.Doc) {
  * version `input.expectedEtag`, in the caller's transaction. Nothing is written, and no document is created, when
  * anything below refuses.
  *
+ * For a writer that carries an `agentProjectItemId` (an agent under a run, or an approved request replayed for one) the
+ * project needs write access to the database that owns the page (`assertAgentPageAccess`), checked first.
+ *
  * The item is resolved live and its row locked (a foreign or unknown id is the one `NotFoundError`), then the
  * Markdown is parsed and checked (`prepareReplacementBlocks`, so an invalid block or item link is a `ValidationError`
  * on `markdown`). A `page` block must name a live subpage of this item (a Pages item whose `parentItemId` is the item);
@@ -458,21 +477,16 @@ export async function replacePageMarkdown(
   itemId: string,
   input: ReplacePageMarkdownInput,
 ): Promise<ReplacePageMarkdownResult> {
+  await assertAgentPageAccess(client, input.writer.agentProjectItemId, itemId, "write");
   const host = await lockLiveItem(client, itemId);
   const blocks = await prepareReplacementBlocks(client, input.markdown);
 
   const pagesDatabase = await getDatabaseByModuleId(client, PAGES_MODULE_ID);
   const liveSubpageIds = new Set(pagesDatabase ? await lockLiveChildPageIds(client, pagesDatabase.id, host.id) : []);
-  for (const [index, block] of blocks.entries()) {
-    if (block.type !== "page") continue;
-    const pageId = block.pageId ?? "";
-    if (!liveSubpageIds.has(pageId)) throw pageLinkRefused(index, "pageId", "page_link_invalid");
-  }
+  assertPageLinksNameSubpages(blocks, liveSubpageIds);
 
   const docRow = await getDocByItemId(client, host.id);
-  if (docRow && docRow.kind !== "page") {
-    throw new ValidationError("This item cannot host a page", { field: "itemId", reason: "not_a_page_host" });
-  }
+  if (docRow && docRow.kind !== "page") throw notAPageHost();
   const loaded = docRow ? await loadDocWithClient(client, docRow.id) : new Y.Doc();
   let current: ReturnType<typeof realBlocks>;
   try {
@@ -526,4 +540,42 @@ export async function replacePageMarkdown(
     });
   }
   return { etag: await etagOfItemPage(client, host.id), trashedPages };
+}
+
+export interface PageReplaceCheckResult {
+  /** The item's page document, or `null` when it has none. */
+  docId: string | null;
+  /** The version token of the page, equal to the `expectedEtag` the check was given. */
+  etag: string;
+}
+
+/**
+ * The read-only counterpart of the refusals at the head of `replacePageMarkdown`, for the approval of a replace
+ * (`pageReplaceApproval.ts`): the item is resolved live and its row locked, the Markdown is parsed and checked
+ * (`prepareReplacementBlocks`), every `page` block must name a live subpage of the item, and the page must still have
+ * the version `expectedEtag` (`PageVersionConflictError`, which carries the current token). It writes nothing and locks
+ * no subpage and no document, so it takes no lock in another order than `replacePageMarkdown`; the replace that
+ * follows in the same transaction takes them and compares the token again.
+ */
+export async function checkPageReplace(
+  client: PoolClient,
+  itemId: string,
+  markdown: string,
+  expectedEtag: string,
+): Promise<PageReplaceCheckResult> {
+  const host = await lockLiveItem(client, itemId);
+  const blocks = await prepareReplacementBlocks(client, markdown);
+  const pagesDatabase = await getDatabaseByModuleId(client, PAGES_MODULE_ID);
+  const { rows } = pagesDatabase
+    ? await client.query<{ id: string }>(
+        `SELECT id FROM items WHERE database_id = $1 AND properties->>'parentItemId' = $2 AND deleted_at IS NULL`,
+        [pagesDatabase.id, host.id],
+      )
+    : { rows: [] };
+  assertPageLinksNameSubpages(blocks, new Set(rows.map((row) => row.id)));
+  const docRow = await getDocByItemId(client, host.id);
+  if (docRow && docRow.kind !== "page") throw notAPageHost();
+  const etag = await etagOfItemPage(client, host.id);
+  if (etag !== expectedEtag) throw new PageVersionConflictError(etag);
+  return { docId: docRow?.id ?? null, etag };
 }

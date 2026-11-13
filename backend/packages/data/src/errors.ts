@@ -20,6 +20,18 @@ export class ValidationError extends ChokePointError {
   }
 }
 
+/**
+ * An external host the request depended on could not be reached or did not answer with a success status (issue
+ * gh-1812: the host of a library cover candidate). Distinct from `ValidationError`: the caller sent nothing wrong
+ * and may try again. `details` is flat and holds only a reason keyword, never a URL or host.
+ */
+export class UpstreamUnavailableError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(502, "upstream_unavailable", message, details);
+    this.name = "UpstreamUnavailableError";
+  }
+}
+
 export class ForbiddenError extends ChokePointError {
   constructor(message: string, details?: unknown, code = "forbidden") {
     super(403, code, message, details);

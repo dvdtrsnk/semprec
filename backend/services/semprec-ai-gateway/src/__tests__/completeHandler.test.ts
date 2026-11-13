@@ -1,7 +1,7 @@
 import { createServer, request, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createPool, seedSystem } from "@semprec/data";
+import { createPool, getAiUsageReport, seedSystem } from "@semprec/data";
 import { getTenantZeroId, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { getTraceContext, runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
@@ -359,6 +359,53 @@ describe("POST /internal/complete", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it("dispatches transcript_event_match with a null projectItemId, records an unattributed audit row and the usage report counts it", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_event_match",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "transcript_event_match" }]);
+    const report = await runInTenant(getTenantZeroId(), () =>
+      getAiUsageReport(pool, {
+        from: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+        to: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      }),
+    );
+    expect(report.byOperation.map((entry) => ({ operation: entry.operation, callCount: entry.callCount }))).toEqual([
+      { operation: "transcript_event_match", callCount: 1 },
+    ]);
+  });
+
+  it("rejects transcript_event_match with a project item id with 400 validation_failed and no side effects", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_event_match",
+      projectItemId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
   });
 
   it("rejects a temperature outside [0, 1] with 400 validation_failed", async () => {

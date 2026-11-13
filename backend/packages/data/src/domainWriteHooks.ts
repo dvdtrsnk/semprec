@@ -10,6 +10,7 @@ import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWr
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { libraryCoverPreWriteTransform, prepareLibraryCoverWrite } from "./library/libraryCoverHooks.js";
+import { libraryCoverCandidatesPurgeHook } from "./library/libraryCoverCandidatesPurgeHook.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./seed/libraryModuleKeys.js";
 import {
   mailboxConnectionLimitCreateHook,
@@ -326,3 +327,7 @@ registerItemUpdateHook(taskCompletedInEventHook);
 // recomputations use. Recorded in docs/adr/2026-11-13-event-trash-and-restore-write-the-tasks-they-host.md.
 registerItemDeleteHook(eventHostedTasksDeleteHook);
 registerItemRestoreHook(eventHostedTasksRestoreHook);
+
+// Issue gh-1812: the cover candidates of a permanently deleted item go with it, whatever its database (an item of
+// another database has none). gh-1812 declares only #1809 as a blocker, and that one for shared-file ordering.
+registerItemPurgeHook(libraryCoverCandidatesPurgeHook);

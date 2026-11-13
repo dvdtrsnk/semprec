@@ -19,6 +19,7 @@ const valid: Record<string, Record<string, unknown>> = {
   approvalRequest: { kind: "approvalRequest", approvalRequestId: id() },
   taskOccurrence: { kind: "taskOccurrence", seriesId: id(), occurrenceDate: "2026-11-16" },
   taskTrace: { kind: "taskTrace", itemId: id(), databaseId: id(), traceDay: "2026-11-02" },
+  sleepNight: { kind: "sleepNight", night: "2026-10-16" },
 };
 
 describe("sempMessageRefSchema", () => {
@@ -120,6 +121,48 @@ describe("sempMessageRefSchema", () => {
       expect(key(trace({ itemId, databaseId }))).toBe(key(trace({ itemId, databaseId })));
       expect(key(trace({ itemId, databaseId }))).not.toBe(key(trace({ itemId, databaseId, traceDay: "2026-11-03" })));
       expect(key(trace({ itemId, databaseId }))).not.toBe(key(trace({ itemId: id(), databaseId })));
+    });
+  });
+
+  describe("sleep night reference (issue #1853)", () => {
+    const night = (value: unknown) => ({ kind: "sleepNight", night: value });
+
+    it.each([
+      "2026-13-01",
+      "2026-02-30",
+      "2027-02-29",
+      "2026-00-10",
+      "2026-10-00",
+      "2026-1-01",
+      "2026-10-16T00:00:00Z",
+      " 2026-10-16",
+      "",
+      "tonight",
+    ])("refuses %j as the night", (value) => {
+      expect(sempMessageRefSchema.safeParse(night(value)).success).toBe(false);
+      expect(labeledSempMessageRefSchema.safeParse({ ...night(value), label: "Night" }).success).toBe(false);
+    });
+
+    it("refuses a night that is not a string", () => {
+      expect(sempMessageRefSchema.safeParse(night(20261016)).success).toBe(false);
+      expect(sempMessageRefSchema.safeParse({ kind: "sleepNight" }).success).toBe(false);
+    });
+
+    it("accepts a leap day and refuses it in a common year", () => {
+      expect(sempMessageRefSchema.safeParse(night("2028-02-29")).success).toBe(true);
+      expect(sempMessageRefSchema.safeParse(night("2027-02-29")).success).toBe(false);
+    });
+
+    it("carries no item id and refuses one, as it refuses any extra key", () => {
+      expect(sempMessageRefSchema.safeParse({ ...night("2026-10-16"), itemId: id() }).success).toBe(false);
+      expect(sempMessageRefSchema.safeParse({ ...night("2026-10-16"), databaseId: id() }).success).toBe(false);
+    });
+
+    it("keys a night as sleepNight:<night>, equal for equal nights and distinct for different ones", () => {
+      const key = (value: unknown) => messageRefKey(sempMessageRefSchema.parse(value));
+      expect(key(night("2026-10-16"))).toBe("sleepNight:2026-10-16");
+      expect(key(night("2026-10-16"))).toBe(key(night("2026-10-16")));
+      expect(key(night("2026-10-16"))).not.toBe(key(night("2026-10-17")));
     });
   });
 

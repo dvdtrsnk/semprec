@@ -5,6 +5,7 @@ import type {
   AgentMessage,
   AgentSession,
   CreateAgentSession,
+  ToolCallTarget,
   ToolEventMetadata,
   UserTurnContextRef,
 } from "@semprec/agent-runtime";
@@ -39,6 +40,31 @@ function assistantText(message: AssistantMessage): string {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("");
+}
+
+/** The databases and items a tool call's arguments name, as the call's events carry them. */
+function targetsOf(args: unknown): { targetDatabaseId?: string; targetItemId?: string } {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return {};
+  return {
+    ...("databaseId" in args && typeof args.databaseId === "string" ? { targetDatabaseId: args.databaseId } : {}),
+    ...("itemId" in args && typeof args.itemId === "string" ? { targetItemId: args.itemId } : {}),
+  };
+}
+
+/**
+ * The `toolCall` blocks of an assistant message that are generic operations, with their operation and targets
+ * (issue #2001): pi emits the message before it starts the calls, so the run log needs them to store a content-bearing
+ * write to a sensitive database redacted in the message too. A call of any other tool is not listed.
+ */
+function toolCallTargetsOfContent(
+  content: AssistantMessage["content"],
+  toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
+): ToolCallTarget[] {
+  return content.flatMap((block): ToolCallTarget[] => {
+    if (block.type !== "toolCall") return [];
+    const operation = toolEventMetadata.get(block.name)?.operation;
+    return operation === undefined ? [] : [{ toolCallId: block.id, operation, ...targetsOf(block.arguments) }];
+  });
 }
 
 /**
@@ -79,6 +105,7 @@ function toAgentMessage(
           errorMessage: "AI budget exceeded",
         };
       }
+      const toolCallTargets = toolCallTargetsOfContent(message.content, toolEventMetadata);
       return {
         kind: "message",
         role: message.role,
@@ -86,20 +113,13 @@ function toAgentMessage(
         content: message.content,
         stopReason: message.stopReason,
         errorMessage: message.errorMessage,
+        ...(toolCallTargets.length > 0 ? { toolCallTargets } : {}),
       };
     }
     case "tool_execution_start": {
       const metadata = toolEventMetadata.get(event.toolName);
       const args: unknown = event.args;
-      const target =
-        metadata && typeof args === "object" && args !== null && !Array.isArray(args)
-          ? {
-              ...("databaseId" in args && typeof args.databaseId === "string"
-                ? { targetDatabaseId: args.databaseId }
-                : {}),
-              ...("itemId" in args && typeof args.itemId === "string" ? { targetItemId: args.itemId } : {}),
-            }
-          : {};
+      const target = metadata ? targetsOf(args) : {};
       if (metadata) targets.set(event.toolCallId, target);
       return {
         kind: "tool_use",

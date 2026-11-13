@@ -91,6 +91,7 @@ const TENANT_TABLES = [
   "inbox_attachments",
   "notification_preferences",
   "transcript_action_item_states",
+  "library_cover_candidates",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -143,6 +144,11 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   { table: "doc_history_updates", columns: ["update_id"], reason: "scoped by the server-generated update id" },
   { table: "task_recurrence", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "item_automation", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  {
+    table: "library_cover_candidates",
+    columns: ["item_id", "idx"],
+    reason: "scoped by the server-generated item id",
+  },
   { table: "mail_account_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_drafts", columns: ["email_item_id"], reason: "scoped by the server-generated email item id" },
   {

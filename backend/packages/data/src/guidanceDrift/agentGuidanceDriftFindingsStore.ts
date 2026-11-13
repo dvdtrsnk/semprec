@@ -8,6 +8,7 @@ import { validateGuidanceDriftContradiction } from "@semprec/shared";
 import { requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInvalidation.js";
 
 interface FindingRow {
   id: string;
@@ -42,6 +43,11 @@ const COLUMNS = "id, project_item_id, fingerprint, payload, status, first_seen_a
  * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceDriftFindingStore`
  * (issue #85), backed by migration 0035's `agent_guidance_drift_findings` table and its
  * `unique(project_item_id, fingerprint)` constraint.
+ *
+ * A write that changes which findings of a project are active (a finding raised or reactivated, a
+ * finding resolved, dismissed or decided) announces the change of the project's agent setup once the
+ * transaction commits (`publishProjectAgentInvalidation`); observing a finding that is already active
+ * and a call that finds nothing to change announce nothing.
  */
 export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClient> = {
   async listActive(tx, projectItemId) {
@@ -72,6 +78,7 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
          RETURNING ${COLUMNS}`,
         [input.projectItemId, input.fingerprint, payloadJson, input.seenAt],
       );
+      publishProjectAgentInvalidation(tx, input.projectItemId);
       return {
         finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings insert")),
         transitionedToActive: true,
@@ -90,6 +97,7 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
        RETURNING ${COLUMNS}`,
       [existing.id, input.seenAt, payloadJson],
     );
+    if (wasResolved) publishProjectAgentInvalidation(tx, input.projectItemId);
     return {
       finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings reactivate/observe")),
       transitionedToActive: wasResolved,
@@ -115,6 +123,7 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
        RETURNING ${COLUMNS}`,
       [findingId, resolvedAt],
     );
+    if (wasActive) publishProjectAgentInvalidation(tx, existing.project_item_id);
     return {
       finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings resolve")),
       transitionedToResolved: wasActive,
@@ -130,6 +139,8 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
       [findingId, decision.status, decision.choice, decision.userId, decision.at],
     );
     if (result.rowCount === 0) throw new NotFoundError("Guidance drift finding not found");
-    return mapRow(requireSingleRow(result.rows, "agent_guidance_drift_findings decide"));
+    const decided = mapRow(requireSingleRow(result.rows, "agent_guidance_drift_findings decide"));
+    publishProjectAgentInvalidation(tx, decided.projectItemId);
+    return decided;
   },
 };

@@ -29,6 +29,7 @@ import {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
+  TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY,
 } from "../transcription/transcriptionComputedKeys.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -165,6 +166,7 @@ export async function seedSystem(
   computedKeyRegistry.add(TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPT_LANGUAGE_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY);
 
   // The systemDatabases module is always active for this seed: it's the retrofit manifest
   // (module-contract issue #226) describing the ten hardcoded databases this function itself

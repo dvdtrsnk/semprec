@@ -32,7 +32,6 @@ import {
   lockItemById,
   listPropertiesByDatabase,
   markItemAutomationDone,
-  matchTranscriptToEvent,
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
   readRecordingRequest,
@@ -83,6 +82,7 @@ import {
   parseMeetingNotesContent,
   recordingDay,
 } from "./transcriptSummary.js";
+import { runEventMatch } from "./eventRecommendationStep.js";
 import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
 import { linkTranscriptToUploadEvent } from "./uploadEventLink.js";
 
@@ -747,29 +747,32 @@ async function runSummarizeStep(
 }
 
 /**
- * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose time
- * interval overlaps the recording's interval, or otherwise creates the transcript's single
- * suggestion card. A retry of an unfinished transcript converges: an existing card, or an existing
- * edge to an Event that is not in the Trash, is left as it is; an edge to an Event in the Trash is
- * no link (issue #1743). A transcript whose `status` is already `done` is not matched at all (issue
- * #1712), so a later run of its job neither links an Event again nor adds a card after the user
- * removed the edge.
- * The status is read from the row this transaction locked. See
- * docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
+ * Step 6 (`match`): links the one Event whose time interval overlaps the recording's interval, or
+ * otherwise creates the transcript's single suggestion card; with two or more overlapping Events one
+ * paid call recommends one of them (`runEventMatch`, issue #1848). A retry of an unfinished transcript
+ * converges: an existing card, or an existing edge to an Event that is not in the Trash, is left as it
+ * is; an edge to an Event in the Trash is no link (issue #1743). A transcript whose `status` is already
+ * `done` is not matched at all (issue #1712), so a later run of its job neither links an Event again
+ * nor adds a card after the user removed the edge. The status is read from the row `lockTranscription`
+ * locked. See docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
  */
-async function runMatchStep({
-  pool,
-  filesDatabaseId,
-  fileItemId,
-  transcriptId,
-}: TranscriptionStepContext): Promise<void> {
-  await withTransaction(pool, async (client) => {
-    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
-    if (locked.properties.status === "done") return;
-    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    const { durationSeconds } = requirePrepareCheckpoint(source, fileItemId);
-    await matchTranscriptToEvent(client, { transcriptId, durationSeconds });
-  });
+function runMatchStep(context: TranscriptionStepContext, completionClient: AiGatewayClientPort): Promise<void> {
+  const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
+  return runEventMatch(
+    {
+      pool,
+      transcriptId,
+      lockTranscription: (client) => requireTranscriptionUnlocked(client, context),
+      readSource: async (client, lock) => {
+        const source = requireSource(
+          await (lock ? lockItemById : getItemById)(client, filesDatabaseId, fileItemId),
+          fileItemId,
+        );
+        return { source, durationSeconds: requirePrepareCheckpoint(source, fileItemId).durationSeconds };
+      },
+    },
+    completionClient,
+  );
 }
 
 /**
@@ -880,7 +883,7 @@ function createTranscriptionSteps(
     (context) => runAsrStep(context, blobStorage, gatewayClient),
     runMergeStep,
     (context) => runSummarizeStep(context, summaryClient),
-    runMatchStep,
+    (context) => runMatchStep(context, summaryClient),
     (context) => runSuggestSpeakersStep(context, summaryClient),
     runFinalizeStep,
   ];

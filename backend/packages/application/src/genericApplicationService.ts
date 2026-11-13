@@ -4,10 +4,14 @@ import type { Pool } from "pg";
 import {
   createChokePoint,
   createDocStore,
+  ensureJournalPeriodForWriter,
   ForbiddenError,
+  listUnreadableDatabaseIds,
+  mergeJournalDuplicatesForWriter,
   NotFoundError,
   PAGES_MODULE_ID,
   ValidationError,
+  withTransaction,
   type Actor,
   type InitialItemRelation,
   type WriterIdentity,
@@ -18,8 +22,13 @@ import type {
   GenericApplicationPort,
   Item,
   ItemPatchOutput,
+  OutputByOperation,
   Page,
 } from "@semprec/shared";
+
+type BreadcrumbEntry = NonNullable<
+  Extract<OutputByOperation["page.get"], { kind: "page"; breadcrumbs: unknown }>["breadcrumbs"]
+>[number];
 
 /**
  * The sole neutral implementation of `GenericApplicationPort` (issue #219): built only over
@@ -530,21 +539,40 @@ export function createGenericApplicationService(
       return chokePoint.relinkValue(input, actor.userId, { ...writer, writerKind: writer.writerKind });
     },
 
+    // ---- pages ----
+    // The page operations of an agent run are held to its project's grant on the database that owns the page
+    // (`resolvePageOwnerDatabase`). Each method below that reads or writes a page hands the actor's project to the
+    // document store, which checks it in the transaction of the operation; `replacePage` hands it over in its writer and
+    // `restorePageVersion` is checked by its approval projection, because an agent's call to either is held for approval
+    // first. A person, the system and an `/mcp` call on a human session carry no project and are not checked
+    // (docs/adr/2026-11-13-page-operations-follow-the-owner-database-grant.md).
     async getPage(actor, input) {
       const item = await requireItem(input.itemId);
+      const { agentProjectItemId } = writerIdentityOf(actor);
       if (input.format === "markdown") {
-        const { docId, markdown, etag } = await docStore.readPageMarkdown(item.id);
+        const { docId, markdown, etag } = await docStore.readPageMarkdown(item.id, agentProjectItemId);
         return { docId, kind: "page", markdown, etag };
       }
       const summary = await docStore.getPageSummary(
         item.id,
         (await chokePoint.findUserLocale(actor.userId)) ?? "en",
         input.limit,
+        agentProjectItemId,
       );
       const path = await chokePoint.getItemPath(item.id);
+      // An ancestor can live in a database this project may not read (a database nested under an item of a sensitive
+      // one), so for an agent its trail entry names the item and nothing else, as a hidden relation target does
+      // (docs/adr/2026-11-12-per-database-agent-grants.md).
+      const unreadableDatabaseIds =
+        agentProjectItemId === undefined
+          ? new Set<string>()
+          : await withTransaction(pool, (client) => listUnreadableDatabaseIds(client, agentProjectItemId));
       let hostedByPagesDatabase = false;
       const breadcrumbs = await Promise.all(
-        path.map(async (entry) => {
+        path.map(async (entry): Promise<BreadcrumbEntry> => {
+          if (unreadableDatabaseIds.has(entry.databaseId)) {
+            return { itemId: entry.id, title: "", databaseKey: null, hidden: true };
+          }
           const database = await chokePoint.getDatabase(entry.databaseId);
           const properties = await chokePoint.listProperties(entry.databaseId);
           const titleKey = properties
@@ -569,36 +597,69 @@ export function createGenericApplicationService(
     },
 
     /** The change list of one page; the docs module resolves the item in the caller's tenant and bounds the replay. */
-    async listPageChanges(_actor, input) {
-      return docStore.listPageChanges(input.itemId, { since: new Date(input.since), by: input.by, limit: input.limit });
+    async listPageChanges(actor, input) {
+      return docStore.listPageChanges(
+        input.itemId,
+        { since: new Date(input.since), by: input.by, limit: input.limit },
+        writerIdentityOf(actor).agentProjectItemId,
+      );
     },
 
-    async ensurePage(_actor, input) {
-      return docStore.ensurePage(input.itemId);
+    /** The Journal entry of a period and its page, created when missing; an agent needs write access to the Journal database. */
+    async ensureJournalPeriod(actor, input) {
+      return withTransaction(pool, (client) =>
+        ensureJournalPeriodForWriter(
+          client,
+          input.type,
+          { date: input.date, period: input.period },
+          writerIdentityOf(actor),
+        ),
+      );
+    },
+
+    /**
+     * Merges the two live entries of a Journal period that were created first, or answers `{ merged: false }`. The
+     * merge itself needs no approval here: a person's call is their decision, and an agent's call is held for approval
+     * by the gateway before it can reach this method (issue #2017).
+     */
+    async mergeJournalDuplicates(actor, input) {
+      return withTransaction(pool, (client) => mergeJournalDuplicatesForWriter(client, input, writerIdentityOf(actor)));
+    },
+
+    async ensurePage(actor, input) {
+      return docStore.ensurePage(input.itemId, writerIdentityOf(actor).agentProjectItemId);
     },
 
     /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
     async createSubpage(actor, input) {
-      return docStore.createSubpage(input, toActor(actor).type);
+      return docStore.createSubpage(input, toActor(actor).type, writerIdentityOf(actor).agentProjectItemId);
     },
 
     /** The copies are authored like `createSubpage`'s block; the suffix of the copy's title follows the locale of the user the actor is or acts for (English when that user is not found). */
     async duplicatePage(actor, input) {
-      return docStore.duplicatePage(input.pageItemId, {
-        origin: toActor(actor).type,
-        locale: (await chokePoint.findUserLocale(actor.userId)) ?? "en",
-      });
+      return docStore.duplicatePage(
+        input.pageItemId,
+        {
+          origin: toActor(actor).type,
+          locale: (await chokePoint.findUserLocale(actor.userId)) ?? "en",
+        },
+        writerIdentityOf(actor).agentProjectItemId,
+      );
     },
 
     /** The parent's block is rewritten as the caller, with the origin split `createSubpage` makes. */
     async renamePage(actor, input) {
-      return docStore.renamePage(input, toActor(actor).type);
+      return docStore.renamePage(input, toActor(actor).type, writerIdentityOf(actor).agentProjectItemId);
     },
 
     /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */
     async insertPage(actor, input) {
       const { itemId, placement, markdown, blockIds } = input;
-      return docStore.insertPageMarkdown(itemId, { placement, markdown, blockIds, origin: toActor(actor).type });
+      return docStore.insertPageMarkdown(
+        itemId,
+        { placement, markdown, blockIds, origin: toActor(actor).type },
+        writerIdentityOf(actor).agentProjectItemId,
+      );
     },
 
     /**
@@ -615,7 +676,6 @@ export function createGenericApplicationService(
       });
     },
 
-    // ---- pages ----
     /** The docs module refuses an unknown or non-page item (404), a future `at` (400) and an `at` outside the retained window (410). */
     async restorePageVersion(_actor, input) {
       return docStore.restoreVersion(input.itemId, new Date(input.at));

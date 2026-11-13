@@ -13,6 +13,7 @@ import { getItemById } from "./chokePoint/itemsStore.js";
 import { getTenantUserId, getUserById } from "./auth/usersStore.js";
 import { PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { projectAgentGuidanceVersionStore } from "./projectAgentGuidanceVersionStore.js";
+import { publishProjectAgentInvalidation } from "./projectAgent/projectAgentInvalidation.js";
 
 type ProjectAgentGuidanceRow = {
   project_item_id: string;
@@ -52,6 +53,7 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
     await projectAgentGuidanceVersionStore.remember(tx, projectItemId, current.updated_at);
     const result = await tx.query("DELETE FROM project_agent_guidance WHERE project_item_id = $1", [projectItemId]);
     if (result.rowCount !== 1) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+    publishProjectAgentInvalidation(tx, projectItemId);
   },
   async load(tx, projectItemId) {
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
@@ -76,6 +78,7 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
       [row.projectItemId, row.ownerUserId, row.markdown, version],
     );
+    publishProjectAgentInvalidation(tx, row.projectItemId);
     return mapRow(requireSingleRow(rows, "project_agent_guidance upsert"));
   },
 

@@ -39,6 +39,7 @@ import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.j
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "../tenancy/tenantPurgeJob.js";
 import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
+import { replaceCoverCandidates } from "../library/coverCandidatesStore.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import {
   createRuntimeRolePool,
@@ -441,6 +442,16 @@ describe("tenant purge (issue #1055)", () => {
         }),
       );
     }
+    for (const tenant of [tenantA, tenantB]) {
+      // A cover candidate row for an item id of the tenant; the purge deletes it with the tenant's other rows.
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          replaceCoverCandidates(client, randomUUID(), [
+            { source: "tmdb", title: "Purge me", subtitle: null, imageUrl: "https://covers.example.test/p.jpg" },
+          ]),
+        ),
+      );
+    }
     await runInTenant(tenantB, () => enqueueJob(pool, "purgeTestJob", { which: "b" }));
     await beginDeletion(tenantB);
     const { rows: before } = await adminPool.query<{ status_changed_at: Date }>(
@@ -452,6 +463,8 @@ describe("tenant purge (issue #1055)", () => {
     expect(countsA.mail_thread_aliases).toBe(1);
     expect((await rowCounts(tenantB)).mail_thread_aliases).toBe(1);
     expect(countsA.item_origins).toBe(1);
+    expect(countsA.library_cover_candidates).toBe(1);
+    expect((await rowCounts(tenantB)).library_cover_candidates).toBe(1);
     expect(countsA.semp_problem_occurrences).toBe(1);
     expect((await rowCounts(tenantB)).semp_problem_occurrences).toBe(1);
     expect((await rowCounts(tenantB)).item_origins).toBe(1);

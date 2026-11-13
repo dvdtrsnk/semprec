@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import { writeNotification } from "../notifications/notify.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { publishSempStatusInvalidation } from "../sempStatus/sempStatusInvalidation.js";
 
 /** Mirrors the CHECK on `semp_problems.category`. */
 export type SempProblemCategory = "mail" | "agents" | "guidance" | "automation" | "transcription" | "backup";
@@ -54,6 +55,10 @@ interface RaiseRow {
  * (issue #1466): one notification per problem and per severity rise, which the fanout job pushes
  * according to the user's preferences. A merge writes no notification. The returned outcome tells
  * the caller which of the three happened.
+ *
+ * Every raise that changed the status announces `sempStatus` once the transaction commits (a new
+ * problem, a severity rise, a merged occurrence); a replay of an occurrence that was already counted
+ * and raised no severity changed nothing and announces nothing.
  *
  * One INSERT ... ON CONFLICT on the partial unique index `semp_problems_active_dedupe_uq`. A
  * transaction-scoped advisory lock on the key, taken first, makes the prior severity the
@@ -137,6 +142,7 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
   }
   const escalated = row.prior_severity === "warning" && row.severity === "critical";
   const outcome: RaiseProblemOutcome = row.inserted ? "created" : escalated ? "escalated" : "merged";
+  if (outcome !== "merged" || countOccurrence) publishSempStatusInvalidation(client);
   if (outcome !== "merged") {
     // The transition instance names the severity, so a severity rise is a new transition of the
     // same problem. The severity comes from RETURNING, not from the input.
@@ -155,7 +161,8 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
 
 /**
  * Resolves the active problem with `dedupeKey` in the caller's open transaction (it never opens
- * one). Idempotent: a key with no active problem changes nothing. Returns whether a row changed.
+ * one). Idempotent: a key with no active problem changes nothing. Returns whether a row changed;
+ * a change announces `sempStatus` once the transaction commits, no change announces nothing.
  */
 export async function resolveProblem(
   client: PoolClient,
@@ -169,5 +176,7 @@ export async function resolveProblem(
       WHERE tenant_id = app_tenant_default() AND dedupe_key = $1 AND resolved_at IS NULL`,
     [input.dedupeKey, input.resolutionKind],
   );
-  return (result.rowCount ?? 0) > 0;
+  const changed = (result.rowCount ?? 0) > 0;
+  if (changed) publishSempStatusInvalidation(client);
+  return changed;
 }

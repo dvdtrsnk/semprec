@@ -18,6 +18,7 @@ import { getBlob } from "../blobs/blobsStore.js";
 import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
 import { listTranscriptSpeakers } from "../transcription/transcriptionSpeakerEdges.js";
 import type { BlobRow, ItemRow } from "../types.js";
+import { readSleepNightContext } from "./sempSleepNightContext.js";
 
 /** Ephemeral tenant-scoped data; never persist this projection in a run or event. */
 export interface SempRefContext {
@@ -210,17 +211,37 @@ export interface SempRefReader {
   agentProjectItemId: string;
 }
 
+/** What the read knows about the turn that asks for it. */
+export interface SempRefReadOptions {
+  /**
+   * True when the refs are those of the message of the turn that is starting. Only a `sleepNight` ref depends on it
+   * (issue #1853): its sleep databases are sensitive, so the night is read under the reader's database grants, or
+   * because the turn attached it. Every other kind is read because the user attached it, whatever the turn.
+   */
+  attachedThisTurn?: boolean;
+}
+
 /**
  * Composes existing tenant readers for exactly the reference carried by this turn. The referenced item itself is
  * read because the user attached it; the items it relates to are read only as far as `reader` may read them.
+ *
+ * A `sleepNight` ref is read in a REPEATABLE READ transaction (the caller opens it; any other level throws an `Error`)
+ * and throws a `ForbiddenError` when neither a grant of `reader` nor `options.attachedThisTurn` allows it.
  */
 export async function readSempRefContext(
   client: PoolClient,
   ref: SempMessageRef,
   reader?: SempRefReader,
+  options: SempRefReadOptions = {},
 ): Promise<SempRefContext | null> {
   requireManagedTransaction(client);
   if (currentTenantScope()?.kind !== "tenant") throw new Error("Semp reference read requires tenant scope");
+  if (ref.kind === "sleepNight") {
+    return readSleepNightContext(client, ref.night, {
+      agentProjectItemId: reader?.agentProjectItemId,
+      attachedThisTurn: options.attachedThisTurn === true,
+    });
+  }
   if (ref.kind === "agentRun") {
     const run = await getAgentRun(client, ref.agentRunId);
     if (!run) return null;

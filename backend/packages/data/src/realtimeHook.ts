@@ -29,6 +29,21 @@ import type { CreatedBy } from "./types.js";
  * `scope: "mailThread"` names one mail thread (a group of Emails items) that changed, for example
  * because a message arrived in it; the client refetches the thread, the mailbox counts and the overview.
  * Without a `userId` it reaches every socket of the publisher's tenant, as the other scopes do.
+ *
+ * `scope: "agentRuns"` names one agent run whose existence, status or approval state changed and the
+ * project it belongs to (`null` for a run without a project); the client refetches the run lists.
+ * Its `userId` is the actor user of the run, and `@semprec/realtime` delivers the frame to that user's
+ * sockets only.
+ *
+ * `scope: "projectAgent"` names one project whose agent setup (guidance, tool grants, user heartbeats,
+ * guidance drift findings) changed; the client refetches the project's agent summary. Its publishers
+ * pass no `userId` (the writes that cause it include background ones with no acting user), and
+ * `@semprec/realtime` delivers the frame to every socket of the publisher's tenant whatever the event
+ * says: the field exists only because every variant of this union has it.
+ *
+ * `scope: "sempStatus"` says that the tenant's Semp status (its problems and the services derived from
+ * them) changed and names nothing else, so it carries no problem text; the client refetches the status.
+ * It is delivered to every socket of the publisher's tenant, as `projectAgent` is.
  */
 export type InvalidationEvent =
   | {
@@ -49,7 +64,10 @@ export type InvalidationEvent =
     }
   | { scope: "schema"; databaseId: string; userId?: string }
   | { scope: "approvalRequest"; approvalRequestId: string; userId?: string }
-  | { scope: "mailThread"; threadId: string; userId?: string };
+  | { scope: "mailThread"; threadId: string; userId?: string }
+  | { scope: "agentRuns"; projectItemId: string | null; agentRunId: string; userId?: string }
+  | { scope: "projectAgent"; projectItemId: string; userId?: string }
+  | { scope: "sempStatus"; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;
 

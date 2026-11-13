@@ -5,6 +5,7 @@ import { writeNotification } from "../notifications/notify.js";
 import { withTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode } from "./agentRunErrorCodes.js";
+import { publishAgentRunInvalidation } from "./agentRunInvalidation.js";
 
 export { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode };
 
@@ -200,7 +201,9 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
       actorUserId,
     ],
   );
-  return mapRow(requireSingleRow(rows, "agent_runs row"));
+  const run = mapRow(requireSingleRow(rows, "agent_runs row"));
+  await publishAgentRunInvalidation(client, run.id);
+  return run;
 }
 
 /**
@@ -233,7 +236,11 @@ export async function createChainedAgentRun(
       input.task,
     ],
   );
-  if (rows[0]) return mapRow(rows[0]);
+  if (rows[0]) {
+    const run = mapRow(rows[0]);
+    await publishAgentRunInvalidation(client, run.id);
+    return run;
+  }
   if (!(await getAgentRun(client, input.retryOfRunId))) {
     throw new NotFoundError(`Agent run '${input.retryOfRunId}' not found`);
   }
@@ -275,6 +282,9 @@ export async function getLatestRunOfOccurrence(
  * A `done` close stores the given result snapshot. An `error` close takes no free text: it stores
  * the canonical `errorCode` as both `error_code` and `result`, so no exception text and no user
  * content remain in the row (issue #1824). `errorDetail` is a plain object of ids and counters.
+ *
+ * A close this call performed announces the run to its actor (`publishAgentRunInvalidation`); a lost
+ * race announces nothing.
  */
 export function finishAgentRun(
   client: Pool | PoolClient,
@@ -304,7 +314,10 @@ export async function finishAgentRun(
      WHERE id = $1 AND status = 'running'`,
     [agentRunId, status, errorCode ?? resultOrErrorCode, errorCode, detail],
   );
-  if (updated.rowCount === 1) return true;
+  if (updated.rowCount === 1) {
+    await publishAgentRunInvalidation(client, agentRunId);
+    return true;
+  }
   const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);
   if (rows.length === 0) throw new NotFoundError(`agent run ${agentRunId} not found`);
   return false;

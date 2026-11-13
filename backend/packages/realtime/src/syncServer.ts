@@ -134,6 +134,12 @@ function rejectUpgrade(socket: Duplex): void {
  *   sockets of the owner it names inside the envelope's tenant; a message without an owner is dropped.
  * - `invalidation` with `scope: "mailThread"` sends a thin frame naming the thread to every socket of the
  *   envelope's tenant, narrowed to one user's sockets when the message names one.
+ * - `invalidation` with `scope: "agentRuns"` sends a thin frame naming the run and its project only to the
+ *   sockets of the run's actor user inside the envelope's tenant; a message without a user is dropped.
+ * - `invalidation` with `scope: "projectAgent"` sends a thin frame naming the project to every socket of the
+ *   envelope's tenant.
+ * - `invalidation` with `scope: "sempStatus"` sends a frame with no field but its scope to every socket of
+ *   the envelope's tenant.
  * - `invalidation` with `scope: "inboxCards"` sends a thin frame naming the card and the operation to
  *   every socket of the envelope's tenant, narrowed to one user's sockets when the message names one.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
@@ -450,6 +456,37 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
               { type: "invalidate", scope: "mailThread", threadId: parsed.threadId },
               parsed.userId,
             );
+            return;
+          }
+          if (parsed.scope === "agentRuns") {
+            // Actor-only: a message that names no user has no socket it may go to, so it is dropped
+            // rather than widened to the tenant.
+            if (parsed.userId === undefined) {
+              logger.warn({ type: parsed.type, scope: parsed.scope }, "realtime_agent_runs_without_user");
+              return;
+            }
+            sendToTenant(
+              tenantId,
+              {
+                type: "invalidate",
+                scope: "agentRuns",
+                projectItemId: parsed.projectItemId,
+                agentRunId: parsed.agentRunId,
+              },
+              parsed.userId,
+            );
+            return;
+          }
+          if (parsed.scope === "projectAgent") {
+            sendToTenant(tenantId, {
+              type: "invalidate",
+              scope: "projectAgent",
+              projectItemId: parsed.projectItemId,
+            });
+            return;
+          }
+          if (parsed.scope === "sempStatus") {
+            sendToTenant(tenantId, { type: "invalidate", scope: "sempStatus" });
             return;
           }
           if (parsed.scope === "inboxCards") {

@@ -22,6 +22,7 @@ import { withTraceContext } from "@semprec/shared";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
 import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";
+import { createSensitiveTurnRedactor } from "./sensitiveTurnRedaction.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_start",
@@ -111,8 +112,11 @@ export async function pushRunStatus(
  * Drives one turn's message stream to completion against an already-open `agent_runs` row:
  * pushes `message_update` deltas through the ephemeral stream (never persisted) and appends the
  * persisted-kind ones to `agent_run_events` in arrival order before announcing thin references.
- * Returns the turn's last
- * `message`-kind event, or null if it never produced one. An aborted `signal` (already aborted, or
+ * A `tool_result` that carries the sensitive mark is stored redacted (issue #1827), and so are, from then on in
+ * this call, the arguments of every `tool_use` and the content of every assistant `message`; a `tool_use` of a
+ * content-bearing write to a sensitive database is stored with redacted arguments from the start (issue #2001,
+ * `createSensitiveTurnRedactor`). `onEvent` still receives every message unchanged. Returns the turn's last
+ * `message`-kind event as the session produced it (the live one), or null if it never produced one. An aborted `signal` (already aborted, or
  * aborting while the loop waits for or records a message) ends the session through its iterator's
  * `return()` and throws `AgentRunCancelledError`. `onFirstEvent` is awaited once, with the row id
  * of the first event this call stores, right after its insert; a throw there ends the turn like
@@ -132,10 +136,41 @@ export async function runAgentTurn(
   onFirstEvent?: (eventId: string) => Promise<void> | void,
   sempMessageId?: string,
 ): Promise<AgentMessage | null> {
+  return (await runAgentTurnWithStoredForm(client, agentRunId, messages, onEvent, signal, onFirstEvent, sempMessageId))
+    .lastMessage;
+}
+
+/** What `runAgentTurnWithStoredForm` returns: the last `message` as the session produced it and as it was stored. */
+export interface AgentTurnOutcome {
+  /** The live last `message`, or null; what `runAgentTurn` returns. */
+  lastMessage: AgentMessage | null;
+  /**
+   * The last `message` in the form written to `agent_run_events` (issue #2001): the marker as its text when the call
+   * had already stored a sensitive result. Whatever persists the turn's outcome elsewhere, such as
+   * `agent_runs.result`, derives it from this form. Null when there was no `message`.
+   */
+  storedLastMessage: AgentMessage | null;
+}
+
+/**
+ * `runAgentTurn` that also returns the stored form of the last `message` (`AgentTurnOutcome`), for the callers that
+ * write the turn's outcome into a row other readers, other agents included, read back.
+ */
+export async function runAgentTurnWithStoredForm(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  messages: AsyncIterable<AgentMessage>,
+  onEvent?: (message: AgentMessage) => void,
+  signal?: AbortSignal,
+  onFirstEvent?: (eventId: string) => Promise<void> | void,
+  sempMessageId?: string,
+): Promise<AgentTurnOutcome> {
   let firstEventReported = false;
   let lastMessage: AgentMessage | null = null;
+  let storedLastMessage: AgentMessage | null = null;
   let lastPersistedId: string | undefined;
   let deltaSequence = 0;
+  const redactor = createSensitiveTurnRedactor(client, agentRunId);
   const iterator = messages[Symbol.asyncIterator]();
   let finished = false;
   let cancelled = false;
@@ -188,7 +223,9 @@ export async function runAgentTurn(
         );
       } else {
         if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-          const stored = await recordPersistentEvent(client, agentRunId, message.kind, message);
+          const storedForm = await redactor.redact(message);
+          const stored = await recordPersistentEvent(client, agentRunId, message.kind, storedForm);
+          if (message.kind === "message") storedLastMessage = storedForm;
           lastPersistedId = stored.id;
           deltaSequence = 0;
           if (!firstEventReported) {
@@ -210,7 +247,7 @@ export async function runAgentTurn(
     if (!finished) await closeSession(iterator, agentRunId, cancelled);
   }
 
-  return lastMessage;
+  return { lastMessage, storedLastMessage };
 }
 
 /**
@@ -330,12 +367,19 @@ export async function runAgentSessionForRun(
         systemPromptOverride: input.systemPromptOverride,
         signal: input.signal,
       });
-      const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent, input.signal);
+      // The run row keeps the stored form of the last message, not the live reply (issue #2001).
+      const { storedLastMessage } = await runAgentTurnWithStoredForm(
+        client,
+        run.id,
+        session.messages(),
+        input.onEvent,
+        input.signal,
+      );
       // The row's terminal status and its `run_status` event commit together, so a poller never
       // sees the row closed before the event exists, and a failed close leaves neither behind —
       // the catch below then writes the only terminal state, `error`.
       await closeAtomically(client, async (c) => {
-        if (!(await finishAgentRun(c, run.id, "done", extractResultSnapshot(lastMessage)))) return;
+        if (!(await finishAgentRun(c, run.id, "done", extractResultSnapshot(storedLastMessage)))) return;
         await pushRunStatus(c, run.id, "done");
       });
     } catch (err) {

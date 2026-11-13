@@ -28,6 +28,7 @@ import {
   type ItemAutomationErrorCode,
   type LibraryAutomationSource,
 } from "./itemAutomationStore.js";
+import { replaceCoverCandidates, type CoverCandidateInput } from "./coverCandidatesStore.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { automationProblemKey } from "../semp/sourceProblemKeys.js";
 import type { ItemRow } from "../types.js";
@@ -79,6 +80,31 @@ export type LibraryMetadataFetcher = (
 ) => Promise<LibraryMetadataFetchResult>;
 
 export const noopLibraryMetadataFetcher: LibraryMetadataFetcher = async () => ({});
+
+/**
+ * The alternative matches of a run in the form the store takes: the run's source (the configured one when the
+ * result names none) on each, and the author and year of an entry joined into its subtitle. An entry without a
+ * cover URL is dropped here, and the store drops the entries whose URL fails its check. No source means no
+ * candidate can be stored, so the result is empty.
+ */
+function toCoverCandidates(
+  candidates: LibraryMetadataFetchResult["candidates"],
+  source: LibraryAutomationSource | undefined,
+): CoverCandidateInput[] {
+  if (!candidates || !source) return [];
+  return candidates.flatMap((candidate) =>
+    candidate.coverUrl === undefined
+      ? []
+      : [
+          {
+            source,
+            title: candidate.title,
+            subtitle: [candidate.author, candidate.year].filter((part) => part !== undefined).join(", ") || null,
+            imageUrl: candidate.coverUrl,
+          },
+        ],
+  );
+}
 
 export function libraryMetadataJobKey(itemId: string): string {
   return `library-metadata:${itemId}`;
@@ -213,6 +239,16 @@ export async function handleProcessLibraryMetadataTask(
         callbackFinished = true;
         return;
       }
+      // Every run that did not fail replaces the item's candidates (a run with none leaves it with none), in this
+      // transaction and after the item row lock taken above.
+      await replaceCoverCandidates(
+        client,
+        payload.itemId,
+        toCoverCandidates(
+          result.candidates,
+          result.source ?? (configuredSource.success ? configuredSource.data : undefined),
+        ),
+      );
       if (result.status === "notFound") {
         await markItemAutomationNotFound(client, payload.itemId, result.source ?? null);
         runAfterCommit(client, () =>

@@ -80,6 +80,43 @@ describe("Semp reference observation", () => {
     );
   });
 
+  it("accepts a sleep night ref without any statement, keeps the first of equal nights and still refuses a missing neighbour by its own index", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const night = (value: string): SempMessageRef => ({ kind: "sleepNight", night: value });
+    const queries: string[] = [];
+    let validationStatements: string[] = [];
+    const accepted = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        /* eslint-disable @typescript-eslint/unbound-method */
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            if (typeof args[0] === "string") queries.push(args[0]);
+            return Reflect.apply(target, receiver, args);
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+        const result = await validateSempMessageRefs(client, [
+          night("2026-10-16"),
+          night("2026-10-17"),
+          night("2026-10-16"),
+        ]);
+        validationStatements = [...queries];
+        return result;
+      }),
+    );
+    expect(accepted).toEqual([night("2026-10-16"), night("2026-10-17")]);
+    expect(validationStatements).toEqual([]);
+
+    await expect(
+      runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          validateSempMessageRefs(client, [night("2026-10-16"), { kind: "agentRun", agentRunId: randomUUID() }]),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "validation_failed", details: { field: "context[1]" } });
+  });
+
   it("refuses deletion before observation and permits deletion after observation", async () => {
     const tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));

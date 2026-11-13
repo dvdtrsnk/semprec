@@ -11,4 +11,28 @@ export const LIBRARY_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "library cover candidates list",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/cover-candidates`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "library cover candidates refresh",
+    method: "POST",
+    path: `/api/items/${EXAMPLE_ID}/cover-candidates/refresh`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "library cover candidate select",
+    method: "POST",
+    path: `/api/items/${EXAMPLE_ID}/cover-candidates/0/select`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

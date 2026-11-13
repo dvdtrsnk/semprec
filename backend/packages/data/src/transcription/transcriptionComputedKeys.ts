@@ -33,6 +33,12 @@ export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruct
 export const TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY = "meetingNotes";
 /** Step 7 stores `{ proposedSpeakers }` on the source Files item once its one speaker-suggestion call has been turned into cards: the keys that got a card. */
 export const TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY = "suggestSpeakers";
+/**
+ * Step 6 (issue #1848) stores `{ recommendedEventId, reason }` on the source Files item once its one
+ * Event-recommendation call has been turned into a card: the Event the card recommends (`null` for
+ * none) and the model's reason (`null` for none).
+ */
+export const TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY = "eventRecommendation";
 
 /** Recording duration in seconds, copied from the Files prepare checkpoint. */
 export const TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY = "durationSeconds";

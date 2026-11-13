@@ -30,7 +30,7 @@ interface LibraryAutomationRetryRouteContext {
  * from the contract, because its `source` is the one the tenant's heartbeat holds
  * (`libraryHeartbeatConfigCutoverMigration.ts` upgrades it).
  */
-async function readJobConfig(client: PoolClient, database: DatabaseRow): Promise<LibraryMetadataJobConfig> {
+export async function readJobConfig(client: PoolClient, database: DatabaseRow): Promise<LibraryMetadataJobConfig> {
   const heartbeats = database.ownerProjectItemId
     ? await listHeartbeatsByProject(client, database.ownerProjectItemId)
     : [];
