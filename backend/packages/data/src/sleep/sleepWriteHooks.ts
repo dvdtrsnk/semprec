@@ -2,16 +2,21 @@ import { DatabaseError, type PoolClient } from "pg";
 import type {
   ItemCreateHook,
   ItemCreateHookContext,
+  ItemDeleteHook,
   ItemPreWritePreparation,
   ItemPreWriteTransform,
+  ItemRestoreHook,
   ItemUpdateHook,
+  ItemUpdatePreLockHook,
 } from "../chokePoint/hooks.js";
 import { isCalendarDate } from "../calendar/eventValidationHook.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { requireSingleRow } from "../db/pool.js";
 import { ConflictError, DuplicateItemError, ValidationError } from "../errors.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
+import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { normalizeWallClockTime } from "../timezone.js";
+import { enqueueSleepResync } from "./sleepResync.js";
 
 /** The sleep time keys; they exist on `sleepPlans` and `sleepNights` only. */
 const TIME_KEYS = ["bedTime", "wakeTime"] as const;
@@ -129,18 +134,25 @@ function validateSleepNight(properties: Record<string, unknown>): string {
 }
 
 /**
- * Serializes the writers of one night: takes the transaction-scoped advisory lock
- * `hashtext('sleepNight:' || <tenant id> || ':' || <night>)`, then looks in a new statement for another
- * non-deleted item of the database with the same `night` and refuses with a 409 `duplicate_item` naming `night`
- * when one exists. The lock key is the contract of every writer of a night item; it is held until the
- * transaction ends. The tenant is `app_tenant_default()`, which is the tenant of the scope the item was inserted
- * in, so it is never NULL here.
+ * Takes the transaction-scoped advisory lock `hashtext('sleepNight:' || <tenant id> || ':' || <night>)`, held
+ * until the transaction ends. Its key is the contract of every writer of a night item: the duplicate check of
+ * the write hooks below and the find-or-create of `PUT /api/sleep/nights/:night` (issue gh-1835) take it. The
+ * tenant is `app_tenant_default()`, the tenant of the scope the caller runs in.
  */
-async function assertNightIsFree(client: PoolClient, databaseId: string, itemId: string, night: string): Promise<void> {
+export async function lockSleepNight(client: PoolClient, night: string): Promise<void> {
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtext('sleepNight:' || app_tenant_default()::text || ':' || $1::text))",
     [night],
   );
+}
+
+/**
+ * Serializes the writers of one night: takes `lockSleepNight`, then looks in a new statement for another
+ * non-deleted item of the database with the same `night` and refuses with a 409 `duplicate_item` naming `night`
+ * when one exists. The tenant of the lock key is never NULL here, because the item was inserted in a scope.
+ */
+async function assertNightIsFree(client: PoolClient, databaseId: string, itemId: string, night: string): Promise<void> {
+  await lockSleepNight(client, night);
   const { rows } = await client.query<{ taken: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM items
@@ -204,6 +216,20 @@ export const sleepItemUpdateHook: ItemUpdateHook = async ({ client, database, it
     const night = validateSleepNight(item.properties);
     if (Object.hasOwn(propertiesPatch, "night")) await assertNightIsFree(client, database.id, item.id, night);
   }
+};
+
+/**
+ * The update pre-lock rule of the night exceptions, registered by `../domainWriteHooks.ts` under the `sleepNights`
+ * module id (see docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md). A patch that
+ * names `night` takes the per-night lock of that date before the choke point locks the written row, which is the
+ * order of `PUT /api/sleep/nights/:night` (the lock of the night, then the row). Without it the update would lock
+ * the row first and ask `sleepItemUpdateHook` for the lock after, and a PUT of the same night that holds the lock
+ * and waits for the row would deadlock with it. The later `assertNightIsFree` takes the same lock again, which
+ * returns at once. A patch that does not name `night`, or names something that is not a calendar date (the
+ * update rule refuses it with a 400), takes no lock.
+ */
+export const sleepNightUpdatePreLockHook: ItemUpdatePreLockHook = async ({ client, patch }) => {
+  if (isCalendarDate(patch.night)) await lockSleepNight(client, patch.night);
 };
 
 /** A sleep plan another plan's write has to take days from: its id and the `wakeDays` it holds once locked. */
@@ -304,3 +330,51 @@ export async function keepWakeDaysInOnePlan({
     }
   }
 }
+
+const SLEEP_MODULE_IDS: readonly (string | null)[] = [
+  SLEEP_SETTINGS_MODULE_ID,
+  SLEEP_PLANS_MODULE_ID,
+  SLEEP_NIGHTS_MODULE_ID,
+];
+
+/**
+ * Enqueues the debounced `sleep.resync` job (issue gh-1838) for the tenant of the write, on the write's client, so
+ * the job commits or rolls back with the write. The tenant is the one `app_tenant_default()` names for the
+ * transaction, which is the tenant the written row belongs to.
+ */
+async function enqueueResyncForWrite(client: PoolClient): Promise<void> {
+  const { rows } = await client.query<{ tenant_id: string | null }>("SELECT app_tenant_default()::text AS tenant_id");
+  const { tenant_id: tenantId } = requireSingleRow(rows, "sleep resync tenant");
+  if (tenantId === null) throw new Error("A sleep write ran without a tenant");
+  await enqueueSleepResync(client, tenantId);
+}
+
+/** The create hook of issue gh-1838: a new item of a sleep database enqueues a resync. */
+export const sleepResyncCreateHook: ItemCreateHook = async ({ client, database }) => {
+  if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
+};
+
+/**
+ * The update hook of issue gh-1838: an update of an item of a sleep database enqueues a resync, and so does an
+ * update of the System settings item whose patch names `timezone`, because the zone decides the instants of
+ * every night.
+ */
+export const sleepResyncUpdateHook: ItemUpdateHook = async ({ client, database, propertiesPatch }) => {
+  const moduleId = database.ownerModuleId;
+  if (
+    SLEEP_MODULE_IDS.includes(moduleId) ||
+    (moduleId === SYSTEM_SETTINGS_MODULE_ID && Object.hasOwn(propertiesPatch, "timezone"))
+  ) {
+    await enqueueResyncForWrite(client);
+  }
+};
+
+/** The delete hook of issue gh-1838: a soft-deleted item of a sleep database enqueues a resync. */
+export const sleepResyncDeleteHook: ItemDeleteHook = async ({ client, database }) => {
+  if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
+};
+
+/** The restore hook of issue gh-1838: a restored item of a sleep database enqueues a resync. */
+export const sleepResyncRestoreHook: ItemRestoreHook = async ({ client, database }) => {
+  if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
+};

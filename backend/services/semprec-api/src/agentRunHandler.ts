@@ -9,6 +9,7 @@ import {
   buildAgentRunStepPage,
   getAgentRun,
   getAgentRunDetail,
+  getAgentRunReplyOutcome,
   getAgentRunUsage,
   isAgentRunHistoryTruncated,
   isAgentRunStepReadSettled,
@@ -88,7 +89,8 @@ function parseStepsQuery(url: URL): { after: string; limit: number } {
  * agent-run link" points at — a read-only view of one run: the fields of its row (`getAgentRun`)
  * and, beside them, its title, project and heartbeat names, duration, trigger, approval counts and
  * `displayStatus` (`getAgentRunDetail`, issues #1805 and #1820), as `errorCode` and `errorSummary`
- * why it failed, the summary in the session user's locale (`agentRunErrorFields`, issue #1824) and,
+ * why it failed, the summary in the session user's locale (`agentRunErrorFields`, issue #1824; a run
+ * whose reply is incomplete reads `error` with the summary of that reply, issue #1890) and,
  * as `usage`, its AI spend per model with the model names in that locale (`getAgentRunUsage`, issue
  * #1822). A run whose `actorUserId` is not the session user answers the 404 of an unknown id,
  * before anything else about the run is read.
@@ -193,10 +195,14 @@ export function createAgentRunRequestListener(pool: Pool) {
         const detail = await withTransaction(pool, async (client) => {
           const run = await getAgentRun(client, agentRunId);
           if (!run || run.actorUserId !== identity.user.id) return null;
+          // A run that closed as done may have an incomplete reply (issue #1890); read it once for both fields.
+          const reply = run.status === "done" ? await getAgentRunReplyOutcome(client, run) : null;
+          const runDetail = await getAgentRunDetail(client, run, reply);
+          const incompleteReply = runDetail.displayStatus === "error" && reply?.outcome === "incomplete" ? reply : null;
           return {
             ...run,
-            ...(await getAgentRunDetail(client, run)),
-            ...(await agentRunErrorFields(run, identity.user.locale)),
+            ...runDetail,
+            ...(await agentRunErrorFields(run, identity.user.locale, incompleteReply)),
             usage: await getAgentRunUsage(client, run.id, toManifestLocale(identity.user.locale)),
           };
         });

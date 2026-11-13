@@ -41,6 +41,7 @@ import {
   RelationListInputSchema,
   RelationPutInputSchema,
   RelationSetInputSchema,
+  SearchInputSchema,
   ValueLinkInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
@@ -66,7 +67,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 48 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 49 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -251,5 +252,9 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "database.facets": {
     input: DatabaseFacetsInputSchema,
     invoke: (service, actor, input) => service.getDatabaseFacets(actor, input),
+  },
+  search: {
+    input: SearchInputSchema,
+    invoke: (service, actor, input) => service.searchItems(actor, input),
   },
 };

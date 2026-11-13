@@ -58,6 +58,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "project mcp grants": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "project mcp grant toggle": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",
+  "project database grants": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
+  "project database grant set": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
   "confirm proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox types": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox cards": "packages/data/src/inbox/inboxRouteHandlers.ts",
@@ -190,6 +192,9 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "library cover candidates refresh": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
   "library cover candidate select": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
   "sleep nights": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "sleep night put": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "overview summary": "packages/data/src/overview/overviewRouteHandler.ts",
+  "global search": "services/semprec-api/src/searchHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

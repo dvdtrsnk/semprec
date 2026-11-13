@@ -13,10 +13,50 @@ type RefKind = SempMessageRef["kind"];
 
 const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const PURGED: SempRefResolution = { label: null, databaseKey: null, state: "purged" };
-
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
+}
+
+/** The current display metadata of an item: its title, its database's key and whether it is live, trashed or gone. */
+export type SempItemResolution = SempRefResolution & { label: string | null };
+
+const PURGED: SempItemResolution = { label: null, databaseKey: null, state: "purged" };
+
+/**
+ * Resolves item-shaped references (the item, block, transcript segment and task trace refs of a context, and the
+ * changed items of a reply) in one statement, in the order given. An item that is not found under the tenant scope,
+ * or not in the database a ref names, resolves as purged. A ref without a database matches the item in any database.
+ */
+export async function resolveSempItemRefs(
+  client: PoolClient,
+  refs: readonly { itemId: string; databaseId: string | null }[],
+): Promise<SempItemResolution[]> {
+  const { rows } = await client.query<{
+    ordinal: number;
+    found: boolean;
+    deleted_at: Date | null;
+    database_key: string | null;
+    label: unknown;
+  }>(
+    `SELECT r.ordinal::int, i.id IS NOT NULL AS found, i.deleted_at, d.key AS database_key,
+            i.properties -> title.key AS label
+       FROM unnest($1::uuid[], $2::uuid[]) WITH ORDINALITY AS r(item_id, database_id, ordinal)
+       LEFT JOIN items i ON i.id = r.item_id AND (r.database_id IS NULL OR i.database_id = r.database_id)
+       LEFT JOIN databases d ON d.tenant_id = i.tenant_id AND d.id = i.database_id
+       LEFT JOIN LATERAL (SELECT p.key FROM properties p WHERE p.tenant_id = i.tenant_id
+                          AND p.database_id = i.database_id AND p.type = 'title' ORDER BY p.id LIMIT 1) title ON true
+      ORDER BY r.ordinal`,
+    [refs.map((ref) => ref.itemId), refs.map((ref) => ref.databaseId)],
+  );
+  return rows.map((row) =>
+    row.found
+      ? {
+          label: typeof row.label === "string" ? row.label : null,
+          databaseKey: row.database_key,
+          state: row.deleted_at ? "trashed" : "active",
+        }
+      : PURGED,
+  );
 }
 
 /** Enriches recognized refs on one history page without changing stored contexts. */
@@ -43,34 +83,12 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
           throw new Error("Invalid item reference group");
         return ref;
       });
-      const { rows } = await client.query<{
-        ordinal: number;
-        found: boolean;
-        deleted_at: Date | null;
-        database_key: string | null;
-        label: unknown;
-      }>(
-        `SELECT r.ordinal::int, i.id IS NOT NULL AS found, i.deleted_at, d.key AS database_key,
-                i.properties -> title.key AS label
-           FROM unnest($1::uuid[], $2::uuid[]) WITH ORDINALITY AS r(item_id, database_id, ordinal)
-           LEFT JOIN items i ON i.id = r.item_id AND (r.database_id IS NULL OR i.database_id = r.database_id)
-           LEFT JOIN databases d ON d.tenant_id = i.tenant_id AND d.id = i.database_id
-           LEFT JOIN LATERAL (SELECT p.key FROM properties p WHERE p.tenant_id = i.tenant_id
-                              AND p.database_id = i.database_id AND p.type = 'title' ORDER BY p.id LIMIT 1) title ON true
-          ORDER BY r.ordinal`,
-        [
-          refs.map((ref) => ref.itemId),
-          refs.map((ref) => (ref.kind === "item" || ref.kind === "taskTrace" ? ref.databaseId : null)),
-        ],
-      );
-      values = rows.map((row) =>
-        row.found
-          ? {
-              label: typeof row.label === "string" ? row.label : null,
-              databaseKey: row.database_key,
-              state: row.deleted_at ? "trashed" : "active",
-            }
-          : PURGED,
+      values = await resolveSempItemRefs(
+        client,
+        refs.map((ref) => ({
+          itemId: ref.itemId,
+          databaseId: ref.kind === "item" || ref.kind === "taskTrace" ? ref.databaseId : null,
+        })),
       );
     } else if (kind === "taskOccurrence") {
       // `series_id` is a uuid column; a stored id of any other shape names no series and resolves as purged.

@@ -110,6 +110,18 @@ describe("parseToolEventPayload result details (issue #1527)", () => {
     expect(parseToolEventPayload("tool_result", stored)).toEqual(stored);
   });
 
+  it("reads the timeoutMs of a timed-out MCP call and ignores one that is no positive finite number (issue #1890)", () => {
+    const timedOut = { ...result, result: { details: { error: true, failureKind: "timeout", timeoutMs: 60000 } } };
+    expect(parseToolEventPayload("tool_result", timedOut)).toEqual({
+      ...timedOut,
+      details: { failureKind: "timeout", timeoutMs: 60000 },
+    });
+    for (const timeoutMs of ["60000", 0, -5, Infinity, null]) {
+      const odd = { ...result, result: { details: { error: true, failureKind: "timeout", timeoutMs } } };
+      expect(parseToolEventPayload("tool_result", odd)).toEqual({ ...odd, details: { failureKind: "timeout" } });
+    }
+  });
+
   it("reads the createdItemId of a created item and ignores one that is not a string (issue #1885)", () => {
     const created = { ...result, result: { details: { error: false, createdItemId: "item-1" } } };
     const odd = { ...result, result: { details: { error: false, createdItemId: 7 } } };

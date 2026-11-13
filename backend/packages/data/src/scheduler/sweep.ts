@@ -6,6 +6,7 @@ import { ValidationError } from "../errors.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
+import { raiseAgentHeartbeatProblem } from "../semp/agentProblems.js";
 import {
   failHeartbeatOccurrence,
   getHeartbeat,
@@ -28,8 +29,9 @@ import { logger } from "./logger.js";
  * duplicate it on redelivery) but distinct for every new fire — a later, independent failure of
  * the same heartbeat is a different job and so is never deduped away.
  *
- * Silently skips when the current tenant has no user: there is no `users` row
- * to bind the notification to, and the heartbeat failure itself is still recorded either way.
+ * Also raises the heartbeat's `agents` problem (issue #1911) in the same transaction, which merges with
+ * the one the failed run raised. Silently skips both when the current tenant has no user: there is no
+ * `users` row to bind them to, and the heartbeat failure itself is still recorded either way.
  */
 async function notifyHeartbeatError(
   client: Parameters<typeof writeNotification>[0],
@@ -47,6 +49,7 @@ async function notifyHeartbeatError(
     sourceId: heartbeat.id,
     transitionInstance: jobId,
   });
+  await raiseAgentHeartbeatProblem(client, { userId, heartbeatId: heartbeat.id, occurrenceKey: jobId });
 }
 
 /**

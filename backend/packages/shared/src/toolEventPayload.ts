@@ -38,6 +38,8 @@ export interface ToolResultDetails {
   errorCode?: string;
   /** The failure kind of a failed MCP tool call (issue #1444). */
   failureKind?: string;
+  /** The timeout in milliseconds that applied to a timed-out MCP tool call (issue #1444); a positive finite number. */
+  timeoutMs?: number;
   /** The id of the item a successful `item.create` created; unlike the result text it is kept when that is redacted as sensitive. */
   createdItemId?: string;
 }
@@ -60,7 +62,7 @@ function parseChange(value: unknown): ToolResultChange | null {
 /** Lenient on purpose: a malformed `changes` entry is dropped, a malformed field is ignored, nothing throws. */
 function parseResultDetails(result: unknown): ToolResultDetails | undefined {
   if (!isRecord(result) || !isRecord(result.details)) return undefined;
-  const { approvalRequestId, changes, errorCode, failureKind, createdItemId } = result.details;
+  const { approvalRequestId, changes, errorCode, failureKind, timeoutMs, createdItemId } = result.details;
   const parsedChanges = Array.isArray(changes)
     ? changes.map(parseChange).filter((change): change is ToolResultChange => change !== null)
     : undefined;
@@ -69,6 +71,7 @@ function parseResultDetails(result: unknown): ToolResultDetails | undefined {
     ...(parsedChanges !== undefined ? { changes: parsedChanges } : {}),
     ...(typeof errorCode === "string" ? { errorCode } : {}),
     ...(typeof failureKind === "string" ? { failureKind } : {}),
+    ...(typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
     ...(typeof createdItemId === "string" ? { createdItemId } : {}),
   };
   return Object.keys(details).length > 0 ? details : undefined;

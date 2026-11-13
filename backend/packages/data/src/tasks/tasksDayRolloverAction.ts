@@ -6,6 +6,7 @@ import { rolloverTaskWithClient } from "../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
+import { publishOverviewInvalidation } from "../overview/overviewInvalidation.js";
 import type { ActionHandler } from "../scheduler/actions.js";
 import { MAX_SWEEP_CHUNKS_PER_TENANT } from "../scheduler/sweep.js";
 import { getSystemTimezone } from "../systemSettings.js";
@@ -102,7 +103,9 @@ async function completedInEventEdge(
  * `CHUNK_SIZE`, each its own transaction, with `FOR UPDATE SKIP LOCKED`; the second pass waits (`FOR UPDATE`) for the
  * rows the first one skipped, chunk after chunk from the start, until no candidate is left. Each pass runs at most
  * `MAX_SWEEP_CHUNKS_PER_TENANT` chunks, the cap of the heartbeat sweep; what is left after that waits for the next
- * run. A moved task is in the rollover's result state for today, so it is no candidate again even when a stale
+ * run. When every chunk and every closing of a missed occurrence has committed, one `overview` invalidation is
+ * announced to the tenant's sockets (`publishOverviewInvalidation`), whether or not a task moved, because the number
+ * of tasks for today changes with the day itself. A run that throws before that point announces nothing. A moved task is in the rollover's result state for today, so it is no candidate again even when a stale
  * `effectiveDate` still lies in the past: a second run on the same day changes nothing, and a run after an outage of
  * several days writes each task once. See docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md and
  * docs/adr/2026-11-09-task-rollover-excludes-its-current-result-state.md.
@@ -178,5 +181,8 @@ export function createTasksDayRolloverAction(pool: Pool, options: { recurringLim
       });
       if (ids.length === 0) break;
     }
+    // Every transaction above has committed: the announcement is that of the whole run, and it is its own
+    // transaction so that it is sent when nothing moved as well.
+    await withTransaction(pool, async (client) => publishOverviewInvalidation(client));
   };
 }

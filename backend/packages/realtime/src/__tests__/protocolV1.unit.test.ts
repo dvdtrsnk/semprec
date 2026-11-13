@@ -232,6 +232,81 @@ describe("parseRealtimeMessage (issue #163)", () => {
     // Whatever else a message carries (a problem's text, a user) is not kept.
     expect(parseRealtimeMessage({ ...valid, userId: RUN_ID, title: "private problem text" })).toEqual(valid);
   });
+  it.each(["notificationPreferences", "badgeCounts"] as const)(
+    "validates a %s invalidation, keeps its user and nothing else (issue #1918)",
+    (scope) => {
+      const valid = { type: "invalidation", scope, userId: RUN_ID };
+      expect(parseRealtimeMessage(valid)).toEqual(valid);
+      expect(parseRealtimeMessage({ ...valid, title: "private text", count: 3 })).toEqual(valid);
+    },
+  );
+  it.each(["notificationPreferences", "badgeCounts"] as const)(
+    "drops a %s invalidation that names no valid user (issue #1918)",
+    (scope) => {
+      const valid = { type: "invalidation", scope, userId: RUN_ID };
+      for (const malformed of [
+        { userId: "not-a-uuid" },
+        { userId: "" },
+        { userId: undefined },
+        { userId: null },
+        { userId: 7 },
+      ])
+        expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+    },
+  );
+  it("validates an account invalidation, keeps its user and nothing else (issue #1946)", () => {
+    const valid = { type: "invalidation", scope: "account", userId: RUN_ID };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The frame never carries the profile: a name or a language the message holds is not kept.
+    expect(parseRealtimeMessage({ ...valid, displayName: "Private Name", locale: "cs" })).toEqual(valid);
+  });
+  it("drops an account invalidation that names no valid user (issue #1946)", () => {
+    const valid = { type: "invalidation", scope: "account", userId: RUN_ID };
+    for (const malformed of [
+      { userId: "not-a-uuid" },
+      { userId: "" },
+      { userId: undefined },
+      { userId: null },
+      { userId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
+  it("validates an overview invalidation and keeps nothing but its scope (issue #1951)", () => {
+    const valid = { type: "invalidation", scope: "overview" };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The scope is tenant-wide and names nothing: a user or a count the message carries is not kept.
+    expect(parseRealtimeMessage({ ...valid, userId: RUN_ID, count: 3 })).toEqual(valid);
+  });
+  it("drops an overview message whose scope or type is not exactly the catalog's (issue #1951)", () => {
+    for (const malformed of [
+      { scope: "Overview" },
+      { scope: "overview " },
+      { scope: "" },
+      { scope: null },
+      { scope: 7 },
+      { scope: undefined },
+      { type: "overview" },
+    ])
+      expect(parseRealtimeMessage({ type: "invalidation", scope: "overview", ...malformed })).toBeNull();
+  });
+  it("validates an mcpServers invalidation and keeps nothing but its scope (issue #2025)", () => {
+    const valid = { type: "invalidation", scope: "mcpServers" };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The scope is tenant-wide and carries no ids: a user, a server or a project the message names is not kept.
+    expect(parseRealtimeMessage({ ...valid, userId: RUN_ID, mcpServerItemId: DOC_ID, projectItemId: DOC_ID })).toEqual(
+      valid,
+    );
+  });
+  it("drops a message whose scope is not exactly mcpServers (issue #2025)", () => {
+    for (const malformed of [
+      { scope: "McpServers" },
+      { scope: "mcpServer" },
+      { scope: "" },
+      { scope: null },
+      { scope: undefined },
+    ])
+      expect(parseRealtimeMessage({ type: "invalidation", ...malformed })).toBeNull();
+  });
   it("validates a mailThread invalidation (issue #1816)", () => {
     const valid = { type: "invalidation", scope: "mailThread", threadId: DOC_ID, userId: RUN_ID };
     expect(parseRealtimeMessage(valid)).toEqual(valid);

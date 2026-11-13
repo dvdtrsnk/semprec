@@ -17,11 +17,23 @@ export {
   heartbeatTriggerArgsSchema,
 } from "../scheduler/heartbeatAgentTools.js";
 export {
+  createHeartbeatCreateTool,
+  createHeartbeatUpdateTool,
+  createHeartbeatSetEnabledTool,
+  createHeartbeatCreateSnapshot,
+  createHeartbeatUpdateSnapshot,
+  createHeartbeatSetEnabledSnapshot,
+  heartbeatCreateArgsSchema,
+  heartbeatUpdateArgsSchema,
+  heartbeatSetEnabledArgsSchema,
+} from "../scheduler/heartbeatWriteAgentTools.js";
+export {
   createRegisterPushSubscriptionRouteHandler,
   createRevokePushSubscriptionRouteHandler,
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export { createOverviewRouteHandler } from "../overview/overviewRouteHandler.js";
 export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "../semp/sempStatusRouteHandler.js";
 export {
   createGetNotificationPreferencesRouteHandler,
@@ -30,6 +42,10 @@ export {
 export { createBadgeCountsRouteHandler } from "../notifications/badgeCountsRoute.js";
 export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeatEnabledRoute.js";
+export {
+  createListAgentDatabaseGrantsRouteHandler,
+  createPatchAgentDatabaseGrantRouteHandler,
+} from "../agentGrants/agentDatabaseGrantsRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -48,6 +64,12 @@ export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeat
  * (see `heartbeatAgentTools.ts`). `heartbeat.trigger` (issue #136) joins them on the same terms —
  * availability only, no `capability` gate and no approval requirement beyond that — but stays
  * limited to the calling run's own project.
+ *
+ * `heartbeat.create`, `heartbeat.update` and `heartbeat.setEnabled` (issue #1846) are the write tools of the
+ * same setup. Each is declared with `requiresApproval`, so a session defers a call to a `moduleTool`
+ * approval request and the handler runs once, after approval; `approval: "always"` is only their
+ * classification. Each names a `snapshotExport`, whose canonical JSON the request hashes and the executor
+ * compares again before the handler runs (`heartbeatWriteAgentTools.ts`).
  *
  * `capabilities` registers the generic-operation capability ids from
  * `CAPABILITY_IDS` (issue #220) — the same `OPERATION_METADATA.requiresCapability` values
@@ -85,6 +107,33 @@ export const manifest: ModuleManifest = {
       argumentSchemaExport: "heartbeatTriggerArgsSchema",
       approval: "none",
       riskClass: "write",
+    },
+    {
+      name: "heartbeat.create",
+      handlerExport: "createHeartbeatCreateTool",
+      argumentSchemaExport: "heartbeatCreateArgsSchema",
+      approval: "always",
+      riskClass: "write",
+      requiresApproval: true,
+      snapshotExport: "createHeartbeatCreateSnapshot",
+    },
+    {
+      name: "heartbeat.update",
+      handlerExport: "createHeartbeatUpdateTool",
+      argumentSchemaExport: "heartbeatUpdateArgsSchema",
+      approval: "always",
+      riskClass: "write",
+      requiresApproval: true,
+      snapshotExport: "createHeartbeatUpdateSnapshot",
+    },
+    {
+      name: "heartbeat.setEnabled",
+      handlerExport: "createHeartbeatSetEnabledTool",
+      argumentSchemaExport: "heartbeatSetEnabledArgsSchema",
+      approval: "always",
+      riskClass: "write",
+      requiresApproval: true,
+      snapshotExport: "createHeartbeatSetEnabledSnapshot",
     },
   ],
   migrations: ["0001_core_schema.sql"],
@@ -159,6 +208,15 @@ export const manifest: ModuleManifest = {
       justification: "single-consumer-read",
     },
     {
+      name: "overviewSummary",
+      method: "GET",
+      path: "/api/overview",
+      handlerExport: "createOverviewRouteHandler",
+      // The badges and counts of the Overview screen, its one consumer (issue gh-1837): every number is
+      // computed by the function of its owner, and the route counts nothing itself.
+      justification: "single-consumer-read",
+    },
+    {
       name: "getNotificationPreferences",
       method: "GET",
       path: "/api/notification-preferences",
@@ -193,6 +251,24 @@ export const manifest: ModuleManifest = {
       // The active-run and waiting-job checks and the enqueue commit or roll back together under the
       // heartbeat's row lock (issue #1453): the transactional shape the generic item-write endpoint
       // can't express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "listAgentDatabaseGrants",
+      method: "GET",
+      path: "/api/projects/:id/database-grants",
+      handlerExport: "createListAgentDatabaseGrantsRouteHandler",
+      // Shaped for exactly one consumer, the Collections list in a project's Semp settings (issue #1841): the
+      // sensitive and the user-created databases with the project's access, and no other table.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "patchAgentDatabaseGrant",
+      method: "PATCH",
+      path: "/api/projects/:id/database-grants",
+      handlerExport: "createPatchAgentDatabaseGrantRouteHandler",
+      // The project and database locks, the removal of a default decision and the upsert of any other commit
+      // together (issue #1841): a shape the generic item-write endpoint can't express.
       justification: "transactional-semantics",
     },
   ],

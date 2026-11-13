@@ -57,6 +57,11 @@ function parseTokens(value: unknown): { input: number; output: number } | undefi
   return { input, output };
 }
 
+function parseTimeoutMs(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : malformed();
+}
+
 function parseOperation(value: unknown): GenericOperationName | undefined {
   const name = optionalString(value);
   if (name === undefined) return undefined;
@@ -78,6 +83,10 @@ function parseStep(value: unknown): SempReplyStep {
   const operation = parseOperation(value.operation);
   const approvalRequestId = parseApprovalRequestId(value.approvalRequestId);
   const errorCode = optionalString(value.errorCode);
+  const mcpToolRegistrationId = optionalString(value.mcpToolRegistrationId);
+  const mcpServerItemId = optionalString(value.mcpServerItemId);
+  const connectorName = optionalString(value.connectorName);
+  const timeoutMs = parseTimeoutMs(value.timeoutMs);
   const tokens = parseTokens(value.tokens);
   return {
     kind: assertKnownValue(STEP_KINDS, requireString(value.kind), "step kind"),
@@ -91,6 +100,10 @@ function parseStep(value: unknown): SempReplyStep {
     durationMs,
     ...(approvalRequestId === undefined ? {} : { approvalRequestId }),
     ...(errorCode === undefined ? {} : { errorCode }),
+    ...(mcpToolRegistrationId === undefined ? {} : { mcpToolRegistrationId }),
+    ...(mcpServerItemId === undefined ? {} : { mcpServerItemId }),
+    ...(connectorName === undefined ? {} : { connectorName }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tokens === undefined ? {} : { tokens }),
   };
 }

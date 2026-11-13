@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { isCalendarDate } from "../calendar/eventValidationHook.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import {
@@ -11,12 +12,14 @@ import {
   SLEEP_SETTINGS_MODULE_ID,
 } from "../seed/sleepModuleKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
+import { normalizeWallClockTime } from "../timezone.js";
 import {
   resolveSleepNights,
   type ResolvedSleepNight,
   type SleepNightException,
   type SleepPlan,
 } from "./resolveSleepNights.js";
+import { lockSleepNight } from "./sleepWriteHooks.js";
 
 /** The most nights one request may ask for, both ends of the range included. */
 const MAX_NIGHTS = 62;
@@ -157,6 +160,7 @@ function assertNightsRange(from: string, to: string): void {
  * transaction of `client`, which must be REPEATABLE READ (as `sleepNightsGet` opens it) for the settings, the
  * zone, the plans and the exceptions to describe one state of the data: under READ COMMITTED each statement
  * takes its own snapshot and a write that commits between two of them is seen by the later ones only.
+ * `sleepNightPut` calls it at READ COMMITTED and accepts that.
  *
  * Throws a 400 `validation_failed` for a range that `assertNightsRange` refuses, before anything is read, and
  * a 404 `not_found` when the tenant has no sleep database or no non-deleted settings item. It also throws,
@@ -221,6 +225,143 @@ export function sleepNightsGet(pool: Pool) {
     const to = requiredParameter(parameters, "to");
     const body = await withTransaction(pool, (client) => loadSleepNights(client, { from, to }), {
       isolation: "repeatable_read",
+    });
+    return { status: 200, body };
+  };
+}
+
+/** The part of the request context of `PUT /api/sleep/nights/:night` that the handler reads. */
+interface SleepNightPutRequestContext {
+  params: Record<string, string>;
+  body: unknown;
+  identity: { user: { id: string } };
+}
+
+/** The fields of a night exception that a request may set, each as a value or null; a key the request omits is absent. */
+interface SleepNightFields {
+  bedTime?: string | null;
+  wakeTime?: string | null;
+  alarm?: boolean | null;
+}
+
+const FIELD_KEYS = ["bedTime", "wakeTime", "alarm"] as const;
+
+const nightPutBody = z.strictObject({
+  bedTime: z.string().nullable().optional(),
+  wakeTime: z.string().nullable().optional(),
+  alarm: z.boolean().nullable().optional(),
+});
+
+/** The name `ValidationError` carries for a body that `nightPutBody` refused: the offending key, or `body` itself. */
+function refusedBodyField(issue: z.core.$ZodIssue | undefined): string {
+  if (issue?.code === "unrecognized_keys") return issue.keys[0] ?? "body";
+  const key = issue?.path[0];
+  return typeof key === "string" ? key : "body";
+}
+
+/**
+ * The body of the PUT as the fields it sets. It must be an object with no other key than `bedTime`, `wakeTime`
+ * and `alarm`; a time is `HH:MM` (`6:45` is read as `06:45`) or null, and `alarm` is a boolean or null. Anything
+ * else, an empty string and `24:00` included, is a 400 `validation_failed` naming the key.
+ */
+function parseNightPutBody(body: unknown): SleepNightFields {
+  const parsed = nightPutBody.safeParse(body);
+  if (!parsed.success) {
+    const field = refusedBodyField(parsed.error.issues[0]);
+    throw new ValidationError("The body must hold only bedTime, wakeTime and alarm, each a valid value or null", {
+      field,
+    });
+  }
+  const fields: SleepNightFields = {};
+  for (const key of ["bedTime", "wakeTime"] as const) {
+    const value = parsed.data[key];
+    if (value === undefined) continue;
+    const time = value === null ? null : normalizeWallClockTime(value, { field: key, allow2400: false });
+    if (value !== null && time === null) {
+      throw new ValidationError(`Property '${key}' must be a time HH:MM or null`, { field: key });
+    }
+    fields[key] = time;
+  }
+  if (parsed.data.alarm !== undefined) fields.alarm = parsed.data.alarm;
+  return fields;
+}
+
+/** The non-deleted exception of `night`, locked `FOR UPDATE`, or null when the night has none. */
+async function lockNightException(client: PoolClient, databaseId: string, night: string): Promise<SleepItemRow | null> {
+  const { rows } = await client.query<SleepItemRow>(
+    `SELECT id, properties FROM items
+      WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> 'night' = $2
+      ORDER BY id
+        FOR UPDATE`,
+    [databaseId, night],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * `PUT /api/sleep/nights/:night` (issue gh-1835): sets, changes or resets the exception of one night and answers
+ * the resolved night. `:night` must be a calendar date `YYYY-MM-DD` and the body is `{ bedTime?, wakeTime?, alarm? }`
+ * (see `parseNightPutBody`), otherwise the answer is a 400 `validation_failed` naming `night` or the key of the
+ * body; both are judged before anything is read. A tenant without the sleep module gets a 404.
+ *
+ * In one transaction the handler takes the per-night advisory lock (`lockSleepNight`, which the write hooks of
+ * the night exceptions take too), then locks the non-deleted exception of the night `FOR UPDATE`. A generic
+ * update that names `night` takes the same lock before it locks the row (`sleepNightUpdatePreLockHook`), so the
+ * two never wait for each other in opposite orders.
+ * - No exception and a non-null field in the body: one is created with `night` and the fields of the body.
+ * - No exception and no non-null field (all null, or an empty body): nothing is written.
+ * - An exception and a field of the body that differs from the stored one (an absent stored field counts as
+ *   null): the differing fields are patched without `ifVersion`. When none differs, nothing is written.
+ * A field the body omits is left as it is, and a field set to null follows the plan again: the exception stays
+ * with that field null and is never deleted. Both writes go through the choke point as the signed-in user, so
+ * its hooks, validation and invalidation apply.
+ *
+ * The answer is `{ night }`: the entry of `resolveSleepNights` for that date as `GET /api/sleep/nights` returns
+ * it, or null when neither a plan nor an exception applies. It is read in the write's transaction, which runs at
+ * READ COMMITTED (a snapshot taken before the lock could not see an exception another PUT committed meanwhile),
+ * so a plan that another transaction commits during the response reads is seen by the later reads only.
+ * Whatever `loadSleepNights` throws for the read (a 404 for a tenant without a settings item, a `ZodError` for
+ * stored data of the wrong type) is thrown after the writes and rolls them back with the transaction.
+ * The export is the factory that `customRouteMount.ts` calls once with the pool.
+ */
+export function sleepNightPut(pool: Pool) {
+  return async (ctx: SleepNightPutRequestContext): Promise<{ status: number; body: unknown }> => {
+    const night = ctx.params.night;
+    if (!isCalendarDate(night)) {
+      throw new ValidationError("'night' must be a calendar date YYYY-MM-DD", { field: "night" });
+    }
+    const fields = parseNightPutBody(ctx.body);
+    const userId = ctx.identity.user.id;
+    const writeOptions = {
+      writer: { writerKind: "user" },
+      actingUserId: userId,
+      humanWriterUserId: userId,
+    } as const;
+    const body = await withTransaction(pool, async (client) => {
+      const databaseId = await sleepDatabaseId(client, SLEEP_NIGHTS_MODULE_ID);
+      await lockSleepNight(client, night);
+      const existing = await lockNightException(client, databaseId, night);
+      const provided = FIELD_KEYS.flatMap((key) => (fields[key] === undefined ? [] : [[key, fields[key]] as const]));
+      if (!existing) {
+        if (provided.some(([, value]) => value !== null)) {
+          await createItemWithClient(
+            client,
+            { databaseId, properties: { night, ...Object.fromEntries(provided) } },
+            writeOptions,
+          );
+        }
+      } else {
+        const differing = provided.filter(([key, value]) => (existing.properties[key] ?? null) !== value);
+        if (differing.length > 0) {
+          await updateItemWithClient(
+            client,
+            { databaseId, itemId: existing.id, propertiesPatch: Object.fromEntries(differing) },
+            writeOptions,
+          );
+        }
+      }
+      const { nights } = await loadSleepNights(client, { from: night, to: night });
+      return { night: nights[0] ?? null };
     });
     return { status: 200, body };
   };

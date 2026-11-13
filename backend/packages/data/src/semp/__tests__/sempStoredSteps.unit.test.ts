@@ -25,6 +25,10 @@ function fullToolStep(): SempReplyStep {
     durationMs: 40,
     approvalRequestId: randomUUID(),
     errorCode: "version_conflict",
+    mcpToolRegistrationId: randomUUID(),
+    mcpServerItemId: randomUUID(),
+    connectorName: "GitHub",
+    timeoutMs: 60000,
     tokens: { input: 3, output: 4 },
   };
 }
@@ -81,6 +85,11 @@ describe("parseStoredSempReplySteps (issue #1887)", () => {
     ["an approval request id that is no uuid", [withField(fullToolStep(), "approvalRequestId", "not-a-uuid")]],
     ["an approval request id that is no string", [withField(fullToolStep(), "approvalRequestId", 7)]],
     ["an error code that is no string", [withField(fullToolStep(), "errorCode", 7)]],
+    ["an MCP tool registration that is no string", [withField(fullToolStep(), "mcpToolRegistrationId", 7)]],
+    ["an MCP server id that is no string", [withField(fullToolStep(), "mcpServerItemId", 7)]],
+    ["a connector name that is no string", [withField(fullToolStep(), "connectorName", 7)]],
+    ["a timeout that is no number", [withField(fullToolStep(), "timeoutMs", "60000")]],
+    ["a timeout that is not finite", [withField(fullToolStep(), "timeoutMs", null)]],
     ["tokens that are no object", [withField(fullToolStep(), "tokens", 7)]],
     ["tokens that are no integers", [withField(fullToolStep(), "tokens", { input: 1.5, output: 2 })]],
     ["tokens with a missing count", [withField(fullToolStep(), "tokens", { input: 1 })]],

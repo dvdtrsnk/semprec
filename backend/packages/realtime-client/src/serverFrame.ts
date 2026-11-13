@@ -131,6 +131,11 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
           : null;
       }
       if (parsed.scope === "sempStatus") return { type: "invalidate", scope: "sempStatus" };
+      if (parsed.scope === "overview") return { type: "invalidate", scope: "overview" };
+      if (parsed.scope === "mcpServers") return { type: "invalidate", scope: "mcpServers" };
+      if (parsed.scope === "notificationPreferences" || parsed.scope === "badgeCounts" || parsed.scope === "account") {
+        return { type: "invalidate", scope: parsed.scope };
+      }
       if (parsed.scope === "inboxCards") {
         const { op, cardId } = parsed;
         if (!(op === "created" || op === "updated" || op === "closed")) return null;

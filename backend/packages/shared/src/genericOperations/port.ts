@@ -1,6 +1,6 @@
 import type { AuthenticatedActor } from "./actor.js";
 import type { GenericOperationName } from "./operationNames.js";
-import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
+import type { InputByOperation, ItemPatchOutput, SearchOutput } from "./schemas.js";
 import type {
   Database,
   DatabaseFacet,
@@ -17,7 +17,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 48 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 49 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -74,6 +74,8 @@ export interface OutputByOperation {
   "page.rename": PageRenameOutput;
   /** One entry per requested facet, in request order. */
   "database.facets": DatabaseFacet[];
+  /** The matches of one query, grouped by type in the fixed order of `SEARCH_GROUP_TYPES` (issue #1842). */
+  search: SearchOutput;
 }
 
 /**
@@ -236,7 +238,7 @@ export interface GenericApplicationPort {
    * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 46 catalog operations — `OutputByOperation["property.patch"]` (the
+   * the patch. Not one of the 47 catalog operations — `OutputByOperation["property.patch"]` (the
    * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
    * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
    * AgentTool composition root never call a catalog-external port method. See
@@ -375,4 +377,5 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["database.facets"],
   ): Promise<OutputByOperation["database.facets"]>;
+  searchItems(actor: AuthenticatedActor, input: InputByOperation["search"]): Promise<OutputByOperation["search"]>;
 }

@@ -21,6 +21,7 @@ export { buildItemSearchQuery } from "./search/itemSearchQuery.js";
 export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 export { enqueueTenantSearchReindex } from "./search/itemSearchFanout.js";
+export { searchItemGroups, type SearchItemGroupsInput } from "./search/searchItemsQuery.js";
 export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
 export { enqueueMailMessagePreviewBackfill } from "./mail/mailMessagePreviewBackfillJob.js";
 export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
@@ -77,6 +78,7 @@ export {
 export { sensitiveSourceDatabaseIdsByItem } from "./agentGrants/inheritedSensitivity.js";
 export type { AgentDatabaseAccess } from "./agentGrants/agentDatabaseGrantsStore.js";
 export { allowItemsForTurn, clearForRun } from "./agentGrants/agentRunReadAllowancesStore.js";
+export { setAgentDatabaseGrantForProjectSettings } from "./agentGrants/agentDatabaseGrantsForProject.js";
 export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
 export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export { getDatabaseByModuleId, type CreateDatabaseInput } from "./chokePoint/databasesStore.js";
@@ -111,6 +113,7 @@ export { computeNextFireAt } from "./scheduler/nextFireAt.js";
 export * from "./scheduler/schedulerStore.js";
 export * from "./scheduler/actions.js";
 export * from "./scheduler/heartbeatAgentTools.js";
+export * from "./scheduler/heartbeatWriteAgentTools.js";
 export {
   handleHeartbeatSweepTask,
   createHeartbeatFireCoreTask,
@@ -184,10 +187,10 @@ export { approvalNotificationBody } from "./notifications/approvalNotificationBo
 export { approvalNotificationLinkHref } from "./notifications/approvalNotificationLink.js";
 
 export * from "./agentRuns/agentRunsStore.js";
-export { getAgentRunDetail } from "./agentRuns/agentRunDetail.js";
+export { getAgentRunDetail, getAgentRunReplyOutcome } from "./agentRuns/agentRunDetail.js";
 export { agentRunErrorFields, agentRunErrorSummary } from "./agentRuns/agentRunErrorSummary.js";
-export { deriveRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
-export type { AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
+export { deriveReplyOutcome, REPLY_INCOMPLETE_REASONS, type ReplyOutcome } from "./agentRuns/replyOutcome.js";
+export { deriveRunDisplayStatus, type AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
 export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
 export * from "./agentRuns/agentRunEventsStore.js";
 export {
@@ -508,8 +511,7 @@ export {
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
-export { loadBlobMetadataForItems } from "./blobs/blobMetadata.js";
-export type { BlobMetadata, ItemBlobMetadata } from "./blobs/blobMetadata.js";
+export { loadBlobMetadataForItems, type BlobMetadata, type ItemBlobMetadata } from "./blobs/blobMetadata.js";
 export { detectFileType } from "./blobs/fileTypeDetection.js";
 export { recomputePersonLastContact } from "./people/lastContact.js";
 export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.js";
@@ -761,11 +763,9 @@ export {
   markApprovalRequestExecutionSucceeded,
   recordApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
-export type { ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
-export { toApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
+export { toApprovalRequestArgumentValues, type ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
 export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
-export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
-export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
+export { approvalConflictReason, type ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export {
   attachLiveStepApprovals,
   getApprovalRequestSourceKind,
@@ -922,6 +922,7 @@ export {
 export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 export { buildSempReplySummary, type SempReplySummary } from "./semp/sempReplySummary.js";
 export { projectSempReplySteps, type SempReplyStep } from "./semp/sempReplySteps.js";
+export { classifySempTurnFailure, renderSempReplyFailure } from "./semp/sempReplyErrors.js";
 export { projectSempReplyChanges, type SempReplyChange } from "./semp/sempReplyChanges.js";
 
 export type { ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";

@@ -370,6 +370,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect(delivered).toEqual([
           ...afterSuccess,
           { scope: "approvalRequest", approvalRequestId: expect.any(String), userId: run.actorUserId },
+          { scope: "badgeCounts", userId: run.actorUserId },
           { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: run.actorUserId },
         ]);
         expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
@@ -1336,9 +1337,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
         ).toEqual(jobsBeforeConflict.rows);
-        // The conflict changed no data; it announces only the request that reached its terminal state.
+        // The conflict changed no data; it announces only the request that reached its terminal state, and the owner's count.
         expect(conflictInvalidations).toEqual([
           { scope: "approvalRequest", approvalRequestId: seriesOnly, userId: actor.userId },
+          { scope: "badgeCounts", userId: actor.userId },
           { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
         ]);
         await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
@@ -1430,9 +1432,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
           (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
             .rows,
         ).toEqual(jobsBeforeUserConflict.rows);
-        // The conflict changed no data; it announces only the request that reached its terminal state.
+        // The conflict changed no data; it announces only the request that reached its terminal state, and the owner's count.
         expect(userConflictInvalidations).toEqual([
           { scope: "approvalRequest", approvalRequestId: stale, userId: actor.userId },
+          { scope: "badgeCounts", userId: actor.userId },
           { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
         ]);
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(

@@ -268,7 +268,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 46-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 47-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -542,6 +542,7 @@ const CASES: Record<GenericOperationName, Case> = {
       arguments: { databaseId: fx.database.id, facets: [fx.relationProperty.key] },
     }),
   },
+  search: { tool: () => ({ name: "semprec.search", arguments: { q: "contract", scope: ["task", "event"] } }) },
 };
 
 describe("generic operation MCP contract (issue #220)", () => {
@@ -1664,6 +1665,56 @@ describe("generic operation MCP contract (issue #220)", () => {
     });
     expect(noFacet.error?.code).toBe(-32602);
     expect(noFacet.error?.data).toMatchObject({ field: "facets" });
+  });
+
+  it("searches through MCP search, grouped with the structured subtitle, and refuses an invalid input without repeating the query", async () => {
+    const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+    if (!tasks) throw new Error("Tasks not seeded");
+    const task = await chokePoint.createItem({
+      databaseId: tasks.id,
+      properties: { name: "Odeslat fakturu", date: "2026-10-16", timeFrom: "14:00", timeTo: "15:30" },
+    });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+
+    const answered = await rpc(baseUrl, headers, "semprec.search", { q: "fakturu" });
+    expect(answered.error).toBeUndefined();
+    expect(JSON.parse(z.string().parse(answered.result?.content[0]?.text))).toEqual({
+      groups: [
+        {
+          type: "task",
+          total: 1,
+          items: [
+            {
+              itemId: task.id,
+              databaseId: tasks.id,
+              databaseKey: "tasks",
+              title: "Odeslat fakturu",
+              subtitleParts: [
+                { kind: "date", value: "2026-10-16" },
+                { kind: "timeRange", value: "14:00-15:30" },
+              ],
+              snippet: null,
+            },
+          ],
+          nextCursor: null,
+        },
+      ],
+    });
+
+    const secret = "tajny-dotaz-v-chybe";
+    const twoTypesWithCursor = await rpc(baseUrl, headers, "semprec.search", {
+      q: secret,
+      scope: ["task", "event"],
+      cursor: "x",
+    });
+    expect(twoTypesWithCursor.error?.code).toBe(-32602);
+    expect(twoTypesWithCursor.error?.data).toMatchObject({ field: "cursor" });
+    expect(JSON.stringify(twoTypesWithCursor.error)).not.toContain(secret);
+    const emptyQuery = await rpc(baseUrl, headers, "semprec.search", { q: "" });
+    expect(emptyQuery.error?.code).toBe(-32602);
+    expect(emptyQuery.error?.data).toMatchObject({ field: "q" });
   });
 
   it("rejects an empty database patch at the MCP operation boundary", async () => {

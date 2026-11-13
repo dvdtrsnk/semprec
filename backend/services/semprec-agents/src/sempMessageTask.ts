@@ -4,6 +4,7 @@ import { currentTenantScope } from "@semprec/shared";
 import {
   buildSempReplySummary,
   claimSempMessage,
+  classifySempTurnFailure,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
   getDatabaseByModuleId,
@@ -265,12 +266,16 @@ export function createSempMessageTask(
                 );
               }
             }
+            // The code and params come from the kind of error and the steps, never from the text of the error, which is
+            // stored nowhere and not logged below.
+            const { errorCode, errorParams } = classifySempTurnFailure({ error, signal, steps: summary?.steps ?? [] });
             try {
               await withTransaction(pool, async (client) => {
                 if (
                   !(await finishSempMessageTurn(client, assistantMessageId, {
                     status: "error",
-                    interrupted: signal.aborted && signal.reason === "shutdown",
+                    errorCode,
+                    errorParams,
                     ...(summary ? { summary } : {}),
                   }))
                 ) {
@@ -300,7 +305,10 @@ export function createSempMessageTask(
               );
             }
             if (runPersistenceFailed || freshnessFailed) throw error;
-            logger.warn({ threadId, assistantMessageId }, "Semp turn failed");
+            logger.warn(
+              { threadId, assistantMessageId, agentRunId: failedStart?.agentRunId ?? null, errorCode },
+              "Semp turn failed",
+            );
           }
         },
         true,

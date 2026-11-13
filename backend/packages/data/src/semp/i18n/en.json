@@ -44,5 +44,14 @@
   "status.aiBudgetMissing.shortText": "AI has no limit set.",
   "status.aiBudgetExhausted.title": "AI limit exhausted",
   "status.aiBudgetExhausted.text": "The AI spending limit is used up. It resets on {resetTime}.",
-  "status.aiBudgetExhausted.shortText": "AI limit exhausted, resets on {resetTime}."
+  "status.aiBudgetExhausted.shortText": "AI limit exhausted, resets on {resetTime}.",
+  "reply.failure.budgetExceeded": "I could not answer because the AI spending limit is used up.",
+  "reply.failure.modelError": "I could not answer because the AI model failed to complete the request.",
+  "reply.failure.cancelled": "The reply was cancelled before it was finished.",
+  "reply.failure.interrupted": "The reply was interrupted by a restart before it was finished.",
+  "reply.failure.internal": "I could not answer because of an internal error.",
+  "reply.failure.toolTimeout": "The connection to {connector} timed out after {seconds} s, so the reply is incomplete.",
+  "reply.failure.toolUnavailable": "{connector} is not available, so the reply is incomplete.",
+  "reply.failure.toolError": "{connector} returned an error, so the reply is incomplete.",
+  "reply.failure.unnamedConnector": "(unnamed)"
 }

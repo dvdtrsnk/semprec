@@ -10,6 +10,7 @@ export * from "./tenantScope.js";
 export * from "./sempMessageRef.js";
 export type {
   SempThreadActiveRun,
+  SempThreadChange,
   SempThreadDetail,
   SempThreadMessage,
   SempTickThreadHeartbeat,

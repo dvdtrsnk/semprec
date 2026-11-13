@@ -1,5 +1,5 @@
 /**
- * The closed 48-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017). Every other file in `genericOperations` is
+ * The closed 49-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842). Every other file in `genericOperations` is
  * keyed off this exact list — adding or removing an operation means touching this array and
  * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
  * and `bindings.ts` point at whatever is now missing or extra.
@@ -56,6 +56,7 @@ export const GENERIC_OPERATION_NAMES = [
   "database.facets",
   "page.ensureJournalPeriod",
   "page.mergeJournalDuplicates",
+  "search",
 ] as const;
 
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];

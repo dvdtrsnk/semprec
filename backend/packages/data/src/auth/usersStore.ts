@@ -3,6 +3,10 @@ import { requireSingleRow } from "../db/pool.js";
 import type { SupportedLocale } from "./locales.js";
 import type { UserRole, UserRow } from "./types.js";
 
+// The publisher the profile route calls after its own write reaches `@semprec/data` through this module, which
+// `index.ts` re-exports whole: `index.ts` is at the ESLint line cap and takes no further export line.
+export { publishAccountInvalidation } from "./accountInvalidation.js";
+
 /** The raw `users` row shape this module reads back from Postgres. */
 type UserDbRow = {
   id: string;

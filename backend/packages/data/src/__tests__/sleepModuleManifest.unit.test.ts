@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
-import { sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
+import { handleSleepResync, sleepResyncPayloadSchema } from "../sleep/sleepResync.js";
+import { sleepNightPut, sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 
 const SLEEP_DATABASE_KEYS = ["sleepSettings", "sleepPlans", "sleepNights"];
 
@@ -82,11 +83,41 @@ describe("sleep module manifest (issue #1776)", () => {
     }
   });
 
-  it("mounts GET /api/sleep/nights as its one custom route, resolved to the handler factory (issue gh-1809)", async () => {
+  it("mounts GET and PUT /api/sleep/nights as its custom routes, resolved to the handler factories (issues gh-1809 and gh-1835)", async () => {
     const registry = await loadFullModuleRegistry();
 
     expect((await registry.getCustomRouteDefinitions()).filter((route) => route.moduleId === "sleep")).toEqual([
       { moduleId: "sleep", name: "sleepNights", method: "GET", path: "/api/sleep/nights", handler: sleepNightsGet },
+      {
+        moduleId: "sleep",
+        name: "sleepNightPut",
+        method: "PUT",
+        path: "/api/sleep/nights/:night",
+        handler: sleepNightPut,
+      },
+    ]);
+  });
+
+  it("declares sleep.resync as its one task for the API runtime, resolved to the exported schema and handler (issue gh-1838)", async () => {
+    const registry = await loadFullModuleRegistry();
+
+    expect((await registry.getTasks()).filter((task) => task.moduleId === "sleep")).toEqual([
+      {
+        moduleId: "sleep",
+        name: "sleep.resync",
+        payloadSchemaExport: "sleepResyncPayloadSchema",
+        handlerExport: "handleSleepResync",
+        queueAffinity: "api",
+      },
+    ]);
+    expect((await registry.getTaskDefinitions()).filter((task) => task.moduleId === "sleep")).toEqual([
+      {
+        moduleId: "sleep",
+        name: "sleep.resync",
+        payloadSchema: sleepResyncPayloadSchema,
+        handler: handleSleepResync,
+        queueAffinity: "api",
+      },
     ]);
   });
 });

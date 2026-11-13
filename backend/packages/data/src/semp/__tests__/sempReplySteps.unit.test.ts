@@ -235,6 +235,105 @@ describe("projectSempReplySteps", () => {
     expect(JSON.stringify(step)).not.toContain(FREE_TEXT);
   });
 
+  describe("the facts of an MCP tool step that a reply outcome reads (issue #1890)", () => {
+    const REGISTRATION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const SERVER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const mcpCall = (toolCallId: string): CallOptions => ({
+      toolCallId,
+      name: "mcp_search_aaaaaaaa",
+      mcp: { toolRegistrationId: REGISTRATION, serverItemId: SERVER, serverName: "GitHub", toolName: "search" },
+      args: { query: FREE_TEXT },
+    });
+
+    it("stores the registration of every MCP step, and the server, name and timeout of a failed one", () => {
+      const failed = mcpCall("mcp-failed");
+      const worked = mcpCall("mcp-ok");
+      const steps = projectSempReplySteps({
+        events: [
+          toolUse(failed, 0),
+          toolResult(failed, 5, {
+            isError: true,
+            text: FREE_TEXT,
+            details: { error: true, failureKind: "timeout", timeoutMs: 60000, connectorName: "GitHub" },
+          }),
+          toolUse(worked, 6),
+          toolResult(worked, 9),
+        ],
+        targets,
+      });
+
+      expect(steps[0]).toMatchObject({
+        status: "error",
+        errorCode: "timeout",
+        mcpToolRegistrationId: REGISTRATION,
+        mcpServerItemId: SERVER,
+        connectorName: "GitHub",
+        timeoutMs: 60000,
+      });
+      expect(steps[1]).toMatchObject({ status: "ok", mcpToolRegistrationId: REGISTRATION });
+      expect(steps[1]).not.toHaveProperty("mcpServerItemId");
+      expect(steps[1]).not.toHaveProperty("connectorName");
+      expect(steps[1]).not.toHaveProperty("timeoutMs");
+      expect(JSON.stringify(steps)).not.toContain(FREE_TEXT);
+    });
+
+    it("stores no timeout for a failure of another kind, and none that is no whole number of milliseconds", () => {
+      const refused = mcpCall("mcp-refused");
+      const fractional = mcpCall("mcp-fractional");
+      const steps = projectSempReplySteps({
+        events: [
+          toolUse(refused, 0),
+          toolResult(refused, 1, { isError: true, details: { error: true, failureKind: "auth", timeoutMs: 60000 } }),
+          toolUse(fractional, 2),
+          toolResult(fractional, 3, {
+            isError: true,
+            details: { error: true, failureKind: "timeout", timeoutMs: 1500.5 },
+          }),
+        ],
+        targets,
+      });
+
+      expect(steps[0]).toMatchObject({ errorCode: "auth", connectorName: "GitHub" });
+      expect(steps[0]).not.toHaveProperty("timeoutMs");
+      expect(steps[1]).toMatchObject({ errorCode: "timeout" });
+      expect(steps[1]).not.toHaveProperty("timeoutMs");
+    });
+
+    it("keeps a failure of an unresolved registration without the server id its result lacked, and drops ids that are no uuid", () => {
+      const unresolved: CallOptions = {
+        ...mcpCall("mcp-unavailable"),
+        mcp: { toolRegistrationId: "not-a-uuid", serverItemId: "not-a-uuid", serverName: "GitHub", toolName: "search" },
+      };
+      const [step] = projectSempReplySteps({
+        events: [
+          toolUse(unresolved, 0),
+          toolResult(unresolved, 1, { isError: true, details: { error: true, failureKind: "unavailable" } }),
+        ],
+        targets,
+      });
+
+      expect(step).toMatchObject({ status: "error", errorCode: "unavailable", connectorName: "GitHub" });
+      expect(step).not.toHaveProperty("mcpServerItemId");
+      expect(step).not.toHaveProperty("mcpToolRegistrationId");
+    });
+
+    it("stores none of these facts for a generic operation, which has no MCP identity", () => {
+      const call = patch("generic");
+      const [step] = projectSempReplySteps({
+        events: [
+          toolUse(call, 0),
+          toolResult(call, 1, { isError: true, details: { error: true, errorCode: "timeout" } }),
+        ],
+        targets,
+      });
+
+      expect(step).toMatchObject({ status: "error", errorCode: "timeout" });
+      for (const key of ["mcpToolRegistrationId", "mcpServerItemId", "connectorName", "timeoutMs"]) {
+        expect(step).not.toHaveProperty(key);
+      }
+    });
+  });
+
   it("stores a failure without a code as an error with no code, and refuses a code that is free text", () => {
     const quiet = patch("quiet");
     const loud = patch("loud");

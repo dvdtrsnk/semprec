@@ -23,7 +23,7 @@ interface JournalPeriodEntry {
 }
 
 /** Resolves a set of period keys together, preferring the live reservation target when present. */
-async function findJournalPeriodEntries(
+export async function findJournalPeriodEntries(
   client: PoolClient,
   journalDatabaseId: string,
   type: JournalPeriodType,

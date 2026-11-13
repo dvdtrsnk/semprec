@@ -83,7 +83,7 @@ async function resolveRelationProperty(
  * (issue #1676), `POST /api/items/:id/page/duplicate` (issue #1722) and `PATCH /api/items/:id/page/title` (issue #1725).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
- * own `createChokePoint(pool)` for an operation the 46-operation catalog covers. `?include=path`'s breadcrumb chain
+ * own `createChokePoint(pool)` for an operation the 47-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */

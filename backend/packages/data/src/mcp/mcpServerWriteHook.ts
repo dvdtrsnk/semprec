@@ -8,6 +8,7 @@ import type { ItemCreateHookContext, ItemUpdateHookContext } from "../chokePoint
 import { ValidationError } from "../errors.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertStorableMcpConnectionConfig } from "./mcpConnectionConfig.js";
+import { publishMcpServersInvalidation } from "./mcpServersInvalidation.js";
 import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 
 async function assertWrittenConfigStorable(
@@ -36,6 +37,12 @@ export async function mcpServerItemCreateHook({
   await assertWrittenConfigStorable(client, database.ownerModuleId, properties, humanWriterUserId);
 }
 
+/**
+ * Validates a written `connectionConfig` like the create hook, and announces a server switched on or off: a patch
+ * of an item of the MCP servers database that names `active` publishes one `mcpServers` invalidation for the
+ * tenant, once the write's transaction has committed. A patch without `active`, and any other database, publish
+ * nothing.
+ */
 export async function mcpServerItemUpdateHook({
   client,
   database,
@@ -43,4 +50,7 @@ export async function mcpServerItemUpdateHook({
   humanWriterUserId,
 }: ItemUpdateHookContext): Promise<void> {
   await assertWrittenConfigStorable(client, database.ownerModuleId, propertiesPatch, humanWriterUserId);
+  if (database.ownerModuleId === MCP_SERVERS_MODULE_ID && Object.hasOwn(propertiesPatch, "active")) {
+    publishMcpServersInvalidation(client);
+  }
 }

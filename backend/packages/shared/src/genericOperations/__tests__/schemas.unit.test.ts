@@ -25,6 +25,9 @@ import {
   RelationListInputSchema,
   RelationPutInputSchema,
   RelationSetInputSchema,
+  SearchInputSchema,
+  SearchOutputSchema,
+  SEARCH_GROUP_TYPES,
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
@@ -77,6 +80,7 @@ const ALL_SCHEMAS = [
   PageInsertInputSchema,
   ItemCountInputSchema,
   DatabaseFacetsInputSchema,
+  SearchInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -789,6 +793,138 @@ describe("DatabaseFacetsInputSchema (issue #1759)", () => {
       expect(
         DatabaseFacetsInputSchema.safeParse({ databaseId, facets: ["status"], extra: { open: filter } }).success,
         label,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("SearchInputSchema (issue #1842)", () => {
+  it("defaults the scope to every group in the fixed order and the limit per group to 4", () => {
+    expect(SearchInputSchema.parse({ q: "faktura" })).toEqual({
+      q: "faktura",
+      scope: ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"],
+      perGroupLimit: 4,
+    });
+    expect([...SEARCH_GROUP_TYPES]).toEqual(SearchInputSchema.parse({ q: "x" }).scope);
+  });
+
+  it("accepts a query of 1 and of 200 characters, a limit of 1 and of 50, and a cursor with exactly one scope type", () => {
+    expect(SearchInputSchema.safeParse({ q: "a" }).success).toBe(true);
+    expect(SearchInputSchema.safeParse({ q: "a".repeat(200) }).success).toBe(true);
+    for (const perGroupLimit of [1, 50]) {
+      expect(SearchInputSchema.safeParse({ q: "a", perGroupLimit }).success, String(perGroupLimit)).toBe(true);
+    }
+    expect(SearchInputSchema.safeParse({ q: "a", scope: ["task"], cursor: "opaque" }).success).toBe(true);
+    expect(SearchInputSchema.safeParse({ q: "a", scope: ["mail", "chat"] }).success).toBe(true);
+  });
+
+  it("refuses an empty or missing query, a query over 200 characters and names the field", () => {
+    for (const input of [{ q: "" }, {}, { q: "a".repeat(201) }, { q: 5 }]) {
+      const parsed = SearchInputSchema.safeParse(input);
+      expect(parsed.success, JSON.stringify(input).slice(0, 40)).toBe(false);
+      if (parsed.success) throw new Error("Expected the query to be refused");
+      expect(validationIssueField(parsed.error.issues)).toBe("q");
+    }
+  });
+
+  it("refuses a limit outside 1 to 50 and a non-integer limit, naming perGroupLimit", () => {
+    for (const perGroupLimit of [0, 51, 1.5, "4"]) {
+      const parsed = SearchInputSchema.safeParse({ q: "a", perGroupLimit });
+      expect(parsed.success, String(perGroupLimit)).toBe(false);
+      if (parsed.success) throw new Error("Expected the limit to be refused");
+      expect(validationIssueField(parsed.error.issues)).toBe("perGroupLimit");
+    }
+  });
+
+  it("refuses an empty, repeating or unknown scope", () => {
+    for (const scope of [[], ["task", "task"], ["unknown"], ["contacts"], "task"]) {
+      const parsed = SearchInputSchema.safeParse({ q: "a", scope });
+      expect(parsed.success, JSON.stringify(scope)).toBe(false);
+      if (parsed.success) throw new Error("Expected the scope to be refused");
+      expect(validationIssueField(parsed.error.issues)).toMatch(/^scope(\.\d+)?$/);
+    }
+  });
+
+  it("refuses a cursor with two scope types and with the default scope, naming cursor, and an empty cursor", () => {
+    for (const input of [
+      { q: "a", scope: ["task", "event"], cursor: "opaque" },
+      { q: "a", cursor: "opaque" },
+      { q: "a", scope: ["task"], cursor: "" },
+    ]) {
+      const parsed = SearchInputSchema.safeParse(input);
+      expect(parsed.success, JSON.stringify(input)).toBe(false);
+      if (parsed.success) throw new Error("Expected the cursor to be refused");
+      expect(validationIssueField(parsed.error.issues)).toBe("cursor");
+    }
+  });
+
+  it("does not repeat the query in any refusal message", () => {
+    const secret = "tajny-dotaz-".repeat(30);
+    const parsed = SearchInputSchema.safeParse({ q: secret, perGroupLimit: 99, scope: ["task", "task"] });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected the input to be refused");
+    expect(JSON.stringify(parsed.error.issues)).not.toContain("tajny-dotaz");
+  });
+});
+
+describe("SearchOutputSchema (issue #1842)", () => {
+  const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const itemResult = {
+    itemId: id,
+    databaseId: id,
+    databaseKey: "tasks",
+    title: "Odeslat fakturu",
+    subtitleParts: [{ kind: "date", value: "2026-10-16" }],
+    snippet: null,
+  };
+
+  it("accepts an item group, a thread group and an empty answer", () => {
+    expect(SearchOutputSchema.safeParse({ groups: [] }).success).toBe(true);
+    expect(
+      SearchOutputSchema.safeParse({ groups: [{ type: "task", total: 9, items: [itemResult], nextCursor: "c" }] })
+        .success,
+    ).toBe(true);
+    expect(
+      SearchOutputSchema.safeParse({
+        groups: [
+          {
+            type: "mail",
+            total: 1,
+            items: [
+              {
+                threadId: id,
+                title: "Re: faktura",
+                subtitleParts: [{ kind: "sender", value: "a@b.cz" }],
+                snippet: null,
+              },
+            ],
+            nextCursor: null,
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a thread result in an item group, an item result in a thread group and an unknown group type", () => {
+    const threadResult = { threadId: id, title: "t", subtitleParts: [], snippet: null };
+    for (const group of [
+      { type: "task", total: 1, items: [threadResult], nextCursor: null },
+      { type: "mail", total: 1, items: [itemResult], nextCursor: null },
+      { type: "recipe", total: 1, items: [], nextCursor: null },
+    ]) {
+      expect(SearchOutputSchema.safeParse({ groups: [group] }).success, group.type).toBe(false);
+    }
+  });
+
+  it("refuses an unknown subtitle kind, an unknown key and a missing snippet", () => {
+    for (const result of [
+      { ...itemResult, subtitleParts: [{ kind: "company", value: "x" }] },
+      { ...itemResult, extra: true },
+      { itemId: id, databaseId: id, databaseKey: "tasks", title: "t", subtitleParts: [] },
+    ]) {
+      expect(
+        SearchOutputSchema.safeParse({ groups: [{ type: "task", total: 1, items: [result], nextCursor: null }] })
+          .success,
       ).toBe(false);
     }
   });

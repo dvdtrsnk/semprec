@@ -270,6 +270,26 @@ export async function getHeartbeatVisibleToChatRun(
 }
 
 /**
+ * Whether a Semp chat run whose project is `callingProjectItemId` may reach the heartbeats of `targetProjectItemId`
+ * (issue #1846): `false` when the target project holds a sensitive-database grant the calling project lacks, the
+ * same `SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION` that hides its heartbeats from the chat run's reads. The write tools
+ * ask it before they create an automation in a project that has no heartbeat yet to look up.
+ */
+export async function isProjectReachableByChatRun(
+  client: Pool | PoolClient,
+  callingProjectItemId: string,
+  targetProjectItemId: string,
+): Promise<boolean> {
+  const { rows } = await client.query<{ reachable: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM (SELECT $2::uuid AS project_item_id) h WHERE ${SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION}
+     ) AS reachable`,
+    [callingProjectItemId, targetProjectItemId],
+  );
+  return rows[0]?.reachable === true;
+}
+
+/**
  * The manual-fire lookup (issue #1453): the heartbeat by id, scoped to one project when
  * `projectItemId` is given and to the tenant alone when it is `null`, row-locked with
  * `FOR UPDATE`. The lock is what makes the enabled check and the enqueue that follow it in the

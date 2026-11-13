@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { publishNotificationPreferencesInvalidation } from "./notificationInvalidation.js";
 
 export const NOTIFICATION_PROBLEMS_LEVELS = ["off", "critical", "all"] as const;
 export type NotificationProblemsLevel = (typeof NOTIFICATION_PROBLEMS_LEVELS)[number];
@@ -76,7 +77,9 @@ export async function getNotificationPreferences(client: Queryable, userId: stri
  * Sets the fields `patch` supplies and leaves the others as they are. A patch with no fields changes
  * nothing and returns the current values. The first change creates the row with the column defaults,
  * then one statement updates it, so both run in the caller's transaction. Each `COALESCE` keeps the
- * stored value when its parameter is null.
+ * stored value when its parameter is null. A change is announced to the user's sockets once the
+ * transaction has committed (`publishNotificationPreferencesInvalidation`); a patch with no fields writes
+ * and announces nothing.
  */
 export async function patchNotificationPreferences(
   client: PoolClient,
@@ -116,5 +119,6 @@ export async function patchNotificationPreferences(
     ],
   );
   requireAffectedRows(result, "notification preferences update");
+  publishNotificationPreferencesInvalidation(client, userId);
   return mapRow(requireSingleRow(result.rows, "notification preferences update"));
 }

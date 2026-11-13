@@ -176,7 +176,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 46-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 47-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -344,6 +344,8 @@ const CASES: Record<GenericOperationName, Case> = {
   "database.facets": {
     args: (fx) => ({ databaseId: fx.database.id, facets: [fx.relationProperty.key, fx.optionProperty.key] }),
   },
+  // "Arrival" is the title of a fixture item in a user-created collection, which global search never reads.
+  search: { args: () => ({ q: "Arrival" }) },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
@@ -872,6 +874,10 @@ describe("generic operation AgentTools contract (issue #220)", () => {
             },
             { property: fx.optionProperty.key, all: 2, values: [{ value: null, count: 2 }] },
           ]);
+        }
+        if (operation === "search") {
+          // The fixture items sit in a user-created collection, which is not part of global search.
+          expect(JSON.parse(outcome.result)).toEqual({ groups: [] });
         }
         if (operation === "page.duplicate" || operation === "page.rename") {
           // The agent's write to the parent's page (the copy's block, the retitled block) follows the block `prepare`

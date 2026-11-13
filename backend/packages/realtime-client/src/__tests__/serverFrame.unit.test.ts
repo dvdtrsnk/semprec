@@ -196,3 +196,102 @@ describe("parseServerFrame sempStatus invalidation (issue #1868)", () => {
     ).toEqual({ type: "invalidate", scope: "sempStatus" });
   });
 });
+
+describe("parseServerFrame notificationPreferences and badgeCounts invalidations (issue #1918)", () => {
+  it.each(["notificationPreferences", "badgeCounts"] as const)(
+    "parses a %s invalidate frame and round-trips what the server sends",
+    (scope) => {
+      const frame = { type: "invalidate", scope } as const;
+      expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+    },
+  );
+
+  it.each(["notificationPreferences", "badgeCounts"] as const)("keeps nothing but the scope of a %s frame", (scope) => {
+    expect(parseServerFrame(JSON.stringify({ type: "invalidate", scope, count: 3, reminders: false }))).toEqual({
+      type: "invalidate",
+      scope,
+    });
+  });
+});
+
+describe("parseServerFrame account invalidation (issue #1946)", () => {
+  it("parses an account invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "account" } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps nothing but the scope of the frame", () => {
+    expect(
+      parseServerFrame(
+        JSON.stringify({ type: "invalidate", scope: "account", displayName: "Private Name", locale: "cs" }),
+      ),
+    ).toEqual({ type: "invalidate", scope: "account" });
+  });
+
+  it.each([
+    ["a scope in another case", { type: "invalidate", scope: "Account" }],
+    ["an empty scope", { type: "invalidate", scope: "" }],
+    ["a null scope", { type: "invalidate", scope: null }],
+    ["a non-string scope", { type: "invalidate", scope: 7 }],
+    ["a missing scope", { type: "invalidate" }],
+    ["another frame type", { type: "account", scope: "account" }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+
+  it("ignores a frame that is not JSON", () => {
+    expect(parseServerFrame("{ scope: account")).toBeNull();
+  });
+});
+
+describe("parseServerFrame overview invalidation (issue #1951)", () => {
+  it("parses an overview invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "overview" } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps nothing but the scope of the frame", () => {
+    expect(parseServerFrame(JSON.stringify({ type: "invalidate", scope: "overview", tasksForToday: 4 }))).toEqual({
+      type: "invalidate",
+      scope: "overview",
+    });
+  });
+
+  it.each([
+    ["a scope in another case", { type: "invalidate", scope: "Overview" }],
+    ["an empty scope", { type: "invalidate", scope: "" }],
+    ["a null scope", { type: "invalidate", scope: null }],
+    ["a non-string scope", { type: "invalidate", scope: 7 }],
+    ["another frame type", { type: "overview", scope: "overview" }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+});
+
+describe("parseServerFrame mcpServers invalidation (issue #2025)", () => {
+  it("parses an mcpServers invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "mcpServers" } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps nothing but the scope of the frame", () => {
+    expect(
+      parseServerFrame(
+        JSON.stringify({
+          type: "invalidate",
+          scope: "mcpServers",
+          mcpServerItemId: "8e3b5d27-1a94-4c06-b2f8-6a0d7e9c3b51",
+        }),
+      ),
+    ).toEqual({ type: "invalidate", scope: "mcpServers" });
+  });
+
+  it.each([
+    ["an unknown scope", { type: "invalidate", scope: "mcpServer" }],
+    ["a scope in another case", { type: "invalidate", scope: "McpServers" }],
+    ["a null scope", { type: "invalidate", scope: null }],
+    ["a non-string scope", { type: "invalidate", scope: 7 }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+});

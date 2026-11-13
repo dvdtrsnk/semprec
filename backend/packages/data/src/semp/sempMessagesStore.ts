@@ -7,6 +7,8 @@ import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { enqueueSempMessage } from "./sempMessageQueue.js";
 import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
 import type { SempReplySummary } from "./sempReplySummary.js";
+import type { AgentRunErrorCode } from "../agentRuns/agentRunErrorCodes.js";
+import type { SempReplyErrorParams } from "./sempReplyErrors.js";
 
 // A fixed SQL fragment; no caller input is interpolated.
 const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 'status', status,
@@ -86,6 +88,9 @@ export async function startSempMessageTurn(
  * duration, token totals and changed items of the turn and is written by the same statement as the status, so a
  * message never has a final status without the summary the caller built for it; a caller that has none leaves the
  * four columns NULL.
+ * A failed turn stores its `errorCode` and `errorParams` (issue #1907) by that same statement; `errorCode` is
+ * optional only for a caller that has no classification (a message closed without a turn), which leaves the
+ * columns NULL and reads back as `internal`.
  * Returns false when the message is no longer `running`, in which case nothing is written.
  */
 export async function finishSempMessageTurn(
@@ -93,13 +98,18 @@ export async function finishSempMessageTurn(
   messageId: string,
   outcome:
     | { status: "done"; text: string | null; lastEventId: string; summary?: SempReplySummary }
-    | { status: "error"; interrupted?: boolean; summary?: SempReplySummary },
+    | {
+        status: "error";
+        errorCode?: AgentRunErrorCode;
+        errorParams?: SempReplyErrorParams;
+        summary?: SempReplySummary;
+      },
 ): Promise<boolean> {
   requireManagedTransaction(client);
   const summary = outcome.summary;
   const result = await client.query(
     `UPDATE semp_messages SET status = $2, text = $3::text, search_vector = ${sempMessageSearchVectorSql("$3::text")},
-       event_to_id = $4::bigint, error_code = $5,
+       event_to_id = $4::bigint, error_code = $5, error_params = $10::jsonb,
        steps = $6::jsonb, duration_ms = $7::integer, tokens = $8::jsonb, changes = $9::jsonb, updated_at = now()
      WHERE id = $1 AND status = 'running'`,
     [
@@ -107,11 +117,12 @@ export async function finishSempMessageTurn(
       outcome.status,
       outcome.status === "done" ? outcome.text : null,
       outcome.status === "done" ? outcome.lastEventId : null,
-      outcome.status === "error" && outcome.interrupted ? "interrupted" : null,
+      outcome.status === "error" ? (outcome.errorCode ?? null) : null,
       summary ? JSON.stringify(summary.steps) : null,
       summary?.durationMs ?? null,
       summary ? JSON.stringify(summary.tokens) : null,
       summary ? JSON.stringify(summary.changes) : null,
+      outcome.status === "error" && outcome.errorParams ? JSON.stringify(outcome.errorParams) : null,
     ],
   );
   return result.rowCount === 1;

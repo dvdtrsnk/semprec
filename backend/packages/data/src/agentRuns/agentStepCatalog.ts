@@ -2,6 +2,7 @@ import type { ModuleCatalog } from "@semprec/module-registry";
 import type { GenericOperationName } from "@semprec/shared";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { getAgentRunCatalogs } from "./agentRunErrorSummary.js";
+import { fill } from "./catalogFill.js";
 
 /**
  * The step catalog (issue #1847): the localized title and summary of a step of an agent run. It is the one
@@ -49,13 +50,6 @@ async function loadCatalogs(locale: string): Promise<Catalogs> {
 /** The entry for `key` in the locale's catalog, else in the English one, else `undefined`. */
 function lookup(catalogs: Catalogs, key: string): string | undefined {
   return catalogs.locale[key] ?? catalogs.en[key];
-}
-
-/** Fills `{name}` placeholders in one pass, so a value that itself contains braces is never expanded again. */
-function fill(template: string, params: Readonly<Record<string, string | number>>): string {
-  return template.replace(/\{(\w+)\}/g, (placeholder, name: string) =>
-    Object.hasOwn(params, name) ? String(params[name]) : placeholder,
-  );
 }
 
 /**

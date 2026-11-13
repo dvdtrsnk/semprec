@@ -53,7 +53,7 @@ FROM thread_counts tc
 `;
 
 /** The mail summary of the caller's tenant; row-level security and the tenant filters confine every count to it. */
-async function getMailSummary(client: PoolClient): Promise<MailSummary> {
+export async function getMailSummary(client: PoolClient): Promise<MailSummary> {
   const { rows } = await client.query<Record<string, unknown>>(MAIL_SUMMARY_SQL, [null]);
   const row = summaryRow.parse(requireSingleRow(rows, "mail summary"));
   return {

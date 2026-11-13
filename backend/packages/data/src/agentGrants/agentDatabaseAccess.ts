@@ -50,6 +50,15 @@ function effectiveAccessSql(lock: "" | " FOR SHARE", project = "$1"): string {
 /** The access of an external client to the database aliased `d`: a sensitive database is `none`, any other `write`. */
 const EXTERNAL_CLIENT_ACCESS_SQL = `CASE WHEN d.sensitive THEN 'none' ELSE 'write' END`;
 
+/**
+ * What a project may do with a database while the user has made no decision: a sensitive database is closed and a
+ * user-created one open. It is the `CASE` inside `effectiveAccessSql`, and the PATCH route removes the stored
+ * decision instead of storing this value (`agentDatabaseGrantsForProject.ts`).
+ */
+export function defaultAgentDatabaseAccess(database: { sensitive: boolean }): AgentDatabaseAccess {
+  return database.sensitive ? "none" : "write";
+}
+
 interface EffectiveAccessRow {
   effective_access: string;
 }
@@ -300,4 +309,51 @@ export async function listClosedSensitiveDatabaseIds(
     [agentProjectItemId],
   );
   return new Set(rows.map((row) => row.id));
+}
+
+/** One database a grant can matter for, with the access the project currently has to it. */
+export interface ProjectDatabaseAccessRow {
+  databaseId: string;
+  key: string | null;
+  /** The stored name; `null` for a system database whose label comes from the module catalog. */
+  name: string | null;
+  sensitive: boolean;
+  system: boolean;
+  access: AgentDatabaseAccess;
+}
+
+interface ProjectDatabaseAccessDbRow {
+  id: string;
+  key: string | null;
+  name: string | null;
+  sensitive: boolean;
+  system: boolean;
+  effective_access: string;
+}
+
+/**
+ * Every database of the tenant a grant can matter for, the sensitive ones and the user-created ones, with the
+ * access of the project (`effectiveAccessSql`, the expression the point check uses). A non-sensitive system
+ * database is always open and not listed. Sensitive databases first (system before user-created), then the
+ * user-created ones by name. Not locked: it is a read model, while the point check guards the data itself.
+ */
+export async function listProjectDatabaseAccess(
+  client: PoolClient,
+  projectItemId: string,
+): Promise<ProjectDatabaseAccessRow[]> {
+  const { rows } = await client.query<ProjectDatabaseAccessDbRow>(
+    `SELECT d.id, d.key, d.name, d.sensitive, d.system, ${effectiveAccessSql("")} AS effective_access
+       FROM databases d
+      WHERE d.sensitive OR NOT d.system
+      ORDER BY d.sensitive DESC, d.system DESC, d.key, d.name, d.id`,
+    [projectItemId],
+  );
+  return rows.map((row) => ({
+    databaseId: row.id,
+    key: row.key,
+    name: row.name,
+    sensitive: row.sensitive,
+    system: row.system,
+    access: parseAgentDatabaseAccess(row.effective_access),
+  }));
 }

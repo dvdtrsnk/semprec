@@ -754,10 +754,14 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       withTransaction(pool, (client) => createPendingApprovalRequestAndPublish(client, input)),
     );
 
-    await waitUntil(() => frames.length >= 4);
+    await waitUntil(() => frames.length >= 5);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(frames).toHaveLength(4);
+    expect(frames).toHaveLength(5);
     expect(frames).toContainEqual({ type: "invalidate", scope: "approvalRequest", approvalRequestId: request.id });
+    // The owner's pending-decision count changed with the committed request (issue #1918), once.
+    expect(frames.filter((frame) => frame.scope === "badgeCounts")).toEqual([
+      { type: "invalidate", scope: "badgeCounts" },
+    ]);
     expect(frames).toContainEqual({ type: "invalidate", scope: "sempThread", threadId });
     // The run is announced twice: when it was created, and with the committed request (issue #1863).
     expect(

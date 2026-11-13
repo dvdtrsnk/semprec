@@ -68,6 +68,7 @@ const EXPECTED_ROWS: Record<
   "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
   "item.count": { schema: schemas.ItemCountInputSchema, method: "countItems" },
   "database.facets": { schema: schemas.DatabaseFacetsInputSchema, method: "getDatabaseFacets" },
+  search: { schema: schemas.SearchInputSchema, method: "searchItems" },
 };
 
 const EXPECTED_METADATA: Record<
@@ -332,12 +333,13 @@ const EXPECTED_METADATA: Record<
     riskClass: "read",
     reversible: true,
   },
+  search: { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read", reversible: true },
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 48 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(48);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(48);
+  it("has exactly 49 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(49);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(49);
   });
 });
 
@@ -480,7 +482,7 @@ describe("page.mergeJournalDuplicates input (issue #2017)", () => {
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 48 catalog rows and no others", () => {
+  it("has exactly the 49 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

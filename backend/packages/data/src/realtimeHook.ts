@@ -44,6 +44,23 @@ import type { CreatedBy } from "./types.js";
  * `scope: "sempStatus"` says that the tenant's Semp status (its problems and the services derived from
  * them) changed and names nothing else, so it carries no problem text; the client refetches the status.
  * It is delivered to every socket of the publisher's tenant, as `projectAgent` is.
+ *
+ * `scope: "notificationPreferences"` and `scope: "badgeCounts"` say that one user's stored notification
+ * preferences, or the number of decisions pending for that user, changed, and name nothing else; the client
+ * refetches the preferences or the counts. Both are per user: they carry the `userId` they concern and
+ * `@semprec/realtime` delivers them to that user's sockets only, never to the rest of the tenant.
+ *
+ * `scope: "account"` says that the profile of `userId` (its display name or language) changed and names nothing
+ * else, so it carries neither; the client rereads the profile. It is delivered to that user's sockets only.
+ *
+ * `scope: "overview"` says that the numbers of the Overview changed without a write that announces it (the
+ * nightly rollover of the tasks of a day) and names nothing else. It is delivered to every socket of the
+ * publisher's tenant, as `sempStatus` is.
+ *
+ * `scope: "mcpServers"` says that the effective tools of the projects that have grants on an MCP server may
+ * have changed (a server switched on or off, a successful tool synchronization) and names no server and no
+ * project; the client refreshes the project summaries it has open. It is delivered to every socket of the
+ * publisher's tenant, as `sempStatus` is.
  */
 export type InvalidationEvent =
   | {
@@ -67,7 +84,12 @@ export type InvalidationEvent =
   | { scope: "mailThread"; threadId: string; userId?: string }
   | { scope: "agentRuns"; projectItemId: string | null; agentRunId: string; userId?: string }
   | { scope: "projectAgent"; projectItemId: string; userId?: string }
-  | { scope: "sempStatus"; userId?: string };
+  | { scope: "sempStatus"; userId?: string }
+  | { scope: "notificationPreferences"; userId: string }
+  | { scope: "badgeCounts"; userId: string }
+  | { scope: "account"; userId: string }
+  | { scope: "overview"; userId?: string }
+  | { scope: "mcpServers"; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;
 

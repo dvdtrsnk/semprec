@@ -71,7 +71,11 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
  * `scope: "mailThread"` names only the mail thread that changed,
  * `scope: "agentRuns"` names one agent run and its project (null for a run without one),
  * `scope: "projectAgent"` names only the project whose agent setup changed,
- * `scope: "sempStatus"` names nothing but the fact that the Semp status changed, and
+ * `scope: "sempStatus"` names nothing but the fact that the Semp status changed,
+ * `scope: "notificationPreferences"`, `scope: "badgeCounts"` and `scope: "account"` name nothing but the fact that
+ * the receiving user's notification preferences, pending-decision counts or profile changed,
+ * `scope: "overview"` names nothing but the fact that the numbers of the Overview changed,
+ * `scope: "mcpServers"` names nothing but the fact that the effective tools of projects changed, and
  * `scope: "inboxCards"` names one card of the Processing proposals stack with the operation
  * (`created`, `updated` or `closed`) — so the client always refetches the durable row, the card list
  * and its count itself over REST rather than trusting a second, parallel copy of it
@@ -106,6 +110,11 @@ export type OutboundFrame =
   | { type: "invalidate"; scope: "agentRuns"; projectItemId: string | null; agentRunId: string }
   | { type: "invalidate"; scope: "projectAgent"; projectItemId: string }
   | { type: "invalidate"; scope: "sempStatus" }
+  | { type: "invalidate"; scope: "notificationPreferences" }
+  | { type: "invalidate"; scope: "badgeCounts" }
+  | { type: "invalidate"; scope: "account" }
+  | { type: "invalidate"; scope: "overview" }
+  | { type: "invalidate"; scope: "mcpServers" }
   | { type: "invalidate"; scope: "inboxCards"; op: "created" | "updated" | "closed"; cardId: string }
   | { type: "notification"; notification: NotificationRow }
   | { type: "agent:event"; agentRunId: string; event: AgentRunEventRow }
