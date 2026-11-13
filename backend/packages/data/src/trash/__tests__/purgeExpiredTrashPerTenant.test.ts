@@ -210,7 +210,7 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
     expect(await partitionExists(zero.databaseId)).toBe(true);
   });
 
-  it("logs and skips tenant B's candidate in an archived database while purging the rest", async () => {
+  it("leaves tenant B's trashed item in an archived database alone, without an error, while purging the rest", async () => {
     const zero = await seedTrash(tenantZero);
     const { archivedItemId, writableItemId } = await runInTenant(tenantB, async () => {
       const archivedDb = await chokePoint.createDatabase({ name: "Archived" });
@@ -225,7 +225,8 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
 
     await runAsSystem("test", () => handleItemTrashPurgeSweepTask(pool, fakeStorage().storage));
 
-    expect(logger.error).toHaveBeenCalledWith(
+    // The item of an archived database is no candidate any more (issue gh-1878), so there is nothing to log.
+    expect(logger.error).not.toHaveBeenCalledWith(
       expect.objectContaining({ itemId: archivedItemId }),
       "Failed to purge trashed item",
     );

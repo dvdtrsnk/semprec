@@ -6,11 +6,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  finishTickRunWithMessage,
+  getOrCreateTickThread,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   buildAgentRunStepPage,
+  CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
+  createHeartbeat,
   createPendingApprovalRequest,
   createUser,
   createViewTypeRegistry,
@@ -35,6 +44,14 @@ import {
   type AgentRunRow,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
+import {
+  createApproval,
+  createChatRun,
+  playQueuedAssistant,
+  playReply,
+  queueAssistantMessage,
+  type ReplySetup,
+} from "./agentRunReplyFixtures.js";
 
 const PASSWORD = "agent-run-steps-password";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -1130,6 +1147,456 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
       expect(finishedPage).toEqual({ steps: [], nextCursor: null, truncatedHistory: true });
       expect(runningPage).toEqual({ steps: [], nextCursor: "0", truncatedHistory: false });
+    });
+  });
+
+  describe("with ?messageId= (issue #1889)", () => {
+    const NOT_FOUND = { status: 404, body: { error: "Not found" } };
+
+    const replySetup = (session: Session): ReplySetup => ({
+      admin,
+      pool,
+      tenant: session.tenant,
+      userId: session.userId,
+    });
+
+    /** A chat run with two replies: A holds one tool call, B two. Each has an answer, so A has 2 steps and B 3. */
+    async function twoReplies(session: Session) {
+      const setup = replySetup(session);
+      const chat = await createChatRun(setup);
+      const a = await playReply(setup, chat, { userText: "First", startMs: 0, toolCalls: [{ toolCallId: "call-a" }] });
+      const b = await playReply(setup, chat, {
+        userText: "Second",
+        startMs: 10_000,
+        toolCalls: [{ toolCallId: "call-b1" }, { toolCallId: "call-b2" }],
+      });
+      return { setup, chat, a, b };
+    }
+
+    const scoped = (messageId: string, rest = "") => `?messageId=${messageId}${rest}`;
+
+    it("returns only the steps in the first reply's events, a tool step with its result and its answer", async () => {
+      const owner = await tenantSession();
+      const { chat, a, b } = await twoReplies(owner);
+
+      const page = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+
+      expect(page.steps.map((step) => [step.kind, step.toolCallId, step.state])).toEqual([
+        ["tool", "call-a", "ok"],
+        ["answer", null, "ok"],
+      ]);
+      const ids = page.steps.map((step) => step.stepId);
+      expect(ids).toEqual([a.eventIds[1], a.eventIds[3]]);
+      expect(ids.filter((id) => b.eventIds.includes(id))).toEqual([]);
+      expect(page.nextCursor).toBeNull();
+      expect(page.truncatedHistory).toBe(false);
+    });
+
+    it("returns only the steps in the second reply's events", async () => {
+      const owner = await tenantSession();
+      const { chat, a, b } = await twoReplies(owner);
+
+      const page = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
+
+      expect(page.steps.map((step) => [step.kind, step.toolCallId])).toEqual([
+        ["tool", "call-b1"],
+        ["tool", "call-b2"],
+        ["answer", null],
+      ]);
+      expect(page.steps.map((step) => step.stepId).filter((id) => a.eventIds.includes(id))).toEqual([]);
+      expect(page.nextCursor).toBeNull();
+    });
+
+    it("returns the steps of both replies without a messageId, as for any run", async () => {
+      const owner = await tenantSession();
+      const { chat, a, b } = await twoReplies(owner);
+
+      const page = await readPage(owner, chat.runId);
+
+      expect(page.steps.map((step) => step.toolCallId)).toEqual(["call-a", null, "call-b1", "call-b2", null]);
+      expect(page.steps.map((step) => step.stepId)).toEqual(
+        expect.arrayContaining([a.eventIds[1], a.eventIds[3], b.eventIds[1], b.eventIds[3], b.eventIds[5]]),
+      );
+    });
+
+    it("pages a reply with the cursor of the unscoped route, never splitting a call from its result nor leaving the reply", async () => {
+      const owner = await tenantSession();
+      const { chat, a, b } = await twoReplies(owner);
+      const unpaged = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
+
+      const pages: Page[] = [];
+      let after: string | null = null;
+      do {
+        const page: Page = await readPage(
+          owner,
+          chat.runId,
+          scoped(b.assistantMessageId, after === null ? "&limit=1" : `&limit=1&after=${after}`),
+        );
+        pages.push(page);
+        after = page.nextCursor;
+      } while (after !== null);
+
+      expect(pages.map((page) => page.steps.length)).toEqual([1, 1, 1]);
+      expect(pages.flatMap((page) => page.steps)).toEqual(unpaged.steps);
+      // A tool step is returned whole: its call and its result belong to one step with a duration.
+      expect(
+        pages
+          .flatMap((page) => page.steps)
+          .filter((step) => step.kind === "tool")
+          .map((s) => s.durationMs),
+      ).toEqual([100, 100]);
+      expect(pages.flatMap((page) => page.steps).map((step) => step.stepId)).not.toContain(a.eventIds[1]);
+    });
+
+    it("starts at the later of the cursor and the reply's first event", async () => {
+      const owner = await tenantSession();
+      const { chat, a, b } = await twoReplies(owner);
+
+      // A cursor inside reply A is before reply B's range, so B is still returned from its start.
+      const early = await readPage(owner, chat.runId, scoped(b.assistantMessageId, `&after=${a.firstEventId}`));
+      const full = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
+      // A cursor at the reply's last event leaves nothing to return.
+      const done = await readPage(owner, chat.runId, scoped(b.assistantMessageId, `&after=${b.lastEventId}`));
+
+      expect(early).toEqual(full);
+      expect(done).toEqual({ steps: [], nextCursor: null, truncatedHistory: false });
+    });
+
+    it("keeps the cursor of a reply that is still running, and ends it for a finished one", async () => {
+      const owner = await tenantSession();
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      const running = await playReply(setup, chat, {
+        userText: "First",
+        startMs: 0,
+        toolCalls: [{ toolCallId: "call-a" }],
+        end: "running",
+      });
+
+      const page = await readPage(owner, chat.runId, scoped(running.assistantMessageId));
+
+      expect(page.steps.map((step) => step.kind)).toEqual(["tool", "answer"]);
+      // The reply may still store events, so a reader keeps the id of the last step's last event.
+      expect(page.nextCursor).toBe(running.eventIds[3]);
+    });
+
+    it("shows a retried reply's latest attempt, whichever attempt the request names", async () => {
+      const owner = await tenantSession();
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      const first = await playReply(setup, chat, {
+        userText: "Plan",
+        startMs: 0,
+        toolCalls: [{ toolCallId: "call-1", fails: true }],
+        end: "error",
+      });
+      const attemptId = await queueAssistantMessage(setup, chat, first.userMessageId);
+      const second = await playQueuedAssistant(setup, chat, attemptId, {
+        userMessageId: first.userMessageId,
+        startMs: 5_000,
+        toolCalls: [{ toolCallId: "call-2" }],
+      });
+
+      const named = await readPage(owner, chat.runId, scoped(first.assistantMessageId));
+      const latest = await readPage(owner, chat.runId, scoped(second.assistantMessageId));
+
+      expect(named).toEqual(latest);
+      expect(latest.steps.map((step) => step.toolCallId)).toEqual(["call-2", null]);
+    });
+
+    it("ends a reply that stored no last event before the next reply's first event", async () => {
+      const owner = await tenantSession();
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      const failed = await playReply(setup, chat, {
+        userText: "First",
+        startMs: 0,
+        toolCalls: [{ toolCallId: "call-a" }],
+        end: "error",
+      });
+      const next = await playReply(setup, chat, {
+        userText: "Second",
+        startMs: 10_000,
+        toolCalls: [{ toolCallId: "call-b" }],
+      });
+
+      const page = await readPage(owner, chat.runId, scoped(failed.assistantMessageId));
+
+      expect(page.steps.map((step) => step.toolCallId)).toEqual(["call-a", null]);
+      expect(page.steps.map((step) => step.stepId).filter((id) => next.eventIds.includes(id))).toEqual([]);
+    });
+
+    it("counts only the reply's own tool and approval steps in the summary of an end step inside its range", async () => {
+      const owner = await tenantSession();
+      await updateUserLocale(admin, owner.userId, "en");
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      await playReply(setup, chat, { userText: "First", startMs: 0, toolCalls: [{ toolCallId: "call-a" }] });
+      const last = await playReply(setup, chat, {
+        userText: "Second",
+        startMs: 10_000,
+        toolCalls: [{ toolCallId: "call-b1" }, { toolCallId: "call-b2" }],
+        end: "error",
+      });
+      await createApproval(setup, chat.runId, "call-b1");
+      // The run's terminal event follows the last reply, which stored no last event, so it lies in its range.
+      await finish(owner, chat.runId);
+
+      const page = await readPage(owner, chat.runId, scoped(last.assistantMessageId));
+
+      expect(page.steps.at(-1)).toMatchObject({ kind: "end", summary: "2 tools, no approvals" });
+      const whole = await readPage(owner, chat.runId, "?limit=500");
+      expect(whole.steps.at(-1)).toMatchObject({ kind: "end", summary: "3 tools, no approvals" });
+    });
+
+    describe("truncatedHistory", () => {
+      it("is true, with no steps, when retention removed every event of the reply while the next reply's remain", async () => {
+        const owner = await tenantSession();
+        const setup = replySetup(owner);
+        const chat = await createChatRun(setup);
+        const a = await playReply(setup, chat, {
+          userText: "First",
+          startMs: 0,
+          toolCalls: [{ toolCallId: "call-a" }],
+        });
+        const checkpoint = await addEvent(owner, chat.runId, "compaction", { kind: "compaction" });
+        const b = await playReply(setup, chat, {
+          userText: "Second",
+          startMs: 10_000,
+          toolCalls: [{ toolCallId: "call-b" }],
+        });
+        await finish(owner, chat.runId);
+        await admin.query("UPDATE agent_run_events SET at = $2 WHERE agent_run_id = $1 AND id <= $3::bigint", [
+          chat.runId,
+          new Date(Date.now() - 40 * DAY_MS),
+          checkpoint.id,
+        ]);
+        expect(await readPage(owner, chat.runId, scoped(a.assistantMessageId))).toMatchObject({
+          truncatedHistory: false,
+        });
+
+        const { deleted } = await handleAgentRunEventsRetentionTask(pool);
+        const removed = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+        const kept = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
+
+        expect(deleted).toBe(a.eventIds.length);
+        expect(removed).toEqual({ steps: [], nextCursor: null, truncatedHistory: true });
+        expect(kept.truncatedHistory).toBe(false);
+        expect(kept.steps.map((step) => step.toolCallId)).toEqual(["call-b", null]);
+      });
+
+      it("is true, and the remaining steps are returned, when only the reply's first event is gone", async () => {
+        const owner = await tenantSession();
+        const { chat, a } = await twoReplies(owner);
+        // Retention removes events before a checkpoint, never one alone; a lone removal gives the same state.
+        await admin.query("DELETE FROM agent_run_events WHERE id = $1", [a.firstEventId]);
+
+        const page = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+
+        expect(page.truncatedHistory).toBe(true);
+        expect(page.steps.map((step) => step.toolCallId)).toEqual(["call-a", null]);
+      });
+    });
+
+    it("returns no step and no truncation for a reply that stored no event", async () => {
+      const owner = await tenantSession();
+      const { chat, a } = await twoReplies(owner);
+      // No production write leaves a started reply without its first event id; the column is cleared by SQL.
+      await admin.query("UPDATE semp_messages SET event_from_id = NULL, event_to_id = NULL WHERE id = $1", [
+        a.assistantMessageId,
+      ]);
+
+      const page = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+
+      expect(page).toEqual({ steps: [], nextCursor: null, truncatedHistory: false });
+    });
+
+    it("answers a message of another run of the same tenant like an unknown id", async () => {
+      const owner = await tenantSession();
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      await playReply(setup, chat, { userText: "First", startMs: 0 });
+      const otherChat = await createChatRun(setup);
+      const other = await playReply(setup, otherChat, { userText: "Elsewhere", startMs: 0 });
+
+      const foreign = await getSteps(owner, chat.runId, scoped(other.assistantMessageId));
+      const unknown = await getSteps(owner, chat.runId, scoped(randomUUID()));
+
+      expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
+      expect(unknown).toEqual(foreign);
+    });
+
+    it("answers a message of another tenant like an unknown id", async () => {
+      const owner = await tenantSession();
+      const stranger = await tenantSession();
+      const chat = await createChatRun(replySetup(owner));
+      await playReply(replySetup(owner), chat, { userText: "First", startMs: 0 });
+      const strangerChat = await createChatRun(replySetup(stranger));
+      const foreignReply = await playReply(replySetup(stranger), strangerChat, { userText: "Private", startMs: 0 });
+
+      const foreign = await getSteps(owner, chat.runId, scoped(foreignReply.assistantMessageId));
+      const unknown = await getSteps(owner, chat.runId, scoped(randomUUID()));
+
+      expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
+      expect(unknown).toEqual(foreign);
+      for (const id of foreignReply.eventIds) expect(foreign.text).not.toContain(id);
+    });
+
+    it("answers a message that is not an assistant message like an unknown id, even when it names the run", async () => {
+      const owner = await tenantSession();
+      const setup = replySetup(owner);
+      const chat = await createChatRun(setup);
+      const reply = await playReply(setup, chat, { userText: "First", startMs: 0 });
+      // No production write gives a user message a run; the link is set by SQL so that only its role is refused.
+      await admin.query("UPDATE semp_messages SET agent_run_id = $2 WHERE id = $1", [reply.userMessageId, chat.runId]);
+
+      const user = await getSteps(owner, chat.runId, scoped(reply.userMessageId ?? ""));
+      const assistant = await getSteps(owner, chat.runId, scoped(reply.assistantMessageId));
+
+      expect({ status: user.status, body: JSON.parse(user.text) }).toEqual(NOT_FOUND);
+      expect(assistant.status).toBe(200);
+    });
+
+    it.each([
+      ["a messageId that is not a UUID", "?messageId=not-a-uuid"],
+      ["an empty messageId", "?messageId="],
+      ["a repeated messageId", `?messageId=${randomUUID()}&messageId=${randomUUID()}`],
+    ])("answers %s with 400 validation_failed naming the field", async (_label, query) => {
+      const owner = await tenantSession();
+      const chat = await createChatRun(replySetup(owner));
+
+      const answer = await getSteps(owner, chat.runId, query);
+
+      expect(answer.status).toBe(400);
+      expect(JSON.parse(answer.text)).toMatchObject({ code: "validation_failed", details: { field: "messageId" } });
+    });
+
+    /**
+     * A heartbeat run in a project of the tenant (seeded on first use) with one tool call, an answer and its one
+     * assistant message in the tick thread.
+     */
+    async function heartbeatRunWithMessage(
+      session: Session,
+      name: string,
+    ): Promise<{ runId: string; tickThreadId: string; messageId: string }> {
+      const projectItemId = await runInTenant(session.tenant, async () => {
+        await seedSystem(pool, createViewTypeRegistry());
+        const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!projects) throw new Error("The Projects database is missing");
+        const project = await createChokePoint(pool).createItem({
+          databaseId: projects.id,
+          properties: { name: "Weekly review" },
+        });
+        return project.id;
+      });
+      const { heartbeatId, tickThreadId } = await runInTenant(session.tenant, () =>
+        withTransaction(pool, async (client) => {
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId,
+            name,
+            rule: { kind: "interval", minutes: 5 },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "Plan the week" },
+          });
+          const tick = await getOrCreateTickThread(client, heartbeat.id);
+          return { heartbeatId: heartbeat.id, tickThreadId: tick.id };
+        }),
+      );
+      const run = await createRun(session, {
+        projectItemId,
+        heartbeatId,
+        threadId: tickThreadId,
+        triggeredBy: "heartbeat",
+      });
+      await addStatus(session, run.id, "running");
+      await addToolUse(session, run.id, "call-1", { operation: "item.get" });
+      await addToolResult(session, run.id, "call-1", { operation: "item.get" });
+      await addMessage(session, run.id, "Here is what I found");
+      await runInTenant(session.tenant, () =>
+        withTransaction(pool, (client) =>
+          finishTickRunWithMessage(client, {
+            thread: { id: tickThreadId, tenantId: session.tenant, heartbeatId },
+            agentRunId: run.id,
+            outcome: { status: "done", result: "ok" },
+          }),
+        ),
+      );
+      const message = await admin.query<{ id: string }>(
+        "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'assistant'",
+        [tickThreadId],
+      );
+      const messageId = message.rows[0]?.id;
+      if (messageId === undefined) throw new Error("The tick run stored no message");
+      await addStatus(session, run.id, "done");
+      await settle(session, run.id);
+      return { runId: run.id, tickThreadId, messageId };
+    }
+
+    it("accepts the message of a heartbeat run and answers the steps of the whole run", async () => {
+      const owner = await tenantSession();
+      const { runId, messageId } = await heartbeatRunWithMessage(owner, "Sunday planning");
+
+      const whole = await getSteps(owner, runId);
+      const withMessage = await getSteps(owner, runId, scoped(messageId));
+      const unknown = await getSteps(owner, runId, scoped(randomUUID()));
+
+      expect(whole.status).toBe(200);
+      expect(withMessage).toEqual(whole);
+      expect(pageSchema.parse(JSON.parse(whole.text)).steps.map((step) => step.kind)).toEqual([
+        "start",
+        "tool",
+        "answer",
+        "end",
+      ]);
+      expect(unknown.status).toBe(404);
+    });
+
+    describe("a heartbeat run refuses a message that is not its own assistant message", () => {
+      it("answers the assistant message of another run of the same tenant like an unknown id", async () => {
+        const owner = await tenantSession();
+        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
+        const other = await heartbeatRunWithMessage(owner, "Monday planning");
+
+        const foreign = await getSteps(owner, run.runId, scoped(other.messageId));
+        const unknown = await getSteps(owner, run.runId, scoped(randomUUID()));
+        const own = await getSteps(owner, run.runId, scoped(run.messageId));
+
+        expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
+        expect(unknown).toEqual(foreign);
+        expect(own.status).toBe(200);
+      });
+
+      it("answers a user message of the run's thread like an unknown id, even when it names the run", async () => {
+        const owner = await tenantSession();
+        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
+        // No production write gives a user message a run; the row is made by SQL so that only its role is refused.
+        const user = await admin.query<{ id: string }>(
+          `INSERT INTO semp_messages (tenant_id, thread_id, role, text, agent_run_id)
+           VALUES ($1, $2, 'user', 'Private question', $3) RETURNING id`,
+          [owner.tenant, run.tickThreadId, run.runId],
+        );
+        const userMessageId = user.rows[0]?.id;
+        if (userMessageId === undefined) throw new Error("The user message was not inserted");
+
+        const refused = await getSteps(owner, run.runId, scoped(userMessageId));
+        const own = await getSteps(owner, run.runId, scoped(run.messageId));
+
+        expect({ status: refused.status, body: JSON.parse(refused.text) }).toEqual(NOT_FOUND);
+        expect(own.status).toBe(200);
+      });
+
+      it("answers a message of another tenant like an unknown id", async () => {
+        const owner = await tenantSession();
+        const stranger = await tenantSession();
+        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
+        const foreignRun = await heartbeatRunWithMessage(stranger, "Private planning");
+
+        const foreign = await getSteps(owner, run.runId, scoped(foreignRun.messageId));
+        const unknown = await getSteps(owner, run.runId, scoped(randomUUID()));
+
+        expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
+        expect(unknown).toEqual(foreign);
+      });
     });
   });
 });

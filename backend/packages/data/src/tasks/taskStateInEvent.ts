@@ -204,7 +204,11 @@ async function readCompletedInEventIds(
  * edges of all Events, their tasks, the host edges and `completedInEvent` edges of those tasks, and the Events those
  * edges name, so the number of queries does not depend on the number of rows.
  */
-async function buildEventTasks(client: PoolClient, events: readonly ItemRow[]): Promise<Map<string, EventTasks>> {
+async function buildEventTasks(
+  client: PoolClient,
+  events: readonly ItemRow[],
+  now: Date,
+): Promise<Map<string, EventTasks>> {
   const relation = await loadHostEventsRelation(client);
   const hosted = await readHostedTasks(
     client,
@@ -239,7 +243,6 @@ async function buildEventTasks(client: PoolClient, events: readonly ItemRow[]): 
   for (const hostEvents of hostEventsByTask.values()) hostEvents.sort(byAddedAtThenEventId);
 
   const clock = await getCalendarClock(client);
-  const now = new Date();
   return new Map(
     events.map((event) => {
       const rows = (hosted.get(event.id) ?? []).map(({ task, completedInEventIds }): EventTaskRow => {
@@ -287,7 +290,21 @@ async function liveEvents(client: PoolClient, eventIds: readonly string[]): Prom
 export async function readEventTasks(client: PoolClient, eventId: string): Promise<EventTasks | null> {
   const [event] = await liveEvents(client, [eventId]);
   if (event === undefined) return null;
-  return (await buildEventTasks(client, [event])).get(event.id) ?? null;
+  return (await buildEventTasks(client, [event], new Date())).get(event.id) ?? null;
+}
+
+/**
+ * The tasks, states and counts of every live Event in `eventIds`, keyed by Event id, as `readEventTasks` reads them
+ * for one Event, in the same fixed number of queries however many Events there are (issue gh-1880). The states are
+ * evaluated at `now`, so a caller that compares other instants with it sees one clock. An id that names no live Event
+ * is absent from the result.
+ */
+export async function readEventsTasks(
+  client: PoolClient,
+  eventIds: readonly string[],
+  now: Date,
+): Promise<Map<string, EventTasks>> {
+  return buildEventTasks(client, await liveEvents(client, [...new Set(eventIds)]), now);
 }
 
 /**
@@ -298,7 +315,6 @@ export async function eventTaskCounts(
   client: PoolClient,
   eventIds: readonly string[],
 ): Promise<Map<string, EventTaskCounts>> {
-  const events = await liveEvents(client, [...new Set(eventIds)]);
-  const built = await buildEventTasks(client, events);
+  const built = await readEventsTasks(client, eventIds, new Date());
   return new Map([...built].map(([eventId, { counts }]) => [eventId, counts] as const));
 }

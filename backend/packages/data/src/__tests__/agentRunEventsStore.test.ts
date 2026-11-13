@@ -551,6 +551,63 @@ describe("agentRunEventsStore", () => {
         hasMore: false,
       });
     });
+
+    describe("with a range (issue #1889)", () => {
+      async function fiveMessages() {
+        const run = await createAgentRun(pool, { triggeredBy: "user", task: "range" });
+        const events = [];
+        for (let i = 0; i < 5; i++) events.push(await insertAgentRunEvent(pool, run.id, "message", {}));
+        return { run, ids: events.map((event) => event.id) };
+      }
+
+      it("reads the events from the range's first through its last, both inclusive", async () => {
+        const { run, ids } = await fiveMessages();
+
+        const page = await listAgentRunEventsForStepPage(pool, run.id, "0", 100, {
+          fromEventId: ids[1]!,
+          throughEventId: ids[3]!,
+        });
+
+        expect(page.events.map((event) => event.id)).toEqual([ids[1], ids[2], ids[3]]);
+        expect(page.hasMore).toBe(false);
+      });
+
+      it("reads to the end of the run for a range that has no last event", async () => {
+        const { run, ids } = await fiveMessages();
+
+        const page = await listAgentRunEventsForStepPage(pool, run.id, "0", 100, {
+          fromEventId: ids[3]!,
+          throughEventId: null,
+        });
+
+        expect(page.events.map((event) => event.id)).toEqual([ids[3], ids[4]]);
+      });
+
+      it("starts at the later of the cursor and the range's first event", async () => {
+        const { run, ids } = await fiveMessages();
+        const range = { fromEventId: ids[1]!, throughEventId: ids[3]! };
+
+        const cursorInRange = await listAgentRunEventsForStepPage(pool, run.id, ids[1]!, 100, range);
+        const cursorBeforeRange = await listAgentRunEventsForStepPage(pool, run.id, ids[0]!, 100, range);
+
+        expect(cursorInRange.events.map((event) => event.id)).toEqual([ids[2], ids[3]]);
+        expect(cursorBeforeRange.events.map((event) => event.id)).toEqual([ids[1], ids[2], ids[3]]);
+      });
+
+      it("reports more events only inside the range", async () => {
+        const { run, ids } = await fiveMessages();
+        const rowLimit = agentRunStepPageRowLimit(1);
+        for (let i = 0; i < rowLimit; i++) await insertAgentRunEvent(pool, run.id, "message", {});
+
+        const bounded = await listAgentRunEventsForStepPage(pool, run.id, "0", 1, {
+          fromEventId: ids[0]!,
+          throughEventId: ids[4]!,
+        });
+
+        expect(bounded.events).toHaveLength(5);
+        expect(bounded.hasMore).toBe(false);
+      });
+    });
   });
 
   describe("countAgentRunToolSteps (issue #1847)", () => {
@@ -590,6 +647,35 @@ describe("agentRunEventsStore", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "no tools" });
 
       await expect(countAgentRunToolSteps(pool, run.id)).resolves.toEqual({ toolCount: 0, approvalCount: 0 });
+    });
+
+    it("counts only the tool and approval steps inside a range (issue #1889)", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "range count" });
+      const use = (toolCallId: string) => ({ kind: "tool_use", toolCallId, name: "item_get", arguments: {} });
+      const result = (toolCallId: string, details: unknown) => ({
+        kind: "tool_result",
+        toolCallId,
+        name: "item_get",
+        result: { content: [], details },
+        isError: false,
+      });
+      await insertAgentRunEvent(pool, run.id, "tool_use", use("before"));
+      await insertAgentRunEvent(pool, run.id, "tool_result", result("before", { approvalRequestId: randomUUID() }));
+      const from = await insertAgentRunEvent(pool, run.id, "tool_use", use("inside"));
+      const through = await insertAgentRunEvent(pool, run.id, "tool_result", result("inside", { error: false }));
+      await insertAgentRunEvent(pool, run.id, "tool_use", use("after"));
+      await insertAgentRunEvent(pool, run.id, "tool_result", result("after", { approvalRequestId: randomUUID() }));
+
+      await expect(
+        countAgentRunToolSteps(pool, run.id, { fromEventId: from.id, throughEventId: through.id }),
+      ).resolves.toEqual({ toolCount: 1, approvalCount: 0 });
+      await expect(
+        countAgentRunToolSteps(pool, run.id, { fromEventId: from.id, throughEventId: null }),
+      ).resolves.toEqual({
+        toolCount: 2,
+        approvalCount: 1,
+      });
+      await expect(countAgentRunToolSteps(pool, run.id)).resolves.toEqual({ toolCount: 3, approvalCount: 2 });
     });
   });
 });

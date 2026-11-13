@@ -2,8 +2,10 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Pool } from "pg";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
+import { z } from "zod";
 import { ChokePointError, ValidationError } from "@semprec/data";
 import {
+  attributeAudioStreamChunks,
   BudgetExceededError,
   reserveAudioStreamChunk,
   type AudioStreamChunk,
@@ -45,6 +47,13 @@ export const MAX_CONCURRENT_STT_STREAMS = 8;
 export const DEFAULT_STT_CHUNK_SECONDS = 30;
 
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The JSON control messages a caller may send; anything else, or a malformed one, closes the stream as `invalid_frame`. */
+const controlMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("end") }),
+  z.object({ type: z.literal("attribute"), sempMessageId: z.string().regex(UUID_PATTERN) }),
+]);
 
 export type SttStreamErrorCode =
   "budget_exceeded" | "provider_error" | "capacity" | "session_limit" | "idle_timeout" | "invalid_frame";
@@ -83,7 +92,10 @@ function readLanguage(url: URL): string | undefined {
  * Handles the WebSocket upgrade of `/internal/stt/stream` (#1396): bearer token and tenant as on
  * the other internal routes, a dedicated concurrency limit, and one stream per accepted socket.
  *
- * Inbound frames: raw 16 kHz PCM s16le in binary frames and one JSON `{type: "end"}`. Outbound
+ * Inbound frames: raw 16 kHz PCM s16le in binary frames, one JSON `{type: "end"}` and any number of
+ * JSON `{type: "attribute", sempMessageId}` (#2020): it sets `semp_message_id` on every chunk row this stream
+ * reserved since it opened or since its previous `attribute` message, in the stream's tenant, and on no other row.
+ * Rows that no later `attribute` message reaches stay unattributed. Outbound
  * JSON: `{type: "partial"|"final", text}` and `{type: "error", code}`. Budget is reserved in
  * chunks of `chunkSeconds` (one `ai_gateway_calls` row each), before the chunk's audio is
  * forwarded. Audio exists only in the frame being forwarded; it is never stored or logged, and
@@ -119,6 +131,8 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
     let session: StreamingTranscriptionSession | null = null;
     let chunk: AudioStreamChunk | null = null;
     let chunkBytesUsed = 0;
+    /** The chunks reserved since the stream opened or since the last `attribute` message. */
+    let unattributed: AudioStreamChunk[] = [];
     let ended = false;
     let done = false;
     let pendingBytes = 0;
@@ -232,6 +246,7 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
         return false;
       }
       chunk = reserved;
+      unattributed.push(reserved);
       return true;
     }
 
@@ -288,6 +303,23 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
       }
     }
 
+    /** Attributes the chunks reserved so far to the message; a message the tenant cannot see ends the stream. */
+    async function handleAttribute(sempMessageId: string): Promise<void> {
+      const chunks = unattributed;
+      try {
+        await inTenant(() => attributeAudioStreamChunks(pool, chunks, sempMessageId));
+      } catch (err) {
+        if (err instanceof ChokePointError) {
+          // Refused like a refused reservation: without detail, and the rows stay as they were.
+          logger.warn({ code: err.code }, "Speech-to-text stream refused an attribution");
+          finish(1008);
+          return;
+        }
+        throw err;
+      }
+      unattributed = [];
+    }
+
     async function handleText(raw: Buffer): Promise<void> {
       if (done) return;
       let value: unknown;
@@ -297,8 +329,16 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
         finish(1008, "invalid_frame");
         return;
       }
-      const isEnd = typeof value === "object" && value !== null && (value as { type?: unknown }).type === "end";
-      if (!isEnd || ended) {
+      const message = controlMessageSchema.safeParse(value);
+      if (!message.success) {
+        finish(1008, "invalid_frame");
+        return;
+      }
+      if (message.data.type === "attribute") {
+        await handleAttribute(message.data.sempMessageId);
+        return;
+      }
+      if (ended) {
         finish(1008, "invalid_frame");
         return;
       }

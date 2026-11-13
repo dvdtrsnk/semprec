@@ -59,6 +59,11 @@ export interface DatabaseRow {
   /** True for a system database whose data an agent must not read or write by default; set by the system only (issue #1808). */
   sensitive: boolean;
   archivedAt: string | null;
+  /**
+   * When the nightly sweep deletes an archived database for good (issue gh-1875). Null while the database is not
+   * archived, and for one archived before the deadline existed until the sweep first sees it.
+   */
+  purgeAt: string | null;
 }
 
 /**

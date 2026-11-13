@@ -34,8 +34,20 @@ export interface AgentRunUsage {
  * not included. `locale` is the caller's `users.locale`, in which the model names are written. A run
  * without such calls returns no entry, a total of 0 and `estimated: false`; so does a run of another
  * tenant, whose calls row-level security hides.
+ *
+ * With `sempMessageId` (issue #1889) only the calls attributed to that Semp message count
+ * (`ai_gateway_calls.semp_message_id`, issue #1744): the spend of one reply of a conversation run. A call counts
+ * when it carries the run's id, or when it carries no run id and the message belongs to the run
+ * (`semp_messages.agent_run_id`): the speech-to-text rows of a spoken question are attributed to the reply before
+ * its run exists (issue #2020), so they reach the run through the message. A message of another run counts nothing,
+ * and neither does a call that names another run. Without `sempMessageId` only calls that carry the run's id count.
  */
-export async function getAgentRunUsage(client: Queryable, runId: string, locale: string): Promise<AgentRunUsage> {
+export async function getAgentRunUsage(
+  client: Queryable,
+  runId: string,
+  locale: string,
+  sempMessageId?: string,
+): Promise<AgentRunUsage> {
   // Sums of integer and numeric columns arrive as strings; the total is summed in Postgres so that
   // it is the exact decimal sum of the model costs.
   const { rows } = await client.query<{
@@ -58,10 +70,17 @@ export async function getAgentRunUsage(client: Queryable, runId: string, locale:
             (SUM(SUM(cost_usd)) OVER ())::text AS total_cost_usd,
             BOOL_OR(status = 'reserved') AS reserved
      FROM ai_gateway_calls
-     WHERE agent_run_id = $1 AND status <> 'failed'
+     WHERE status <> 'failed'
+       AND (
+         ($2::uuid IS NULL AND agent_run_id = $1)
+         OR ($2::uuid IS NOT NULL AND semp_message_id = $2::uuid AND (
+           agent_run_id = $1
+           OR (agent_run_id IS NULL AND EXISTS (SELECT 1 FROM semp_messages WHERE id = $2::uuid AND agent_run_id = $1))
+         ))
+       )
      GROUP BY provider, model
      ORDER BY SUM(cost_usd) DESC, model, provider`,
-    [runId],
+    [runId, sempMessageId ?? null],
   );
   const catalogs = await getModelDisplayCatalogs();
   return {

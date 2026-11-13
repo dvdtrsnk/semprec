@@ -45,7 +45,16 @@ const trashedPagePositionSchema = z.object({
   indent: z.number().int().min(MIN_INDENT).max(MAX_INDENT),
 });
 
-type TrashedPagePosition = z.infer<typeof trashedPagePositionSchema>;
+export type TrashedPagePosition = z.infer<typeof trashedPagePositionSchema>;
+
+/**
+ * The position `pageItemDeleteHook` recorded in `trashedPages` for the trashed page `pageId`, or `null` when `doc` has
+ * no valid entry for it. The entry is left in place, so a restore of the page still finds its place.
+ */
+export function readTrashedPagePosition(doc: Y.Doc, pageId: string): TrashedPagePosition | null {
+  const parsed = trashedPagePositionSchema.safeParse(doc.getMap<unknown>(TRASHED_PAGES_MAP_NAME).get(pageId));
+  return parsed.success ? parsed.data : null;
+}
 
 /** The stored blocks of `doc` in document order, without the synthetic block an empty document is read as. */
 function storedBlocks(doc: Y.Doc) {

@@ -4,7 +4,7 @@
 // values are not in its description, so they cannot reach the body either.
 //
 // Generic operation metadata determines Semp's undo capability. MCP calls have no Semp undo.
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, PAGE_CONVERT_TARGET_TYPES } from "@semprec/shared";
 import { isGenericOperationApprovalRequestPayload, type ApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalPeriods.js";
 import type { WriteNotificationInput } from "./notify.js";
@@ -42,6 +42,17 @@ function journalMergeBodyKey(params: Readonly<Record<string, string | number | n
 }
 
 /**
+ * The body catalog key of a page conversion: one entry per target block type (`approval.pageConvertToBlock.<type>`), so
+ * the block type reaches the user as a localised phrase and never as the canonical key stored in the description
+ * (issue #1876). The entries name `{pageName}` and `{pageCount}`.
+ */
+function pageConvertBodyKey(params: Readonly<Record<string, string | number | null>>): string {
+  const type = PAGE_CONVERT_TARGET_TYPES.find((candidate) => candidate === params.blockType);
+  if (type === undefined) throw new Error("approvalNotificationBody: unknown block type in the description");
+  return `approval.pageConvertToBlock.${type}`;
+}
+
+/**
  * The body fields of a `writeNotification` call for an approval request. A request without a
  * description (a row written before issue #1683) gets no body, so its notification's body stays NULL.
  * A description key with no body entry is a producer bug and throws, which rolls back the request
@@ -55,7 +66,9 @@ export function approvalNotificationBody(
   const bodyKey =
     description.key === "approval.journalMerge"
       ? journalMergeBodyKey(description.params)
-      : BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
+      : description.key === "approval.pageConvertToBlock"
+        ? pageConvertBodyKey(description.params)
+        : BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
   if (bodyKey === undefined) {
     throw new Error(`approvalNotificationBody: no body entry for approval description "${description.key}"`);
   }

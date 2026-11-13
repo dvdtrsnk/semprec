@@ -3052,6 +3052,46 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(await readEventCards()).toEqual([]);
   });
 
+  it("proposes a virtual occurrence of a recurring Event on the card without writing an Event or an edge, and asks no model (issue gh-1850)", async () => {
+    const { file } = await createSourceFile();
+    // A daily series that began the day before the recording; 12:30-13:30 Prague time overlaps the recording at 13:00.
+    const seriesId = await createEvent("2024-02-29", {
+      name: "Daily standup",
+      timeFrom: "12:30",
+      timeTo: "13:30",
+      recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+    });
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const transcript = await readTranscript(file.id);
+    expect(transcript.properties.status).toBe("done");
+    expect(summaryClient.eventMatchCalls()).toHaveLength(0);
+    expect(await readMatch(transcript.id)).toEqual({
+      eventIds: [],
+      cards: [{ id: expect.any(String), kind: "transcript" }],
+    });
+    const proposal = {
+      entityKind: "relation",
+      target: `${seriesId}@2024-03-01`,
+      properties: { propertyKey: "event" },
+    };
+    const cards = await readEventCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      status: "proposed",
+      proposal,
+      aiProposal: proposal,
+      context: { role: "event", candidates: [{ seriesId, occurrenceDate: "2024-03-01" }], recommendedEventId: null },
+    });
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*) FROM items i JOIN databases d ON d.id = i.database_id WHERE d.owner_module_id = 'events'",
+    );
+    expect(Number(rows[0]?.count)).toBe(1);
+  });
+
   it("creates one transcript card when two Events overlap the recording, and a rerun adds no second card or edge", async () => {
     const { file } = await createSourceFile();
     await createEvent("2024-03-01", { timeFrom: "12:30", timeTo: "13:30" });
@@ -3583,10 +3623,19 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       await createUser();
       summaryClient.failure = new Error("Replay fixture failure");
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
-      const events: string[] = [];
+      const created: string[] = [];
       setNotificationCreatedHook((event) => {
-        events.push(event.notificationId);
+        created.push(event.notificationId);
       });
+      // The permanent failure also raises the transcript's Semp problem (issue gh-1945), whose own `semp_problem`
+      // notification is announced too; this test is about the `automation_error` transition.
+      const automationErrorEvents = async (): Promise<string[]> =>
+        (
+          await pool.query<{ id: string }>(
+            "SELECT id FROM notifications WHERE kind = 'automation_error' AND id = ANY($1::uuid[]) ORDER BY created_at, id",
+            [created],
+          )
+        ).rows.map((row) => row.id);
       try {
         await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
           name: "TranscriptionQueueError",
@@ -3602,7 +3651,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           `notification-fanout:${first.id}`,
         ]);
         expect(job.rows).toHaveLength(1);
-        expect(events).toEqual([first.id]);
+        expect(await automationErrorEvents()).toEqual([first.id]);
         // Restore the pre-attempt counter to replay this exact transition identity through the task.
         await pool.query("UPDATE item_automation SET attempts = 0 WHERE item_id = $1", [transcript.id]);
         await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
@@ -3620,11 +3669,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           (await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [`notification-fanout:${first.id}`]))
             .rows,
         ).toEqual(job.rows);
-        expect(events).toEqual([first.id]);
+        expect(await automationErrorEvents()).toEqual([first.id]);
         await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
           name: "TranscriptionQueueError",
         });
         expect(await readNotifications(transcript.id)).toHaveLength(2);
+        const events = await automationErrorEvents();
         expect(events).toHaveLength(2);
         expect(events[1]).not.toBe(first.id);
       } finally {

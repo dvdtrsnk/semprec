@@ -14,6 +14,7 @@ export {
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
   createRejectProposalRouteHandler,
+  createReviseProposalRouteHandler,
 } from "./inboxRouteHandlers.js";
 
 /**
@@ -82,6 +83,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "createRejectProposalRouteHandler",
       // A status transition, its history entry and the Journal recompute committed in one
       // transaction, which the generic item update cannot express (`status` is system-owned).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "reviseProposal",
+      method: "POST",
+      path: "/api/proposals/:id/revise",
+      handlerExport: "createReviseProposalRouteHandler",
+      // The replacement envelope is validated against live destination state, and the lock check and the
+      // status transition commit with it in one transaction.
       justification: "transactional-semantics",
     },
     {

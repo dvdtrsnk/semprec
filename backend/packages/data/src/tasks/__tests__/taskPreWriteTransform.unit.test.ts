@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ItemRow } from "../../types.js";
-import { prepareTaskWrite } from "../taskPreWriteTransform.js";
+import { prepareTaskProposal, prepareTaskWrite } from "../taskPreWriteTransform.js";
 
 const stored: ItemRow = {
   id: "item",
@@ -74,5 +74,74 @@ describe("Tasks schedule preparation", () => {
   it("leaves an unrelated update of a legacy schedule alone", async () => {
     const legacy: ItemRow = { ...stored, properties: { name: "Task", timeTo: "09:00" } };
     await expect(prepareTaskWrite({ stored: legacy, patch: { status: "done" } })).resolves.toEqual({ status: "done" });
+  });
+});
+
+describe("Tasks status preparation (issue sp-9cf1be65)", () => {
+  const notAStatus: [string, unknown][] = [
+    ["null", null],
+    ["an empty string", ""],
+    ["a number", 1],
+  ];
+  const legacy: ItemRow = { ...stored, properties: { name: "Legacy task" } };
+
+  it.each(notAStatus)("refuses a create that names status %s", async (_name, status) => {
+    await expect(prepareTaskWrite({ stored: null, patch: { name: "Task", status } })).rejects.toMatchObject({
+      code: "validation_failed",
+      message: "Property 'status' must be a task status",
+      details: { field: "status" },
+    });
+  });
+
+  it.each(notAStatus)("refuses an update that names status %s", async (_name, status) => {
+    await expect(
+      prepareTaskWrite({ stored: { ...stored, properties: { name: "Task", status: "done" } }, patch: { status } }),
+    ).rejects.toMatchObject({
+      code: "validation_failed",
+      details: { field: "status" },
+    });
+    await expect(prepareTaskWrite({ stored: legacy, patch: { status } })).rejects.toMatchObject({
+      code: "validation_failed",
+      details: { field: "status" },
+    });
+  });
+
+  it("refuses the status of a write that names a date as well", async () => {
+    await expect(prepareTaskWrite({ stored, patch: { date: "2026-10-14", status: null } })).rejects.toMatchObject({
+      details: { field: "status" },
+    });
+  });
+
+  it("accepts a status string on a create and on an update", async () => {
+    await expect(prepareTaskWrite({ stored: null, patch: { name: "Task", status: "done" } })).resolves.toMatchObject({
+      name: "Task",
+      status: "done",
+    });
+    await expect(prepareTaskWrite({ stored, patch: { status: "done" } })).resolves.toEqual({ status: "done" });
+  });
+
+  it("leaves a create without status unchanged, for the property default to fill in", async () => {
+    const prepared = await prepareTaskWrite({ stored: null, patch: { name: "Task" } });
+    expect(prepared).not.toHaveProperty("status");
+  });
+
+  it("leaves a patch that does not name status unchanged on a legacy row that has none", async () => {
+    const patch = { name: "Renamed" };
+    const prepared = await prepareTaskWrite({ stored: legacy, patch });
+    expect(prepared).toBe(patch);
+    const unrelated = { priority: "high" };
+    await expect(prepareTaskWrite({ stored: legacy, patch: unrelated })).resolves.toBe(unrelated);
+  });
+
+  it("refuses a proposal that names a status that is not a nonempty string and accepts one that does", async () => {
+    await expect(prepareTaskProposal({ stored, patch: { status: null } })).rejects.toMatchObject({
+      details: { field: "status" },
+    });
+    await expect(prepareTaskProposal({ stored: null, patch: { name: "Task", status: "" } })).rejects.toMatchObject({
+      details: { field: "status" },
+    });
+    await expect(prepareTaskProposal({ stored, patch: { status: "notDone" } })).resolves.toMatchObject({
+      patch: { status: "notDone" },
+    });
   });
 });

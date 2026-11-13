@@ -12,6 +12,10 @@ import {
 /** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
 const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
+/** The headers that attribute a speech synthesis to the agent run and the Semp message it serves (issue #2020). */
+const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
+const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
+
 /** #215's 60-second budget for the whole round trip to `semprec-ai-gateway`. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -175,6 +179,12 @@ export interface SttStream {
   sendAudio(pcm: Uint8Array): boolean;
   /** Signals the end of the audio; the gateway then sends the last finals and closes. */
   end(): void;
+  /**
+   * Attributes every chunk row the gateway reserved on this stream since it opened, or since the previous call,
+   * to the Semp assistant message of the turn the speech started (issue #2020). Speech never attributed stays
+   * unattributed. Returns false when the stream is not open, in which case nothing was sent.
+   */
+  attribute(sempMessageId: string): boolean;
   /** Drops the stream at once; the gateway aborts the provider session and settles the open chunk row. */
   close(): void;
 }
@@ -260,6 +270,11 @@ export function openSttStream(
         end: () => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "end" }));
         },
+        attribute: (sempMessageId) => {
+          if (ws.readyState !== WebSocket.OPEN) return false;
+          ws.send(JSON.stringify({ type: "attribute", sempMessageId }));
+          return true;
+        },
         close,
       });
     });
@@ -299,6 +314,10 @@ export interface SynthesizeSpeechOptions {
   voice: string;
   /** Aborting it ends the request; the gateway aborts the provider and settles the audio produced so far. */
   signal?: AbortSignal;
+  /** The agent run whose turn is spoken (`x-semprec-agent-run-id`); omit when the speech serves no run (issue #2020). */
+  agentRunId?: string;
+  /** The Semp assistant message that is spoken (`x-semprec-semp-message-id`); omit when the speech serves none (issue #2020). */
+  sempMessageId?: string;
 }
 
 /** The gateway refused a synthesis because its bounded stream capacity was exhausted. */
@@ -354,6 +373,8 @@ export async function synthesizeSpeech(
         authorization: `Bearer ${config.token}`,
         "x-trace-id": getTraceId() ?? mintTraceId(),
         ...tenantHeader(),
+        ...(options.agentRunId === undefined ? {} : { [AGENT_RUN_ID_HEADER]: options.agentRunId }),
+        ...(options.sempMessageId === undefined ? {} : { [SEMP_MESSAGE_ID_HEADER]: options.sempMessageId }),
       },
       body: JSON.stringify({ text: options.text, voice: options.voice }),
       signal,

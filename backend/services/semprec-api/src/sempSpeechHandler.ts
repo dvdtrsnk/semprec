@@ -87,11 +87,11 @@ export function createSempSpeechRequestListener(
         try {
           return await withMessageSpeechGuard(pool, messageId, voice, signal, async (guardSignal) => {
             const source = await withTransaction(pool, async (client) => {
-              const text = await getMessageSpeechSource(client, threadId, messageId);
+              const { text, agentRunId } = await getMessageSpeechSource(client, threadId, messageId);
               guardSignal.throwIfAborted();
               const cached = await getMessageSpeech(client, messageId, voice);
               guardSignal.throwIfAborted();
-              return { text, cached };
+              return { text, agentRunId, cached };
             });
             guardSignal.throwIfAborted();
             if (source.cached) return source.cached;
@@ -99,7 +99,14 @@ export function createSempSpeechRequestListener(
             const key = await withTransaction(pool, (client) => tenantBlobStorageKey(client, `blobs/${randomUUID()}`));
             guardSignal.throwIfAborted();
             stagedKey = key;
-            const audio = await synthesizeSpeech(gateway, { text: source.text, voice, signal: guardSignal });
+            // The speech row is attributed to the message that is read aloud and to the run that produced it.
+            const audio = await synthesizeSpeech(gateway, {
+              text: source.text,
+              voice,
+              signal: guardSignal,
+              sempMessageId: messageId,
+              ...(source.agentRunId === null ? {} : { agentRunId: source.agentRunId }),
+            });
             guardSignal.throwIfAborted();
             const readable = Readable.from(audio);
             const cancel = () => readable.destroy(new Error("Speech request cancelled"));

@@ -153,6 +153,7 @@ export function createViewRoutes(service: GenericApplicationPort, pool: Pool): R
           limit: body.limit,
           inTrash: body.inTrash,
           includeCount: body.includeCount,
+          q: body.q,
         });
         return { status: 200, body: await toItemQueryEnvelope(pool, result) };
       },

@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { SEARCH_MAX_QUERY_LENGTH } from "@semprec/shared";
 import type { ItemRow, PropertyRow, ViewItemRow, ViewRow } from "../types.js";
 import {
   countItems,
@@ -24,6 +25,7 @@ import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
 import { excludeInheritedSensitiveItems } from "../agentGrants/agentDatabaseAccess.js";
+import { andItemSearchMatch } from "../search/itemSearchMatch.js";
 import { assertNoSortOverClosedRollup } from "../agentGrants/closedSensitiveAggregationAccess.js";
 
 /**
@@ -203,6 +205,11 @@ interface QueryItemsCoreOptions extends QueryViewOptions {
   sortSpecs?: SortSpec[];
   /** The direction `sortSpecs`' leading group key was built with; the cursor carries it. */
   groupDirection?: GroupDirection;
+  /**
+   * Free text (issue #1857): the page and its cursor keep only the items of this database whose search index row
+   * matches it, ANDed with the filter. `totalCount` ignores it, so it stays the filter-only count.
+   */
+  q?: string;
 }
 
 /**
@@ -239,12 +246,15 @@ async function queryItemsCore(
     options.excludeInheritedSensitiveFor !== undefined
       ? excludeInheritedSensitiveItems(compiledFilterSql, options.excludeInheritedSensitiveFor)
       : compiledFilterSql;
+  // `q` narrows the page only: the count below keeps the filter-only `buildFilterSql`.
+  const buildPageFilterSql =
+    options.q !== undefined ? andItemSearchMatch(buildFilterSql, databaseId, options.q) : buildFilterSql;
 
   const page = await listItems(client, databaseId, {
     limit: options.limit,
     cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
-    buildFilterSql,
+    buildFilterSql: buildPageFilterSql,
     buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params, collation) : undefined,
     keyset: sorted
       ? {
@@ -394,6 +404,15 @@ function parseInTrashInput(raw: unknown): boolean {
   return raw;
 }
 
+/** The `q` of a raw request: absent, or text of 1 to 200 characters. The refusal never repeats the text. */
+function parseSearchTextInput(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > SEARCH_MAX_QUERY_LENGTH) {
+    throw new ValidationError(`'q' must be a string of 1 to ${SEARCH_MAX_QUERY_LENGTH} characters`, { field: "q" });
+  }
+  return raw;
+}
+
 function parseIncludeCountInput(raw: unknown): boolean {
   if (raw === undefined) return false;
   if (typeof raw !== "boolean") {
@@ -409,6 +428,8 @@ export interface DatabaseQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
+  /** Free text that narrows the page together with the filter (issue #1857); `totalCount` ignores it. */
+  q?: unknown;
   /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
   locale?: string;
 }
@@ -434,6 +455,7 @@ export async function queryDatabaseItems(
   const cursor = parseCursorInput(input.cursor, sortSpecs.length === 0);
   const includeDeleted = parseInTrashInput(input.inTrash);
   const includeCount = parseIncludeCountInput(input.includeCount);
+  const q = parseSearchTextInput(input.q);
 
   return queryItemsCore(client, databaseId, {
     filterNode,
@@ -442,6 +464,7 @@ export async function queryDatabaseItems(
     cursor,
     includeDeleted,
     includeCount,
+    q,
     locale: input.locale,
     excludeInheritedSensitiveFor,
     closedDatabaseIds,
@@ -455,6 +478,8 @@ export interface ViewQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
+  /** Free text that narrows the page together with the filter (issue #1857); `totalCount` ignores it. A curated view refuses it. */
+  q?: unknown;
   /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
   locale?: string;
 }
@@ -486,12 +511,17 @@ export async function queryViewItems(
   const limit = parseLimitInput(input.limit);
   const includeDeleted = parseInTrashInput(input.inTrash);
   const includeCount = parseIncludeCountInput(input.includeCount);
+  const q = parseSearchTextInput(input.q);
 
   if (view.databaseId === null) {
     if (input.filter !== undefined || input.sort !== undefined) {
       throw new ValidationError("A curated view has no filter/sort tree of its own; omit 'filter'/'sort'", {
         field: "filter",
       });
+    }
+    // The text match is restricted to one database, and a curated view has none.
+    if (q !== undefined) {
+      throw new ValidationError("A curated view has no single database to search; omit 'q'", { field: "q" });
     }
     const cursor = parseCursorInput(input.cursor, false);
     return queryCuratedView(client, view, {
@@ -518,6 +548,7 @@ export async function queryViewItems(
     cursor,
     includeDeleted,
     includeCount,
+    q,
     locale: input.locale,
     excludeInheritedSensitiveFor,
     closedDatabaseIds,

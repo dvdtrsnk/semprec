@@ -17,8 +17,12 @@ import {
   recordTokenGatewayCall,
   reserveGatewayCall,
   settleAudioGatewayCall,
+  settleTokenGatewayCall,
 } from "../aiGateway/aiGatewayCallsStore.js";
 import { getAgentRunUsage } from "../aiGateway/agentRunUsage.js";
+import { withTransaction } from "../db/pool.js";
+import { sendSempMessage } from "../sempThreads/sempThreadsStore.js";
+import { claimSempMessage, startSempMessageTurn } from "../semp/sempMessagesStore.js";
 
 const EMPTY_USAGE = { totalCostUsd: 0, estimated: false, perModel: [] };
 
@@ -212,6 +216,144 @@ describe("getAgentRunUsage (issue #1822)", () => {
     expect(await getAgentRunUsage(pool, otherRunId, "en")).toMatchObject({
       totalCostUsd: 0.01,
       perModel: [{ callCount: 1 }],
+    });
+  });
+
+  describe("of one Semp message (issue #1889)", () => {
+    /** Two assistant messages of one thread, as two replies of one conversation run. */
+    async function twoMessages(): Promise<{ first: string; second: string }> {
+      return runInTenant(getTenantZeroId(), async () => {
+        const sent = await withTransaction(pool, (client) =>
+          sendSempMessage(client, { text: "one", context: [], hasContext: false }),
+        );
+        const next = await withTransaction(pool, (client) =>
+          sendSempMessage(client, { threadId: sent.threadId, text: "two", context: [], hasContext: false }),
+        );
+        return { first: sent.assistantMessageId, second: next.assistantMessageId };
+      });
+    }
+
+    async function attributedCall(runId: string, messageId: string | null, costUsd: number): Promise<void> {
+      const reserved = await reserveGatewayCall(pool, {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        estimatedCostUsd: costUsd,
+        agentRunId: runId,
+        sempMessageId: messageId,
+      });
+      await settleTokenGatewayCall(pool, reserved.id, { inputTokens: 10, outputTokens: 1, costUsd });
+    }
+
+    it("aggregates only the calls attributed to that message, and every call of the run without one", async () => {
+      const runId = await createRun();
+      const { first, second } = await twoMessages();
+      await attributedCall(runId, first, 0.01);
+      await attributedCall(runId, second, 0.02);
+      await attributedCall(runId, second, 0.04);
+      await attributedCall(runId, null, 0.08);
+
+      expect(await getAgentRunUsage(pool, runId, "en", first)).toMatchObject({
+        totalCostUsd: 0.01,
+        perModel: [{ callCount: 1, inputTokens: 10, costUsd: 0.01 }],
+      });
+      expect(await getAgentRunUsage(pool, runId, "en", second)).toMatchObject({
+        totalCostUsd: 0.06,
+        perModel: [{ callCount: 2, inputTokens: 20, costUsd: 0.06 }],
+      });
+      expect(await getAgentRunUsage(pool, runId, "en")).toMatchObject({
+        totalCostUsd: 0.15,
+        perModel: [{ callCount: 4 }],
+      });
+    });
+
+    it("counts nothing for a message whose calls belong to another run, and for a message without calls", async () => {
+      const runId = await createRun();
+      const otherRunId = await createRun();
+      const { first, second } = await twoMessages();
+      await attributedCall(otherRunId, first, 0.01);
+
+      expect(await getAgentRunUsage(pool, runId, "en", first)).toEqual(EMPTY_USAGE);
+      expect(await getAgentRunUsage(pool, runId, "en", second)).toEqual(EMPTY_USAGE);
+      expect(await getAgentRunUsage(pool, otherRunId, "en", first)).toMatchObject({ totalCostUsd: 0.01 });
+    });
+
+    describe("a call that carries only the message (issue #2020)", () => {
+      /** Attributes a call to the message alone, as the speech-to-text rows of a spoken question are. */
+      async function messageOnlyCall(messageId: string, costUsd: number): Promise<void> {
+        const reserved = await reserveGatewayCall(pool, {
+          provider: "fake-stt",
+          model: "fake-stt-model",
+          estimatedCostUsd: costUsd,
+          sempMessageId: messageId,
+        });
+        await settleAudioGatewayCall(pool, reserved.id, { audioSeconds: 1, costUsd });
+      }
+
+      /** The turn of the message starts: the message names the run, as the Semp turn runner stores it. */
+      async function startTurn(threadMessageId: string, runId: string): Promise<void> {
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, async (client) => {
+            const thread = await client.query<{ thread_id: string }>(
+              "SELECT thread_id FROM semp_messages WHERE id = $1",
+              [threadMessageId],
+            );
+            const threadId = thread.rows[0]?.thread_id;
+            if (!threadId) throw new Error("message has no thread");
+            expect(await claimSempMessage(client, threadId, threadMessageId)).toBe(true);
+            await startSempMessageTurn(client, threadMessageId, runId, "1");
+          }),
+        );
+      }
+
+      it("is counted for the reply when the message belongs to the run, with the calls that name the run", async () => {
+        const runId = await createRun();
+        const { first } = await twoMessages();
+        await startTurn(first, runId);
+        await attributedCall(runId, first, 0.01);
+        await messageOnlyCall(first, 0.03);
+
+        expect(await getAgentRunUsage(pool, runId, "en", first)).toMatchObject({
+          totalCostUsd: 0.04,
+          perModel: [
+            { provider: "fake-stt", callCount: 1, audioSeconds: 1, costUsd: 0.03 },
+            { provider: "anthropic", callCount: 1, costUsd: 0.01 },
+          ],
+        });
+      });
+
+      it("is not counted for another run, for a message that belongs to no run, or for a call that names another run", async () => {
+        const runId = await createRun();
+        const otherRunId = await createRun();
+        const { first, second } = await twoMessages();
+        await startTurn(first, runId);
+        await messageOnlyCall(first, 0.03);
+        await messageOnlyCall(second, 0.05);
+        // A call of another run attributed to the same message is not made the run's by the message.
+        await attributedCall(otherRunId, first, 0.5);
+
+        expect(await getAgentRunUsage(pool, otherRunId, "en", first)).toMatchObject({
+          totalCostUsd: 0.5,
+          perModel: [{ provider: "anthropic", callCount: 1 }],
+        });
+        expect(await getAgentRunUsage(pool, runId, "en", second)).toEqual(EMPTY_USAGE);
+        expect(await getAgentRunUsage(pool, runId, "en", first)).toMatchObject({
+          totalCostUsd: 0.03,
+          perModel: [{ provider: "fake-stt", callCount: 1 }],
+        });
+      });
+
+      it("is not part of the usage of the whole run, which counts only the calls that carry the run's id", async () => {
+        const runId = await createRun();
+        const { first } = await twoMessages();
+        await startTurn(first, runId);
+        await attributedCall(runId, first, 0.01);
+        await messageOnlyCall(first, 0.03);
+
+        expect(await getAgentRunUsage(pool, runId, "en")).toMatchObject({
+          totalCostUsd: 0.01,
+          perModel: [{ provider: "anthropic", callCount: 1 }],
+        });
+      });
     });
   });
 });

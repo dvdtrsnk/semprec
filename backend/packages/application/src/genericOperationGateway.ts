@@ -18,7 +18,9 @@ import {
   buildDestructiveApprovalDescription,
   changeValueLinkWithClient,
   computeJournalMergeProjection,
+  computePageConvertProjection,
   computePageReplaceProjection,
+  convertPageToBlockWithClient,
   databaseArchiveWithClient,
   createRelationWithClient,
   deleteRelationWithClient,
@@ -47,6 +49,7 @@ import {
   type DestructiveResourceProjection,
   type GenericOperationApprovalRequestPayload,
   type JournalMergeCheck,
+  type PageConvertCheck,
   type PageReplaceCheck,
   type PageRestoreCheck,
 } from "@semprec/data";
@@ -75,6 +78,7 @@ type DestructiveOperationName =
   | "relation.delete"
   | "page.restoreVersion"
   | "page.replace"
+  | "page.convertToBlock"
   | "page.mergeJournalDuplicates"
   | "item.patch"
   | "relation.put"
@@ -98,6 +102,7 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "relation.delete" ||
     operation === "page.restoreVersion" ||
     operation === "page.replace" ||
+    operation === "page.convertToBlock" ||
     operation === "page.mergeJournalDuplicates" ||
     operation === "item.patch" ||
     operation === "relation.put" ||
@@ -106,8 +111,9 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
   );
 }
 
-/** A destructive check the choke point's own projection covers, or a page one (restore, replace), which the docs module projects, or a Journal merge, which the Journal module projects (`chokePoint` may not import `docs` or `journal`). */
-type GatewayCheck = DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | JournalMergeCheck;
+/** A destructive check the choke point's own projection covers, or a page one (restore, replace, convert to a block), which the docs module projects, or a Journal merge, which the Journal module projects (`chokePoint` may not import `docs` or `journal`). */
+type GatewayCheck =
+  DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | PageConvertCheck | JournalMergeCheck;
 
 /** The approval snapshot of one destructive check, computed by the module that owns the resource. */
 function projectCheck(client: PoolClient, check: GatewayCheck): Promise<DestructiveResourceProjection> {
@@ -116,6 +122,8 @@ function projectCheck(client: PoolClient, check: GatewayCheck): Promise<Destruct
       return computePageRestoreProjection(client, check);
     case "page.replace":
       return computePageReplaceProjection(client, check);
+    case "page.convertToBlock":
+      return computePageConvertProjection(client, check);
     case "page.mergeJournalDuplicates":
       return computeJournalMergeProjection(client, check);
     default:
@@ -136,6 +144,12 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
       return {
         operation,
         input: input as InputByOperation["page.replace"],
+        agentProjectItemId: actor.agentProjectItemId,
+      };
+    case "page.convertToBlock":
+      return {
+        operation,
+        input: input as InputByOperation["page.convertToBlock"],
         agentProjectItemId: actor.agentProjectItemId,
       };
     case "page.mergeJournalDuplicates":
@@ -223,6 +237,14 @@ async function executeDestructiveWithClient(
       const { itemId, markdown, expectedEtag } = input as InputByOperation["page.replace"];
       return replacePageMarkdown(client, itemId, { markdown, expectedEtag, origin: "user", writer, actingUserId });
     }
+    case "page.convertToBlock":
+      // Authored `user`, as the replace: the approver's decision is the user's. The page tree is trashed as the agent
+      // that asked, so the trash hooks and the grant check see it (docs/adr/2026-10-29-agent-page-write-policy.md, decision 4).
+      return convertPageToBlockWithClient(client, input as InputByOperation["page.convertToBlock"], {
+        origin: "user",
+        writer,
+        actingUserId,
+      });
     case "page.mergeJournalDuplicates":
       // The entries the replay's projection found must be the ones merged; a drift throws, which rolls the replay back, and the next attempt ends it as a conflict (docs/adr/2026-11-13-the-assistant-proposes-a-journal-merge-and-the-user-approves-the-pair.md).
       return mergeApprovedJournalDuplicates(

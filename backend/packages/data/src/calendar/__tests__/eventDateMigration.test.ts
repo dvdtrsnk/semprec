@@ -180,7 +180,7 @@ describe("the Events 1.0.0 to 1.1.0 data migration (issue gh-1797)", () => {
     await admin?.end();
   });
 
-  it("is registered for the Events database after the three Tasks migrations", async () => {
+  it("is registered for the Events database after the four Tasks migrations", async () => {
     const registry = await loadFullModuleRegistry();
     const all = (await registry.getDataMigrations()).filter((entry) => entry.moduleId === "systemDatabases");
 
@@ -188,6 +188,7 @@ describe("the Events 1.0.0 to 1.1.0 data migration (issue gh-1797)", () => {
       ["tasks", "1.0.0", "1.1.0", "backfillTaskTimeProperties"],
       ["tasks", "1.1.0", "1.2.0", "normalizeTaskDatesAndTimes"],
       ["tasks", "1.2.0", "1.3.0", "backfillTaskEffectiveDate"],
+      ["tasks", "1.3.0", "1.4.0", "backfillTaskStatus"],
       ["events", "1.0.0", "1.1.0", "convertEventDateToWallClock"],
     ]);
   });

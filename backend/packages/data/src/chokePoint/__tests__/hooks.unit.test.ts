@@ -102,6 +102,7 @@ const CONTEXT: ItemUpdateHookContext = {
     overviewHidden: false,
     sensitive: false,
     archivedAt: null,
+    purgeAt: null,
   },
   item: { id: "item", databaseId: "db", properties: {}, computed: {}, createdAt: "", updatedAt: "", deletedAt: null },
   propertiesPatch: {},

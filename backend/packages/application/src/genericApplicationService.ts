@@ -353,6 +353,7 @@ export function createGenericApplicationService(
           limit: input.limit,
           inTrash: input.inTrash,
           includeCount: input.includeCount,
+          q: input.q,
         },
         expansion(input.include),
         readerOf(actor),
@@ -484,6 +485,7 @@ export function createGenericApplicationService(
           limit: input.limit,
           inTrash: input.inTrash,
           includeCount: input.includeCount,
+          q: input.q,
         },
         expansion(input.include),
         readerOf(actor),
@@ -722,6 +724,19 @@ export function createGenericApplicationService(
     /** The parent's block is rewritten as the caller, with the origin split `createSubpage` makes. */
     async renamePage(actor, input) {
       return docStore.renamePage(input, toActor(actor).type, readerOf(actor));
+    },
+
+    /**
+     * The new block is authored with the origin split `createSubpage` makes, and the page tree is trashed by the caller's
+     * writer identity and user, so the choke point's trash hooks see who asked for it. An agent run's call is held for
+     * approval by the gateway before it can reach this method (issue #1876).
+     */
+    async convertPageToBlock(actor, input) {
+      return docStore.convertPageToBlock(input, {
+        origin: toActor(actor).type,
+        writer: writerIdentityOf(actor),
+        actingUserId: actor.userId,
+      });
     },
 
     /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */

@@ -145,6 +145,13 @@ describe("the Tasks 1.1.0 to 1.2.0 data migration (issue #1657)", () => {
         toVersion: "1.3.0",
         converterExport: "backfillTaskEffectiveDate",
       },
+      {
+        moduleId: "systemDatabases",
+        databaseKey: "tasks",
+        fromVersion: "1.3.0",
+        toVersion: "1.4.0",
+        converterExport: "backfillTaskStatus",
+      },
     ]);
     const { converter } = await definition();
     expect(converter({ date: "", timeFrom: "9:00" }, { timezone: "UTC", itemId: "x", log: () => undefined })).toEqual({

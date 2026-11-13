@@ -7,6 +7,8 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { readCalendarTimeline } from "../../calendar/timelineRead.js";
 import { CALENDAR_TIMELINE_SOURCES } from "../../calendar/timelineSources.js";
+import { createEventInCalendar } from "../../calendar/defaultCalendarCreateHook.js";
+import { createMaterializeEventOccurrenceRouteHandler } from "../../calendar/eventOccurrenceRouteHandlers.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -153,6 +155,39 @@ function world(tenantId: string) {
     return calendar.id;
   }
 
+  /** The id of a calendar of the tenant's own that is not the default one (`Work`, `Family` or `Health`). */
+  async function otherCalendarId(): Promise<string> {
+    const id = await databaseId(CALENDARS_MODULE_ID);
+    const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
+    const calendar = rows.find((row) => !row.properties.isDefault && row.properties.systemKey === undefined);
+    if (!calendar) throw new Error("No other own calendar");
+    return calendar.id;
+  }
+
+  /** An Event created in the calendar `calendarId` through the default-calendar create path of issue gh-1761. */
+  async function createInCalendar(calendarId: string, properties: Record<string, unknown>): Promise<string> {
+    const item = await inTenant(() =>
+      withTransaction(dataPool, (client) =>
+        createEventInCalendar(client, { properties }, calendarId, { writer: USER }),
+      ),
+    );
+    return item.id;
+  }
+
+  /** Materializes the occurrence of the series `seriesId` on `date` into an Event of its own, as a user's edit does. */
+  async function materialize(seriesId: string, date: string): Promise<string> {
+    const users = await adminPool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [tenantId]);
+    const userId = users.rows[0]?.id;
+    if (userId === undefined) throw new Error("No user in the tenant");
+    const result = await inTenant(() =>
+      createMaterializeEventOccurrenceRouteHandler(dataPool)({
+        params: { seriesId, date },
+        identity: { user: { id: userId } },
+      }),
+    );
+    return result.item.id;
+  }
+
   async function birthdaysCalendarId(): Promise<string> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
@@ -189,6 +224,9 @@ function world(tenantId: string) {
     trash,
     trashCalendarWithoutHooks,
     defaultCalendarId,
+    otherCalendarId,
+    createInCalendar,
+    materialize,
     birthdaysCalendarId,
     readPeriod,
     events,
@@ -369,6 +407,158 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
     // A seeded tenant also has the sleep nights of the day (issue #1806) in its timeline; the Journal lists Events.
     const timelineEvents = (await w.timelineOf(DAY)).filter((item) => item.kind === "event");
     expect(events.map((event) => event.id)).toEqual(timelineEvents.map((item) => item.id));
+  });
+
+  it("lists an Event from 2026-10-16 23:30 to 2026-10-17 00:30 in the events of both days with its stored end and calendar", async () => {
+    const w = world(await newTenant());
+    const calendarId = await w.defaultCalendarId();
+    const overnight = await w.create("events", {
+      name: "Night shift",
+      date: DAY,
+      endDate: "2026-10-17",
+      timeFrom: "23:30",
+      timeTo: "00:30",
+    });
+    const expected = {
+      id: overnight,
+      title: "Night shift",
+      type: null,
+      date: DAY,
+      endDate: "2026-10-17",
+      timeFrom: "23:30",
+      timeTo: "00:30",
+      allDay: false,
+      place: null,
+      project: null,
+      calendarId,
+      transcript: null,
+    };
+
+    expect(await w.events(DAY)).toEqual([expected]);
+    expect(await w.events("2026-10-17")).toEqual([expected]);
+    expect(await w.events("2026-10-15")).toEqual([]);
+    expect(await w.events("2026-10-18")).toEqual([]);
+  });
+
+  it("lists a three-day Event in the events of each of its days, with the same date and endDate on every day", async () => {
+    const w = world(await newTenant());
+    const trip = await w.create("events", { name: "Trip", date: "2026-10-15", endDate: "2026-10-17" });
+
+    for (const day of ["2026-10-15", "2026-10-16", "2026-10-17"]) {
+      expect(
+        (await w.events(day)).map((event) => [event.id, event.date, event.endDate]),
+        day,
+      ).toEqual([[trip, "2026-10-15", "2026-10-17"]]);
+    }
+    expect(await w.events("2026-10-18")).toEqual([]);
+  });
+
+  it("lists a Monday-to-Friday stand-up on 2026-10-19 as <seriesId>@2026-10-19 and not on Saturday 2026-10-17", async () => {
+    const w = world(await newTenant());
+    const calendarId = await w.defaultCalendarId();
+    const series = await w.create("events", {
+      name: "Standup",
+      type: "standup",
+      date: "2026-10-12",
+      timeFrom: "09:00",
+      timeTo: "09:30",
+      place: "Room 1",
+      recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+    });
+
+    expect(await w.events("2026-10-19")).toEqual([
+      {
+        id: `${series}@2026-10-19`,
+        title: "Standup",
+        type: "standup",
+        date: "2026-10-19",
+        endDate: null,
+        timeFrom: "09:00",
+        timeTo: "09:30",
+        allDay: false,
+        place: "Room 1",
+        project: null,
+        calendarId,
+        transcript: null,
+      },
+    ]);
+    // Neither the series row nor an occurrence is on the Saturday and the Sunday.
+    expect(await w.events("2026-10-17")).toEqual([]);
+    expect(await w.events("2026-10-18")).toEqual([]);
+    // The Friday before has its occurrence, once, and the series id itself is never an element.
+    expect((await w.events("2026-10-16")).map((event) => event.id)).toEqual([`${series}@2026-10-16`]);
+  });
+
+  it("lists the second day of a multi-day occurrence of a recurring Event under the id of that occurrence", async () => {
+    const w = world(await newTenant());
+    const series = await w.create("events", {
+      name: "Retreat",
+      date: "2026-10-16",
+      endDate: "2026-10-17",
+      recurrence: { kind: "weekdays", days: ["fri"] },
+    });
+
+    // The occurrence of Friday 2026-10-23 runs to Saturday 2026-10-24: both days list it, and the days before and after do not.
+    for (const day of ["2026-10-23", "2026-10-24"]) {
+      expect(
+        (await w.events(day)).map((event) => [event.id, event.date, event.endDate]),
+        day,
+      ).toEqual([[`${series}@2026-10-23`, "2026-10-23", "2026-10-24"]]);
+    }
+    expect(await w.events("2026-10-22")).toEqual([]);
+    expect(await w.events("2026-10-25")).toEqual([]);
+  });
+
+  it("lists a materialized occurrence under its own id and its calendar, once, and the other dates stay virtual", async () => {
+    const w = world(await newTenant());
+    const workId = await w.otherCalendarId();
+    const series = await w.createInCalendar(workId, {
+      name: "Standup",
+      date: "2026-10-12",
+      timeFrom: "09:00",
+      timeTo: "09:30",
+      recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+    });
+    const real = await w.materialize(series, "2026-10-13");
+
+    const tuesday = await w.events("2026-10-13");
+    const wednesday = await w.events("2026-10-14");
+
+    expect(tuesday.map((event) => [event.id, event.calendarId])).toEqual([[real, workId]]);
+    expect(real).not.toBe(`${series}@2026-10-13`);
+    expect(wednesday.map((event) => [event.id, event.calendarId])).toEqual([[`${series}@2026-10-14`, workId]]);
+  });
+
+  it("gives every event of a day the calendarId of its own calendar: stored, recurring, overnight and in another calendar", async () => {
+    const w = world(await newTenant());
+    const defaultId = await w.defaultCalendarId();
+    const workId = await w.otherCalendarId();
+    expect(workId).not.toBe(defaultId);
+    const plain = await w.create("events", { name: "Lunch", date: "2026-10-19", timeFrom: "12:00" });
+    const inWork = await w.createInCalendar(workId, { name: "Review", date: "2026-10-19", timeFrom: "13:00" });
+    const standup = await w.createInCalendar(workId, {
+      name: "Standup",
+      date: "2026-10-19",
+      timeFrom: "09:00",
+      recurrence: { kind: "weekdays", days: ["mon"] },
+    });
+    const overnight = await w.create("events", {
+      name: "Night shift",
+      date: "2026-10-18",
+      endDate: "2026-10-19",
+      timeFrom: "23:30",
+      timeTo: "00:30",
+    });
+
+    const events = await w.events("2026-10-19");
+
+    expect(events.map((event) => [event.id, event.calendarId])).toEqual([
+      // The timeline orders by the day an entry starts, so the Event that began the evening before (date 2026-10-18) comes first.
+      [overnight, defaultId],
+      [`${standup}@2026-10-19`, workId],
+      [plain, defaultId],
+      [inWork, workId],
+    ]);
   });
 
   it("answers an empty list for a day without events, and no events key for a week, month, quarter or year", async () => {
@@ -556,6 +746,9 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
     const birthdaysSource = CALENDAR_TIMELINE_SOURCES.find((source) => source.id === "birthdays");
     if (!birthdaysSource) throw new Error("No birthdays source");
     await w.create("events", { name: "Meeting", date: DAY, timeFrom: "10:00" });
+    // Both days that are compared by their total hold an Event: the task-in-event read (issue gh-1880) sends one more
+    // statement for a day that has Events than for one that has none.
+    await w.create("events", { name: "Meeting on the 17th", date: "2026-10-17", timeFrom: "10:00" });
     await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
     await w.create("people", { name: "Petr Novák", birthday: "1991-10-17" });
     for (let index = 0; index < 4; index += 1) {

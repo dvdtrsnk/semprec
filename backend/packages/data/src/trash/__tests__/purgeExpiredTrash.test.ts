@@ -6,16 +6,22 @@ import * as itemsStore from "../../chokePoint/itemsStore.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { withClient, withTransaction } from "../../db/pool.js";
+import { ForbiddenError } from "../../errors.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { TRANSCRIPTS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
 import { setActionItemState } from "../../transcription/transcriptActionItemStates.js";
 import { purgeExpiredTrash } from "../purgeExpiredTrash.js";
 import { logger } from "../logger.js";
 
-// Passthrough spy, so the paging test can see how many candidates each page loaded.
+// Passthrough spies: the paging test sees how many candidates each page loaded, and a test can make the hard delete
+// refuse or archive a database between the candidate read and the purge.
 vi.mock("../../chokePoint/itemsStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../chokePoint/itemsStore.js")>();
-  return { ...actual, findItemsDeletedBefore: vi.fn(actual.findItemsDeletedBefore) };
+  return {
+    ...actual,
+    findItemsDeletedBefore: vi.fn(actual.findItemsDeletedBefore),
+    hardDeleteItem: vi.fn(actual.hardDeleteItem),
+  };
 });
 
 let pool: Pool;
@@ -223,18 +229,105 @@ describe("purgeExpiredTrash (issue #156)", () => {
     });
   });
 
-  it("never hard-deletes an eligible item whose database has since been archived, leaving it for a future run", async () => {
-    const db = await makeMoviesDb();
-    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
-    await chokePoint.softDeleteItem(db.id, item.id);
-    await ageDeletion(item.id, 31, db.id);
-    await chokePoint.archiveDatabase(db.id);
+  describe("items of archived databases (issue gh-1878)", () => {
+    /** An item deleted `daysAgo` days ago in a fresh database, with its trash age backdated like real trash. */
+    async function trashedItemInNewDatabase(name: string, daysAgo: number) {
+      const db = await chokePoint.createDatabase({ name });
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      await chokePoint.softDeleteItem(db.id, item.id);
+      await ageDeletion(item.id, daysAgo, db.id);
+      return { db, item };
+    }
 
-    const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
-    expect(purgedCount).toBe(0);
+    const itemRows = async (itemId: string) => (await pool.query("SELECT id FROM items WHERE id = $1", [itemId])).rows;
 
-    const { rows } = await pool.query("SELECT id FROM items WHERE id = $1", [item.id]);
-    expect(rows).toHaveLength(1);
+    it("leaves an item deleted 40 days ago in an archived database alone and logs no error", async () => {
+      const { db, item } = await trashedItemInNewDatabase("Old", 40);
+      await chokePoint.archiveDatabase(db.id);
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+      try {
+        expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(0);
+
+        expect(await itemRows(item.id)).toHaveLength(1);
+        expect(errorSpy).not.toHaveBeenCalled();
+        // The item is not even a candidate, so the quiet skip of the archived-meanwhile case has nothing to log.
+        expect(debugSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
+    });
+
+    it("purges the same item on the next run once its database is restored", async () => {
+      const { db, item } = await trashedItemInNewDatabase("Restored", 40);
+      await chokePoint.archiveDatabase(db.id);
+      expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(0);
+      await chokePoint.restoreDatabase(db.id);
+
+      expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(1);
+
+      expect(await itemRows(item.id)).toHaveLength(0);
+    });
+
+    it("purges an expired item of a live database as before, next to one in an archived database", async () => {
+      const live = await trashedItemInNewDatabase("Live", 40);
+      const archived = await trashedItemInNewDatabase("Archived", 40);
+      await chokePoint.archiveDatabase(archived.db.id);
+
+      expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(1);
+
+      expect(await itemRows(live.item.id)).toHaveLength(0);
+      expect(await itemRows(archived.item.id)).toHaveLength(1);
+    });
+
+    it("skips quietly an item whose database was archived between the candidate read and the purge", async () => {
+      const { db, item } = await trashedItemInNewDatabase("Archived meanwhile", 40);
+      const actualFind = vi.mocked(itemsStore.findItemsDeletedBefore).getMockImplementation();
+      vi.mocked(itemsStore.findItemsDeletedBefore).mockImplementationOnce(async (...args) => {
+        const candidates = actualFind ? await actualFind(...args) : [];
+        await chokePoint.archiveDatabase(db.id);
+        return candidates;
+      });
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+      try {
+        expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(0);
+
+        expect(await itemRows(item.id)).toHaveLength(1);
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(debugSpy).toHaveBeenCalledWith(
+          { itemId: item.id },
+          "Skipped a trashed item of a database that was archived meanwhile",
+        );
+      } finally {
+        errorSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
+    });
+
+    it("still logs a refusal that is not the archived-database one as an error", async () => {
+      const { item } = await trashedItemInNewDatabase("Refused", 40);
+      vi.mocked(itemsStore.hardDeleteItem).mockRejectedValueOnce(new ForbiddenError("Another refusal"));
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+      try {
+        expect(await purgeExpiredTrash(pool, fakeStorage().storage)).toBe(0);
+
+        expect(await itemRows(item.id)).toHaveLength(1);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ itemId: item.id }),
+          "Failed to purge trashed item",
+        );
+        expect(debugSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
+    });
   });
 
   it("never destroys an item a concurrent restore un-deletes between the purge's eligibility scan and its delete loop", async () => {

@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 
@@ -187,10 +187,15 @@ export async function insertMailDraft(db: Queryable, input: InsertMailDraftInput
   }
 }
 
-export async function getMailDraft(db: Queryable, emailItemId: string): Promise<MailDraft | null> {
-  const { rows } = await db.query<DraftDbRow>(`SELECT ${COLUMNS} FROM mail_drafts WHERE email_item_id = $1`, [
-    emailItemId,
-  ]);
+/**
+ * The draft's row, or `null` when the item has none. With `forUpdate` the row is locked until the end of the
+ * caller's transaction, for a caller whose decision to write depends on what it reads (its `sentAt`).
+ */
+export async function getMailDraft(db: Queryable, emailItemId: string, forUpdate = false): Promise<MailDraft | null> {
+  const { rows } = await db.query<DraftDbRow>(
+    `SELECT ${COLUMNS} FROM mail_drafts WHERE email_item_id = $1${forUpdate ? " FOR UPDATE" : ""}`,
+    [emailItemId],
+  );
   const row = rows[0];
   return row ? toDraft(row) : null;
 }
@@ -240,4 +245,13 @@ export async function markMailDraftSent(
   const row = rows[0];
   if (!row) throw new NotFoundError(`Unsent mail draft ${emailItemId} not found`, { emailItemId });
   return toDraft(row);
+}
+
+/**
+ * Deletes the draft's row, which frees its thread for a new agent draft. The row is expected to exist: the
+ * caller read it under `forUpdate` in the same transaction.
+ */
+export async function deleteMailDraft(db: Queryable, emailItemId: string): Promise<void> {
+  const result = await db.query("DELETE FROM mail_drafts WHERE email_item_id = $1", [emailItemId]);
+  requireAffectedRows(result, `mail draft ${emailItemId} delete`);
 }

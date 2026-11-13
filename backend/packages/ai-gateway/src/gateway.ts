@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
 import {
   assertGatewayTenantActive,
+  attributeGatewayCallsToSempMessage,
   failGatewayCall,
   findExhaustedWindow,
   getCurrentTenantAiBudget,
@@ -317,6 +318,8 @@ export async function synthesizeSpeech(
  * `settle` and `fail` takes effect; later calls are no-ops. Neither ever rejects.
  */
 export interface AudioStreamChunk {
+  /** The `ai_gateway_calls.id` of this chunk's row. */
+  readonly callId: string;
   /** Settles the row with the audio seconds actually used, retrying a transient database failure. */
   settle(audioSeconds: number, costUsd: number): Promise<void>;
   /** Marks the row `failed` (cost 0); a failure of that cleanup is logged, never thrown. */
@@ -335,6 +338,7 @@ export async function reserveAudioStreamChunk(pool: Pool, ctx: GatewayCallContex
   const reservation = await reserve(pool, ctx);
   let finished = false;
   return {
+    callId: reservation.id,
     async settle(audioSeconds, costUsd) {
       if (finished) return;
       finished = true;
@@ -357,4 +361,22 @@ export async function reserveAudioStreamChunk(pool: Pool, ctx: GatewayCallContex
       }
     },
   };
+}
+
+/**
+ * Attributes the rows of the given stream chunks to the Semp assistant message of the turn their audio started
+ * (issue #2020), in the ambient tenant, whatever the status of the rows. It touches only the rows of these chunks;
+ * a message that is not visible in the tenant, an unknown message and a chunk row that is not visible in the
+ * tenant are refused with the one `attribution_refused` error and change nothing. Without chunks it does nothing.
+ */
+export function attributeAudioStreamChunks(
+  pool: Pool,
+  chunks: readonly AudioStreamChunk[],
+  sempMessageId: string,
+): Promise<void> {
+  return attributeGatewayCallsToSempMessage(
+    pool,
+    chunks.map((chunk) => chunk.callId),
+    sempMessageId,
+  );
 }

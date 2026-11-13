@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { z } from "zod";
 import { getAiUsageSummary } from "../aiGateway/aiUsageSummary.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
@@ -9,6 +9,8 @@ import { withTransaction } from "../db/pool.js";
 import { readRestoreTestOutcome, RESTORE_TEST_CHECK_KEY } from "../observability/restoreTestResult.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { assertValidTimezone } from "../timezone.js";
+import { readSempResolvedRecent } from "./sempStatusResolved.js";
+import { readTranscriptionQueueCounts } from "./sempTranscriptionQueue.js";
 
 const problemSchema = z.object({
   id: z.uuid(),
@@ -78,9 +80,26 @@ async function readAiBudgetProblem(
  * The list starts with the AI budget problem when the tenant has one (`readAiBudgetProblem`), which
  * is derived in this read and written nowhere. The stored active problems follow, `critical` first,
  * then the latest `last_seen_at`. `activeCount` counts both. `services` take their state from the
- * stored problems only.
+ * stored problems only; the `transcription` service also carries the tenant's queued and running
+ * transcription jobs as its `detail` (issue gh-1945, `readTranscriptionQueueCounts`) and no
+ * `lastActivityAt`. The report does not carry `resolvedRecent`: only the full endpoint lists the
+ * problems resolved in the last seven days (`getSempStatusReport`, issue gh-1919), so the summary
+ * and the overview, which read only the count and the banner, never run the resolved read.
  */
 export async function readSempStatusReport(pool: Pool) {
+  const { report, problemKinds } = await readSempStatus(pool, async () => null);
+  return { report, problemKinds };
+}
+
+/**
+ * The one transaction behind `readSempStatusReport` and `getSempStatusReport`. `readExtra` runs last,
+ * in the same transaction, so the full endpoint reads its extra list from the same snapshot as the
+ * active problems; the summary passes a reader that reads nothing.
+ */
+async function readSempStatus<Extra>(
+  pool: Pool,
+  readExtra: (client: PoolClient, catalogs: ModuleCatalogs, language: "cs" | "en") => Promise<Extra>,
+) {
   const catalogs = await loadModuleCatalogs(import.meta.url);
   const mailCatalogs = await loadModuleCatalogs(new URL("../mail/mailModuleManifest.js", import.meta.url).href);
   return withTransaction(pool, async (client) => {
@@ -254,6 +273,13 @@ export async function readSempStatusReport(pool: Pool) {
         };
       }),
       {
+        key: "transcription",
+        name: label("status.service.transcription"),
+        ...serviceState("transcription"),
+        lastActivityAt: null,
+        detail: await readTranscriptionQueueCounts(client),
+      },
+      {
         key: "backup",
         name: label("status.service.backup"),
         ...serviceState("backup"),
@@ -343,10 +369,17 @@ export async function readSempStatusReport(pool: Pool) {
       activeCount: derivedProblems.length + stored.activeCount,
       problems: [...derivedProblems, ...stored.problems],
     };
-    return { report, problemKinds: new Map(problems.map((problem) => [problem.id, problem.kind])) };
+    const extra = await readExtra(client, catalogs, locale === "cs" ? "cs" : "en");
+    return { report, extra, problemKinds: new Map(problems.map((problem) => [problem.id, problem.kind])) };
   });
 }
 
+/**
+ * The body of `GET /api/semp-status`: the report and `resolvedRecent`, the problems resolved in the last
+ * seven days with their resolution titles (issue gh-1919, `readSempResolvedRecent`). `resolvedRecent`
+ * is not part of `activeCount`.
+ */
 export async function getSempStatusReport(pool: Pool) {
-  return (await readSempStatusReport(pool)).report;
+  const { report, extra } = await readSempStatus(pool, readSempResolvedRecent);
+  return { ...report, resolvedRecent: extra };
 }

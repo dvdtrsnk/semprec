@@ -201,6 +201,32 @@ export async function reserveGatewayCall(
 }
 
 /**
+ * Sets `semp_message_id` on the given rows, whatever their status: the chunk rows of one speech-to-text stream are
+ * attributed while the open chunk is still `reserved` and the earlier ones are already settled (issue #2020).
+ * The update is one conditional statement, so the checks and the write cannot be separated by a concurrent change:
+ * it writes only when the message is visible in the ambient tenant and every given id is a row visible in that
+ * tenant, and then it writes all of them. Row-level security makes both probes tenant-local, so a foreign message,
+ * an unknown message and a foreign or unknown row all end in the one `attribution_refused` error of
+ * `reserveGatewayCall`, without detail and with no row changed. No ids means nothing to write and no statement.
+ * The ids must be distinct.
+ */
+export async function attributeGatewayCallsToSempMessage(
+  client: Pool | PoolClient,
+  callIds: readonly string[],
+  sempMessageId: string,
+): Promise<void> {
+  if (callIds.length === 0) return;
+  const result = await client.query(
+    `UPDATE ai_gateway_calls SET semp_message_id = $2::uuid
+     WHERE id = ANY($1::bigint[])
+       AND EXISTS (SELECT 1 FROM semp_messages WHERE id = $2::uuid)
+       AND (SELECT count(*) FROM ai_gateway_calls WHERE id = ANY($1::bigint[])) = cardinality($1::bigint[])`,
+    [callIds, sempMessageId],
+  );
+  if (result.rowCount !== callIds.length) throw attributionRefused();
+}
+
+/**
  * Replaces a `reserved` row's estimate with the real token usage. Returns `null` when no `reserved`
  * row matched (already settled or failed, or gone) — the caller decides what that means.
  */

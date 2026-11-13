@@ -7,9 +7,11 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import {
   loadSempThreadTitleResolver,
+  parseSempThreadListCursor,
   SEMP_THREAD_KINDS,
   type SempThreadListCursor,
 } from "../semp/sempThreadsListStore.js";
+import type { ThreadSearchGroup } from "./searchGroupRegistry.js";
 
 // The `chat` group of global search (issue #1854): the user's Semp conversations found by title or preview. A thread
 // is not an item, so it has no row in `item_search_index`; the combined query of `buildItemSearchQuery` is applied to
@@ -109,8 +111,8 @@ function matchingThreadsSql(tsquerySql: string): string {
  * time of its last activity in the user's time zone as `date` and `time` parts. `snippet` is `null`.
  *
  * `cursor` is the parsed `nextCursor` of an earlier page, in the format of the thread list's cursor (the last
- * thread's `last_activity_at` with microseconds, and its id). The caller parses the token, so that a token of another
- * shape is refused whether or not this group is searched.
+ * thread's `last_activity_at` with microseconds, and its id). The caller parses the token (`sempThreadSearchGroup.prepare`
+ * does), so that a token of another shape is refused whether or not this group is searched.
  */
 export async function searchSempThreads(
   client: PoolClient,
@@ -177,3 +179,20 @@ export async function searchSempThreads(
         : Buffer.from(`${lastListed.activity_cursor}|${lastListed.id}`).toString("base64url"),
   };
 }
+
+/**
+ * The `chat` group as the search registry holds it. `prepare` parses a token with `parseSempThreadListCursor`, which
+ * refuses a malformed one with a `ValidationError` naming `cursor`. The run searches the Semp threads for a person
+ * only: Semp conversations belong to the user and are part of no database an agent or an MCP client is granted, so
+ * for any other actor it answers an empty page and reads nothing.
+ */
+export const sempThreadSearchGroup: ThreadSearchGroup = {
+  type: "chat",
+  prepare(cursor) {
+    const parsed = cursor === undefined ? undefined : parseSempThreadListCursor(cursor);
+    return async (client, request) =>
+      request.humanActor
+        ? searchSempThreads(client, { buildQuery: request.buildQuery, limit: request.limit, cursor: parsed })
+        : { total: 0, items: [], nextCursor: null };
+  },
+};

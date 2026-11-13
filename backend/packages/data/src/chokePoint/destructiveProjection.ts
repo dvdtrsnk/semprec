@@ -1,8 +1,8 @@
 import { getItemDeleteApprovalGuard, getItemPatchApprovalContribution } from "./hooks.js";
 // Owns the single authorize-and-project call for approved destructive operations: the read-only
 // projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
-// with the exact domain error the matching mutation would throw. `page_restore`, `page_replace` and `journal_merge` are the kinds
-// this file does not project: `docs/docPageRestore.ts`, `docs/pageReplaceApproval.ts` and
+// with the exact domain error the matching mutation would throw. `page_restore`, `page_replace`, `page_convert` and `journal_merge` are the kinds
+// this file does not project: `docs/docPageRestore.ts`, `docs/pageReplaceApproval.ts`, `docs/pageConvertApproval.ts` and
 // `journal/journalMergeApproval.ts` do, because `chokePoint/` may not import `docs/` or `journal/`.
 // Nothing that performs a write, and no mutation logic of the destructive operations themselves,
 // belongs here.
@@ -30,7 +30,7 @@ import { reserveBreakingLinks, reserveEdgeLinks, type BreakingValueLinks } from 
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { assertWriterDeleteCascadeAccess } from "./itemSubtreeAccess.js";
 
-/** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`, `page_replace` is issue #1844's, in `docs/pageReplaceApproval.ts`, and `journal_merge` is issue #2017's, in `journal/journalMergeApproval.ts`). */
+/** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`, `page_replace` is issue #1844's, in `docs/pageReplaceApproval.ts`, `page_convert` is issue #1876's, in `docs/pageConvertApproval.ts`, and `journal_merge` is issue #2017's, in `journal/journalMergeApproval.ts`). */
 export type ResourceSnapshotKind =
   | "database_archive"
   | "property_delete"
@@ -39,6 +39,7 @@ export type ResourceSnapshotKind =
   | "relation_delete"
   | "page_restore"
   | "page_replace"
+  | "page_convert"
   | "journal_merge"
   | "item_patch"
   | "relation_put"

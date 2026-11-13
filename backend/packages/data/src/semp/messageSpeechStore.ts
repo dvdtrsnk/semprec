@@ -114,16 +114,22 @@ export async function withMessageSpeechGuard<T>(
   return result.value;
 }
 
+/** The readable text of a message and the agent run that produced it, which is null for a message of no run (issue #2020). */
+export interface MessageSpeechSource {
+  text: string;
+  agentRunId: string | null;
+}
+
 export async function getMessageSpeechSource(
   client: PoolClient,
   threadId: string,
   messageId: string,
   lock = false,
-): Promise<string> {
+): Promise<MessageSpeechSource> {
   requireManagedTransaction(client);
   // The optional SQL suffix is selected from two fixed literals.
-  const { rows } = await client.query<{ role: string; text: string | null }>(
-    `SELECT role, text FROM semp_messages WHERE id = $1 AND thread_id = $2 ${lock ? "FOR UPDATE" : ""}`,
+  const { rows } = await client.query<{ role: string; text: string | null; agent_run_id: string | null }>(
+    `SELECT role, text, agent_run_id FROM semp_messages WHERE id = $1 AND thread_id = $2 ${lock ? "FOR UPDATE" : ""}`,
     [messageId, threadId],
   );
   const row = rows[0];
@@ -132,7 +138,7 @@ export async function getMessageSpeechSource(
     throw new ValidationError("Message has no readable text", { field: "messageId" });
   }
   if (row.text.length > 4000) throw new ValidationError("Message is too long for speech", { field: "messageId" });
-  return row.text;
+  return { text: row.text, agentRunId: row.agent_run_id };
 }
 
 export async function getMessageSpeech(client: PoolClient, messageId: string, voice: string): Promise<BlobRow | null> {
@@ -175,7 +181,7 @@ export async function storeMessageSpeech(
   ) {
     throw new ValidationError("Invalid speech audio size", { field: "audio" });
   }
-  const text = await getMessageSpeechSource(client, input.threadId, input.messageId, true);
+  const { text } = await getMessageSpeechSource(client, input.threadId, input.messageId, true);
   if (text !== input.text) throw new ValidationError("Message changed during synthesis", { field: "messageId" });
   const existing = await getMessageSpeech(client, input.messageId, input.voice);
   if (existing) return { blob: existing, created: false };

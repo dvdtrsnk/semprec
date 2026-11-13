@@ -1,13 +1,21 @@
 import type { Pool } from "pg";
 import { z } from "zod";
+import { lockItemForObservedMailFlags, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { parseMailSearchQuery } from "./search.js";
-import { listMailThreads } from "./mailThreadListQuery.js";
+import { hasInvalidMailSearchDate, listMailThreads, parseMailThreadListCursor } from "./mailThreadListQuery.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
+import { resolveMailModuleIds } from "./mailModuleIds.js";
+import { READ_PROPERTY_KEY } from "./messageFlags.js";
+import {
+  announceMailThreadChanged,
+  listMailThreadActionMessages,
+  readMailThreadUnread,
+  resolveMailThreadForAction,
+} from "./mailThreadActions.js";
 import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
-
-const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
 
 export function createMailThreadListRouteHandler(pool: Pool) {
   return async (ctx: { req: { url?: string } }) => {
@@ -18,22 +26,7 @@ export function createMailThreadListRouteHandler(pool: Pool) {
     const limit = rawLimit === null ? 50 : Number(rawLimit);
     if (limit < 1 || limit > 200) throw new ValidationError("Invalid limit", { field: "limit" });
     const rawCursor = url.searchParams.get("cursor");
-    let cursor: z.infer<typeof cursorSchema> | null = null;
-    if (rawCursor !== null) {
-      if (rawCursor.length > 256 || !/^[A-Za-z0-9_-]+$/.test(rawCursor))
-        throw new ValidationError("Invalid cursor", { field: "cursor" });
-      let decoded: unknown;
-      try {
-        const bytes = Buffer.from(rawCursor, "base64url");
-        if (bytes.toString("base64url") !== rawCursor) throw new Error("Invalid encoding");
-        decoded = JSON.parse(bytes.toString("utf8"));
-      } catch {
-        throw new ValidationError("Invalid cursor", { field: "cursor" });
-      }
-      const parsed = cursorSchema.safeParse(decoded);
-      if (!parsed.success) throw new ValidationError("Invalid cursor", { field: "cursor" });
-      cursor = parsed.data;
-    }
+    const cursor = rawCursor === null ? null : parseMailThreadListCursor(rawCursor);
     const box = url.searchParams.get("box") ?? "inbox";
     if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
       throw new ValidationError("Invalid box", { field: "box" });
@@ -54,14 +47,7 @@ export function createMailThreadListRouteHandler(pool: Pool) {
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q.length > 1000) throw new ValidationError("Invalid q", { field: "q" });
     const search = q ? parseMailSearchQuery(q, true) : undefined;
-    for (const date of [search?.before, search?.after]) {
-      if (
-        date !== undefined &&
-        !z.iso.date().safeParse(date).success &&
-        !z.iso.datetime({ offset: true }).safeParse(date).success
-      )
-        throw new ValidationError("Invalid search date", { field: "q" });
-    }
+    if (search && hasInvalidMailSearchDate(search)) throw new ValidationError("Invalid search date", { field: "q" });
     const rows = await withTransaction(pool, (client) =>
       listMailThreads(client, limit, cursor, {
         box,
@@ -122,5 +108,67 @@ export function createMailThreadFacetsRouteHandler(pool: Pool) {
     };
     const selection = { areaId: selected("areaId"), projectId: selected("projectId") };
     return { status: 200, body: await withTransaction(pool, (client) => readMailThreadFacets(client, selection)) };
+  };
+}
+
+const readBodySchema = z.object({ read: z.boolean() }).strict();
+
+/**
+ * `POST /api/mail/threads/:threadId/read` with the body `{ read: boolean }` (issue gh-1865): marks the
+ * conversation read or unread in one transaction and answers `{ threadId, unread }`, the thread id after
+ * the translation of a merged id (issue #1493) and the thread's unread state once the writes are done
+ * (`readMailThreadUnread`, the value the thread detail reports). A thread id that is no UUID and a body that is anything but that object
+ * are 400s; an unknown id, another tenant's id and a thread without a live message are the same 404.
+ *
+ * `read: true` sets `read` on every incoming copy of the thread, in every mailbox. `read: false` sets it
+ * on the copies of the last incoming message only (`listMailThreadActionMessages`). A copy that is not
+ * incoming (the user's own mail, anything in Sent or Drafts) is never written. The server loads the
+ * versions, so a request carries none and the last write wins.
+ *
+ * The transaction starts with the tenant's mail-thread guard (`resolveMailThreadForAction`, see
+ * [[2026-11-13-mail-thread-actions-take-the-thread-guard-before-their-item-locks]]). Each copy is locked, in
+ * item id order, and written only when the locked row's `read` differs from the
+ * requested value; the write is `updateItemWithClient` as the session's user, so the Emails flag hook
+ * records the desired state and queues the mailbox sync (issue #1494). After the commit the route sends
+ * one `mailThread` invalidation, also when every copy already matched; a rolled-back request sends none.
+ */
+export function createMailThreadReadRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: {
+    params: Record<string, string>;
+    body: unknown;
+    identity: { user: { id: string } };
+  }): Promise<{ status: number; body: { threadId: string; unread: boolean } }> => {
+    const requested = z.uuid().safeParse(ctx.params.threadId);
+    if (!requested.success) throw new ValidationError("Invalid threadId", { field: "threadId" });
+    const body = readBodySchema.safeParse(ctx.body);
+    if (!body.success) throw new ValidationError("The body must be { read: boolean }", { field: "read" });
+    const { read } = body.data;
+    const userId = ctx.identity.user.id;
+
+    return withTransaction(pool, async (client) => {
+      const threadId = await resolveMailThreadForAction(client, requested.data);
+      const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
+      if (messages.length === 0) throw new NotFoundError("Thread not found");
+      const { emailsDatabaseId } = await resolveMailModuleIds(client);
+      const targets = messages.filter(
+        (message) => message.incoming && (read || message.messageId === lastIncomingMessageId),
+      );
+      // The guard `resolveMailThreadForAction` took serializes this request with a reconcile pass and with every
+      // other thread action, so the copies, locked in item id order, are never locked against another order.
+      for (const target of targets) {
+        const locked = await lockItemForObservedMailFlags(client, emailsDatabaseId, target.itemId);
+        if (locked === null || locked.deletedAt !== null || (locked.properties[READ_PROPERTY_KEY] === true) === read)
+          continue;
+        await updateItemWithClient(
+          client,
+          { databaseId: emailsDatabaseId, itemId: target.itemId, propertiesPatch: { [READ_PROPERTY_KEY]: read } },
+          { queueAffinity, writer: { writerKind: "user" }, actingUserId: userId, humanWriterUserId: userId },
+        );
+      }
+      const unread = await readMailThreadUnread(client, threadId);
+      announceMailThreadChanged(client, threadId);
+      return { status: 200, body: { threadId, unread } };
+    });
   };
 }

@@ -118,6 +118,45 @@ export async function getRelationDefinitionByPropertyId(
   return rows[0] ? mapRelationDefinitionRow(rows[0]) : null;
 }
 
+/**
+ * The properties of other databases that are the paired side of a relation property of `databaseId`. A relation
+ * whose two sides are both in `databaseId` has none; both of its properties go with the database.
+ */
+export async function listPairedPropertiesOfOtherDatabases(
+  client: PoolClient,
+  databaseId: string,
+): Promise<{ propertyId: string; databaseId: string; key: string }[]> {
+  const { rows } = await client.query<{ property_id: string; database_id: string; key: string }>(
+    `SELECT DISTINCT other.id AS property_id, other.database_id, other.key
+       FROM relation_definitions definition
+       JOIN properties mine ON mine.id IN (definition.property_id_a, definition.property_id_b)
+       JOIN properties other
+         ON other.id = CASE WHEN mine.id = definition.property_id_a THEN definition.property_id_b ELSE definition.property_id_a END
+      WHERE mine.database_id = $1 AND other.database_id <> $1`,
+    [databaseId],
+  );
+  return rows.map((row) => ({ propertyId: row.property_id, databaseId: row.database_id, key: row.key }));
+}
+
+/**
+ * The relation properties of other databases that point at `databaseId` (`config.targetDatabaseId`) and have no paired
+ * side in it: a one-directional relation is created without an inverse, so `listPairedPropertiesOfOtherDatabases`
+ * never meets it. A relation that has an inverse in `databaseId` is listed too, so the result is every relation
+ * property outside `databaseId` that would point at a deleted database.
+ */
+export async function listRelationPropertiesTargetingDatabase(
+  client: PoolClient,
+  databaseId: string,
+): Promise<{ propertyId: string; databaseId: string; key: string }[]> {
+  const { rows } = await client.query<{ property_id: string; database_id: string; key: string }>(
+    `SELECT id AS property_id, database_id, key
+       FROM properties
+      WHERE type = 'relation' AND database_id <> $1 AND config->>'targetDatabaseId' = $1::text`,
+    [databaseId],
+  );
+  return rows.map((row) => ({ propertyId: row.property_id, databaseId: row.database_id, key: row.key }));
+}
+
 export interface CreateItemRelationInput {
   relationDefinitionId: string;
   itemA: string;

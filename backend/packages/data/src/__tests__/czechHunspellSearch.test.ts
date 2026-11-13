@@ -15,6 +15,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
+import { searchItemGroups } from "../search/searchItemsQuery.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import { handleItemSearchBackfillTask, runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
 import { createApiCoreTaskList } from "../worker.js";
@@ -218,6 +219,49 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
               ),
             );
             expect(result.rows[0]).toEqual({ body: "Retained page text", page_text: "Retained page text" });
+          } finally {
+            await removeAssets(pool);
+          }
+        });
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "matches an inflected word through the q of a database query exactly as the global search does",
+    async () => {
+      await withFreshDatabase(async (pool) => {
+        await removeAssets(pool);
+        await runMigrations(pool);
+        await ensureQueueSchema(pool);
+        const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
+        const tenantId = tenants[0]?.id;
+        if (!tenantId) throw new Error("Missing tenant");
+        await runInTenant(tenantId, async () => {
+          await seedSystem(pool);
+          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+          if (!files) throw new Error("Missing Files database");
+          const cp = createChokePoint(pool);
+          const invoice = await cp.createItem({ databaseId: files.id, properties: { name: "Faktura 2026" } });
+          await cp.createItem({ databaseId: files.id, properties: { name: "Smlouva 2026" } });
+          const viaQ = async (q: string): Promise<string[]> =>
+            (await cp.queryDatabaseItems(files.id, { q })).items.map((item) => item.id).sort();
+          const viaGlobalSearch = async (q: string): Promise<string[]> => {
+            const { groups } = await searchItemGroups(pool, { q, scope: ["file"], perGroupLimit: 50 });
+            const group = groups.find((candidate) => candidate.type === "file");
+            return (group?.type === "file" ? group.items.map((item) => item.itemId) : []).sort();
+          };
+
+          // Without the dictionary "fakturu" is neither the word nor a prefix of it: the lemma branch is what matches.
+          expect(await viaQ("fakturu")).toEqual([]);
+          await installAssets(pool);
+          try {
+            expect(await activateCzechHunspellSearch(pool)).toBe(true);
+            await handleItemSearchBackfillTask(pool, { onlyMissing: false });
+            expect(await viaQ("fakturu")).toEqual([invoice.id]);
+            expect(await viaGlobalSearch("fakturu")).toEqual([invoice.id]);
+            expect(await viaQ("faktury 2026")).toEqual(await viaGlobalSearch("faktury 2026"));
           } finally {
             await removeAssets(pool);
           }

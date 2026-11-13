@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { listDatabaseLabelsByIds } from "../chokePoint/databasesStore.js";
 import { getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { listApprovalRequestStatesByIds, type ApprovalRequestStateView } from "../mcp/approvalRequestsStore.js";
-import { countAgentRunToolSteps } from "./agentRunEventsStore.js";
+import { countAgentRunToolSteps, type AgentRunEventRange } from "./agentRunEventsStore.js";
 import {
   projectAgentRunSteps,
   type AgentRunStep,
@@ -69,16 +69,17 @@ export async function loadAgentRunStepApprovals(
  * A page of a run's steps ready for the route (issues #1847 and #1862): `page` from `buildAgentRunStepPage`,
  * each step with its localized title and summary, its target's name and its change, and an approval step
  * with the live state of its request. `locale` is the session user's `users.locale`. The caller's `client`
- * must be inside the tenant scope of the run.
+ * must be inside the tenant scope of the run. With `range` (issue #1889) the page belongs to one reply of the
+ * run, and the tool and approval counts of an `end` step cover that range only.
  */
 export async function projectAgentRunStepPage(
   client: PoolClient,
   page: AgentRunStepPage,
-  input: { agentRunId: string; locale: string },
+  input: { agentRunId: string; locale: string; range?: AgentRunEventRange },
 ): Promise<{ steps: AgentRunStep[]; nextCursor: string | null }> {
   const targets = await loadAgentRunStepTargets(client, page.steps);
   const counts = page.steps.some((step) => step.kind === "end")
-    ? await countAgentRunToolSteps(client, input.agentRunId)
+    ? await countAgentRunToolSteps(client, input.agentRunId, input.range)
     : null;
   const approvals = await loadAgentRunStepApprovals(client, page.steps);
   return {

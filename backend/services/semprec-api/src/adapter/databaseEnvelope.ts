@@ -33,8 +33,12 @@ export interface DatabaseEnvelope {
   defaultViewType: string | null;
 }
 
+/**
+ * `database` is a `DatabaseRow` without its purge deadline (`purgeAt`, issue gh-1875), which the wire envelope does not
+ * carry: the generic-operations `Database` that the database routes hold has no such field either.
+ */
 export function toDatabaseEnvelope(
-  database: DatabaseRow,
+  database: Omit<DatabaseRow, "purgeAt">,
   resolvedName: string,
   searchPlaceholder: string | null,
   metadata: CollectionMetadata,

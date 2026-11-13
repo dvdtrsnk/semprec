@@ -380,8 +380,10 @@ export async function findFileItemByBlobId(
 }
 
 /**
- * One page of items, across every database of the current tenant, trashed longer ago than
- * `olderThan` — the 30-day purge sweep's entry point into the subtree roots it must consider.
+ * One page of items, across the databases of the current tenant that are not archived, trashed longer ago than
+ * `olderThan` — the 30-day purge sweep's entry point into the subtree roots it must consider. An item of an archived
+ * database is never a candidate: the database is in the trash itself and is deleted with all its items by the purge
+ * of archived databases (issue gh-1878; `trash/purgeArchivedDatabases.ts`), and the item purge refuses to touch it.
  * Queried against the partitioned parent table directly (same pattern as `getItemsByIds`), so it
  * isn't scoped to one database the way most of this module's reads are; it is confined to the
  * current tenant's partitions by a database-id list resolved under RLS. Keyset-paged on the composite primary key
@@ -394,7 +396,10 @@ export async function findItemsDeletedBefore(
   after?: { databaseId: string; id: string },
   limit = 500,
 ): Promise<ItemRow[]> {
-  const databaseIds = await visibleDatabaseIds(client);
+  const { rows: databaseRows } = await client.query<{ ids: string[] }>(
+    "SELECT coalesce(array_agg(id), '{}') AS ids FROM databases WHERE archived_at IS NULL",
+  );
+  const databaseIds = requireSingleRow(databaseRows, "live databases").ids;
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
      FROM items
@@ -423,6 +428,33 @@ export async function hardDeleteItem(client: Queryable, databaseId: string, item
     itemId,
   ]);
   return (result.rowCount ?? 0) > 0;
+}
+
+/** The ids of the first `limit` rows of the database's partition by id, deleted rows included; empty when it holds none. */
+export async function listItemIdsForPurge(client: Queryable, databaseId: string, limit: number): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 ORDER BY id LIMIT $2",
+    [databaseId, limit],
+  );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Permanently deletes the named rows of one database, live or trashed, and returns each as it was removed. The
+ * purge of an archived database (issue gh-1875) is the only caller; `hardDeleteItem` serves the trash sweep and
+ * refuses a live row. A row another transaction removed first is not returned.
+ */
+export async function hardDeleteItemsOfDatabase(
+  client: Queryable,
+  databaseId: string,
+  itemIds: readonly string[],
+): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `DELETE FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+    [databaseId, itemIds],
+  );
+  return rows.map(mapItemRow);
 }
 
 export interface ListItemsOptions {

@@ -7,6 +7,8 @@ import {
   HeartbeatDisabledError,
   HeartbeatEventTriggeredError,
   HeartbeatRunningError,
+  MailDraftAlreadySentError,
+  MailDraftNotEditableError,
   NotFoundError,
   OptionLabelExistsError,
   PropertyLockedError,
@@ -96,6 +98,8 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     status: 409,
     error: new DuplicateItemError("A night exception for 2026-10-16 already exists", { field: "night" }),
   },
+  { code: "mail_draft_already_sent", status: 409, error: new MailDraftAlreadySentError() },
+  { code: "mail_draft_not_editable", status: 409, error: new MailDraftNotEditableError() },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
