@@ -65,6 +65,34 @@ describe("synthesizeSpeech", () => {
     expect(seen?.headers["x-semprec-tenant-id"]).toBe(TENANT_ID);
   });
 
+  it("sends the run and message attribution headers only for the ids it is given", async () => {
+    const port = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "audio/L16; rate=24000; channels=1" });
+      res.end(Buffer.alloc(10));
+    });
+    const runId = "7a1e2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+    const messageId = "8b1e2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+
+    await collect(
+      await synthesizeSpeech(
+        { port, token: "t" },
+        { text: "Hello.", voice: "nova", agentRunId: runId, sempMessageId: messageId },
+      ),
+    );
+    expect(seen?.headers["x-semprec-agent-run-id"]).toBe(runId);
+    expect(seen?.headers["x-semprec-semp-message-id"]).toBe(messageId);
+
+    await collect(
+      await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova", sempMessageId: messageId }),
+    );
+    expect(seen?.headers["x-semprec-agent-run-id"]).toBeUndefined();
+    expect(seen?.headers["x-semprec-semp-message-id"]).toBe(messageId);
+
+    await collect(await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova" }));
+    expect(seen?.headers["x-semprec-agent-run-id"]).toBeUndefined();
+    expect(seen?.headers["x-semprec-semp-message-id"]).toBeUndefined();
+  });
+
   it("rejects with budget_exceeded for the gateway's budget refusal", async () => {
     const port = await serve((_req, res) => {
       res.writeHead(403, { "content-type": "application/json" });

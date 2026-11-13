@@ -112,6 +112,14 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "item delete impact",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/delete-impact`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   // prettier-ignore
   { name: "ensure page", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
@@ -133,6 +141,8 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   { name: "duplicate page", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/duplicate`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "rename page", method: "PATCH", path: `/api/items/${EXAMPLE_ID}/page/title`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "convert page block", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/convert`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "database facets", method: "POST", path: `/api/databases/${EXAMPLE_ID}/facets`, surface: "api", public: false, tenancy: "tenant" },
 ];

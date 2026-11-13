@@ -1,6 +1,6 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError } from "@semprec/data";
+import { computeDeleteImpact, createChokePoint, NotFoundError, ValidationError, withTransaction } from "@semprec/data";
 import type { GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import {
@@ -75,17 +75,19 @@ async function resolveRelationProperty(
  * The item endpoint family (rebased onto the generic-operation bindings by issue #219): `POST
  * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
- * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `POST /api/databases/:id/facets` (issue #1759),
+ * `POST /api/items/:id/restore`, `POST /api/databases/:id/query` (its optional body field `q`, issue #1857), `POST /api/databases/:id/facets` (issue #1759),
  * `POST /api/items/count` (issue #1709),
  * `GET /api/items/:id/relations` (with optional `?propertyKey=`),
  * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
  * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field), `POST /api/items/:id/page/subpages`
- * (issue #1676), `POST /api/items/:id/page/duplicate` (issue #1722) and `PATCH /api/items/:id/page/title` (issue #1725).
+ * (issue #1676), `POST /api/items/:id/page/duplicate` (issue #1722), `PATCH /api/items/:id/page/title` (issue #1725), `POST /api/items/:id/page/convert` (issue #1876) and
+ * `GET /api/items/:id/delete-impact` (issue #1856).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
  * own `createChokePoint(pool)` for an operation the 47-operation catalog covers. `?include=path`'s breadcrumb chain
- * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
- * no corresponding generic operation, so there is no binding to rebase it onto.
+ * (`chokePoint.getItemPath`) and the delete impact (`computeDeleteImpact`, a REST-only read for a person) are the
+ * reads this family still reaches the data layer for directly: neither has a corresponding generic operation, so
+ * there is no binding to rebase it onto.
  */
 export function createItemRoutes(
   service: GenericApplicationPort,
@@ -231,6 +233,7 @@ export function createItemRoutes(
           limit: body.limit,
           inTrash: body.inTrash,
           includeCount: body.includeCount,
+          q: body.q,
         });
         return { status: 200, body: await toItemQueryEnvelope(pool, result) };
       },
@@ -323,6 +326,21 @@ export function createItemRoutes(
           itemId: id,
         });
         return { status: 200, body: related };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/delete-impact",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        // A read of the same permission as `GET /api/items/:id`: a person, so no database reader. An unknown, trashed
+        // and other-tenant id answer alike. The read is several statements, so it takes one repeatable-read snapshot:
+        // under READ COMMITTED each statement would see a different state and the four parts could disagree.
+        const impact = await withTransaction(pool, (client) => computeDeleteImpact(client, id, resolver), {
+          isolation: "repeatable_read",
+        });
+        if (!impact) throw new NotFoundError(`Item ${id} not found`, { resource: "item", itemId: id });
+        return { status: 200, body: impact };
       },
     },
     {
@@ -459,6 +477,31 @@ export function createItemRoutes(
           title: body.title,
         });
         return { status: 200, body: renamed };
+      },
+    },
+    {
+      // The path item is the parent whose document holds the `page` block; the body carries `blockId`, `type` and
+      // `confirmedPageCount` (docs/adr/2026-11-13-page-convert-to-block-trashes-the-page-tree-after-a-confirmed-count.md).
+      method: "POST",
+      path: "/api/items/:id/page/convert",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find(
+          (key) => key !== "blockId" && key !== "type" && key !== "confirmedPageCount",
+        );
+        if (unexpected !== undefined) throw new ValidationError("Unexpected convert field", { field: unexpected });
+        const converted = await dispatchGenericOperation(
+          service,
+          "page.convertToBlock",
+          restActor(ctx.identity.user.id),
+          {
+            parentItemId: requireUuidParam(ctx.params, "id"),
+            blockId: body.blockId,
+            type: body.type,
+            confirmedPageCount: body.confirmedPageCount,
+          },
+        );
+        return { status: 200, body: converted };
       },
     },
     {

@@ -24,6 +24,9 @@ const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * See docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md and
  * docs/adr/2026-10-29-tasks-date-and-time-rules-in-pre-write-transform.md.
  *
+ * A write that names `status` names a nonempty string (issue sp-9cf1be65,
+ * docs/adr/2026-11-13-a-task-always-has-a-status.md); a write that does not name it leaves the status alone, so a
+ * stored task without one can still be written.
  * Schedule validation runs only when its input keys are named, so a status-only write does not revalidate a
  * legacy schedule. Completion and first-planned-day rules run separately in the managed write.
  */
@@ -34,6 +37,7 @@ export const prepareTaskWrite = async ({
   const creating = stored === null;
   const nameNamed = patch.name !== undefined;
   const timeNamed = patch.date !== undefined || patch.timeFrom !== undefined || patch.timeTo !== undefined;
+  if (Object.hasOwn(patch, "status")) assertStatusNamed(patch.status);
   if (!creating && !nameNamed && !timeNamed) return patch;
   if (nameNamed) assertNonBlankName(patch.name);
   if (!creating && !timeNamed) return patch;
@@ -167,6 +171,16 @@ async function applyTaskRules(context: ItemPreWriteTransformContext): Promise<Re
     }
   }
   return output;
+}
+
+/**
+ * A task always has a status: `null`, an empty string and a non-string are refused. Which strings are allowed stays
+ * with `assertSelectValuesKnown`.
+ */
+function assertStatusNamed(value: unknown): void {
+  if (typeof value !== "string" || value === "") {
+    throw new ValidationError("Property 'status' must be a task status", { field: "status" });
+  }
 }
 
 function assertNonBlankName(value: unknown): void {

@@ -20,6 +20,7 @@
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
 //   approval.pageReplace      {itemName, databaseKey, databaseName}   (issue #1844; the new Markdown is an argument value, so it is not in the description)
+//   approval.pageConvertToBlock {pageName, blockType, pageCount}   (issue #1876; the stored title of the page, the block type it becomes, and the pages that go to the Trash, the page included)
 //   approval.journalMerge     {periodType, period, survivorName, mergedName}   (issue #2017; the stored titles of the two entries, `null` when the period has no two live entries; no page content)
 //   approval.mcpInvoke        {serverName, toolName}
 //   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
@@ -32,6 +33,7 @@
 import type { PoolClient } from "pg";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
 import type { PageRestoreCheck } from "../docs/docPageRestore.js";
+import type { PageConvertCheck } from "../docs/pageConvertApproval.js";
 import type { PageReplaceCheck } from "../docs/pageReplaceApproval.js";
 import type { JournalMergeCheck } from "../journal/journalMergeApproval.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -40,7 +42,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { NotFoundError } from "../errors.js";
-import { TRASH_RETENTION_DAYS } from "../trash/purgeExpiredTrash.js";
+import { RETENTION_DAYS } from "../trash/purgeExpiredTrash.js";
 import type { BreakingValueLinks } from "../chokePoint/valueLinkApproval.js";
 import { describeBreakingLinks, isLinkDeferralOperation } from "./approvalBreaksLink.js";
 import type { ApprovalDescription } from "./approvalRequestsStore.js";
@@ -94,13 +96,14 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
  */
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
-  check: DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | JournalMergeCheck,
+  check: DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | PageConvertCheck | JournalMergeCheck,
   currentResource?: unknown,
   valueLinks?: BreakingValueLinks,
 ): Promise<ApprovalDescription> {
   if (
     check.operation === "page.restoreVersion" ||
     check.operation === "page.replace" ||
+    check.operation === "page.convertToBlock" ||
     check.operation === "page.mergeJournalDuplicates" ||
     valueLinks === undefined ||
     valueLinks.links.length === 0
@@ -133,6 +136,7 @@ async function buildOperationDescription(
     | Exclude<DestructiveOperationCheck, { operation: "link.unlink" }>
     | PageRestoreCheck
     | PageReplaceCheck
+    | PageConvertCheck
     | JournalMergeCheck,
   currentResource?: unknown,
 ): Promise<ApprovalDescription> {
@@ -227,6 +231,9 @@ async function buildOperationDescription(
         },
       };
     }
+    case "page.convertToBlock":
+      // Described by its projection, which read the page's title and the page count (`computePageConvertProjection`).
+      throw new Error("A page.convertToBlock request is described by its projection");
     case "page.mergeJournalDuplicates":
       // Described by its projection, which read the two entries' titles (`computeJournalMergeProjection`).
       throw new Error("A page.mergeJournalDuplicates request is described by its projection");
@@ -242,7 +249,7 @@ async function buildOperationDescription(
             relationsStore.otherSide(relation, item.id),
           ),
         ).size,
-        restorableDays: TRASH_RETENTION_DAYS,
+        restorableDays: RETENTION_DAYS,
       };
       if (database.ownerProjectItemId) {
         const [project] = await itemsStore.getItemsByIds(client, [database.ownerProjectItemId]);

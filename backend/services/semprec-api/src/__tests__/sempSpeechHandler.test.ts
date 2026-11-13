@@ -18,13 +18,17 @@ import {
   setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import {
+  claimSempMessage,
+  createAgentRun,
   createUser,
+  finishSempMessageTurn,
   getMessageSpeech,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   sendSempMessage,
+  startSempMessageTurn,
   storeMessageSpeech,
   withMessageSpeechGuard,
   withTransaction,
@@ -334,6 +338,13 @@ describe("message speech HTTP", () => {
       ),
     );
   }
+  async function attribution() {
+    return runInTenant(tenant, () =>
+      pool.query<{ id: string; status: string; agent_run_id: string | null; semp_message_id: string | null }>(
+        "SELECT id::text, status, agent_run_id, semp_message_id FROM ai_gateway_calls WHERE operation = 'voice_synthesize' ORDER BY id",
+      ),
+    );
+  }
   async function withCleanup(action: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
     let outcome: { ok: true } | { ok: false; error: unknown };
     try {
@@ -373,6 +384,50 @@ describe("message speech HTTP", () => {
     expect(Buffer.from(await second.arrayBuffer())).toEqual(Buffer.alloc(480, 1));
     expect((await accounting()).rows).toEqual(after.rows);
     expect(providerCalls()).toBe(priorCalls + 1);
+  });
+
+  it("attributes the speech row of a read-aloud answer to the answer and the run that produced it, and a cache hit adds none", async () => {
+    const run = await runInTenant(tenant, () => createAgentRun(pool, { triggeredBy: "user", task: "read aloud" }));
+    const value = await turn("A question that has an answer");
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        expect(await claimSempMessage(client, value.threadId, value.assistantMessageId)).toBe(true);
+        await startSempMessageTurn(client, value.assistantMessageId, run.id, "1");
+        expect(
+          await finishSempMessageTurn(client, value.assistantMessageId, {
+            status: "done",
+            text: "The answer that is read aloud.",
+            lastEventId: "2",
+          }),
+        ).toBe(true);
+      }),
+    );
+    const before = await attribution();
+
+    const first = await post(value.threadId, value.assistantMessageId);
+    expect(first.status).toBe(200);
+    await first.arrayBuffer();
+
+    const created = (await attribution()).rows.filter((row) => !before.rows.some((old) => old.id === row.id));
+    expect(created).toMatchObject([
+      { status: "settled", agent_run_id: run.id, semp_message_id: value.assistantMessageId },
+    ]);
+    const cached = await post(value.threadId, value.assistantMessageId);
+    expect(cached.status).toBe(200);
+    await cached.arrayBuffer();
+    expect((await attribution()).rows).toHaveLength(before.rows.length + 1);
+  });
+
+  it("attributes the speech row of a message that belongs to no run to that message alone", async () => {
+    const value = await turn("A question read aloud as it is");
+    const before = await attribution();
+
+    const response = await post(value.threadId, value.messageId);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+
+    const created = (await attribution()).rows.filter((row) => !before.rows.some((old) => old.id === row.id));
+    expect(created).toMatchObject([{ status: "settled", agent_run_id: null, semp_message_id: value.messageId }]);
   });
 
   it("synthesizes an uncached 4000-unit message exactly once through the real gateway", async () => {

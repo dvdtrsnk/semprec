@@ -5,8 +5,15 @@ export {
   createMailThreadDetailRouteHandler,
   createMailThreadFacetsRouteHandler,
   createMailThreadListRouteHandler,
+  createMailThreadReadRouteHandler,
 } from "./mailThreadRoutes.js";
 export { createMailAutonomousSendProjectsRouteHandler } from "./mailAutonomousSendRouteHandlers.js";
+export {
+  createMailDraftCreateRouteHandler,
+  createMailDraftDiscardRouteHandler,
+  createMailDraftReadRouteHandler,
+  createMailDraftUpdateRouteHandler,
+} from "./mailDraftRouteHandlers.js";
 export {
   createMailboxReauthorizeRouteHandler,
   createMailOauthCompleteRouteHandler,
@@ -125,6 +132,48 @@ export const manifest: ModuleManifest = {
       // Shaped for exactly one consumer, the Mail detail: the thread's list-row header with every
       // message, sanitized at read time, and its attachments' blobs and Files items.
       justification: "single-consumer-read",
+    },
+    {
+      name: "mailThreadRead",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/read",
+      handlerExport: "createMailThreadReadRouteHandler",
+      // Issue gh-1865: marks every incoming message of a conversation read, or its last incoming message
+      // unread, through the item update path in one transaction, and sends one thin invalidation after the commit.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailDraftCreate",
+      method: "POST",
+      path: "/api/mail/drafts",
+      handlerExport: "createMailDraftCreateRouteHandler",
+      // Issue gh-1867: creates the Emails item, its `mail_drafts` row and its Drafts folder edge in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailDraftRead",
+      method: "GET",
+      path: "/api/mail/drafts/:id",
+      handlerExport: "createMailDraftReadRouteHandler",
+      // Issue gh-1867: the draft as the compose window shows it, joined from the Emails item and its `mail_drafts` row.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailDraftUpdate",
+      method: "PATCH",
+      path: "/api/mail/drafts/:id",
+      handlerExport: "createMailDraftUpdateRouteHandler",
+      // Issue gh-1867: rewrites the Emails item's system-owned display fields and the `mail_drafts` row under one
+      // version check in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailDraftDiscard",
+      method: "DELETE",
+      path: "/api/mail/drafts/:id",
+      handlerExport: "createMailDraftDiscardRouteHandler",
+      // Issue gh-1867: trashes the Emails item and deletes its `mail_drafts` row in one transaction.
+      justification: "transactional-semantics",
     },
     {
       name: "mailAutonomousSendProjects",

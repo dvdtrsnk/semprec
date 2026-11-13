@@ -62,6 +62,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
+import { assertValidOccurrenceTarget } from "../calendar/eventOccurrenceTarget.js";
 import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { computeInboxFingerprintV2, isFingerprintCurrent } from "./fingerprint.js";
@@ -372,7 +373,8 @@ export async function assertValidProposalEnvelope(
   if (envelope.entityKind === "relation") {
     // Only the envelope's own shape is checked here: whether the edge may be written depends on
     // the card's source item, which proposalActions.ts resolves and checks against the relation.
-    if (!UUID_RE.test(envelope.target)) {
+    // A synthetic occurrence id `<seriesId>@<date>` names an occurrence that has no item yet (issue gh-1850).
+    if (!UUID_RE.test(envelope.target) && (await assertValidOccurrenceTarget(client, envelope.target)) === null) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an item id`, { field: "target" });
     }
     const { propertyKey, metadata, ...rest } = envelope.properties;

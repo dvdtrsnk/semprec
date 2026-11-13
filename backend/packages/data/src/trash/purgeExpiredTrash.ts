@@ -1,12 +1,15 @@
 import type { Pool } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { ForbiddenError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
+import { RETENTION_DAYS } from "../trashRetention.js";
 import { logger } from "./logger.js";
+import { purgeExpiredArchivedDatabases } from "./purgeArchivedDatabases.js";
 
 /** How long a trashed item stays restorable before the purge sweep removes it. */
-export const TRASH_RETENTION_DAYS = 30;
+export { RETENTION_DAYS };
 const CANDIDATE_PAGE_SIZE = 500;
 
 /**
@@ -16,7 +19,11 @@ const CANDIDATE_PAGE_SIZE = 500;
  * archived-database rejection, and eligibility re-check, so one oversized or
  * already-partially-purged subtree can't fail the whole sweep and a database archived after a
  * candidate was selected is never written to. Live items and trashed items younger than the cutoff
- * are never touched, whether they're a purge root or nested underneath one.
+ * are never touched, whether they're a purge root or nested underneath one. The items of an archived
+ * database are not candidates (`itemsStore.findItemsDeletedBefore`, issue gh-1878): the database is in the
+ * trash itself and `purgeExpiredArchivedDatabases` deletes it with all of them. One archived between the
+ * candidate read and its purge makes `purgeExpiredTrashSubtree` refuse with `database_archived`; that
+ * refusal is skipped with a debug line, every other failure is logged as an error.
  *
  * Candidates are read in keyset pages of 500 (issue #675), so at most one page is held at a time;
  * the keyset advances from the last row of each page, so a candidate whose subtree failed is not
@@ -32,7 +39,7 @@ const CANDIDATE_PAGE_SIZE = 500;
 export async function purgeExpiredTrash(
   pool: Pool,
   storage: BlobStorageWriter,
-  retentionDays = TRASH_RETENTION_DAYS,
+  retentionDays = RETENTION_DAYS,
   alternateStorage?: BlobStorageWriter,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
@@ -50,6 +57,12 @@ export async function purgeExpiredTrash(
       try {
         result = await chokePoint.purgeExpiredTrashSubtree(candidate.id, cutoff);
       } catch (err) {
+        // A database archived after the candidate read refuses the purge; it is in the trash itself now and its items
+        // are deleted with it (issue gh-1878), so the item is skipped without an error.
+        if (err instanceof ForbiddenError && err.code === "database_archived") {
+          logger.debug({ itemId: candidate.id }, "Skipped a trashed item of a database that was archived meanwhile");
+          continue;
+        }
         logger.error({ err, itemId: candidate.id }, "Failed to purge trashed item");
         continue;
       }
@@ -79,16 +92,36 @@ export async function purgeExpiredTrash(
 
 /**
  * The graphile-worker task handler wired into `createCoreTaskList` (`worker.ts`) and `CORE_CRONTAB`.
- * Runs `purgeExpiredTrash` once per active tenant, each inside that tenant's scope. A failure that
- * escapes one tenant's pass fails only that tenant; `forEachActiveTenant` rethrows the failures
- * together after every tenant was attempted, so the job is retried.
+ * Runs, once per active tenant and inside that tenant's scope, the item purge `purgeExpiredTrash` and then the purge
+ * of archived databases `purgeExpiredArchivedDatabases` (issue gh-1875). A failure of the first stage does not skip
+ * the second: each failure is logged with the tenant id and the error's class, and the stages' failures are rethrown
+ * together after both ran. A failure that escapes one tenant's pass fails only that tenant; `forEachActiveTenant`
+ * rethrows the failures together after every tenant was attempted, so the job is retried.
  */
 export async function handleItemTrashPurgeSweepTask(
   pool: Pool,
   storage: BlobStorageWriter,
   alternateStorage?: BlobStorageWriter,
 ): Promise<void> {
-  await forEachActiveTenant(pool, async () => {
-    await purgeExpiredTrash(pool, storage, TRASH_RETENTION_DAYS, alternateStorage);
+  await forEachActiveTenant(pool, async (tenantId) => {
+    const failures: unknown[] = [];
+    try {
+      await purgeExpiredTrash(pool, storage, RETENTION_DAYS, alternateStorage);
+    } catch (err) {
+      logger.error({ tenantId, errorName: err instanceof Error ? err.name : typeof err }, "Item purge stage failed");
+      failures.push(err);
+    }
+    try {
+      await purgeExpiredArchivedDatabases(pool, storage, alternateStorage);
+    } catch (err) {
+      logger.error(
+        { tenantId, errorName: err instanceof Error ? err.name : typeof err },
+        "Archived database purge stage failed",
+      );
+      failures.push(err);
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Trash purge of tenant ${tenantId}: ${failures.length} stages failed`);
+    }
   });
 }

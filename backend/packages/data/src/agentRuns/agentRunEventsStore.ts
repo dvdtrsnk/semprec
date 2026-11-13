@@ -20,6 +20,15 @@ const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "user_message",
 ];
 
+/**
+ * The events of a run that one Semp reply owns (issue #1889): `fromEventId` through `throughEventId`, both
+ * inclusive; `throughEventId` is `null` for a range that is open at the end.
+ */
+export interface AgentRunEventRange {
+  fromEventId: string;
+  throughEventId: string | null;
+}
+
 export interface AgentRunEventRow {
   id: string;
   agentRunId: string;
@@ -202,12 +211,17 @@ export async function listSempTurnEvents(
  * `agentRunStepPageRowLimit(stepLimit)` of them. A page of `stepLimit` steps needs at most two events
  * per step, so the limit leaves room for a block of parallel tool calls; it is the bound of the
  * read, never an unbounded set. `hasMore` is true when more events follow the ones returned.
+ *
+ * With `range` (issue #1889) only the events of that range are read: the page starts at the later of
+ * `afterEventId` and the range's first event and ends at its last one, so the cursor and the limit work as
+ * they do for the whole run, inside the range.
  */
 export async function listAgentRunEventsForStepPage(
   client: Pool | PoolClient,
   agentRunId: string,
   afterEventId: string,
   stepLimit: number,
+  range?: AgentRunEventRange,
 ): Promise<{ events: AgentRunEventRow[]; hasMore: boolean }> {
   if (!Number.isInteger(stepLimit) || stepLimit < 1 || stepLimit > AGENT_RUN_STEP_MAX_LIMIT) {
     throw new ValidationError("Invalid agent run step limit");
@@ -217,8 +231,16 @@ export async function listAgentRunEventsForStepPage(
     `SELECT id, agent_run_id, kind, payload, at
      FROM agent_run_events
      WHERE agent_run_id = $1 AND id > $2::bigint AND kind = ANY($3::text[])
+       AND ($5::bigint IS NULL OR id >= $5::bigint) AND ($6::bigint IS NULL OR id <= $6::bigint)
      ORDER BY id ASC LIMIT $4`,
-    [agentRunId, afterEventId, AGENT_RUN_STEP_EVENT_KINDS, rowLimit + 1],
+    [
+      agentRunId,
+      afterEventId,
+      AGENT_RUN_STEP_EVENT_KINDS,
+      rowLimit + 1,
+      range?.fromEventId ?? null,
+      range?.throughEventId ?? null,
+    ],
   );
   return { events: rows.slice(0, rowLimit).map(mapRow), hasMore: rows.length > rowLimit };
 }
@@ -227,11 +249,13 @@ export async function listAgentRunEventsForStepPage(
  * The number of tool steps and of approval steps in the events of a run still stored (issue #1847), for
  * the summary of its `end` step. A tool step is one `toolCallId` of a stored call or result; an approval
  * step is one whose result carries an `approvalRequestId` (`details` of the stored pi result). The
- * counts are read in SQL because a page holds only some of the run's events.
+ * counts are read in SQL because a page holds only some of the run's events. With `range` (issue #1889) only
+ * the events of that range are counted.
  */
 export async function countAgentRunToolSteps(
   client: Pool | PoolClient,
   agentRunId: string,
+  range?: AgentRunEventRange,
 ): Promise<{ toolCount: number; approvalCount: number }> {
   const { rows } = await client.query<{ tool_count: string; approval_count: string }>(
     `SELECT count(DISTINCT payload->>'toolCallId') AS tool_count,
@@ -241,8 +265,9 @@ export async function countAgentRunToolSteps(
             ) AS approval_count
      FROM agent_run_events
      WHERE agent_run_id = $1 AND kind IN ('tool_use', 'tool_result')
-       AND jsonb_typeof(payload->'toolCallId') = 'string'`,
-    [agentRunId],
+       AND jsonb_typeof(payload->'toolCallId') = 'string'
+       AND ($2::bigint IS NULL OR id >= $2::bigint) AND ($3::bigint IS NULL OR id <= $3::bigint)`,
+    [agentRunId, range?.fromEventId ?? null, range?.throughEventId ?? null],
   );
   const row = requireSingleRow(rows, "agent run tool step counts");
   return { toolCount: Number(row.tool_count), approvalCount: Number(row.approval_count) };

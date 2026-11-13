@@ -453,6 +453,25 @@ export async function deleteProperty(client: PoolClient, propertyId: string): Pr
   await client.query(`DELETE FROM properties WHERE id = $1`, [propertyId]);
 }
 
+/**
+ * Deletes properties of databases that are kept because the database on the other side of their relation, or the
+ * rollup source they aggregate, is being purged (issue gh-1875). `deleteProperty`'s `assertPropertySchemaMutable`
+ * is not applied: a schema-locked system database refuses a schema write by a user, but the paired relation
+ * property of a purged database belongs to a relation whose other side no longer exists. A relation definition and
+ * a rollup dependency go with their property by foreign key. Ids a concurrent write already removed are skipped;
+ * returns the ids it deleted.
+ */
+export async function deletePropertiesOfPurgedDatabase(
+  client: PoolClient,
+  propertyIds: readonly string[],
+): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    "DELETE FROM properties WHERE id = ANY($1::uuid[]) RETURNING id",
+    [propertyIds],
+  );
+  return rows.map((row) => row.id);
+}
+
 /** The most options `addPropertyOption` lets one property hold. */
 const PROPERTY_OPTION_LIMIT = 100;
 

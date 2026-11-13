@@ -6,9 +6,12 @@ import {
   confirmProposalWithClient,
   readConfirmationResults,
   rejectProposalWithClient,
+  reviseProposalWithClient,
   type ConfirmationResult,
   type ConfirmProposalCredentialInput,
+  type ReviseProposalInput,
 } from "./proposalActions.js";
+import type { ProposalEntityKind } from "./proposalEnvelope.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
 import { countOpenInboxCards, listInboxCards } from "./inboxCardsStore.js";
 import { resolveEditorSchema, type ResolvedEditorSchema } from "./editorSchema.js";
@@ -35,7 +38,7 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
-  /** The authenticated caller; only the confirm route reads it. */
+  /** The authenticated caller; only the confirm and revise routes read it. */
   identity?: { user: { id: string } };
 }
 
@@ -164,6 +167,135 @@ export function createRejectProposalRouteHandler(pool: Pool) {
     const item = await withTransaction(pool, async (client) => {
       const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
       return rejectProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, message, ifVersion);
+    });
+    return { status: 200, item };
+  };
+}
+
+/** The longest `message` the revise route accepts, in UTF-16 code units: it becomes one entry of the card's stored history. */
+const MAX_REVISE_MESSAGE_LENGTH = 2000;
+
+const REVISE_BODY_KEYS: readonly string[] = ["entityKind", "target", "properties", "message", "ifVersion"];
+
+const PROPOSAL_ENTITY_KINDS: readonly ProposalEntityKind[] = ["pageContent", "database", "relation"];
+
+function isProposalEntityKind(value: string): value is ProposalEntityKind {
+  return (PROPOSAL_ENTITY_KINDS as readonly string[]).includes(value);
+}
+
+function requireNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ValidationError(`'${field}' must be a non-empty string`, { field });
+  }
+  // Postgres cannot store U+0000 in jsonb or text (22P05), so it is refused here as a 400 naming the field.
+  if (value.includes("\u0000")) {
+    throw new ValidationError(`'${field}' must not contain NUL characters`, { field });
+  }
+  return value;
+}
+
+/**
+ * Whether a JSON value holds U+0000 in any string or object key. The walk is iterative and visits every node of the
+ * request body once, so a deeply nested body cannot exhaust the stack; the body's own size cap bounds its length.
+ */
+function containsNul(root: unknown): boolean {
+  const pending: unknown[] = [root];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (value.includes("\u0000")) return true;
+    } else if (Array.isArray(value)) {
+      for (const entry of value as unknown[]) pending.push(entry);
+    } else if (typeof value === "object" && value !== null) {
+      for (const [key, entry] of Object.entries(value)) {
+        if (key.includes("\u0000")) return true;
+        pending.push(entry);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Parses the revise body strictly: a JSON object with only the keys `entityKind`, `target`, `properties`, `message`
+ * and `ifVersion`, each of its type and free of U+0000, which jsonb cannot store. The three envelope keys come all together or not at all, and the body must carry
+ * the envelope or a `message`. Whether a `message` alone is allowed depends on the card, which
+ * `reviseProposalWithClient` decides.
+ */
+function parseReviseBody(body: unknown): ReviseProposalInput {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  const fields = body as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    if (!REVISE_BODY_KEYS.includes(key)) {
+      throw new ValidationError(`Unknown field '${key}'`, { field: key });
+    }
+  }
+  const ifVersion = fields.ifVersion === undefined ? undefined : requireNonEmptyString(fields.ifVersion, "ifVersion");
+  const message = fields.message === undefined ? undefined : requireNonEmptyString(fields.message, "message");
+  if (message !== undefined && message.length > MAX_REVISE_MESSAGE_LENGTH) {
+    throw new ValidationError(`'message' must be at most ${MAX_REVISE_MESSAGE_LENGTH} characters`, {
+      field: "message",
+    });
+  }
+
+  const envelopeKeys = ["entityKind", "target", "properties"] as const;
+  const present = envelopeKeys.filter((key) => fields[key] !== undefined);
+  if (present.length === 0) {
+    if (message === undefined) {
+      throw new ValidationError("Send a proposal ('entityKind', 'target' and 'properties') or a 'message'");
+    }
+    return { message, ...(ifVersion === undefined ? {} : { ifVersion }) };
+  }
+  const missing = envelopeKeys.find((key) => fields[key] === undefined);
+  if (missing !== undefined) {
+    throw new ValidationError(
+      `'entityKind', 'target' and 'properties' must be sent together; '${missing}' is missing`,
+      {
+        field: missing,
+      },
+    );
+  }
+
+  const entityKind = requireNonEmptyString(fields.entityKind, "entityKind");
+  if (!isProposalEntityKind(entityKind)) {
+    throw new ValidationError(`'entityKind' must be one of: ${PROPOSAL_ENTITY_KINDS.join(", ")}`, {
+      field: "entityKind",
+    });
+  }
+  const target = requireNonEmptyString(fields.target, "target");
+  const properties = fields.properties;
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) {
+    throw new ValidationError("'properties' must be a JSON object", { field: "properties" });
+  }
+  if (containsNul(properties)) {
+    throw new ValidationError("'properties' must not contain NUL characters", { field: "properties" });
+  }
+  return {
+    entityKind,
+    target,
+    properties: { ...properties },
+    ...(message === undefined ? {} : { message }),
+    ...(ifVersion === undefined ? {} : { ifVersion }),
+  };
+}
+
+/**
+ * `POST /api/proposals/:id/revise` (issue #1870): mounts `reviseProposalWithClient` with the body described at
+ * `parseReviseBody`. The revise runs in one transaction, so the envelope's validation against live destination state,
+ * the lock check and the status transition commit together. Answers `200` with the updated card. Every
+ * rule about the card (locked, role of a transcript card, `message` on a non-transcript card, `ifVersion`) lives in
+ * `reviseProposalWithClient`.
+ */
+export function createReviseProposalRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    const input = parseReviseBody(ctx.body);
+    const actingUserId = ctx.identity?.user.id;
+    const item = await withTransaction(pool, async (client) => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return reviseProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, input, actingUserId);
     });
     return { status: 200, item };
   };

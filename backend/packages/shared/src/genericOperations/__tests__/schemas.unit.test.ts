@@ -28,6 +28,7 @@ import {
   SearchInputSchema,
   SearchOutputSchema,
   SEARCH_GROUP_TYPES,
+  SEARCH_ITEM_GROUP_TYPES,
   PageRestoreVersionInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
@@ -283,6 +284,29 @@ describe("ItemPatchInputSchema", () => {
     expect(ItemPatchInputSchema.safeParse({ itemId: "i1", properties: { title: "x" }, ifVersion: "v1" }).success).toBe(
       true,
     );
+  });
+});
+
+describe("q on the query inputs (issue #1857)", () => {
+  it.each([
+    ["database.query", (q: unknown) => DatabaseQueryInputSchema.safeParse({ databaseId: "d1", q })],
+    ["view.query", (q: unknown) => ViewQueryInputSchema.safeParse({ viewId: "v1", q })],
+  ])(
+    "%s accepts a q of 1 to 200 characters and refuses an empty, a longer and a non-string q on the field q",
+    (_name, parse) => {
+      for (const q of ["x", "x".repeat(200)]) expect(parse(q).success, String(q.length)).toBe(true);
+      for (const q of ["", "x".repeat(201), 1, null, ["x"]]) {
+        const parsed = parse(q);
+        expect(parsed.success, JSON.stringify(q)).toBe(false);
+        if (parsed.success) throw new Error("Expected q to be refused");
+        expect(validationIssueField(parsed.error.issues)).toBe("q");
+      }
+    },
+  );
+
+  it("keeps q optional: a query without it parses to an input without the key", () => {
+    expect("q" in DatabaseQueryInputSchema.parse({ databaseId: "d1" })).toBe(false);
+    expect("q" in ViewQueryInputSchema.parse({ viewId: "v1" })).toBe(false);
   });
 });
 
@@ -651,6 +675,15 @@ describe("ItemCountInputSchema (issue #1709)", () => {
   const databaseId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   const entries = (length: number) => Array.from({ length }, () => ({ databaseId }));
 
+  it("accepts a q of 1 and of 200 characters on an entry, next to the other keys", () => {
+    for (const q of ["x", "x".repeat(200)]) {
+      expect(
+        ItemCountInputSchema.parse({ items: [{ databaseId, filter: { type: "is_empty", property: "p" }, q }] }).items[0]
+          ?.q,
+      ).toBe(q);
+    }
+  });
+
   it("accepts one to twenty entries and refuses none or twenty-one, naming items", () => {
     for (const length of [1, 20]) {
       expect(ItemCountInputSchema.safeParse({ items: entries(length) }).success, String(length)).toBe(true);
@@ -683,6 +716,9 @@ describe("ItemCountInputSchema (issue #1709)", () => {
     ["a non-string groupBy", { items: [{ databaseId, groupBy: 1 }] }, "items.0.groupBy"],
     ["a non-boolean collection", { items: [{ databaseId, collection: "yes" }] }, "items.0.collection"],
     ["an unknown entry key", { items: [{ databaseId }, { databaseId, inTrash: true }] }, "items.1"],
+    ["an empty q", { items: [{ databaseId, q: "" }] }, "items.0.q"],
+    ["a q of 201 characters", { items: [{ databaseId, q: "x".repeat(201) }] }, "items.0.q"],
+    ["a non-string q", { items: [{ databaseId, q: 1 }] }, "items.0.q"],
   ])("refuses %s", (_name, input, field) => {
     const parsed = ItemCountInputSchema.safeParse(input);
     expect(parsed.success).toBe(false);
@@ -914,6 +950,77 @@ describe("SearchOutputSchema (issue #1842)", () => {
     ]) {
       expect(SearchOutputSchema.safeParse({ groups: [group] }).success, group.type).toBe(false);
     }
+  });
+
+  it("accepts a mail entry that names the Emails item of the last message beside the thread, and refuses a partial one", () => {
+    const mailResult = {
+      threadId: id,
+      itemId: id,
+      databaseId: id,
+      databaseKey: "emails",
+      title: "Re: Nabídka na web",
+      subtitleParts: [
+        { kind: "sender", value: "Petr Novák", itemId: id },
+        { kind: "date", value: "2026-03-04T09:30:00.000000Z" },
+      ],
+      snippet: "nabídka na nový web",
+    };
+    const parse = (type: string, result: object) =>
+      SearchOutputSchema.safeParse({ groups: [{ type, total: 1, items: [result], nextCursor: null }] }).success;
+    expect(parse("mail", mailResult)).toBe(true);
+    // A partial item reference, an empty database key and an unknown key are refused in a mail group.
+    expect(parse("mail", { ...mailResult, databaseKey: "" })).toBe(false);
+    expect(parse("mail", { ...mailResult, databaseId: undefined })).toBe(false);
+    expect(parse("mail", { ...mailResult, extra: true })).toBe(false);
+    // An item group never takes a mail entry.
+    expect(parse("task", mailResult)).toBe(false);
+  });
+
+  describe("the Journal period of a journal result (issue #1859)", () => {
+    const journalResult = { ...itemResult, databaseKey: "journal", journal: { type: "week", period: "2026-W42" } };
+    const accepts = (group: unknown) => SearchOutputSchema.safeParse({ groups: [group] }).success;
+
+    it("accepts a journal group whose results carry journal { type, period }, one per Journal period type", () => {
+      for (const type of ["year", "quarter", "month", "week", "day"]) {
+        const result = { ...journalResult, journal: { type, period: "2026" } };
+        expect(accepts({ type: "journal", total: 1, items: [result], nextCursor: null }), type).toBe(true);
+      }
+    });
+
+    it("refuses a journal result without journal, with an unknown type, with no or an empty period, and with another key", () => {
+      for (const journal of [
+        undefined,
+        { type: "decade", period: "2026" },
+        { type: "day" },
+        { type: "day", period: "" },
+        { period: "2026-10-16" },
+        { type: "day", period: "2026-10-16", label: "Pátek 16. října" },
+      ]) {
+        const result = { ...journalResult, journal };
+        expect(accepts({ type: "journal", total: 1, items: [result], nextCursor: null }), JSON.stringify(journal)).toBe(
+          false,
+        );
+      }
+    });
+
+    it("refuses journal on a result of any other item group, so only the journal group carries it", () => {
+      for (const type of ["task", "event", "project", "area", "contact", "file"]) {
+        expect(accepts({ type, total: 1, items: [journalResult], nextCursor: null }), type).toBe(false);
+        expect(accepts({ type, total: 1, items: [itemResult], nextCursor: null }), type).toBe(true);
+      }
+    });
+
+    it("refuses journal on a result of a thread group", () => {
+      const thread = { threadId: id, title: "t", subtitleParts: [], snippet: null, journal: journalResult.journal };
+      expect(accepts({ type: "mail", total: 1, items: [thread], nextCursor: null })).toBe(false);
+    });
+
+    it("covers every item group exactly once between the journal group and the others", () => {
+      for (const type of SEARCH_ITEM_GROUP_TYPES) {
+        const item = type === "journal" ? journalResult : itemResult;
+        expect(accepts({ type, total: 1, items: [item], nextCursor: null }), type).toBe(true);
+      }
+    });
   });
 
   it("refuses an unknown subtitle kind, an unknown key and a missing snippet", () => {

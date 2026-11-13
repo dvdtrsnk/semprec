@@ -23,6 +23,7 @@ import {
 import {
   createChokePoint,
   createUser,
+  getAgentRunUsage,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
@@ -2867,5 +2868,144 @@ describe("voice session through the real gateway and registered worker", () => {
         { timeout: 30_000 },
       );
     }, 70_000);
+  });
+
+  describe("speech attribution (issue #2020)", () => {
+    interface SpeechCall {
+      id: string;
+      operation: string;
+      status: string;
+      agent_run_id: string | null;
+      semp_message_id: string | null;
+    }
+
+    const speechCalls = () =>
+      runInTenant(tenant, () =>
+        pool.query<SpeechCall>(
+          `SELECT id::text, operation, status, agent_run_id, semp_message_id FROM ai_gateway_calls
+           WHERE operation IN ('voice_transcribe_stream', 'voice_synthesize') ORDER BY id`,
+        ),
+      );
+
+    /** Opens a session whose speech-to-text provider has accepted audio, so a scripted transcript can be delivered. */
+    async function openSession(): Promise<void> {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      const sttBefore = ownedGateway.messages.filter((entry) => entry.type === "sttReady").length;
+      const audioBefore = ownedGateway.messages.filter((entry) => entry.type === "audioAccepted").length;
+      socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+      socket.on("message", (data, binary) => {
+        if (binary) {
+          audioFrames++;
+          return;
+        }
+        frames.push(JSON.parse(messageText(data)) as unknown);
+      });
+      await once(socket, "open");
+      socket.send(JSON.stringify({ type: "start", language: "en" }));
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }), { timeout: 10_000 });
+      socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+      await vi.waitFor(
+        () => {
+          expect(ownedGateway.messages.filter((entry) => entry.type === "sttReady")).toHaveLength(sttBefore + 1);
+          expect(ownedGateway.messages.filter((entry) => entry.type === "audioAccepted")).toHaveLength(audioBefore + 1);
+        },
+        { timeout: 10_000 },
+      );
+    }
+
+    it("attributes the speech-to-text rows of a spoken question and the text-to-speech rows of its answer to the turn, and the reply's usage includes them", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const priorCalls = new Set((await speechCalls()).rows.map((row) => row.id));
+      const priorQuestions = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
+      );
+      await openSession();
+
+      send(gateway, "final");
+      const source = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' AND NOT (id = ANY($1::uuid[]))",
+              [priorQuestions.rows.map((row) => row.id)],
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        },
+        { timeout: 10_000 },
+      );
+      const assistant = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string; status: string; agent_run_id: string | null }>(
+              "SELECT id, status, agent_run_id FROM semp_messages WHERE reply_to_message_id = $1 AND role = 'assistant'",
+              [source.id],
+            ),
+          );
+          expect(result.rows[0]).toMatchObject({ status: "done", agent_run_id: expect.any(String) });
+          return result.rows[0]!;
+        },
+        { timeout: 30_000 },
+      );
+      const runId = assistant.agent_run_id!;
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "speaking", state: "stopped" }), {
+        timeout: 20_000,
+      });
+      expect(audioFrames).toBeGreaterThan(0);
+
+      const added = (await speechCalls()).rows.filter((row) => !priorCalls.has(row.id));
+      const spoken = added.filter((row) => row.operation === "voice_synthesize");
+      const heard = added.filter((row) => row.operation === "voice_transcribe_stream");
+      expect(spoken.length).toBeGreaterThan(0);
+      // The answer carries the run and the assistant message; the question carries the message alone.
+      for (const row of spoken) expect(row).toMatchObject({ agent_run_id: runId, semp_message_id: assistant.id });
+      expect(heard).toHaveLength(1);
+      expect(heard[0]).toMatchObject({ agent_run_id: null, semp_message_id: assistant.id });
+
+      const usage = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => getAgentRunUsage(client, runId, "en", assistant.id)),
+      );
+      const counted = await runInTenant(tenant, () =>
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM ai_gateway_calls WHERE semp_message_id = $1 AND status <> 'failed'",
+          [assistant.id],
+        ),
+      );
+      expect(counted.rows[0]?.count).toBeGreaterThanOrEqual(spoken.length + heard.length + 1);
+      expect(usage.perModel.reduce((sum, model) => sum + model.callCount, 0)).toBe(counted.rows[0]?.count);
+      expect(usage.perModel.map((model) => model.model)).toEqual(
+        expect.arrayContaining(["gpt-4o-transcribe", "gpt-4o-mini-tts"]),
+      );
+    }, 70_000);
+
+    it("leaves the speech-to-text row of speech that never becomes a message unattributed, and speaks nothing", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const priorCalls = new Set((await speechCalls()).rows.map((row) => row.id));
+      const messagesBefore = await runInTenant(tenant, () =>
+        pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      );
+      await openSession();
+
+      send(gateway, "finalText", { text: "Stop" });
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "transcript", text: "Stop", final: true }), {
+        timeout: 10_000,
+      });
+      // The stop command is handled on the session's admission queue; a second final that follows it is stored last.
+      send(gateway, "finalText", { text: "zruš" });
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "transcript", text: "zruš", final: true }), {
+        timeout: 10_000,
+      });
+
+      const added = (await speechCalls()).rows.filter((row) => !priorCalls.has(row.id));
+      expect(added).toMatchObject([
+        { operation: "voice_transcribe_stream", agent_run_id: null, semp_message_id: null },
+      ]);
+      const messagesAfter = await runInTenant(tenant, () =>
+        pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      );
+      expect(messagesAfter.rows).toEqual(messagesBefore.rows);
+    }, 30_000);
   });
 });

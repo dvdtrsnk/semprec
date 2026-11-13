@@ -23,7 +23,7 @@ import {
 } from "../../testSupport/testDb.js";
 import { createMarkdownPageContentProposal } from "../../testSupport/pageProposalFixtures.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
-import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
+import { createTranscriptEventCard, matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
@@ -105,6 +105,46 @@ async function proposedCard(
     if (!rows[0]) throw new Error("The tick stored no card");
     return { itemId: item.id, cardId: rows[0].id };
   });
+}
+
+/**
+ * A transcript of a recording that overlaps an occurrence of a recurring Event that has no item yet, and the card the
+ * match step makes for it: a link to the occurrence by its synthetic id (issue gh-1850).
+ */
+async function occurrenceCard(): Promise<{ transcriptId: string; cardId: string; occurrenceId: string }> {
+  return inTenantZero(() =>
+    withTransaction(adminPool, async (client) => {
+      const series = await createItemWithClient(client, {
+        databaseId: await databaseIdFor("events"),
+        properties: {
+          name: "Standup",
+          type: "standup",
+          date: "2026-10-12",
+          timeFrom: "09:00",
+          timeTo: "09:30",
+          recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+        },
+      });
+      const transcriptsId = await databaseIdFor("transcripts");
+      const transcript = await createItemWithClient(
+        client,
+        { databaseId: transcriptsId, properties: { date: "2026-10-14T07:01:00.000Z" } },
+        { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      await itemsStore.writeComputed(client, transcriptsId, transcript.id, "segments", [
+        { speaker: "SPEAKER_00", text: "Good morning everyone." },
+      ]);
+      await itemsStore.writeComputed(client, transcriptsId, transcript.id, "durationSeconds", 1200);
+      const match = await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 1200 });
+      if (typeof match === "string" || match.outcome !== "ambiguous") throw new Error("Expected an ambiguous match");
+      const { cardId } = await createTranscriptEventCard(client, {
+        transcriptId: transcript.id,
+        candidates: match.candidates,
+        recommendation: null,
+      });
+      return { transcriptId: transcript.id, cardId, occurrenceId: `${series.id}@2026-10-14` };
+    }),
+  );
 }
 
 /**
@@ -591,6 +631,18 @@ describe("listInboxCards (issue #1807)", () => {
       const card = await transcriptCard("Standup", "2026-08-28T08:00:00.000Z");
 
       expect(cardOf(await listCards(adminPool, ownerId), card.cardId)).toMatchObject({
+        cardKind: "transcriptEvent",
+        targets: [{ databaseKey: "events", label: "Event" }],
+      });
+    });
+
+    it("names the Events target of a transcript card that proposes the occurrence of a recurring Event by its synthetic id (issue gh-1850)", async () => {
+      const card = await occurrenceCard();
+
+      const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
+
+      expect(listed.envelope).toMatchObject({ target: card.occurrenceId });
+      expect(listed).toMatchObject({
         cardKind: "transcriptEvent",
         targets: [{ databaseKey: "events", label: "Event" }],
       });

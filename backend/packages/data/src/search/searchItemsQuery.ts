@@ -1,53 +1,58 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
-  SEARCH_ITEM_GROUP_TYPES,
+  SEARCH_GROUP_TYPES,
   type SearchGroup,
   type SearchGroupType,
   type SearchItemGroupType,
   type SearchItemResult,
+  type SearchJournalResult,
   type SearchOutput,
 } from "@semprec/shared";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
-import {
-  AREAS_MODULE_ID,
-  COMPANIES_MODULE_ID,
-  EVENTS_MODULE_ID,
-  FILES_MODULE_ID,
-  JOURNAL_MODULE_ID,
-  PEOPLE_MODULE_ID,
-  PROJECTS_MODULE_ID,
-  TASKS_MODULE_ID,
-} from "../seed/tenDatabaseKeys.js";
-import { parseSempThreadListCursor } from "../semp/sempThreadsListStore.js";
+import { JOURNAL_PERIOD_TYPES } from "../journal/journalPeriods.js";
 import { logger } from "./logger.js";
 import { buildItemSearchQuery } from "./itemSearchQuery.js";
-import { searchSempThreads } from "./sempThreadSearch.js";
+import { ITEM_SEARCH_MATCH_FROM, itemSearchMatchWhere } from "./itemSearchMatch.js";
+import {
+  getSearchGroup,
+  type ItemSearchGroup,
+  type ThreadSearchGroup,
+  type ThreadSearchRun,
+} from "./searchGroupRegistry.js";
 import { buildSearchSnippetSql } from "./searchSnippet.js";
 import { buildSubtitleParts } from "./searchSubtitleParts.js";
 
-// Global search over `item_search_index` (issue #1842). A group is an allow-list of databases by owner module, so a
-// database that is not listed here (the inbox pipeline, mailboxes, folders, MCP servers, settings, proposals, the
-// Inbox, subpage storage, Health records, Library, Recordings and every user-created collection) is never searched.
-// An Inbox entry is found through the text its Journal day holds. The `chat` group is thread-backed, not item-backed:
-// `sempThreadSearch.ts` fills it for a person (issue #1854).
-
-/** The owner modules whose databases each item group searches. The `mail` group is filled by a later issue and `chat` by `sempThreadSearch.ts`, so neither has an entry. */
-const GROUP_MODULES: Readonly<Record<SearchItemGroupType, readonly string[]>> = {
-  task: [TASKS_MODULE_ID],
-  event: [EVENTS_MODULE_ID],
-  project: [PROJECTS_MODULE_ID],
-  area: [AREAS_MODULE_ID],
-  contact: [PEOPLE_MODULE_ID, COMPANIES_MODULE_ID],
-  journal: [JOURNAL_MODULE_ID],
-  file: [FILES_MODULE_ID],
-};
+// Global search over `item_search_index` (issue #1842). The groups are not listed here: `searchGroupRegistry.ts` holds
+// them and the composition root `domainWriteHooks.ts` fills it. An item group is an allow-list of databases by owner
+// module, so a database that no registered group lists (the inbox pipeline, mailboxes, folders, MCP servers,
+// settings, proposals, the Inbox, subpage storage, Health records, Library, Recordings and every user-created
+// collection) is never searched. An Inbox entry is found through the text its Journal day holds. A thread group (`chat`
+// of issue #1854, `mail` of issue #1864) is not item-backed: it runs its own search over threads.
 
 /** A project that belongs to a system module (Email, Personal finance, ...) is infrastructure and is never a result. */
 const EXCLUDE_SYSTEM_PROJECTS_SQL = "AND i.properties ->> 'systemActive' IS DISTINCT FROM 'true'";
+
+/**
+ * An extra condition on the items of one group, with the parameters it binds (numbered from `firstParameter`). A project
+ * that belongs to a system module is infrastructure. A Journal entry whose `type` is not a Journal period type, or whose
+ * `period` is not a non-empty text, is dropped from the group (issue #1859), in the count and in the page alike, so a
+ * group's `total` and its cursor never disagree with the results it lists.
+ */
+function groupFilter(group: SearchItemGroupType, firstParameter: number): { sql: string; params: unknown[] } {
+  if (group === "project") return { sql: EXCLUDE_SYSTEM_PROJECTS_SQL, params: [] };
+  if (group === "journal") {
+    return {
+      sql: `AND i.properties ->> 'type' = ANY($${firstParameter}::text[])
+        AND jsonb_typeof(i.properties -> 'period') = 'string' AND i.properties ->> 'period' <> ''`,
+      params: [[...JOURNAL_PERIOD_TYPES]],
+    };
+  }
+  return { sql: "", params: [] };
+}
 
 export interface SearchItemGroupsInput {
   q: string;
@@ -59,8 +64,9 @@ export interface SearchItemGroupsInput {
   /** The Projects item of an agent's run: databases it has no read grant for are not searched. Absent for a person. */
   agentProjectItemId?: string;
   /**
-   * True when a person asks. Only a person is given the `chat` group: Semp conversations belong to the user and are
-   * part of no database an agent or an MCP client is granted. Absent means not a person.
+   * True when a person asks. A thread group applies its own actor rule to it: `chat` is given to a person only,
+   * because Semp conversations belong to the user and are part of no database an agent or an MCP client is granted.
+   * Absent means not a person.
    */
   humanActor?: boolean;
 }
@@ -129,6 +135,9 @@ interface SnippetDbRow {
 
 const propertiesSchema = z.record(z.string(), z.unknown());
 
+/** The Journal period a Journal item stores. `groupFilter` keeps every other Journal item out of the query, so this never refuses a row it is given. */
+const journalPeriodSchema = z.object({ type: z.enum(JOURNAL_PERIOD_TYPES), period: z.string().min(1) });
+
 /** The unarchived databases of the requested modules that the actor may read, each with the key of its title property. */
 async function listSearchableDatabases(
   client: PoolClient,
@@ -153,14 +162,13 @@ async function countMatches(
   group: SearchItemGroupType,
   tsquery: { sql: string; params: string[] },
 ): Promise<number> {
+  const filter = groupFilter(group, 2 + tsquery.params.length);
   const { rows } = await client.query<CountDbRow>(
     `SELECT count(*)::int AS total
-     FROM item_search_index s
-     JOIN items i ON i.database_id = s.database_id AND i.id = s.item_id
-     WHERE s.database_id = ANY($1::uuid[]) AND i.database_id = ANY($1::uuid[]) AND i.deleted_at IS NULL
-       AND s.search_vector @@ ${tsquery.sql}
-       ${group === "project" ? EXCLUDE_SYSTEM_PROJECTS_SQL : ""}`,
-    [databaseIds, ...tsquery.params],
+     FROM ${ITEM_SEARCH_MATCH_FROM}
+     WHERE ${itemSearchMatchWhere("$1::uuid[]", tsquery.sql)} AND i.deleted_at IS NULL
+       ${filter.sql}`,
+    [databaseIds, ...tsquery.params, ...filter.params],
   );
   return rows[0]?.total ?? 0;
 }
@@ -175,18 +183,17 @@ async function readPage(
   buildQuery: (firstParameter: number) => { sql: string; params: string[] },
 ): Promise<SearchPageDbRow[]> {
   const tsquery = buildQuery(9);
+  const filter = groupFilter(group, 9 + tsquery.params.length);
   const { rows } = await client.query<SearchPageDbRow>(
     `WITH matches AS (
        SELECT i.id, i.database_id, db.module_id, db.database_key, i.properties, i.properties ->> db.title_key AS title,
          ts_rank_cd(s.search_vector, ${tsquery.sql})::float8 AS rank,
          (extract(epoch FROM i.updated_at) * 1000000)::bigint AS updated_micros
-       FROM item_search_index s
-       JOIN items i ON i.database_id = s.database_id AND i.id = s.item_id
+       FROM ${ITEM_SEARCH_MATCH_FROM}
        JOIN unnest($1::uuid[], $2::text[], $3::text[], $4::text[]) AS db(id, title_key, database_key, module_id)
          ON db.id = i.database_id
-       WHERE s.database_id = ANY($1::uuid[]) AND i.database_id = ANY($1::uuid[]) AND i.deleted_at IS NULL
-         AND s.search_vector @@ ${tsquery.sql}
-         ${group === "project" ? EXCLUDE_SYSTEM_PROJECTS_SQL : ""}
+       WHERE ${itemSearchMatchWhere("$1::uuid[]", tsquery.sql)} AND i.deleted_at IS NULL
+         ${filter.sql}
      )
      SELECT id, database_id, module_id, database_key, title, properties, rank, updated_micros::text AS updated_micros
      FROM matches
@@ -205,6 +212,7 @@ async function readPage(
       cursor?.i ?? null,
       limit + 1,
       ...tsquery.params,
+      ...filter.params,
     ],
   );
   return rows;
@@ -232,44 +240,59 @@ async function readSnippets(
 }
 
 /**
- * Searches the caller tenant's tasks, events, projects, areas, contacts, journal days and files for `input.q`, one
- * group per type of `input.scope`, in the fixed order of `SEARCH_GROUP_TYPES`; a group without a match is omitted.
- * The tenant is the ambient one (`runInTenant`), as for every data function. The whole answer is read in one
- * repeatable-read transaction, so a group's `total` and its page come from the same snapshot.
+ * Searches the caller tenant's data for `input.q`, one group per registered type of `input.scope`, in the fixed order
+ * of `SEARCH_GROUP_TYPES`; a group without a match is omitted. The groups are the ones `searchGroupRegistry.ts`
+ * holds: a requested type with no registration contributes nothing and is not an error. The tenant is the ambient one
+ * (`runInTenant`), as for every data function. The whole answer is read in one repeatable-read transaction, so a
+ * group's `total` and its page come from the same snapshot.
  *
- * A group's `total` counts every match, even when `items` holds only `perGroupLimit` of them. Matches are ordered by
+ * A group's `total` counts every match, even when `items` holds only `perGroupLimit` of them. Item groups are ordered by
  * `ts_rank_cd` (best first), then `updated_at` (newest first), then item id, and `nextCursor` is the opaque token of
  * the last listed match, or `null` when nothing follows. Items in the trash, projects with `systemActive`, items of
  * an archived database and, for an agent (`agentProjectItemId`), items of a database it has no read grant for are
- * never found. A query with no searchable word, and the `mail` group (which a later issue fills), match nothing.
- * `q` is bound as a parameter and is never logged; only its length and the counts of the answer are.
+ * never found, and neither is a Journal entry without a valid `type` and `period`. A result of the `journal` group
+ * carries that `type` and `period` (issue #1859). A query with no searchable word matches nothing. `q` is bound as a
+ * parameter and is never logged; only its length and the counts of the answer are.
  *
  * An item-backed result carries a `snippet` (issue #1996): an excerpt of at most 160 characters of its page text (for a
  * Journal day, of its Inbox entries and page text) when that text itself matches `q`, and `null` when the item was found
  * only through its title or other properties. The excerpt is read for the returned rows only.
  *
- * The `chat` group lists the user's Semp threads that match by title or preview, last activity first
- * (`searchSempThreads`); it is given only when `humanActor` is true and `chat` is in `scope`. Its `nextCursor` is a
- * thread-list cursor.
+ * A thread group runs after the item groups, in the same transaction, through the search its `prepare` returned; it is
+ * given `q`, the query builder, `perGroupLimit`, `agentProjectItemId` and `humanActor` and applies its own actor rule
+ * (`chat` lists the user's Semp threads for a person only, `searchSempThreads`; `mail` lists the mail threads, unless
+ * the actor may not read the Emails database, `mailGlobalSearchGroup`). Its `nextCursor` is a token of its own.
  *
- * Throws a `ValidationError` for a `cursor` that is not in the shape this function issues (for the `chat` scope, in
- * the shape of a thread-list cursor), and for a `cursor` with a scope of more or fewer than one group. The cursor is
- * checked before anything is searched, so it is refused for every actor and for a query with no searchable word too.
+ * Throws a `ValidationError` for a `cursor` that is not in the shape of the group that owns it: the thread group's
+ * `prepare` decides for a scope that is exactly one registered thread group, and every other scope is checked in the
+ * shape this function issues for item groups. A `cursor` with a scope of more or fewer than one group is refused too.
+ * The cursor is checked before anything is searched, so it is refused for every actor and for a query with no
+ * searchable word too.
  */
 export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput): Promise<SearchOutput> {
-  // A cursor of the `chat` scope is a thread-list cursor and every other cursor is ours; both are checked here, before
-  // anything else, so a token of the wrong shape is refused whoever asks and whatever the query says.
-  const chatCursor = input.scope.length === 1 && input.scope[0] === "chat";
-  const cursor = input.cursor === undefined || chatCursor ? undefined : decodeCursor(input.cursor);
-  const threadCursor = input.cursor !== undefined && chatCursor ? parseSempThreadListCursor(input.cursor) : undefined;
+  const itemGroups: ItemSearchGroup[] = [];
+  const threadGroups: ThreadSearchGroup[] = [];
+  for (const type of SEARCH_GROUP_TYPES.filter((candidate) => input.scope.includes(candidate))) {
+    const registered = getSearchGroup(type);
+    if (registered === undefined) continue;
+    if ("ownerModuleIds" in registered) itemGroups.push(registered);
+    else threadGroups.push(registered);
+  }
+  // A thread group owns the cursor of a scope that is exactly that group; every other cursor is ours. Both are checked
+  // here, before anything is searched, so a token of the wrong shape is refused whoever asks and whatever the query says.
+  const [onlyType] = input.scope;
+  const owner = input.scope.length === 1 ? threadGroups.find((group) => group.type === onlyType) : undefined;
+  const cursor = input.cursor === undefined || owner !== undefined ? undefined : decodeCursor(input.cursor);
   if (input.cursor !== undefined && input.scope.length !== 1) {
     throw new ValidationError("cursor requires a scope of exactly one type", { field: "cursor" });
   }
-  const groups = SEARCH_ITEM_GROUP_TYPES.filter((type) => input.scope.includes(type));
-  const includeChat = input.humanActor === true && input.scope.includes("chat");
+  const threadRuns: Array<{ type: ThreadSearchGroup["type"]; run: ThreadSearchRun }> = threadGroups.map((group) => ({
+    type: group.type,
+    run: group.prepare(group === owner ? input.cursor : undefined),
+  }));
   const buildQuery = (firstParameter: number) => buildItemSearchQuery(input.q, firstParameter);
   const result: SearchGroup[] =
-    buildQuery(1).params.length === 0 || (groups.length === 0 && !includeChat)
+    buildQuery(1).params.length === 0 || (itemGroups.length === 0 && threadRuns.length === 0)
       ? []
       : await withTransaction(
           pool,
@@ -281,23 +304,23 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
                 : await listUnreadableDatabaseIds(client, input.agentProjectItemId);
             const searchable = await listSearchableDatabases(
               client,
-              groups.flatMap((group) => GROUP_MODULES[group]),
+              itemGroups.flatMap((group) => group.ownerModuleIds),
               unreadable,
             );
             const tenantDatabaseIds = await visibleDatabaseIds(client);
-            for (const group of groups) {
+            for (const group of itemGroups) {
               const databases = searchable.filter((database) =>
-                GROUP_MODULES[group].includes(database.owner_module_id),
+                group.ownerModuleIds.includes(database.owner_module_id),
               );
               if (databases.length === 0) continue;
               const total = await countMatches(
                 client,
                 databases.map((database) => database.id),
-                group,
+                group.type,
                 buildQuery(2),
               );
               if (total === 0) continue;
-              const rows = await readPage(client, databases, group, input.perGroupLimit, cursor, buildQuery);
+              const rows = await readPage(client, databases, group.type, input.perGroupLimit, cursor, buildQuery);
               const page = rows.slice(0, input.perGroupLimit);
               const snippets = await readSnippets(
                 client,
@@ -318,32 +341,39 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
               );
               // The extra row `readPage` asks for says another page follows; the cursor is the last listed match.
               const lastListed = rows.length > input.perGroupLimit ? page[page.length - 1] : undefined;
-              const items: SearchItemResult[] = page.map((row) => ({
+              const toResult = (row: SearchPageDbRow): SearchItemResult => ({
                 itemId: row.id,
                 databaseId: row.database_id,
                 databaseKey: row.database_key,
                 title: row.title ?? "",
                 subtitleParts: subtitles.get(row.id) ?? [],
                 snippet: snippets.get(row.id) ?? null,
-              }));
-              found.push({
-                type: group,
-                total,
-                items,
-                nextCursor:
-                  lastListed === undefined
-                    ? null
-                    : encodeCursor({ r: lastListed.rank, u: lastListed.updated_micros, i: lastListed.id }),
               });
+              const nextCursor =
+                lastListed === undefined
+                  ? null
+                  : encodeCursor({ r: lastListed.rank, u: lastListed.updated_micros, i: lastListed.id });
+              const type = group.type;
+              if (type === "journal") {
+                const items: SearchJournalResult[] = page.map((row) => ({
+                  ...toResult(row),
+                  journal: journalPeriodSchema.parse(row.properties),
+                }));
+                found.push({ type, total, items, nextCursor });
+              } else {
+                found.push({ type, total, items: page.map(toResult), nextCursor });
+              }
             }
-            if (includeChat) {
-              const chat = await searchSempThreads(client, {
+            for (const { type, run } of threadRuns) {
+              const threads = await run(client, {
+                q: input.q,
                 buildQuery,
                 limit: input.perGroupLimit,
-                cursor: threadCursor,
+                agentProjectItemId: input.agentProjectItemId,
+                humanActor: input.humanActor === true,
               });
-              if (chat.total > 0) {
-                found.push({ type: "chat", total: chat.total, items: chat.items, nextCursor: chat.nextCursor });
+              if (threads.total > 0) {
+                found.push({ type, total: threads.total, items: threads.items, nextCursor: threads.nextCursor });
               }
             }
             return found;

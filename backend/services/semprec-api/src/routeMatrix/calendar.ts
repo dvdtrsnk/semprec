@@ -35,4 +35,12 @@ export const CALENDAR_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "calendar reminders",
+    method: "GET",
+    path: "/api/calendar/reminders?from=2026-10-16T00%3A00%3A00Z",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

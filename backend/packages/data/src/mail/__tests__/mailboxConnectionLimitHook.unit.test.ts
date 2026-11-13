@@ -17,6 +17,7 @@ function database(ownerModuleId: string | null): DatabaseRow {
     overviewHidden: false,
     sensitive: false,
     archivedAt: null,
+    purgeAt: null,
   };
 }
 const hooks = [

@@ -3,6 +3,8 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import type {
+  PageConvertToBlockInput,
+  PageConvertToBlockOutput,
   PageCreateSubpageInput,
   PageCreateSubpageOutput,
   PageDuplicateOutput,
@@ -21,9 +23,11 @@ import { openDocVersionAt } from "./docHistory.js";
 import { readPageSummary } from "./pageSummary.js";
 import { restorePageVersionWithClient } from "./docPageRestore.js";
 import {
+  convertPageToBlockWithClient,
   createSubpageWithClient,
   duplicatePageWithClient,
   renamePageWithClient,
+  type ConvertPageToBlockOptions,
   type DuplicatePageOptions,
 } from "./pageOperations.js";
 import {
@@ -199,6 +203,14 @@ export function createDocStore(pool: Pool) {
         await assertAgentPageAccess(client, reader, input.pageItemId, "write");
         return renamePageWithClient(client, input, origin);
       });
+    },
+
+    /** Restyles a `page` block into another block type and trashes its page tree (issue #1876) in one transaction; see `convertPageToBlockWithClient`. */
+    async convertPageToBlock(
+      input: PageConvertToBlockInput,
+      options: ConvertPageToBlockOptions,
+    ): Promise<PageConvertToBlockOutput> {
+      return withTransaction(pool, (client) => convertPageToBlockWithClient(client, input, options));
     },
 
     // ---- page content (blocks) ----

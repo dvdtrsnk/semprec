@@ -64,6 +64,7 @@ export {
 export { databaseArchiveWithClient } from "./chokePoint/databaseOps.js";
 export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
 export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
+export { computeDeleteImpact, type DeleteImpact } from "./trash/deleteImpact.js";
 export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
 export {
@@ -186,7 +187,7 @@ export { approvalNotificationBody } from "./notifications/approvalNotificationBo
 export { approvalNotificationLinkHref } from "./notifications/approvalNotificationLink.js";
 
 export * from "./agentRuns/agentRunsStore.js";
-export { getAgentRunDetail, getAgentRunReplyOutcome } from "./agentRuns/agentRunDetail.js";
+export * from "./agentRuns/agentRunDetail.js";
 export { agentRunErrorFields, agentRunErrorSummary } from "./agentRuns/agentRunErrorSummary.js";
 export { deriveReplyOutcome, REPLY_INCOMPLETE_REASONS, type ReplyOutcome } from "./agentRuns/replyOutcome.js";
 export { deriveRunDisplayStatus, type AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
@@ -479,6 +480,8 @@ export { readProjectNotes } from "./docs/projectNotesRead.js";
 export { listPageChanges, type PageChange, type PageChangeKind } from "./docs/pageChanges.js";
 export { resolvePageOwnerDatabase } from "./docs/pageOwnerDatabase.js";
 export { computePageReplaceProjection, type PageReplaceCheck } from "./docs/pageReplaceApproval.js";
+export { convertPageToBlockWithClient } from "./docs/pageOperations.js";
+export { computePageConvertProjection, type PageConvertCheck } from "./docs/pageConvertApproval.js";
 export { PAGE_TITLE_MAX_LENGTH, normalizePageTitle } from "./docs/pageTitle.js";
 
 export {
@@ -501,8 +504,7 @@ export {
   type UploadAttachTarget,
 } from "./blobs/uploadAttachTarget.js";
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
-export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
-export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
+export * from "./blobs/openBlobFromRoots.js";
 export { loadBlobMetadataForItems, type BlobMetadata, type ItemBlobMetadata } from "./blobs/blobMetadata.js";
 export { detectFileType, type DetectedFile, type DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { recomputePersonLastContact } from "./people/lastContact.js";
@@ -628,6 +630,7 @@ export {
 } from "./sleep/resolveSleepNights.js";
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
 export { createCalendarAgendaRouteHandler } from "./calendar/agendaRouteHandler.js";
+export { createRemindersFeedRouteHandler } from "./calendar/remindersFeedRouteHandler.js";
 export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
 export {
   createInviteEventPersonRouteHandler,
@@ -789,11 +792,10 @@ export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecut
 // that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
 // this wrapper (which also enqueues the reserved execution job in the same transaction) is
 // reachable from a route handler.
-export type { DecideApprovalRequestInput, DecideAndEnqueueResult } from "./mcp/approvalDecisionAction.js";
-export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+export * from "./mcp/approvalDecisionAction.js";
 export { createPendingApprovalRequestAndPublish, publishApprovalRequestChange } from "./mcp/approvalRequestRealtime.js";
-export type { CreateModuleToolApprovalRequestInput } from "./mcp/moduleToolApprovalRequest.js";
-export { createModuleToolApprovalRequest } from "./mcp/moduleToolApprovalRequest.js";
+// The module exports exactly CreateModuleToolApprovalRequestInput and createModuleToolApprovalRequest.
+export * from "./mcp/moduleToolApprovalRequest.js";
 
 // `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
 // `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
@@ -825,7 +827,8 @@ export {
 export { runProjectAgentGuidanceCutoverMigration } from "./projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 export { seedSystemProjectAgentGuidance } from "./projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 
-export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
+export { RETENTION_DAYS, purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
+export { purgeExpiredArchivedDatabases } from "./trash/purgeArchivedDatabases.js";
 export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
 export { provisionTenant } from "./tenancy/provisionTenant.js";
 export { acceptInvitation } from "./tenancy/acceptInvitation.js";
@@ -862,7 +865,13 @@ export { registerItemReadProjection, projectItemForRead, type ItemReadProjection
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
 
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
-export { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } from "./mail/mailThreadRoutes.js";
+export { MailDraftAlreadySentError, MailDraftNotEditableError } from "./mail/draft.js";
+export * from "./mail/mailDraftRouteHandlers.js";
+export {
+  createMailThreadDetailRouteHandler,
+  createMailThreadListRouteHandler,
+  createMailThreadReadRouteHandler,
+} from "./mail/mailThreadRoutes.js";
 
 export { getSelfPersonId, setSelfPersonId } from "./selfPerson.js";
 export {

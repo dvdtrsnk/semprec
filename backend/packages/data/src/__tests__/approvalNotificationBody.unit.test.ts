@@ -24,6 +24,14 @@ const paramsByKey: Record<string, string[]> = {
   "approval.relationDelete": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
   "approval.pageRestore": ["itemName", "databaseKey", "databaseName"],
   "approval.pageReplace": ["itemName", "databaseKey", "databaseName"],
+  "approval.pageConvertToBlock.text": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.h1": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.h2": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.h3": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.bullet": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.number": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.todo": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.quote": ["pageName", "pageCount"],
   "approval.journalMerge.year": ["period", "survivorName", "mergedName"],
   "approval.journalMerge.quarter": ["period", "survivorName", "mergedName"],
   "approval.journalMerge.month": ["period", "survivorName", "mergedName"],
@@ -198,5 +206,54 @@ describe("approval notification body", () => {
         description: { key: "approval.journalMerge", params: { periodType: "decade", period: "2020" } },
       }),
     ).toThrow(/unknown Journal period type/);
+  });
+  it.each([
+    ["text", { en: "into a text block", cs: "na textový blok" }],
+    ["h1", { en: "into a heading 1", cs: "na nadpis 1. úrovně" }],
+    ["h2", { en: "into a heading 2", cs: "na nadpis 2. úrovně" }],
+    ["h3", { en: "into a heading 3", cs: "na nadpis 3. úrovně" }],
+    ["bullet", { en: "into a bulleted list item", cs: "na položku odrážkového seznamu" }],
+    ["number", { en: "into a numbered list item", cs: "na položku číslovaného seznamu" }],
+    ["todo", { en: "into a to-do", cs: "na úkol" }],
+    ["quote", { en: "into a quote", cs: "na citaci" }],
+  ] as const)(
+    "names the %s block a page is converted into with a localised phrase and never the canonical type key (issue #1876)",
+    (blockType, words) => {
+      const params = { pageName: "Release checklist", blockType, pageCount: 3 };
+      const body = approvalNotificationBody({
+        riskClass: "destructive",
+        description: { key: "approval.pageConvertToBlock", params },
+        payload: {
+          operationName: "page.convertToBlock",
+          canonicalInput: { parentItemId: "parent", blockId: "block", type: blockType, secret: "private value" },
+          actor: { runId: "run", agentProjectItemId: "project", userId: "user" },
+          resourceSnapshot: { kind: "page_convert", resourceId: "page", sha256: null },
+        },
+      });
+      expect(body).toEqual({
+        bodyKey: `approval.pageConvertToBlock.${blockType}`,
+        bodyParams: params,
+        bodySuffixKey: "notification.body.canUndo",
+      });
+      expect(JSON.stringify(body)).not.toContain("private value");
+      for (const locale of ["en", "cs"] as const) {
+        const rendered = catalog(locale)[body.bodyKey!]!.replace(/\{(\w+)\}/g, (_, name: string) =>
+          String(body.bodyParams![name]),
+        );
+        expect(rendered).toContain(words[locale]);
+        expect(rendered).toContain("Release checklist");
+        expect(rendered).toContain("3");
+      }
+    },
+  );
+  it("refuses a page conversion description whose block type is not one the operation accepts", () => {
+    for (const blockType of ["page", "heading", null]) {
+      expect(() =>
+        approvalNotificationBody({
+          ...mcp,
+          description: { key: "approval.pageConvertToBlock", params: { pageName: "x", blockType, pageCount: 1 } },
+        }),
+      ).toThrow(/unknown block type/);
+    }
   });
 });

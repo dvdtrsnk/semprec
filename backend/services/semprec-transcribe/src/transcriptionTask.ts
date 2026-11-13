@@ -84,6 +84,7 @@ import {
 } from "./transcriptSummary.js";
 import { runEventMatch } from "./eventRecommendationStep.js";
 import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
+import { raiseTranscriptionProblem, resolveTranscriptionProblem } from "./transcriptionProblems.js";
 import { linkTranscriptToUploadEvent } from "./uploadEventLink.js";
 
 /** Source types an iOS player can play and seek as they are; any other type gets a rendition (`renderPlaybackAudio`). */
@@ -824,7 +825,8 @@ async function runSuggestSpeakersStep(
  * attempt's `error`) in one transaction, and only once that transaction itself sees the committed
  * `segments` and `meetingNotes` (issue #1695) — a run that failed before either landed leaves the
  * row as the failure handling in `createTranscriptionTask` records it. `status` goes through
- * `updateItemWithClient`, which announces it over the generic realtime channel. A row that is
+ * `updateItemWithClient`, which announces it over the generic realtime channel. The same transaction
+ * resolves the transcript's `transcription` Semp problem as `recovered` (issue gh-1945). A row that is
  * already `done` only has its `item_automation` settled again, since the attempt that reached this
  * step reopened it as `pending`.
  */
@@ -865,6 +867,7 @@ async function runFinalizeStep({
       new Date().toISOString(),
     );
     await markItemAutomationDone(client, transcriptId);
+    await resolveTranscriptionProblem(client, transcriptId);
   });
 }
 
@@ -942,10 +945,13 @@ function isBudgetRejection(err: unknown): boolean {
  * remain, only `item_automation.error` and `error_code` are written and the row stays `pending`/`processing`. A
  * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
  * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
- * attempt's failure never adds a second one while every later permanent failure gets its own.
+ * attempt's failure never adds a second one while every later permanent failure gets its own. The
+ * same transaction raises the transcript's `transcription` Semp problem after the notification (issue
+ * gh-1945), counting the attempt as its occurrence, so a repeated permanent failure merges into the
+ * one active problem; a tenant without a user gets neither the notification nor the problem.
  * A permanent failure of a re-run of a transcript whose `status` is already `done` (issue #1712's
  * meeting-notes backfill, a manual rerun) is recorded in `item_automation` only: `status` stays
- * `done` and no notification is written, because the user's finished transcript is still complete.
+ * `done` and no notification or problem is written, because the user's finished transcript is still complete.
  * Missing or trashed targets stop without an item update or notification; an existing unlocked
  * automation is marked `error`/`deleted`. A locked automation remains unchanged.
  * Returns `"locked"` for a live target with a user lock, `"deleted"` for the stop, otherwise `"recorded"`.
@@ -1004,6 +1010,7 @@ async function recordTranscriptionFailure(
     sourceId: transcriptId,
     transitionInstance: `attempt:${automation.attempts}`,
   });
+  await raiseTranscriptionProblem(client, { userId, transcriptId, attempts: automation.attempts });
   return "recorded";
 }
 

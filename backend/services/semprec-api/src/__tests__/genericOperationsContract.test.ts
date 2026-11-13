@@ -26,6 +26,7 @@ import {
   createItemWithClient,
   createDocStore,
   getDatabaseByModuleId,
+  getOrCreateJournalItem,
   createUser,
   createViewTypeRegistry,
   ensureItemAutomation,
@@ -650,6 +651,30 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       blocks: [{ id: page.blockId, type: "page", pageId: page.pageItemId, text: "After" }],
     });
   },
+  "page.convertToBlock": async (fx, headers, baseUrl) => {
+    const page = (
+      await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id }, title: "Before" }, "user")
+    ).pages[0];
+    if (!page) throw new Error("Missing page");
+    const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/convert`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ blockId: page.blockId, type: "h2", confirmedPageCount: 1 }),
+    });
+    expect(response.status).toBe(200);
+    const converted = z
+      .object({ blockId: z.string(), trashedPageCount: z.literal(1) })
+      .strict()
+      .parse(await response.json());
+    const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
+    // The page block was the only block of the page, so the trash left the empty text block of an emptied document behind the new one.
+    expect(await read.json()).toMatchObject({
+      blocks: [
+        { id: converted.blockId, type: "h2", text: "Before" },
+        { type: "text", text: "" },
+      ],
+    });
+  },
   "page.insert": async (fx, headers, baseUrl) => {
     const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/insert`, {
       method: "POST",
@@ -793,6 +818,9 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     });
   },
   search: async (_fx, headers, baseUrl) => {
+    const searchResponse = z.object({
+      groups: z.array(z.object({ type: z.string(), items: z.array(z.object({ itemId: z.string() }).passthrough()) })),
+    });
     const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
     if (!tasks) throw new Error("Tasks not seeded");
     const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Contract search task" } });
@@ -817,6 +845,35 @@ const CASES: Record<GenericOperationName, ContractCase> = {
         },
       ],
     });
+
+    // A result of the journal group carries the stored period type and key, and a result of another group none (issue #1859).
+    const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+    if (!journal) throw new Error("Journal not seeded");
+    const day = await withTransaction(pool, (client) =>
+      getOrCreateJournalItem(client, journal.id, "day", new Date("2026-10-16T12:00:00Z"), "UTC"),
+    );
+    const week = await withTransaction(pool, (client) =>
+      getOrCreateJournalItem(client, journal.id, "week", new Date("2026-10-16T12:00:00Z"), "UTC"),
+    );
+    const dated = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Contract task 2026" } });
+    const periods = await fetch(`${baseUrl}/api/search?q=2026&scope=task,journal`, { headers });
+    expect(periods.status).toBe(200);
+    const byId = new Map(
+      searchResponse
+        .parse(await periods.json())
+        .groups.flatMap((group) => group.items.map((item) => [item.itemId, { group: group.type, item }] as const)),
+    );
+    expect(byId.get(day.id)).toEqual({
+      group: "journal",
+      item: expect.objectContaining({ journal: { type: "day", period: "2026-10-16" } }),
+    });
+    expect(byId.get(week.id)).toEqual({
+      group: "journal",
+      item: expect.objectContaining({ journal: { type: "week", period: "2026-W42" } }),
+    });
+    const taskResult = byId.get(dated.id);
+    expect(taskResult?.group).toBe("task");
+    expect(taskResult?.item).not.toHaveProperty("journal");
   },
 };
 

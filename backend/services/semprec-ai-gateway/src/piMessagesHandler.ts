@@ -18,6 +18,7 @@ import type {
 import { ProviderCallError } from "./structuredProviders/types.js";
 import { logger } from "./logger.js";
 import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
+import { extractAgentRunId, extractSempMessageId } from "./attributionHeaders.js";
 
 const ROUTE = "/internal/pi/messages";
 
@@ -35,11 +36,6 @@ const DEFAULT_RESERVED_OUTPUT_TOKENS = 8192;
  * hold the connection and keep its `ai_gateway_calls` row `reserved` for as long as the SDK allows.
  */
 export const STREAM_TIMEOUT_MS = 10 * 60 * 1000;
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
-const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
 export interface PiMessagesHandlerOptions {
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
@@ -149,27 +145,6 @@ function extractBearerToken(req: IncomingMessage): string {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) return "";
   return header.slice("Bearer ".length);
-}
-
-/** The run the `ai_gateway_calls` row is attributed to; absent means an unattributed call, malformed is a 400. */
-function extractAgentRunId(req: IncomingMessage): string | null {
-  const header = req.headers[AGENT_RUN_ID_HEADER];
-  const value = Array.isArray(header) ? header[0] : header;
-  if (value === undefined) return null;
-  if (!UUID_PATTERN.test(value)) {
-    throw new ValidationError(`'${AGENT_RUN_ID_HEADER}' must be a UUID`, { field: AGENT_RUN_ID_HEADER });
-  }
-  return value;
-}
-
-function extractSempMessageId(req: IncomingMessage): string | null {
-  const header = req.headers[SEMP_MESSAGE_ID_HEADER];
-  const value = Array.isArray(header) ? header[0] : header;
-  if (value === undefined) return null;
-  if (!UUID_PATTERN.test(value)) {
-    throw new ValidationError(`'${SEMP_MESSAGE_ID_HEADER}' must be a UUID`, { field: SEMP_MESSAGE_ID_HEADER });
-  }
-  return value;
 }
 
 /**

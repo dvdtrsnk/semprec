@@ -19,4 +19,12 @@ export const PROPOSALS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "revise proposal",
+    method: "POST",
+    path: `/api/proposals/${EXAMPLE_ID}/revise`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

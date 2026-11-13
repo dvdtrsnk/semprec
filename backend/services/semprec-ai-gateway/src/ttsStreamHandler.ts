@@ -13,6 +13,7 @@ import {
   tokensMatch,
 } from "./audioHandler.js";
 import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
+import { extractAgentRunId, extractSempMessageId } from "./attributionHeaders.js";
 import { logger } from "./logger.js";
 
 export const TTS_STREAM_PATH = "/internal/tts/stream";
@@ -41,6 +42,12 @@ export interface TtsStreamHandlerOptions {
   pricePerAudioHour: number;
   maxConcurrentStreams: number;
   globalCaps: GlobalAiCaps;
+}
+
+/** The turn a synthesis serves, from the optional `x-semprec-agent-run-id` and `x-semprec-semp-message-id` headers (#2020). */
+interface TtsAttribution {
+  agentRunId: string | null;
+  sempMessageId: string | null;
 }
 
 interface TtsRequestBody {
@@ -103,13 +110,20 @@ function cutResponse(res: ServerResponse): void {
  * out as a chunked response, written as the provider produces it. The price is reserved from the
  * text length before the provider is called (`synthesizeSpeech`) and the row is settled with the
  * audio actually produced; a caller that disconnects aborts the provider request and the row is
- * settled with what was produced, or failed when nothing was. The text is never logged.
+ * settled with what was produced, or failed when nothing was. The optional attribution headers
+ * `x-semprec-agent-run-id` and `x-semprec-semp-message-id` are written on the reserved row, so the
+ * settled row carries them too; a run or message of another tenant, or an unknown one, is refused
+ * as `attribution_refused` without a row. The text is never logged.
  */
 export function createTtsStreamRequestListener(pool: Pool, options: TtsStreamHandlerOptions) {
   const limit = createAudioConcurrencyLimit(options.maxConcurrentStreams);
   const { provider } = options;
 
-  async function handleSynthesize(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleSynthesize(
+    req: IncomingMessage,
+    res: ServerResponse,
+    attribution: TtsAttribution,
+  ): Promise<void> {
     const body = validateBody(await readJsonBody(req, MAX_BODY_BYTES), provider);
     const signal = abortOnDisconnect(res);
     const estimatedSeconds = body.text.length / ESTIMATE_CHARS_PER_SECOND;
@@ -122,6 +136,8 @@ export function createTtsStreamRequestListener(pool: Pool, options: TtsStreamHan
           provider: provider.id,
           model: provider.model,
           operation: TTS_STREAM_OPERATION,
+          agentRunId: attribution.agentRunId,
+          sempMessageId: attribution.sempMessageId,
           estimatedCostUsd: priceOf(estimatedSeconds),
           globalCaps: options.globalCaps,
         },
@@ -211,6 +227,11 @@ export function createTtsStreamRequestListener(pool: Pool, options: TtsStreamHan
         return;
       }
       const tenantId = readCallerTenantId(req);
+      // Validated before a slot is taken or the body is read, so a malformed header costs nothing.
+      const attribution: TtsAttribution = {
+        agentRunId: extractAgentRunId(req),
+        sempMessageId: extractSempMessageId(req),
+      };
       const release = limit.tryAcquire();
       if (release === null) {
         // Refused before the body is read or anything is reserved, so a rejected request costs nothing.
@@ -220,7 +241,7 @@ export function createTtsStreamRequestListener(pool: Pool, options: TtsStreamHan
       }
       // `close` fires after a finished response and when the connection drops first: every path out frees the slot.
       res.on("close", release);
-      await runForCallerTenant(tenantId, () => handleSynthesize(req, res));
+      await runForCallerTenant(tenantId, () => handleSynthesize(req, res, attribution));
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: err.message });

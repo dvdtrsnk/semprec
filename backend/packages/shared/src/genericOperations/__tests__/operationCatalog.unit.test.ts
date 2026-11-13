@@ -60,6 +60,7 @@ const EXPECTED_ROWS: Record<
   "page.createSubpage": { schema: schemas.PageCreateSubpageInputSchema, method: "createSubpage" },
   "page.duplicate": { schema: schemas.PageDuplicateInputSchema, method: "duplicatePage" },
   "page.rename": { schema: schemas.PageRenameInputSchema, method: "renamePage" },
+  "page.convertToBlock": { schema: schemas.PageConvertToBlockInputSchema, method: "convertPageToBlock" },
   "page.insert": { schema: schemas.PageInsertInputSchema, method: "insertPage" },
   "page.replace": { schema: schemas.PageReplaceInputSchema, method: "replacePage" },
   "page.get": { schema: schemas.PageGetInputSchema, method: "getPage" },
@@ -290,6 +291,12 @@ const EXPECTED_METADATA: Record<
     riskClass: "destructive",
     reversible: false,
   },
+  "page.convertToBlock": {
+    requiresCapability: "core.item.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: true,
+  },
   "page.get": { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read", reversible: true },
   "page.changes": {
     requiresCapability: "core.item.read",
@@ -344,9 +351,9 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 50 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(50);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(50);
+  it("has exactly 51 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(51);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(51);
   });
 });
 
@@ -505,8 +512,57 @@ describe("page.mergeJournalDuplicates input (issue #2017)", () => {
   });
 });
 
+describe("page.convertToBlock input (issue #1876)", () => {
+  const schema = schemas.PageConvertToBlockInputSchema;
+  const valid = {
+    parentItemId: "00000000-0000-4000-8000-000000000001",
+    blockId: "block-1",
+    type: "text",
+    confirmedPageCount: 2,
+  };
+
+  it("accepts every block type except page", () => {
+    expect([...schemas.PAGE_CONVERT_TARGET_TYPES]).toEqual([
+      "text",
+      "h1",
+      "h2",
+      "h3",
+      "bullet",
+      "number",
+      "todo",
+      "quote",
+    ]);
+    for (const type of schemas.PAGE_CONVERT_TARGET_TYPES) {
+      expect(schema.safeParse({ ...valid, type }).success, type).toBe(true);
+    }
+  });
+
+  it.each([
+    ["the page type", { ...valid, type: "page" }, "type"],
+    ["an unknown type", { ...valid, type: "heading" }, "type"],
+    ["a parent that is not a UUID", { ...valid, parentItemId: "not-a-uuid" }, "parentItemId"],
+    ["an empty block id", { ...valid, blockId: "" }, "blockId"],
+    ["no block id", { parentItemId: valid.parentItemId, type: "text", confirmedPageCount: 1 }, "blockId"],
+    ["a count of zero", { ...valid, confirmedPageCount: 0 }, "confirmedPageCount"],
+    ["a negative count", { ...valid, confirmedPageCount: -1 }, "confirmedPageCount"],
+    ["a fractional count", { ...valid, confirmedPageCount: 1.5 }, "confirmedPageCount"],
+    ["a count beyond the int4 range", { ...valid, confirmedPageCount: 2147483648 }, "confirmedPageCount"],
+    ["a count that is a string", { ...valid, confirmedPageCount: "2" }, "confirmedPageCount"],
+    ["no count", { parentItemId: valid.parentItemId, blockId: "b", type: "text" }, "confirmedPageCount"],
+    ["an unknown key", { ...valid, pageItemId: valid.parentItemId }, ""],
+  ])("rejects %s", (_name, input, field) => {
+    const parsed = schema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (field !== "") expect(parsed.error?.issues.map((issue) => issue.path.join("."))).toContain(field);
+  });
+
+  it("accepts the largest count a Postgres integer holds", () => {
+    expect(schema.safeParse({ ...valid, confirmedPageCount: 2147483647 }).success).toBe(true);
+  });
+});
+
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 50 catalog rows and no others", () => {
+  it("has exactly the 51 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

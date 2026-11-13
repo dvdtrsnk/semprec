@@ -271,6 +271,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
           timezone: "Europe/Prague",
           today: "2026-10-16",
           now: { date: "2026-10-16", time: "10:00" },
+          at: new Date("2026-10-16T08:00:00.000Z"),
         }),
       );
       expect(coreItems.map((entry) => entry.id)).toEqual([plain]);
@@ -483,6 +484,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
         endDate: null,
         timeFrom: "09:00",
         status: null,
+        counts: { open: 0, total: 0 },
         updatedAt: expect.any(String),
         readOnly: true,
         seriesId: series,

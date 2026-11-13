@@ -27,6 +27,7 @@ export {
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
 export { backfillTaskEffectiveDate } from "../tasks/backfillTaskEffectiveDate.js";
+export { backfillTaskStatus } from "../tasks/backfillTaskStatus.js";
 export { convertEventDateToWallClock } from "../calendar/eventDateMigration.js";
 export {
   createTaskRecurrenceClearRouteHandler,
@@ -77,6 +78,7 @@ export {
 } from "../calendar/eventParticipantsRouteHandlers.js";
 export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
 export { createMaterializeEventOccurrenceRouteHandler } from "../calendar/eventOccurrenceRouteHandlers.js";
+export { createRemindersFeedRouteHandler } from "../calendar/remindersFeedRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -406,6 +408,15 @@ export const manifest: ModuleManifest = {
       fromVersion: "1.2.0",
       toVersion: "1.3.0",
       converterExport: "backfillTaskEffectiveDate",
+    },
+    // Issue sp-9cf1be65: a task stored without a status (a create that named `status: null`, a patch that cleared it,
+    // or a row older than the property default) gets `notDone`. The manifest `version` above was already past 1.4.0
+    // when this transition was added and is not lowered or raised for it.
+    {
+      databaseKey: TASKS_MODULE_ID,
+      fromVersion: "1.3.0",
+      toVersion: "1.4.0",
+      converterExport: "backfillTaskStatus",
     },
     // Issue gh-1797: an Event stored with a time of day inside `date` gets the wall-clock `date`, `timeFrom`, `timeTo`
     // and `time` that new Events have. Events have their own version series, separate from Tasks; this is the first
@@ -754,6 +765,15 @@ export const manifest: ModuleManifest = {
       // Shaped for exactly one consumer, the speaker picker (issue #1770): it joins the participants of the
       // transcript's Event with their invitation state, the speaker each is mapped to and the tenant's own
       // person, which no generic item read returns.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "upcomingReminders",
+      method: "GET",
+      path: "/api/calendar/reminders",
+      handlerExport: "createRemindersFeedRouteHandler",
+      // Shaped for exactly one consumer, the phone's local scheduler (issue gh-1858): it answers what fires in the next
+      // hours by computing each Event's and Task's fire time with its calendar's `notify`, which no generic query returns.
       justification: "single-consumer-read",
     },
   ],

@@ -4,6 +4,7 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from ".
 import type { DatabaseRow } from "../types.js";
 import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { deleteRollupDependenciesBySourceDatabase } from "../rollup/dependencies.js";
+import { RETENTION_DAYS } from "../trashRetention.js";
 import { getItemsByIds } from "./itemsStore.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,6 +30,7 @@ type DatabaseDbRow = {
   overview_hidden: boolean;
   sensitive: boolean;
   archived_at: Date | null;
+  purge_at: Date | null;
 };
 
 function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
@@ -46,11 +48,12 @@ function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
     overviewHidden: row.overview_hidden,
     sensitive: row.sensitive,
     archivedAt: row.archived_at ? row.archived_at.toISOString() : null,
+    purgeAt: row.purge_at ? row.purge_at.toISOString() : null,
   };
 }
 
 const DATABASE_COLUMNS =
-  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, sensitive, archived_at";
+  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, sensitive, archived_at, purge_at";
 
 export interface CreateDatabaseInput {
   /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
@@ -235,13 +238,19 @@ async function requireDatabase(client: PoolClient, id: string): Promise<Database
   return database;
 }
 
+/**
+ * Moves a user database to the trash: `archived_at` is now and `purge_at`, the moment the nightly sweep may delete it for
+ * good, is `RETENTION_DAYS` times 24 hours later, the retention a trashed item has (issue gh-1875). Archiving an
+ * archived database restarts both.
+ */
 export async function archiveDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await requireDatabase(client, id);
   if (database.system) throw new ForbiddenError("A system database cannot be archived");
 
   const { rows } = await client.query<DatabaseDbRow>(
-    `UPDATE databases SET archived_at = now() WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
-    [id],
+    `UPDATE databases SET archived_at = now(), purge_at = now() + make_interval(hours => $2::int * 24)
+      WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
+    [id, RETENTION_DAYS],
   );
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
@@ -314,13 +323,82 @@ export async function listDatabasesByParentItem(client: PoolClient, itemId: stri
   return rows.map(mapDatabaseRow);
 }
 
+/** Brings a database back from the trash: clears `archived_at` and the purge deadline `purge_at` (issue gh-1875). */
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
   const { rows } = await client.query<DatabaseDbRow>(
-    `UPDATE databases SET archived_at = NULL WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
+    `UPDATE databases SET archived_at = NULL, purge_at = NULL WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
     [id],
   );
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
+}
+
+/**
+ * The SQL condition (`$n` is `RETENTION_DAYS`) that says a row's `purge_at` is one this release can have written:
+ * `archiveDatabase` stamps exactly `archived_at` plus the retention and `assignMissingPurgeDeadlines` stamps a time
+ * that is later still, so neither is ever earlier than `archived_at` plus the retention. A release rolled back to
+ * restores a database (`archived_at = NULL`) and archives it again without touching `purge_at`, which leaves the
+ * deadline of the first archive next to the time of the second: that deadline is earlier than the second archive
+ * plus the retention (or already past) and must not delete the database.
+ */
+function purgeDeadlineIsCurrent(retentionParam: number): string {
+  return `purge_at >= archived_at + make_interval(hours => $${retentionParam}::int * 24)`;
+}
+
+/**
+ * Gives every archived user database that has no usable purge deadline one: `retentionDays` times 24 hours from now.
+ * The databases archived by a release that did not stamp a deadline match, and so do those that carry a stale one: a
+ * deadline earlier than `archived_at` plus `retentionDays` (`purgeDeadlineIsCurrent`), left by a restore and a new
+ * archive under a release rolled back to. A deadline this release wrote is never touched. Returns how many it stamped.
+ */
+export async function assignMissingPurgeDeadlines(client: PoolClient, retentionDays: number): Promise<number> {
+  const result = await client.query(
+    `UPDATE databases SET purge_at = now() + make_interval(hours => $1::int * 24)
+      WHERE archived_at IS NOT NULL AND NOT system
+        AND (purge_at IS NULL OR NOT (${purgeDeadlineIsCurrent(1)}))`,
+    [retentionDays],
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * The ids of the archived user databases whose purge deadline has passed, earliest deadline first. A stale deadline
+ * (`purgeDeadlineIsCurrent`) does not count until `assignMissingPurgeDeadlines` has replaced it.
+ */
+export async function listExpiredArchivedDatabaseIds(client: PoolClient): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM databases
+      WHERE archived_at IS NOT NULL AND NOT system AND purge_at < now() AND ${purgeDeadlineIsCurrent(1)}
+      ORDER BY purge_at, id`,
+    [RETENTION_DAYS],
+  );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Locks the database row `FOR NO KEY UPDATE`, which an archive or a restore of it (an `UPDATE` of the row) waits
+ * for, and says whether it is still an archived user database past its current purge deadline. The purge calls it
+ * first in every transaction that deletes from the database or drops it, so a restore that committed earlier is seen
+ * and one that comes later waits for the transaction. A restore and a new archive by a release rolled back to leave a
+ * stale deadline, which this answers false for.
+ */
+export async function lockExpiredArchivedDatabase(client: PoolClient, id: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM databases
+      WHERE id = $1 AND archived_at IS NOT NULL AND NOT system AND purge_at < now() AND ${purgeDeadlineIsCurrent(2)}
+      FOR NO KEY UPDATE`,
+    [id, RETENTION_DAYS],
+  );
+  return rows.length === 1;
+}
+
+/** The ids of the inline databases owned by any of `itemIds`; an item with a page can own one. */
+export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonly string[]): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM databases WHERE parent_item_id = ANY($1::uuid[]) ORDER BY id",
+    [itemIds],
+  );
+  return rows.map((row) => row.id);
 }
 
 /**

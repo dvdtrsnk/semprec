@@ -12,6 +12,7 @@ import { listApprovalRequestsQueuePage } from "../mcp/approvalRequestsQueue.js";
 import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+import { parseOccurrenceId } from "../calendar/eventOccurrenceId.js";
 import { getInboxCatalogs } from "./inboxCatalogs.js";
 import { renderInvalidReason } from "./invalidReason.js";
 import { invalidReasonSchema, type InvalidReason } from "./inboxTickAction.js";
@@ -337,10 +338,18 @@ function activeStepsOf(envelope: CardEnvelope): ProposalStep[] | null {
   return selectActiveSteps(envelope.operations);
 }
 
+/**
+ * The item an envelope's `target` is read from: the target itself, except that the synthetic id of an occurrence that
+ * has no item yet (issue gh-1850) is read from its series Event, which is in the same database.
+ */
+function targetItemIdOf(target: string): string {
+  return parseOccurrenceId(target)?.seriesId ?? target;
+}
+
 /** The item ids whose database an envelope's kind or targets depend on. */
 function targetItemIdsOf(envelope: CardEnvelope, steps: ProposalStep[] | null): string[] {
   if (!envelope || "unknownKind" in envelope) return [];
-  const ids = envelope.entityKind === "database" ? [] : [envelope.target];
+  const ids = envelope.entityKind === "database" ? [] : [targetItemIdOf(envelope.target)];
   for (const step of steps ?? []) if (step.itemId !== undefined) ids.push(step.itemId);
   return ids;
 }
@@ -400,7 +409,7 @@ async function buildTargets(
   } else if (envelope.entityKind === "database") {
     add(await context.databases.id(envelope.target), baseKind);
   } else {
-    const item = context.targetItems.get(envelope.target);
+    const item = context.targetItems.get(targetItemIdOf(envelope.target));
     add(item ? await context.databases.id(item.databaseId) : null, baseKind);
   }
   return [...targets].map(([databaseKey, label]) => ({ databaseKey, label }));

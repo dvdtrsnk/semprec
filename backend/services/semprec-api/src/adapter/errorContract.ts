@@ -33,6 +33,8 @@ export const ITEM_ERROR_CODES = [
   "mail_reauth_wrong_account",
   "option_label_exists",
   "duplicate_item",
+  "mail_draft_already_sent",
+  "mail_draft_not_editable",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -70,6 +72,8 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   mail_reauth_wrong_account: 400,
   option_label_exists: 409,
   duplicate_item: 409,
+  mail_draft_already_sent: 409,
+  mail_draft_not_editable: 409,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

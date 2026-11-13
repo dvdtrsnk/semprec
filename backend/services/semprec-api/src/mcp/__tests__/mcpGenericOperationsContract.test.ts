@@ -169,6 +169,8 @@ interface Fixtures {
   singleRelationProperty: PropertyRow;
   /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
   subpageItemId?: string;
+  /** The `page` block of `itemA` that names `subpageItemId`, present with it after the `prepare` of `page.convertToBlock`. */
+  subpageBlockId?: string;
   /** The version token of `itemA`'s page, present only after the `prepare` of `page.replace`. */
   pageEtag?: string;
 }
@@ -493,6 +495,18 @@ const CASES: Record<GenericOperationName, Case> = {
     prepare: async (fx) => {
       const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
       fx.subpageItemId = created.pages[0]?.pageItemId;
+    },
+  },
+  // Destructive for a run credential (issue #1876): held for approval, with the count of pages the page block names now.
+  "page.convertToBlock": {
+    tool: (fx) => ({
+      name: "semprec.page.convertToBlock",
+      arguments: { parentItemId: fx.itemA.id, blockId: fx.subpageBlockId, type: "text", confirmedPageCount: 1 },
+    }),
+    prepare: async (fx) => {
+      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+      fx.subpageItemId = created.pages[0]?.pageItemId;
+      fx.subpageBlockId = created.pages[0]?.blockId;
     },
   },
   "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },

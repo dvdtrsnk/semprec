@@ -64,6 +64,7 @@
   "agentStep.title.operation.item.count": "Counting {targetMany}",
   "agentStep.title.operation.page.duplicate": "Duplicating a page",
   "agentStep.title.operation.page.rename": "Renaming a page",
+  "agentStep.title.operation.page.convertToBlock": "Converting a page block",
   "agentStep.title.operation.database.facets": "Grouping {targetMany}",
   "agentStep.title.operation.search": "Searching all records",
   "agentStep.target.areas.one": "an area",
@@ -106,5 +107,9 @@
   "agentStep.summary.toolCount.other": "{count} tools",
   "agentStep.summary.approvalCount.zero": "no approvals",
   "agentStep.summary.approvalCount.one": "{count} approval",
-  "agentStep.summary.approvalCount.other": "{count} approvals"
+  "agentStep.summary.approvalCount.other": "{count} approvals",
+  "agentRun.replyTitle.approval.outcome.executed": "Approved action carried out",
+  "agentRun.replyTitle.approval.outcome.rejected": "Action rejected",
+  "agentRun.replyTitle.approval.outcome.conflict": "Approved action could not be carried out",
+  "agentRun.replyTitle.system": "Automatic follow-up"
 }

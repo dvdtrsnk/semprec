@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Pool } from "pg";
@@ -27,11 +27,13 @@ import {
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
   createRejectProposalRouteHandler,
+  createReviseProposalRouteHandler,
 } from "../inboxRouteHandlers.js";
 import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
-import { confirmProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
-import { NotFoundError, ValidationError } from "../../errors.js";
+import { confirmProposalWithClient, rejectProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
+import { proposeSpeakerMappings } from "../../transcription/transcriptSpeakerSuggestion.js";
+import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest } from "../../mcp/approvalRequestsStore.js";
 import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "../../seed/systemDatabasesEditorSchemas.js";
@@ -1348,6 +1350,444 @@ describe("inbox custom route handlers (issue #239)", () => {
         });
       }
       expect(await writtenState(cardId)).toEqual(before);
+    });
+  });
+
+  describe("createReviseProposalRouteHandler (issue #1870)", () => {
+    const EVENT_DATE = "2024-03-01T12:00:00.000Z";
+    let dataPool: Pool;
+    let transcriptsId: string;
+    let eventsId: string;
+    let peopleId: string;
+
+    beforeEach(async () => {
+      dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+      transcriptsId = await databaseIdFor("transcripts");
+      eventsId = await databaseIdFor("events");
+      peopleId = await databaseIdFor("people");
+    });
+
+    afterEach(async () => {
+      await dataPool.end();
+    });
+
+    /** Runs `body` inside tenant zero, so everything below goes through the runtime role and its row-level security. */
+    function inTenant<T>(body: () => Promise<T>): Promise<T> {
+      return runInTenant(getTenantZeroId(), body);
+    }
+
+    function callRevise(cardId: string, body: unknown, identity?: { user: { id: string } }) {
+      return inTenant(() =>
+        createReviseProposalRouteHandler(dataPool)({ params: { id: cardId }, body, ...(identity ? { identity } : {}) }),
+      );
+    }
+
+    async function readCard(cardId: string): Promise<ItemRow> {
+      const card = await inTenant(() =>
+        withTransaction(dataPool, (client) => itemsStore.getItemById(client, proposalsId, cardId)),
+      );
+      if (!card) throw new Error(`Card ${cardId} not found`);
+      return card;
+    }
+
+    function historyOf(card: { properties: Record<string, unknown> }): Array<Record<string, unknown>> {
+      const history = card.properties.history;
+      if (!Array.isArray(history)) throw new Error("Card has no history");
+      return history as Array<Record<string, unknown>>;
+    }
+
+    async function createEvent(name: string): Promise<string> {
+      const event = await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          createItemWithClient(client, {
+            databaseId: eventsId,
+            properties: { name, type: "meeting", date: EVENT_DATE },
+          }),
+        ),
+      );
+      return event.id;
+    }
+
+    async function createTranscript(name: string): Promise<string> {
+      const transcript = await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name, date: EVENT_DATE } },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        ),
+      );
+      return transcript.id;
+    }
+
+    async function onlyTranscriptCardId(): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' AND deleted_at IS NULL",
+        [proposalsId],
+      );
+      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
+      return rows[0].id;
+    }
+
+    /** The card the match step emits for a recording with no Event in its window: a create-Event proposal. */
+    async function createEventCard(): Promise<string> {
+      const transcriptId = await createTranscript("Weekly sync");
+      await inTenant(() =>
+        withTransaction(dataPool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 })),
+      );
+      return onlyTranscriptCardId();
+    }
+
+    /** The card that proposes who a transcript's speaker is. */
+    async function createSpeakerCard(): Promise<{ cardId: string; personId: string }> {
+      const transcriptId = await createTranscript("Speaker fixture");
+      const person = await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          createItemWithClient(client, { databaseId: peopleId, properties: { name: "Alice" } }),
+        ),
+      );
+      const meetingId = await createEvent("Meeting");
+      const propertyIdFor = async (databaseId: string, key: string): Promise<string> => {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
+          [databaseId, key],
+        );
+        if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
+        return rows[0].id;
+      };
+      const eventPeopleId = await propertyIdFor(eventsId, "people");
+      const transcriptEventId = await propertyIdFor(transcriptsId, "event");
+      await inTenant(() =>
+        withTransaction(dataPool, async (client) => {
+          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+          ]);
+          // The suggestion is proposed only for a person who took part in the transcript's Event.
+          await createRelationWithClient(client, {
+            relationPropertyId: eventPeopleId,
+            callerItemId: meetingId,
+            targetItemId: person.id,
+          });
+          await createRelationWithClient(client, {
+            relationPropertyId: transcriptEventId,
+            callerItemId: transcriptId,
+            targetItemId: meetingId,
+          });
+          await proposeSpeakerMappings(client, {
+            transcriptId,
+            suggestions: [{ speaker: "SPEAKER_01", personId: person.id, reason: "Recognized from the discussion" }],
+          });
+        }),
+      );
+      return { cardId: await onlyTranscriptCardId(), personId: person.id };
+    }
+
+    function linkEvent(eventId: string) {
+      return { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } };
+    }
+
+    it("runs through the runtime role, which neither bypasses row-level security nor is a superuser", async () => {
+      const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+    });
+
+    it("revises a transcript Event card to another live Event without a message", async () => {
+      const cardId = await createEventCard();
+      const eventId = await createEvent("Planning");
+      const before = await readCard(cardId);
+
+      const response = await callRevise(cardId, linkEvent(eventId));
+
+      expect(response.status).toBe(200);
+      if (!("item" in response)) throw new Error("Missing item result");
+      expect(response.item.properties.proposal).toEqual(linkEvent(eventId));
+      expect(response.item.properties.status).toBe("proposed");
+      const history = historyOf(response.item);
+      expect(history).toHaveLength(historyOf(before).length + 1);
+      expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Revised by user." });
+      expect((await readCard(cardId)).properties).toEqual(response.item.properties);
+    });
+
+    it("revises a new-item card to other values with the message as its history entry", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const tasksId = await databaseIdFor("tasks");
+
+      const response = await callRevise(cardId, {
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy oat milk" },
+        message: "Oat, not cow",
+      });
+
+      if (!("item" in response)) throw new Error("Missing item result");
+      expect(response.item.properties.proposal).toEqual({
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy oat milk" },
+      });
+      expect(historyOf(response.item).pop()).toMatchObject({ author: "user", message: "Oat, not cow" });
+    });
+
+    it("records a message alone on a transcript card and leaves its proposal and status untouched", async () => {
+      const cardId = await createEventCard();
+      const before = await readCard(cardId);
+
+      const response = await callRevise(cardId, { message: "It was the planning meeting" });
+
+      expect(response.status).toBe(200);
+      if (!("item" in response)) throw new Error("Missing item result");
+      const { history: historyBefore, ...restBefore } = before.properties;
+      const { history: historyAfter, ...restAfter } = response.item.properties;
+      expect(restAfter).toEqual(restBefore);
+      expect(historyAfter).toEqual([
+        ...(historyBefore as unknown[]),
+        { author: "user", message: "It was the planning meeting", at: expect.any(String) },
+      ]);
+      expect((await readCard(cardId)).properties).toEqual(response.item.properties);
+    });
+
+    it("refuses a message alone on an inbox card with validation_failed on message and writes nothing", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(cardId);
+
+      await expect(callRevise(cardId, { message: "Make it oat milk" })).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "message" },
+      });
+
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it.each([
+      ["entityKind alone", { entityKind: "database" }, "target"],
+      ["target alone", { target: "00000000-0000-0000-0000-000000000000" }, "entityKind"],
+      ["properties alone", { properties: { name: "x" } }, "entityKind"],
+      ["entityKind and target", { entityKind: "database", target: "t" }, "properties"],
+      ["target and properties", { target: "t", properties: {} }, "entityKind"],
+      ["a message and a partial envelope", { message: "Fix it", entityKind: "database", properties: {} }, "target"],
+    ])("refuses a partial envelope (%s) and writes nothing", async (_name, body, field) => {
+      const cardId = await createEventCard();
+      const before = await readCard(cardId);
+
+      await expect(callRevise(cardId, body)).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field },
+      });
+
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it.each([
+      ["an empty object", {}],
+      ["only ifVersion", { ifVersion: "2026-01-01T00:00:00.000Z" }],
+      ["null", null],
+      ["an array", []],
+      ["a string", "revise"],
+    ])("refuses a body that is %s", async (_name, body) => {
+      const cardId = await createEventCard();
+      const before = await readCard(cardId);
+
+      await expect(callRevise(cardId, body)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it.each([
+      ["an unknown key", { message: "x", status: "confirmed" }, "status"],
+      ["relations, which the route does not take", { message: "x", relations: {} }, "relations"],
+      ["a message that is not a string", { message: 5 }, "message"],
+      ["an empty message", { message: "" }, "message"],
+      ["a message over the cap", { message: "x".repeat(2001) }, "message"],
+      ["an ifVersion that is not a string", { message: "x", ifVersion: 5 }, "ifVersion"],
+      ["an empty ifVersion", { message: "x", ifVersion: "" }, "ifVersion"],
+      ["a message with a NUL character", { message: "a\u0000b" }, "message"],
+      ["an ifVersion with a NUL character", { message: "x", ifVersion: "2026\u0000" }, "ifVersion"],
+      ["a target with a NUL character", { entityKind: "database", target: "t\u0000", properties: {} }, "target"],
+      [
+        "properties with a NUL character in a value",
+        { entityKind: "database", target: "t", properties: { name: "a\u0000b" } },
+        "properties",
+      ],
+      [
+        "properties with a NUL character in a key",
+        { entityKind: "database", target: "t", properties: { "na\u0000me": "x" } },
+        "properties",
+      ],
+      [
+        "properties with a NUL character in a nested array",
+        { entityKind: "database", target: "t", properties: { tags: [["ok"], { deep: "a\u0000" }] } },
+        "properties",
+      ],
+      ["an entityKind that is not a string", { entityKind: 5, target: "t", properties: {} }, "entityKind"],
+      ["an unknown entityKind", { entityKind: "bogus", target: "t", properties: {} }, "entityKind"],
+      ["an empty target", { entityKind: "database", target: "", properties: {} }, "target"],
+      ["properties that are an array", { entityKind: "database", target: "t", properties: [] }, "properties"],
+      ["properties that are null", { entityKind: "database", target: "t", properties: null }, "properties"],
+    ])("refuses %s", async (_name, body, field) => {
+      const cardId = await createEventCard();
+      const before = await readCard(cardId);
+
+      await expect(callRevise(cardId, body)).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field },
+      });
+
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it("accepts a message of exactly the cap", async () => {
+      const cardId = await createEventCard();
+
+      const response = await callRevise(cardId, { message: "x".repeat(2000) });
+
+      expect(response.status).toBe(200);
+    });
+
+    it("refuses a confirmed or rejected card with validation_failed on status and writes nothing", async () => {
+      const rejectedId = await createEventCard();
+      await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rejectedId),
+        ),
+      );
+      const confirmedId = await createDatabaseProposal("Buy milk");
+      await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, confirmedId),
+        ),
+      );
+      const eventId = await createEvent("Planning");
+
+      for (const [cardId, body] of [
+        [rejectedId, linkEvent(eventId)],
+        [confirmedId, { entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "x" } }],
+        [rejectedId, { message: "Reconsider" }],
+      ] as const) {
+        const before = await readCard(cardId);
+        await expect(callRevise(cardId, body)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "status" },
+        });
+        expect(await readCard(cardId)).toEqual(before);
+      }
+    });
+
+    it("refuses a speaker-mapping card revised into an Event proposal and writes nothing", async () => {
+      const { cardId, personId } = await createSpeakerCard();
+      const eventId = await createEvent("Planning");
+      const before = await readCard(cardId);
+      expect(before.properties.proposal).toMatchObject({ entityKind: "relation", target: personId });
+
+      for (const body of [
+        linkEvent(eventId),
+        { entityKind: "database", target: eventsId, properties: { name: "Planning", date: EVENT_DATE } },
+      ]) {
+        await expect(callRevise(cardId, body)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "entityKind" },
+        });
+      }
+
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it("revises a speaker-mapping card to another person", async () => {
+      const { cardId } = await createSpeakerCard();
+      const other = await inTenant(() =>
+        withTransaction(dataPool, (client) =>
+          createItemWithClient(client, { databaseId: peopleId, properties: { name: "Bob" } }),
+        ),
+      );
+      const envelope = {
+        entityKind: "relation",
+        target: other.id,
+        properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+      };
+
+      const response = await callRevise(cardId, envelope);
+
+      if (!("item" in response)) throw new Error("Missing item result");
+      expect(response.item.properties.proposal).toEqual(envelope);
+      expect(response.item.properties.status).toBe("proposed");
+    });
+
+    it("applies an ifVersion that equals the card's updatedAt", async () => {
+      const cardId = await createEventCard();
+      const eventId = await createEvent("Planning");
+      const card = await readCard(cardId);
+
+      const response = await callRevise(cardId, { ...linkEvent(eventId), ifVersion: card.updatedAt });
+
+      expect(response.status).toBe(200);
+    });
+
+    it("answers a stale ifVersion with version_conflict carrying the current card and writes nothing", async () => {
+      const cardId = await createEventCard();
+      const eventId = await createEvent("Planning");
+      const stale = (await readCard(cardId)).updatedAt;
+      await callRevise(cardId, { message: "A first note" });
+      const current = await readCard(cardId);
+      expect(current.updatedAt).not.toBe(stale);
+
+      const error = await callRevise(cardId, { ...linkEvent(eventId), ifVersion: stale }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict", details: { current } });
+      expect(await readCard(cardId)).toEqual(current);
+    });
+
+    it("answers an unknown id, an id of another database and a trashed card alike with not found", async () => {
+      const cardId = await createEventCard();
+      const eventId = await createEvent("Planning");
+      const body = { message: "Note" };
+      const answers: unknown[] = [];
+
+      for (const id of ["00000000-0000-0000-0000-000000000000", eventId]) {
+        const error = await callRevise(id, body).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(NotFoundError);
+        answers.push({ status: (error as NotFoundError).status, code: (error as NotFoundError).code });
+      }
+      await inTenant(() =>
+        withTransaction(dataPool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId)),
+      );
+      const trashed = await callRevise(cardId, body).catch((e: unknown) => e);
+      expect(trashed).toBeInstanceOf(NotFoundError);
+      answers.push({ status: (trashed as NotFoundError).status, code: (trashed as NotFoundError).code });
+
+      expect(answers).toEqual([
+        { status: 404, code: "not_found" },
+        { status: 404, code: "not_found" },
+        { status: 404, code: "not_found" },
+      ]);
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      await expect(
+        inTenant(() => createReviseProposalRouteHandler(dataPool)({ params: {}, body: { message: "x" } })),
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it("addresses realtime invalidation to the authenticated user", async () => {
+      const cardId = await createEventCard();
+      const userId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await callRevise(cardId, { message: "Note" }, { user: { id: userId } });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      const itemEvents = events.filter((event) => event.scope === "item");
+      expect(itemEvents.length).toBeGreaterThanOrEqual(1);
+      expect(itemEvents.every((event) => event.userId === userId)).toBe(true);
     });
   });
 

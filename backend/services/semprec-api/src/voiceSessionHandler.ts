@@ -38,6 +38,11 @@ interface Session {
   speech: Promise<void>;
   speechController: AbortController | undefined;
   textState: VoiceTextState;
+  /**
+   * The turn whose answer is being spoken: its run and assistant message, which the speech calls carry so that their
+   * usage counts for that reply (issue #2020). Set when a turn begins to be spoken and cleared when the turn ends.
+   */
+  speechTurn: { runId: string; assistantMessageId: string } | undefined;
   /** The assistant messages this session asked to cancel; a cancelled reply among them ends its turn quietly. */
   stoppedTurns: Set<string>;
   speaking: boolean;
@@ -206,7 +211,14 @@ export function createVoiceSessionHandler(
       while (session.textState.hasSentences && !signal.aborted) {
         const text = session.textState.takeSentence();
         if (!text) continue;
-        const audio = await synthesizeSpeech(gateway, { text, voice: DEFAULT_MESSAGE_SPEECH_VOICE, signal });
+        // Read together with the sentence: the queue holds only the sentences of the turn that is set here.
+        const speechTurn = session.speechTurn;
+        const audio = await synthesizeSpeech(gateway, {
+          text,
+          voice: DEFAULT_MESSAGE_SPEECH_VOICE,
+          signal,
+          ...(speechTurn ? { agentRunId: speechTurn.runId, sempMessageId: speechTurn.assistantMessageId } : {}),
+        });
         if (signal.aborted) break;
         if (!session.speaking) {
           session.speaking = true;
@@ -252,6 +264,10 @@ export function createVoiceSessionHandler(
       ),
     );
     session.threadId = result.threadId;
+    // The speech-to-text rows reserved since the previous question belong to this turn. A stream that is already
+    // closed cannot receive the message (the provider finished after the client ended it), so the rows of that
+    // last utterance stay unattributed (see the ADR consequences) and a false answer needs no handling.
+    session.stream?.attribute(result.assistantMessageId);
     return result;
   }
   async function turn(session: Session, result: Awaited<ReturnType<typeof admit>>): Promise<void> {
@@ -280,6 +296,7 @@ export function createVoiceSessionHandler(
     }
     if (!delivery?.runId || !delivery.firstEventId) throw new Error("Voice turn unavailable");
     session.textState.beginTurn();
+    session.speechTurn = { runId: delivery.runId, assistantMessageId: result.assistantMessageId };
     let lastEventId = delivery.firstEventId;
     let failed = false;
     let watchFailure: unknown;
@@ -387,6 +404,7 @@ export function createVoiceSessionHandler(
       turnFailure = error;
     }
     session.stoppedTurns.delete(result.assistantMessageId);
+    session.speechTurn = undefined;
     let cleanupFailed = false;
     let cleanupFailure: unknown;
     try {
@@ -432,6 +450,7 @@ export function createVoiceSessionHandler(
         speech: Promise.resolve(),
         speechController: undefined,
         textState: new VoiceTextState(),
+        speechTurn: undefined,
         stoppedTurns: new Set(),
         speaking: false,
         dispose: undefined,

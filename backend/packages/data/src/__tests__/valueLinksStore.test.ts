@@ -13,6 +13,7 @@ import {
   insertValueLink,
   listValueLinkSourcesByLinkIds,
   listValueLinksByItemIds,
+  listValueLinksBySourceItem,
   moveValueLinkItemSources,
 } from "../chokePoint/valueLinksStore.js";
 
@@ -228,6 +229,53 @@ describe("value links store (issue #1403)", () => {
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => moveValueLinkItemSources(client, from, to)),
       ).toBe(0);
+    } finally {
+      await runtimePool.end();
+    }
+  });
+
+  it("lists the links of any state that name an item as a source, once each, and not those of another tenant (issue #1856)", async () => {
+    const adminPool = pool;
+    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      const tenantA = await createTestTenant(adminPool);
+      const tenantB = await createTestTenant(adminPool);
+      const source = randomUUID();
+      const other = randomUUID();
+      const holderOn = randomUUID();
+      const holderBroken = randomUUID();
+      const holderTwice = randomUUID();
+      const holderOther = randomUUID();
+      const domainOnly = randomUUID();
+      const itemSource = (sourceItemId: string, sourcePropertyKey = "project") =>
+        ({ kind: "item", sourceItemId, sourcePropertyKey }) as const;
+      const insert = (tenant: string, itemId: string, input: Partial<Parameters<typeof insertValueLink>[1]>) =>
+        withTenantTransaction(runtimePool, tenant, (client) =>
+          insertValueLink(client, { itemId, propertyKey: "projects", ruleKey: "r", sources: [], ...input }),
+        );
+      await insert(tenantA, holderOn, { sources: [itemSource(source)] });
+      await insert(tenantA, holderBroken, {
+        state: "broken",
+        brokenBy: "user",
+        brokenAt: new Date("2026-10-20T10:00:00.000Z"),
+        sources: [itemSource(source)],
+      });
+      await insert(tenantA, holderTwice, { sources: [itemSource(source), itemSource(source, "company")] });
+      await insert(tenantA, holderOther, { sources: [itemSource(other)] });
+      await insert(tenantA, domainOnly, {
+        sources: [{ kind: "senderDomain", domain: "example.com", sourcePropertyKey: "x" }],
+      });
+      await insert(tenantB, randomUUID(), { sources: [itemSource(source)] });
+
+      const listed = await withTenantTransaction(runtimePool, tenantA, (client) =>
+        listValueLinksBySourceItem(client, source),
+      );
+
+      expect(listed.map((link) => link.itemId).sort()).toEqual([holderOn, holderBroken, holderTwice].sort());
+      expect(listed.find((link) => link.itemId === holderBroken)?.state).toBe("broken");
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) => listValueLinksBySourceItem(client, randomUUID())),
+      ).toEqual([]);
     } finally {
       await runtimePool.end();
     }

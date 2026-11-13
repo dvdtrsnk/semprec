@@ -1,12 +1,13 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { NotFoundError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 import {
   mailThreadHasSempDraft,
   mailThreadPredicates,
   matchesSearch,
   type MailThreadFilters,
 } from "./mailThreadPredicates.js";
+import type { ParsedMailSearchQuery } from "./search.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
 const thread = z.object({
@@ -99,6 +100,61 @@ export function mailThreadCopyCtes(threadIdParameter: number): string {
 )`;
 }
 
+/**
+ * The `search_messages` CTE that the fragments of `matchesSearch` (`mailThreadPredicates.ts`) read: every live message of
+ * the Emails database that has a thread, with the columns the search operators compare. It reads the query's `schema_ids`
+ * and `folder_definition`, which `mailThreadCopyCtes` defines, and is fixed SQL. The thread list and the mail group of
+ * global search (`mailGlobalSearchGroup.ts`) both put it in their `WITH` list.
+ */
+export const MAIL_SEARCH_MESSAGES_CTE = `search_messages AS (
+  SELECT m.thread_id, m.item_id, m.envelope,
+    NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
+    COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
+    COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
+    EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
+    EXISTS (SELECT 1 FROM folder_definition fd JOIN item_relations r ON r.tenant_id = m.tenant_id AND r.relation_definition_id = fd.id
+      AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
+      JOIN items f ON f.tenant_id = m.tenant_id AND f.database_id = (SELECT folders FROM schema_ids)
+        AND f.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND f.deleted_at IS NULL
+      WHERE f.properties->>'specialPurpose' IN ('drafts', 'sent')) AS excluded_from_unread
+  FROM mail_message_meta m JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id
+    AND i.database_id = (SELECT emails FROM schema_ids)
+  WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
+)`;
+
+const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
+
+/**
+ * The position of a thread in the list order, as the list's `nextCursor` encodes it: base64url of a JSON object with
+ * the `lastMessageAt` and the `threadId` of the last listed thread. Throws a `ValidationError` naming `cursor` for a
+ * token that is too long, is not canonical base64url, is not JSON or is not that object.
+ */
+export function parseMailThreadListCursor(rawCursor: string): { at: string; id: string } {
+  if (rawCursor.length > 256 || !/^[A-Za-z0-9_-]+$/.test(rawCursor))
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  let decoded: unknown;
+  try {
+    const bytes = Buffer.from(rawCursor, "base64url");
+    if (bytes.toString("base64url") !== rawCursor) throw new Error("Invalid encoding");
+    decoded = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new ValidationError("Invalid cursor", { field: "cursor" });
+  }
+  const parsed = cursorSchema.safeParse(decoded);
+  if (!parsed.success) throw new ValidationError("Invalid cursor", { field: "cursor" });
+  return parsed.data;
+}
+
+/** True when a `before:` or `after:` operand is neither an ISO date nor an ISO date-time with an offset, which Postgres would read differently or refuse. */
+export function hasInvalidMailSearchDate(search: ParsedMailSearchQuery): boolean {
+  return [search.before, search.after].some(
+    (date) =>
+      date !== undefined &&
+      !z.iso.date().safeParse(date).success &&
+      !z.iso.datetime({ offset: true }).safeParse(date).success,
+  );
+}
+
 export async function listMailThreads(
   client: PoolClient,
   limit: number,
@@ -179,21 +235,7 @@ WITH ${mailThreadCopyCtes(9)}, thread_project AS (
   CROSS JOIN LATERAL (SELECT i.id FROM items i WHERE i.tenant_id = m.tenant_id AND i.database_id = (SELECT people FROM schema_ids)
     AND i.id = CASE WHEN rd.property_id_a = p.id THEN r.item_b ELSE r.item_a END OFFSET 0) person
   WHERE m.tenant_id = app_tenant_default()
-), search_messages AS (
-  SELECT m.thread_id, m.item_id, m.envelope,
-    NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
-    COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
-    COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
-    EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
-    EXISTS (SELECT 1 FROM folder_definition fd JOIN item_relations r ON r.tenant_id = m.tenant_id AND r.relation_definition_id = fd.id
-      AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
-      JOIN items f ON f.tenant_id = m.tenant_id AND f.database_id = (SELECT folders FROM schema_ids)
-        AND f.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND f.deleted_at IS NULL
-      WHERE f.properties->>'specialPurpose' IN ('drafts', 'sent')) AS excluded_from_unread
-  FROM mail_message_meta m JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id
-    AND i.database_id = (SELECT emails FROM schema_ids)
-  WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
-), dedup AS (
+), ${MAIL_SEARCH_MESSAGES_CTE}, dedup AS (
   SELECT DISTINCT ON (thread_id, message_id) thread_id, message_id, item_id, activity, subject, envelope, preview_text
   FROM copies ORDER BY thread_id, message_id, activity DESC NULLS LAST, item_id DESC
 ), thread_stats AS (

@@ -58,6 +58,7 @@ interface ViewItemBody {
 interface ItemQueryBody {
   items: { id: string }[];
   nextCursor: string | null;
+  totalCount?: number;
 }
 
 interface ErrorBody {
@@ -519,6 +520,63 @@ describe("view routes (issue #155)", () => {
       const headers = await authHeader();
       const res = await fetch(`${baseUrl}/api/views/${randomUUID()}/query`, { method: "POST", headers });
       expect(res.status).toBe(404);
+    });
+
+    it("narrows a filtered view by q together with its stored filter and keeps totalCount at the filter-only count", async () => {
+      const database = await chokePoint.createDatabase({ name: "Movies" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "stage", name: "Stage", type: "text" });
+      const arrival = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { title: "Příchod Novák", stage: "todo" },
+      });
+      await chokePoint.createItem({ databaseId: database.id, properties: { title: "Duna Novák", stage: "done" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: { title: "Jiný film", stage: "todo" } });
+      const view = await chokePoint.createView({
+        databaseId: database.id,
+        type: "table",
+        name: "Todo",
+        config: { filter: { type: "equals", property: "stage", value: "todo" } },
+      });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ q: "novak", includeCount: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemQueryBody;
+      expect(body.items.map((i) => i.id)).toEqual([arrival.id]);
+      expect(body.totalCount).toBe(2);
+    });
+
+    it("answers 400 on the field q for an invalid q, and for any q on a curated view, without repeating it", async () => {
+      const database = await chokePoint.createDatabase({ name: "Movies" });
+      const filtered = await chokePoint.createView({ databaseId: database.id, type: "table", name: "All" });
+      const curated = await chokePoint.createView({ type: "list", name: "Picked", config: { membership: "manual" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const tooLong = "q".repeat(201);
+
+      for (const [viewId, q] of [
+        [filtered.id, ""],
+        [filtered.id, tooLong],
+        [curated.id, "novak"],
+      ] as const) {
+        const res = await fetch(`${baseUrl}/api/views/${viewId}/query`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ q }),
+        });
+        expect(res.status).toBe(400);
+        const text = await res.text();
+        expect(text).toContain('"q"');
+        expect(text).not.toContain(tooLong);
+        expect(text).not.toContain("novak");
+      }
+      const plain = await fetch(`${baseUrl}/api/views/${curated.id}/query`, { method: "POST", headers, body: "{}" });
+      expect(plain.status).toBe(200);
     });
 
     it("uses the view's own stored filter when the request omits one, never 204", async () => {

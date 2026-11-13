@@ -233,6 +233,25 @@ export async function listOnValueLinksFollowing(
   return rows.map(mapValueLinkRow);
 }
 
+/**
+ * The links, in any state, that have an item source naming `sourceItemId`: the places that take over a value from the
+ * item (issue #1856). One row per link, so a link with two sources that name the item is listed once. In
+ * `(item_id, property_key)` order.
+ */
+export async function listValueLinksBySourceItem(client: PoolClient, sourceItemId: string): Promise<ValueLinkRow[]> {
+  const { rows } = await client.query<ValueLinkDbRow>(
+    `SELECT l.id, l.item_id, l.property_key, l.rule_key, l.state, l.broken_by, l.broken_at
+     FROM value_links l
+     WHERE l.tenant_id = app_tenant_default()
+       AND EXISTS (SELECT 1 FROM value_link_sources s
+                    WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item'
+                      AND s.source_item_id = $1)
+     ORDER BY l.item_id, l.property_key`,
+    [sourceItemId],
+  );
+  return rows.map(mapValueLinkRow);
+}
+
 /** Locks a specific link, including a broken one, for a change to its sources. */
 export async function lockValueLink(
   client: PoolClient,

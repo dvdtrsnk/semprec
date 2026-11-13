@@ -1,10 +1,28 @@
 import type { PoolClient } from "pg";
 import type { WallClock } from "../calendarTime.js";
+import type { EventTaskCounts, EventTaskRow, EventTaskState } from "../tasks/taskStateInEvent.js";
 import { readBirthdayTimelineItems } from "./timelineBirthdaySource.js";
 import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
 import { readEventOccurrenceTimelineItems } from "./timelineEventOccurrenceSource.js";
 import { readSleepTimelineItems } from "./timelineSleepSource.js";
+import { readTaskOccurrenceTimelineItems } from "./timelineTaskOccurrenceSource.js";
+import { readTaskTraceTimelineItems } from "./timelineTaskTraceSource.js";
+
+/**
+ * The Event that decided the day of a Task in the timeline (issue gh-1880): the live host event with a `date` that
+ * the task was added to last. `ended` is whether the Event's end in the tenant zone is at or before the timeline's
+ * instant, and `state` is the task's state in that Event as `GET /api/events/:id/tasks` reports it.
+ */
+export interface CalendarTimelineHostEvent {
+  id: string;
+  title: string;
+  ended: boolean;
+  date: string;
+  timeFrom: string | null;
+  timeTo: string | null;
+  state: EventTaskState;
+}
 
 /** One entry of the calendar timeline in its full shape (issue #1717). */
 export interface CalendarTimelineItem {
@@ -52,6 +70,25 @@ export interface CalendarTimelineItem {
    * `null` for an Event without a live transcript, and for a Task.
    */
   transcript: { id: string; status: string | null } | null;
+  /**
+   * The host event of a Task that sits in at least one live Event with a date (issue gh-1880); `null` for a Task
+   * in no such Event and for an Event.
+   */
+  hostEvent: CalendarTimelineHostEvent | null;
+  /**
+   * The tasks that sit in a stored Event, with their states in it, as `GET /api/events/:id/tasks` lists them (issue
+   * gh-1880). An occurrence of a recurring Event carries those of its stored Event: its own item for a changed
+   * occurrence, the series Event for a virtual one. `null` for a Task.
+   */
+  tasks: EventTaskRow[] | null;
+  /** The counts of `tasks`, as `GET /api/events/:id/tasks` reports them; `null` for a Task. */
+  counts: EventTaskCounts | null;
+  /**
+   * The first planned day of a Task that was carried forward (issue gh-1884): its stored `since`, whenever that is
+   * a calendar date and the Task is not done on a day earlier than today. `null` for an Event, for a Task without a
+   * `since`, and for a Task done before today.
+   */
+  carriedFrom: string | null;
   /** The stored item's `updatedAt`, which a write passes back as `ifVersion`. */
   updatedAt: string;
   /** `false` for a stored Event or Task; a source sets `true` on an entry that is not a stored row. */
@@ -71,6 +108,26 @@ export interface CalendarEventOccurrence extends CalendarTimelineItem {
   seriesId: string;
   /** The day the series rule assigns to the occurrence; a moved item keeps it. */
   occurrenceDate: string;
+  overridden: boolean;
+}
+
+/**
+ * One occurrence of a recurring Task (issue gh-1886), in the full shape of a Task. A virtual occurrence is not a stored
+ * row: its `id` is `<seriesId>@<date>` (`projectTaskOccurrences`), `readOnly` is `true` and `overridden` is `false`, and it
+ * carries the series template with the status `notDone`, or `missed` for a day before today. An occurrence that has an
+ * item of its own is that item: its `id` is the item's, `readOnly` is `false` and `overridden` is `true`. `date` is the
+ * day the occurrence is displayed on, its `occurrenceDate`, also for an item whose own `date` was changed. An item of a series
+ * that no series projects any more (turned off and started again, or deleted) is the history of that series and is also
+ * returned this way, as it stays an item with its `seriesId`.
+ */
+export interface CalendarTaskOccurrence extends CalendarTimelineItem {
+  kind: "task";
+  /** The id of the series. */
+  seriesId: string;
+  /** The day the series rule assigns to the occurrence. */
+  occurrenceDate: string;
+  /** Whether the Task `status` is `done`. */
+  done: boolean;
   overridden: boolean;
 }
 
@@ -141,12 +198,48 @@ export interface CalendarSleepTimelineItem {
   readOnly: false;
 }
 
+/**
+ * How the chain of a carried-over Task ended or stands (issue gh-1884), the same on every trace of the Task: `doneOn`
+ * the Task was completed on `date` (its `completedOn`), `missed` its status is `missed`, `movedToEvent` it sits in the
+ * host event `id` named `title`, and `carried` it was only moved on to the next day.
+ */
+export type CalendarTaskTraceOutcome =
+  | { kind: "carried" }
+  | { kind: "doneOn"; date: string }
+  | { kind: "movedToEvent"; id: string; title: string }
+  | { kind: "missed" };
+
+/**
+ * One past day on which a Task was planned and not done (issue gh-1884), derived on read from the stored `since` of
+ * the Task: it is not a stored row, so its `id` is not an item id and the item routes refuse it. A Task has one trace
+ * for each day from `firstDay` up to the day before its live day, and none for a day that is not over yet. The trace
+ * of `firstDay` carries the time the Task had then; the later ones are all-day.
+ */
+export interface CalendarTaskTraceTimelineItem {
+  kind: "trace";
+  /** `trace:<taskId>:<day>`. */
+  id: string;
+  taskId: string;
+  /** The day the trace marks. */
+  day: string;
+  /** The Task's stored `since`, the first day of its chain, also when it is before the requested range. */
+  firstDay: string;
+  /** The stored `sinceTime` on the trace of `firstDay`; `null` on every other trace and for a Task without one. */
+  sinceTime: { from: string | null; to: string | null } | null;
+  outcome: CalendarTaskTraceOutcome;
+  readOnly: true;
+}
+
 /** An entry that is not a stored row: the shape of each derived `kind` is added here by the source that returns it. */
 export type CalendarDerivedTimelineItem =
-  CalendarBirthdayTimelineItem | CalendarHolidayTimelineItem | CalendarSleepTimelineItem;
+  | CalendarBirthdayTimelineItem
+  | CalendarHolidayTimelineItem
+  | CalendarSleepTimelineItem
+  | CalendarTaskTraceTimelineItem;
 
 /** Everything a source may return: a stored Event or Task, or a derived entry. `kind` tells them apart. */
-export type CalendarTimelineEntry = CalendarTimelineItem | CalendarEventOccurrence | CalendarDerivedTimelineItem;
+export type CalendarTimelineEntry =
+  CalendarTimelineItem | CalendarEventOccurrence | CalendarTaskOccurrence | CalendarDerivedTimelineItem;
 
 /** What every source of one timeline read is given: the requested range and the tenant's zone, day and time. */
 export interface CalendarTimelineContext {
@@ -160,6 +253,8 @@ export interface CalendarTimelineContext {
   today: string;
   /** The current wall-clock date and time in `timezone`. */
   now: WallClock;
+  /** The instant `today` and `now` are read from, to the millisecond. */
+  at: Date;
 }
 
 /** One source of timeline entries: it returns the entries it has for the range of `context`. */
@@ -181,4 +276,6 @@ export const CALENDAR_TIMELINE_SOURCES: readonly CalendarTimelineSource[] = [
   { id: "holidays", readItems: readHolidayTimelineItems },
   { id: "sleep", readItems: readSleepTimelineItems },
   { id: "eventOccurrences", readItems: readEventOccurrenceTimelineItems },
+  { id: "taskTraces", readItems: readTaskTraceTimelineItems },
+  { id: "taskOccurrences", readItems: readTaskOccurrenceTimelineItems },
 ];

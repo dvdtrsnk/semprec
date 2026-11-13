@@ -6,11 +6,14 @@ import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
+import { TASK_DISPLAY_DAY_SQL } from "../tasks/taskDisplayDaySql.js";
 import { EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
 import { readEventSeries } from "./eventSeries.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
+import { attachTaskInEventState } from "./timelineTaskInEvent.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
   type CalendarDerivedTimelineItem,
@@ -50,17 +53,39 @@ const EVENT_CANDIDATES_SQL = `
 
 /**
  * The Tasks that may belong to the range `$2`..`$3`, selected like `EVENT_CANDIDATES_SQL` by the first ten
- * characters of `date`. A Task whose status is `$5` (`wontDo`), or whose `date` is absent, `null` or empty, is
- * not selected.
+ * characters of the day the Task is displayed on (`taskDisplayDay`, issue #1544, written in SQL as
+ * `TASK_DISPLAY_DAY_SQL`). A Task whose status is `$5` (`wontDo`) or that has no display day is not selected, and
+ * `seriesFilter` (a condition on the row `i`) decides which Tasks of series are. Whether the Task is hidden or was
+ * completed in an Event is judged by `toShownTaskItems`.
  */
-const TASK_CANDIDATES_SQL = `
+function taskCandidatesSql(seriesFilter: string): string {
+  return `
   SELECT i.id, i.properties, i.updated_at
     FROM items i
-   CROSS JOIN LATERAL (SELECT left(i.properties->>'date', 10) AS day) days
+   CROSS JOIN LATERAL (SELECT ${TASK_DISPLAY_DAY_SQL} AS day) days
    WHERE i.database_id = $1 AND i.deleted_at IS NULL
-     AND i.properties->>'date' <> ''
+     AND ${seriesFilter}
+     AND days.day IS NOT NULL
      AND i.properties->>'status' IS DISTINCT FROM $5
      AND (days.day !~ $4 OR days.day COLLATE "C" BETWEEN $2 AND $3)`;
+}
+
+/**
+ * The core Tasks source selects the Tasks without a `seriesId` (issue gh-1886): a series' current Task and its
+ * occurrences come only from the Task occurrence source.
+ */
+const TASK_CANDIDATES_SQL = taskCandidatesSql(`i.properties->>'seriesId' IS NULL`);
+
+/**
+ * The Tasks that have a `seriesId` that no series projects any more: no `task_recurrence` row with that `series_id` and an
+ * anchor date, the rows `projectTaskOccurrences` projects. The history of a series that was turned off and started
+ * again (the row takes a new `series_id`) or deleted (its row is removed) stays as ordinary items with the old `seriesId`
+ * (docs/adr/2026-10-25-task-and-event-recurrence-model.md, "Series edits and deletion"), so the projection never
+ * returns it. Selected like `TASK_CANDIDATES_SQL`.
+ */
+const ORPHANED_SERIES_TASK_CANDIDATES_SQL = taskCandidatesSql(`i.properties->>'seriesId' IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM task_recurrence r
+                      WHERE r.series_id::text = i.properties->>'seriesId' AND r.anchor_date IS NOT NULL)`);
 
 export interface Schedule {
   date: string;
@@ -77,7 +102,7 @@ type ScheduleKey = keyof Schedule;
  * times are read by `readTime` (`eventTime.ts`), for which `""`, `null` and an absent value are no time and
  * `24:00` is an end only.
  */
-function readSchedule(
+export function readSchedule(
   kind: CalendarTimelineItem["kind"],
   properties: Record<string, unknown>,
 ): Schedule | { invalidKey: ScheduleKey } {
@@ -144,7 +169,7 @@ async function readEdges(
 }
 
 /** The tenant's live default calendar and its live calendar with the system key `tasks`; `null` for one it lacks. */
-async function readCalendarIds(
+export async function readCalendarIds(
   client: PoolClient,
 ): Promise<{ defaultCalendarId: string | null; tasksCalendarId: string | null }> {
   const calendars = await getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
@@ -284,6 +309,10 @@ export async function toTimelineItems(
           : { id: project.id, name: text(project.properties.name) ?? "", color: text(project.properties.color) },
       people: liveTargets(row.id, "people").map(({ id, properties }) => ({ id, name: text(properties.name) ?? "" })),
       transcript: null,
+      hostEvent: null,
+      tasks: null,
+      counts: null,
+      carriedFrom: null,
       updatedAt: row.updated_at.toISOString(),
       readOnly: false,
     };
@@ -321,9 +350,68 @@ export async function readEventTimelineItems(
   return items.map((item) => ({ ...item, transcript: transcripts.get(item.id) ?? null }));
 }
 
+/** The Tasks-side key of the relation that records where a task was completed (issue #1781). */
+const COMPLETED_IN_EVENT_KEY = "completedInEvent";
+
 /**
- * The core Tasks source: every live Task whose `date` is inside the range and whose status is not `wontDo`.
- * A tenant without a Tasks database has none.
+ * Whether the stored `hiddenUntil` of a Task is a UTC instant later than `at`. A value that is absent, empty or not
+ * an instant does not hide the Task: the stored value is derived state (issue #1780) and an unreadable one must not
+ * make a Task disappear.
+ */
+function isHiddenAt(hiddenUntil: unknown, at: Date): boolean {
+  if (typeof hiddenUntil !== "string") return false;
+  return Date.parse(hiddenUntil) > at.getTime();
+}
+
+/**
+ * The `carriedFrom` of a Task (issue gh-1884): its stored `since` when that is a calendar date, unless the Task is done
+ * on a day earlier than `today`. A `done` Task without a calendar date as `completedOn` is not done on an earlier day.
+ */
+function carriedFrom(properties: Record<string, unknown> | undefined, today: string): string | null {
+  if (properties === undefined || !isCalendarDate(properties.since)) return null;
+  const { status, completedOn } = properties;
+  return status === "done" && isCalendarDate(completedOn) && completedOn < today ? null : properties.since;
+}
+
+/**
+ * The Tasks of `rows` (rows of the Tasks database `tasksDatabaseId`) as timeline items, placed by their display day
+ * (`taskDisplayDay`, issue gh-1880): the item's `date` is that day, not the Task's own `date`. A Task is left out while
+ * its stored `hiddenUntil` is later than `context.at` (it sits in an Event that has not ended, which shows it) and when
+ * it has a `completedInEvent` edge (it was completed inside an Event, which shows it). A Task whose display day is not
+ * a calendar date is left out with the log line of `toTimelineItems`, which names the property `date`. Each item
+ * carries `carriedFrom` (issue gh-1884). The number of statements does not depend on the number of rows. It does not
+ * judge the Task's `status` or its `seriesId`: the caller selects the rows.
+ */
+export async function toShownTaskItems(
+  client: PoolClient,
+  tasksDatabaseId: string,
+  rows: StoredRow[],
+  context: Pick<CalendarTimelineContext, "timezone" | "today" | "at">,
+): Promise<CalendarTimelineItem[]> {
+  const shown = rows.filter((row) => !isHiddenAt(row.properties.hiddenUntil, context.at));
+  const completedInEvent = new Set(
+    (
+      await readEdges(
+        client,
+        tasksDatabaseId,
+        [COMPLETED_IN_EVENT_KEY],
+        shown.map((row) => row.id),
+      )
+    ).map((edge) => edge.source_id),
+  );
+  const onDisplayDay = shown
+    .filter((row) => !completedInEvent.has(row.id))
+    .map((row) => ({ ...row, properties: { ...row.properties, date: taskDisplayDay(row) } }));
+  const items = await toTimelineItems(client, "task", tasksDatabaseId, onDisplayDay, context);
+  const storedById = new Map(onDisplayDay.map((row) => [row.id, row.properties]));
+  return items.map((item) => ({ ...item, carriedFrom: carriedFrom(storedById.get(item.id), context.today) }));
+}
+
+/**
+ * The core Tasks source: every live Task whose display day (`taskDisplayDay`, issue gh-1880) is inside the range, whose
+ * status is not `wontDo` and that has no `seriesId`, shown as `toShownTaskItems` describes. A Task with a `seriesId`
+ * (the current Task of a recurring series and every stored occurrence) is left out: it comes only from the Task
+ * occurrence source (issue gh-1886), so no Task is shown twice. A tenant without a Tasks database has none.
  */
 export async function readTaskTimelineItems(
   client: PoolClient,
@@ -338,7 +426,28 @@ export async function readTaskTimelineItems(
     DAY_PATTERN,
     "wontDo",
   ]);
-  return toTimelineItems(client, "task", tasks.id, rows, context);
+  return toShownTaskItems(client, tasks.id, rows, context);
+}
+
+/**
+ * The rows of the Tasks database `tasksDatabaseId` that belong to the range like the rows of the core Tasks source but
+ * have a `seriesId` that no series projects any more (`ORPHANED_SERIES_TASK_CANDIDATES_SQL`): the history of a series
+ * that was turned off and started again or deleted. The Task occurrence source shows them, so a Task that the core source
+ * leaves out for its `seriesId` is never left out by both sources. One statement whatever the number of rows.
+ */
+export async function readOrphanedSeriesTaskRows(
+  client: PoolClient,
+  tasksDatabaseId: string,
+  context: Pick<CalendarTimelineContext, "from" | "to">,
+): Promise<StoredRow[]> {
+  const { rows } = await client.query<StoredRow>(ORPHANED_SERIES_TASK_CANDIDATES_SQL, [
+    tasksDatabaseId,
+    context.from,
+    context.to,
+    DAY_PATTERN,
+    "wontDo",
+  ]);
+  return rows;
 }
 
 /** The key the merge orders an entry by: its day, its place in the day, its start time and its title. */
@@ -351,7 +460,9 @@ interface SortKey {
 
 /**
  * The place of an entry among the entries of one day: public holidays, birthdays, all-day Events, Tasks without
- * a time, timed Events, timed Tasks, then sleep nights, which belong to the day of their evening.
+ * a time, timed Events, timed Tasks, then sleep nights, which belong to the day of their evening. A trace of a
+ * carried-over Task (issue gh-1884) sits with the Tasks, at the time it had on its first day, and before the Tasks
+ * of its group, as it has no title.
  */
 function sortKey(entry: CalendarTimelineEntry): SortKey {
   switch (entry.kind) {
@@ -363,6 +474,13 @@ function sortKey(entry: CalendarTimelineEntry): SortKey {
       return { date: entry.date, group: entry.allDay ? 2 : 4, timeFrom: entry.timeFrom ?? "", title: entry.title };
     case "task":
       return { date: entry.date, group: entry.allDay ? 3 : 5, timeFrom: entry.timeFrom ?? "", title: entry.title };
+    case "trace":
+      return {
+        date: entry.day,
+        group: entry.sinceTime?.from ? 5 : 3,
+        timeFrom: entry.sinceTime?.from ?? "",
+        title: "",
+      };
     case "sleep":
       return { date: entry.night, group: 6, timeFrom: "", title: "" };
   }
@@ -373,8 +491,11 @@ function compareText(a: string, b: string): number {
 }
 
 /**
- * The fields of the `compact` shape, which the month view reads. An occurrence of a recurring Event also carries
- * `seriesId` and `occurrenceDate` (issue gh-1877), so a month can tell the occurrences that were changed apart.
+ * The fields of the `compact` shape, which the month view reads. An occurrence of a recurring Event or Task also
+ * carries `seriesId` and `occurrenceDate` (issues gh-1877 and gh-1886), so a month can tell the occurrences that were
+ * changed apart.
+ * `counts` is the task counts of an Event, which the shape carries next to a Task's `status` (issue gh-1880); it
+ * has no `tasks` or `hostEvent`.
  */
 export type CalendarTimelineCompactItem = Pick<
   CalendarTimelineItem,
@@ -387,6 +508,7 @@ export type CalendarTimelineCompactItem = Pick<
   | "endDate"
   | "timeFrom"
   | "status"
+  | "counts"
   | "updatedAt"
   | "readOnly"
 > &
@@ -398,8 +520,8 @@ export type CalendarTimelineCompactItem = Pick<
  */
 function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactItem | CalendarDerivedTimelineItem {
   if (entry.kind !== "event" && entry.kind !== "task") return entry;
-  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly } = entry;
-  const compact = { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly };
+  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, updatedAt, readOnly } = entry;
+  const compact = { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, updatedAt, readOnly };
   return "seriesId" in entry ? { ...compact, seriesId: entry.seriesId, occurrenceDate: entry.occurrenceDate } : compact;
 }
 
@@ -422,11 +544,14 @@ export interface CalendarTimelineInFullShape extends CalendarTimeline {
 
 /**
  * Everything on the calendar from `from` to `to`, both days included (issue #1717): the items of every source
- * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an entry's `date`, a sleep night's `night`), then
- * public holidays, birthdays, all-day Events, Tasks without a time, timed Events, timed Tasks and sleep
- * nights, then `timeFrom`, then title, then id. Titles compare in the language of the tenant's user, Czech or
+ * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an entry's `date`, a trace's `day`, a sleep night's
+ * `night`), then public holidays, birthdays, all-day Events, Tasks without a time, timed Events, timed Tasks and
+ * sleep nights, then `timeFrom`, then title, then id. A trace is ordered with the Tasks: in the all-day group, or in
+ * the timed group at the start time of its first day (`sinceTime.from`). Titles compare in the language of the tenant's user, Czech or
  * English (`toManifestLocale`), and in Czech when the tenant has no user. `shape: "compact"` returns the
- * fields of `CalendarTimelineCompactItem` for an Event or a Task; a derived entry is returned as it is.
+ * fields of `CalendarTimelineCompactItem` for an Event or a Task; a derived entry is returned as it is. A Task
+ * is placed by its display day (`readTaskTimelineItems`), and the Tasks that sit in Events are added to the Events
+ * and the Tasks' host events to the Tasks by `attachTaskInEventState` (issue gh-1880).
  *
  * The caller passes calendar dates with `to` not before `from`, and bounds the length of the range. The read
  * writes nothing.
@@ -451,9 +576,11 @@ export async function readCalendarTimeline(
     timezone: clock.zone,
     today: clock.today(at),
     now: clock.now(at),
+    at,
   };
-  const items: CalendarTimelineEntry[] = [];
-  for (const source of CALENDAR_TIMELINE_SOURCES) items.push(...(await source.readItems(client, context)));
+  const read: CalendarTimelineEntry[] = [];
+  for (const source of CALENDAR_TIMELINE_SOURCES) read.push(...(await source.readItems(client, context)));
+  const items = await attachTaskInEventState(client, read, context);
 
   const collator = new Intl.Collator(toManifestLocale((await getTenantUserLocale(client)) ?? "cs"));
   items.sort((a, b) => {

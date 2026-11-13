@@ -18,7 +18,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 50 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 51 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -74,6 +74,7 @@ export interface OutputByOperation {
   "item.count": ItemCountEntry[];
   "page.duplicate": PageDuplicateOutput;
   "page.rename": PageRenameOutput;
+  "page.convertToBlock": PageConvertToBlockOutput;
   /** One entry per requested facet, in request order. */
   "database.facets": DatabaseFacet[];
   /** The matches of one query, grouped by type in the fixed order of `SEARCH_GROUP_TYPES` (issue #1842). */
@@ -134,6 +135,15 @@ export interface PageDuplicateOutput {
 export interface PageRenameOutput {
   pageItemId: string;
   title: string;
+}
+
+/**
+ * What one `page.convertToBlock` call did (issue #1876): the id of the new block that stands where the `page` block
+ * stood, and how many pages went to the Trash, the page itself included.
+ */
+export interface PageConvertToBlockOutput {
+  blockId: string;
+  trashedPageCount: number;
 }
 
 /**
@@ -371,6 +381,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.rename"],
   ): Promise<OutputByOperation["page.rename"]>;
+  convertPageToBlock(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.convertToBlock"],
+  ): Promise<OutputByOperation["page.convertToBlock"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

@@ -12,6 +12,8 @@ import {
 } from "@semprec/block-model";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import type {
+  PageConvertToBlockInput,
+  PageConvertToBlockOutput,
   PageCreateSubpageInput,
   PageCreateSubpageOutput,
   PageDuplicateOutput,
@@ -20,9 +22,12 @@ import type {
 } from "@semprec/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import type { CreatedBy, ItemRow } from "../types.js";
 import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc, readPageStatesForItems } from "./docsStore.js";
@@ -31,6 +36,7 @@ import { normalizePageTitle, PAGE_TITLE_MAX_LENGTH } from "./pageTitle.js";
 import type { DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { assertAgentPageAccess, MAX_SUBPAGE_CHAIN, UUID_RE } from "./pageOwnerDatabase.js";
 import { ensurePagesDatabase, PAGES_MODULE_ID } from "./pagesDatabase.js";
+import { collectSubpageTree, lockLiveChildPageIds, readTrashedPagePosition } from "./pageTrash.js";
 
 /** The Pages item properties `createSubpage` and `duplicatePage` write; both are system-owned by the `pages` process. */
 const PAGES_ALLOWED_SYSTEM_KEYS = ["title", "parentItemId"] as const;
@@ -474,4 +480,158 @@ export async function renamePageWithClient(
     await mutateDocWithClient(client, parentDoc.id, origin, (doc) => retitlePageBlock(doc, page.id, title));
   }
   return { pageItemId: page.id, title };
+}
+
+export interface ConvertPageToBlockOptions {
+  /** Authors the document write of the new block: derived server-side from the caller, never from a request body. */
+  origin: CreatedBy;
+  /** Who trashes the page tree; the choke point's delete hooks see it, and an agent's project is held to its grant on the database that owns the page. */
+  writer: WriterIdentity;
+  /** The user the choke point's delete hooks receive as the acting user. */
+  actingUserId?: string;
+}
+
+/** The refusal of a `blockId` that is not a `page` block of the parent's document naming a live subpage of that parent. */
+function notAConvertibleBlock(reason: string): ValidationError {
+  return new ValidationError("blockId must name the page block of a live subpage of the parent page", {
+    field: "blockId",
+    reason,
+  });
+}
+
+/**
+ * Locks the live pages below `rootItemId` at any depth, level by level and each level in id order, the root's own row
+ * excluded. A level is locked completely before the level below it, so the call never holds a row below a page it waits
+ * for. A page created below one of them before the call took that row is among them; one created after waits.
+ */
+async function lockSubpageTree(client: PoolClient, pagesDatabaseId: string, rootItemId: string): Promise<void> {
+  const visited = new Set([rootItemId]);
+  let frontier = [rootItemId];
+  while (frontier.length > 0) {
+    const level: string[] = [];
+    for (const parentId of frontier) {
+      for (const childId of await lockLiveChildPageIds(client, pagesDatabaseId, parentId)) {
+        if (visited.has(childId)) continue;
+        visited.add(childId);
+        level.push(childId);
+      }
+    }
+    frontier = level;
+  }
+}
+
+/** What a `page.convertToBlock` call is about to do, after every refusal that needs no write has been checked. */
+export interface PageConvertPlan {
+  /** The parent whose document holds the block; its row is locked. */
+  parent: ItemRow;
+  /** The id of the parent's page document. */
+  parentDocId: string;
+  /** The `page` block that is restyled. */
+  block: PageBlock;
+  /** The subpage the block names; its row is locked. */
+  page: ItemRow;
+  /** The page's title as the block shows it: plain text, normalized, the text of the new block. */
+  title: string;
+  /** The pages the trash takes: the page and every live page below it. */
+  trashedPageCount: number;
+}
+
+/**
+ * Everything `page.convertToBlock` (issue #1876) refuses before it writes, in the caller's transaction, and holds the
+ * rows the write needs locked. The parent's row is locked first, then an agent's project (`agentProjectItemId`) needs
+ * write access to the database that owns the parent page, as `createSubpageWithClient` checks it.
+ *
+ * `input.blockId` must be the first block of the parent's document that names a live Pages item whose `parentItemId`
+ * is the parent (`ValidationError` on `blockId` otherwise), because the trash hook removes the first block naming a
+ * page. The page's row and the rows of the pages below it are then locked, and `input.confirmedPageCount` must equal
+ * the number of pages the trash takes, the page itself included (`collectSubpageTree` plus one), or the call is a
+ * `ConflictError` (409) with `currentPageCount` in its details. The rows are locked before the count is taken, so a
+ * transaction that creates a page below one of them either committed first, and its page is counted, or waits for this
+ * one and then finds its parent trashed. The contract and the lock order are recorded in
+ * `docs/adr/2026-11-13-page-convert-to-block-trashes-the-page-tree-after-a-confirmed-count.md`.
+ */
+export async function planPageConvertToBlock(
+  client: PoolClient,
+  input: PageConvertToBlockInput,
+  agentProjectItemId: string | undefined,
+): Promise<PageConvertPlan> {
+  const parent = await lockLiveItem(client, input.parentItemId);
+  await assertAgentPageAccess(client, agentProjectItemId, parent.id, "write");
+
+  const parentDoc = await getDocByItemId(client, parent.id);
+  const blocks = parentDoc?.kind === "page" ? await readStoredPageBlocks(client, parent.id) : [];
+  const block = blocks.find((candidate) => candidate.id === input.blockId);
+  if (!parentDoc || !block) {
+    throw new ValidationError("blockId does not name a block of the parent page", { field: "blockId" });
+  }
+  if (block.type !== "page") throw notAConvertibleBlock("not_a_page_block");
+  const pageId = namedPageId(block);
+  if (pageId === null || firstBlockNaming(blocks, pageId)?.id !== block.id) throw notAConvertibleBlock("not_a_subpage");
+
+  const pagesDatabase = await getDatabaseByModuleId(client, PAGES_MODULE_ID);
+  const [named] = await getItemsByIds(client, [pageId]);
+  const namedParent: unknown = named?.properties.parentItemId;
+  if (
+    !named ||
+    named.databaseId !== pagesDatabase?.id ||
+    typeof namedParent !== "string" ||
+    namedParent.toLowerCase() !== parent.id
+  ) {
+    throw notAConvertibleBlock("not_a_subpage");
+  }
+  const page = await lockItemById(client, named.databaseId, named.id);
+  if (!page || page.deletedAt !== null) throw notAConvertibleBlock("not_a_subpage");
+
+  await lockSubpageTree(client, page.databaseId, page.id);
+  const trashedPageCount = (await collectSubpageTree(client, page.id)).length + 1;
+  if (trashedPageCount !== input.confirmedPageCount) {
+    throw new ConflictError("The number of pages this would trash is not the number that was confirmed", {
+      reason: "page_count_mismatch",
+      currentPageCount: trashedPageCount,
+    });
+  }
+  const title = normalizePageTitle(block.text.map((run) => run.insert).join(""), { truncate: true });
+  return { parent, parentDocId: parentDoc.id, block, page, title, trashedPageCount };
+}
+
+/**
+ * `page.convertToBlock` (issue #1876) in the caller's transaction: restyles the `page` block `input.blockId` of the
+ * document of `input.parentItemId` into a block of `input.type`, after `planPageConvertToBlock` has accepted it. The
+ * page the block names and every live page below it go to the Trash through the choke point's item delete, so the
+ * Pages hooks remove the page's block and record where it stood, and the new block is inserted at that recorded place
+ * with the page's title as plain text and the page block's indent. A later restore of the page puts its block back at
+ * the recorded place; the new block stays. The new block gets a new id; the old block's id is gone with the block.
+ * When the page block was the only block of the document, the trash leaves the empty text block an emptied document
+ * keeps (`deleteBlocks`), and the new block stands before it.
+ *
+ * Every failure after the plan, the trash's and the document write's, rolls the whole transaction back, so no page is
+ * trashed unless the new block is written.
+ */
+export async function convertPageToBlockWithClient(
+  client: PoolClient,
+  input: PageConvertToBlockInput,
+  options: ConvertPageToBlockOptions,
+): Promise<PageConvertToBlockOutput> {
+  const { parentDocId, block, page, title, trashedPageCount } = await planPageConvertToBlock(
+    client,
+    input,
+    options.writer.agentProjectItemId,
+  );
+  await itemDeleteWithClient(client, page.databaseId, page.id, {
+    queueAffinity: createActionQueueAffinity(),
+    actingUserId: options.actingUserId,
+    writer: options.writer,
+  });
+
+  const newBlockId = randomUUID();
+  await mutateDocWithClient(client, parentDocId, options.origin, (doc) => {
+    const position = readTrashedPagePosition(doc, page.id);
+    // The block was in the document when the hook ran, so the hook recorded it; this guards a document that changed
+    // between the plan's read and the hook's own write, which rolls the trash back.
+    if (position === null || position.blockId !== block.id) throw notAConvertibleBlock("block_changed");
+    insertBlocks(doc, position.afterBlockId, [
+      { id: newBlockId, type: input.type, indent: position.indent, text: title },
+    ]);
+  });
+  return { blockId: newBlockId, trashedPageCount };
 }

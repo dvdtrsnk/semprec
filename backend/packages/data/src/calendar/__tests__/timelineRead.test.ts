@@ -31,6 +31,11 @@ let dataPool: Pool;
 
 const USER = { writerKind: "user" } as const;
 const DAY = "2026-10-16";
+/** Sets the server clock to noon of `day` in the seeded zone, so a completion made next has that `completedOn`. */
+function completedOn(day: string): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(`${day}T10:00:00Z`));
+}
 const SKIP_MESSAGE = "Calendar timeline left out an item with an invalid stored value";
 
 const fullItemSchema = z
@@ -53,6 +58,10 @@ const fullItemSchema = z
     project: z.object({ id: z.string(), name: z.string(), color: z.string().nullable() }).strict().nullable(),
     people: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
     transcript: z.object({ id: z.string(), status: z.string().nullable() }).strict().nullable(),
+    hostEvent: z.null(),
+    tasks: z.array(z.unknown()).nullable(),
+    counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
+    carriedFrom: z.string().nullable(),
     updatedAt: z.string(),
     readOnly: z.boolean(),
   })
@@ -301,6 +310,7 @@ describe("calendar timeline read (issue #1717)", () => {
     const invoice = await w.create("tasks", { name: "Send invoice", date: DAY, timeFrom: "08:00" });
     await w.link("tasks", "project", invoice, project);
     await w.link("tasks", "people", invoice, jana);
+    completedOn(DAY);
     await w.update("tasks", invoice, { status: "done" });
     const rent = await w.create("tasks", { name: "Pay rent", date: DAY });
     const skipped = await w.create("tasks", { name: "Call plumber", date: DAY, status: "wontDo" });
@@ -337,6 +347,10 @@ describe("calendar timeline read (issue #1717)", () => {
       project: null,
       people: [],
       transcript: null,
+      hostEvent: null,
+      tasks: null,
+      counts: null,
+      carriedFrom: null,
       updatedAt: await w.updatedAt("tasks", rent),
       readOnly: false,
     });
@@ -359,6 +373,10 @@ describe("calendar timeline read (issue #1717)", () => {
       project: null,
       people: [],
       transcript: null,
+      hostEvent: null,
+      tasks: [],
+      counts: { open: 0, total: 0 },
+      carriedFrom: null,
       updatedAt: await w.updatedAt("events", standup),
       readOnly: false,
     });
@@ -385,6 +403,10 @@ describe("calendar timeline read (issue #1717)", () => {
         { id: petr, name: "Petr Novák" },
       ].sort(byId),
       transcript: null,
+      hostEvent: null,
+      tasks: [],
+      counts: { open: 0, total: 0 },
+      carriedFrom: null,
       updatedAt: await w.updatedAt("events", meeting),
       readOnly: false,
     });
@@ -408,6 +430,10 @@ describe("calendar timeline read (issue #1717)", () => {
       project: { id: project, name: "Website", color: "#FF9500" },
       people: [{ id: jana, name: "Jana Kovářová" }],
       transcript: null,
+      hostEvent: null,
+      tasks: null,
+      counts: null,
+      carriedFrom: null,
       updatedAt: await w.updatedAt("tasks", invoice),
       readOnly: false,
     });
@@ -485,6 +511,7 @@ describe("calendar timeline read (issue #1717)", () => {
     const w = world(await newTenant());
     const open = await w.create("tasks", { name: "Open", date: DAY });
     const done = await w.create("tasks", { name: "Done", date: DAY });
+    completedOn(DAY);
     await w.update("tasks", done, { status: "done" });
     await w.create("tasks", { name: "Dropped", date: DAY, status: "wontDo" });
     await w.create("tasks", { name: "Unscheduled" });
@@ -726,7 +753,7 @@ describe("calendar timeline read (issue #1717)", () => {
     ["events", "endDate", { endDate: "soon" }, DAY, DAY],
     ["events", "timeFrom", { timeFrom: "25:00" }, DAY, DAY],
     ["events", "timeTo", { timeTo: "9am" }, DAY, DAY],
-    ["tasks", "date", { date: "abc" }, DAY, DAY],
+    ["tasks", "date", { date: "abc", effectiveDate: "abc" }, DAY, DAY],
     ["tasks", "timeFrom", { timeFrom: "noon" }, DAY, DAY],
     ["tasks", "timeTo", { timeTo: "late" }, DAY, DAY],
   ] as const)(
@@ -881,6 +908,7 @@ describe("calendar timeline read (issue #1717)", () => {
         endDate: null,
         timeFrom: null,
         status: "notDone",
+        counts: null,
         updatedAt: await w.updatedAt("tasks", task),
         readOnly: false,
       },
@@ -894,6 +922,7 @@ describe("calendar timeline read (issue #1717)", () => {
         endDate: null,
         timeFrom: "09:00",
         status: null,
+        counts: { open: 0, total: 0 },
         updatedAt: await w.updatedAt("events", event),
         readOnly: false,
       },
@@ -1052,6 +1081,10 @@ describe("calendar timeline read (issue #1717)", () => {
       project: null,
       people: [],
       transcript: null,
+      hostEvent: null,
+      tasks: null,
+      counts: null,
+      carriedFrom: null,
       updatedAt: "2026-10-16T00:00:00.000Z",
       readOnly: true,
     };
@@ -1074,6 +1107,7 @@ describe("calendar timeline read (issue #1717)", () => {
         timezone: "Europe/Prague",
         today: DAY,
         now: { date: DAY, time: "12:15" },
+        at: new Date("2026-10-16T10:15:00Z"),
       },
     ]);
   });

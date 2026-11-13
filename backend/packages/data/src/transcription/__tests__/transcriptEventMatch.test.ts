@@ -308,7 +308,11 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
     expect(typeof result).toBe("object");
     expect(
-      typeof result === "string" ? [] : result.candidates.map(({ id, timeFrom, timeTo }) => ({ id, timeFrom, timeTo })),
+      typeof result === "string"
+        ? []
+        : result.candidates.flatMap((candidate) =>
+            "id" in candidate ? [{ id: candidate.id, timeFrom: candidate.timeFrom, timeTo: candidate.timeTo }] : [],
+          ),
     ).toEqual([
       { id: spanId, timeFrom: "13:00", timeTo: "13:30" },
       { id: pointId, timeFrom: "13:15", timeTo: null },
@@ -1659,9 +1663,10 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
 
     const result = await inTenant(tenant, () => matchInTransaction(mine.transcriptId));
 
-    expect(typeof result === "string" ? [] : result.candidates.map(({ id }) => id)).toEqual([
-      mine.meetingId,
-      mine.standupId,
-    ]);
+    expect(
+      typeof result === "string"
+        ? []
+        : result.candidates.flatMap((candidate) => ("id" in candidate ? candidate.id : [])),
+    ).toEqual([mine.meetingId, mine.standupId]);
   });
 });

@@ -4127,6 +4127,175 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect((untouched!.properties.proposal as { target: string }).target).toBe(tasksId);
   });
 
+  describe("revise with an optional envelope, a message alone and ifVersion (issue #1870)", () => {
+    async function readCard(id: string) {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`Card ${id} not found`);
+      return card;
+    }
+
+    /** A `kind = 'transcript'` card as the match step emits it: no Event in the window, so a create-Event proposal. */
+    async function createTranscriptCard(): Promise<string> {
+      const transcriptsId = await databaseIdFor("transcripts");
+      const transcript = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: transcriptsId, properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" } },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        ),
+      );
+      await withTransaction(pool, (client) =>
+        matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 3600 }),
+      );
+      const { rows } = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+        [proposalsId],
+      );
+      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
+      return rows[0].id;
+    }
+
+    function revise(cardId: string, input: Parameters<typeof reviseProposalWithClient>[3]) {
+      return withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, input),
+      );
+    }
+
+    it("appends the message to a transcript card's history and changes nothing else", async () => {
+      const cardId = await createTranscriptCard();
+      const before = await readCard(cardId);
+
+      const revised = await revise(cardId, { message: "Use the planning meeting instead" });
+
+      const { history: historyBefore, ...restBefore } = before.properties;
+      const { history: historyAfter, ...restAfter } = revised.properties;
+      expect(restAfter).toEqual(restBefore);
+      expect(revised.properties.status).toBe("proposed");
+      expect(historyAfter).toEqual([
+        ...(historyBefore as unknown[]),
+        { author: "user", message: "Use the planning meeting instead", at: expect.any(String) },
+      ]);
+      const stored = await readCard(cardId);
+      expect({ properties: stored.properties, updatedAt: stored.updatedAt }).toEqual({
+        properties: revised.properties,
+        updatedAt: revised.updatedAt,
+      });
+    });
+
+    it("refuses a message alone on a card that is not a transcript card and writes nothing", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+      const before = await readCard(card.id);
+
+      const error = await revise(card.id, { message: "Use the planning meeting instead" }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ code: "validation_failed", details: { field: "message" } });
+      expect(await readCard(card.id)).toEqual(before);
+    });
+
+    it("refuses a message alone on a locked transcript card and writes nothing", async () => {
+      const cardId = await createTranscriptCard();
+      await withTransaction(pool, (client) =>
+        rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+      );
+      const before = await readCard(cardId);
+
+      const error = await revise(cardId, { message: "Too late" }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: "validation_failed", details: { field: "status" } });
+      expect(await readCard(cardId)).toEqual(before);
+    });
+
+    it("records 'Revised by user.' when an envelope comes without a message", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+
+      const revised = await revise(card.id, {
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy bread" },
+      });
+
+      const history = revised.properties.history as Array<Record<string, unknown>>;
+      expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Revised by user." });
+      expect(revised.properties.proposal).toMatchObject({ properties: { name: "Buy bread" } });
+    });
+
+    it("applies an envelope revise whose ifVersion equals the card's updatedAt", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+
+      const revised = await revise(card.id, {
+        ifVersion: card.updatedAt,
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy bread" },
+      });
+
+      expect(revised.properties.proposal).toMatchObject({ properties: { name: "Buy bread" } });
+    });
+
+    it("applies a message alone whose ifVersion equals the card's updatedAt", async () => {
+      const cardId = await createTranscriptCard();
+      const card = await readCard(cardId);
+
+      const revised = await revise(cardId, { ifVersion: card.updatedAt, message: "Note this" });
+
+      const history = revised.properties.history as Array<Record<string, unknown>>;
+      expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Note this" });
+    });
+
+    it("refuses an envelope revise with a stale ifVersion as version_conflict carrying the current card, writing nothing", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+      const stale = card.updatedAt;
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: card.id,
+            propertiesPatch: { history: appendHistoryEntry(card.properties.history, "A concurrent edit", "user") },
+          },
+          { allowedSystemKeys: ["history"] },
+        ),
+      );
+      const current = await readCard(card.id);
+      expect(current.updatedAt).not.toBe(stale);
+
+      const error = await revise(card.id, {
+        ifVersion: stale,
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy bread" },
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict", details: { current } });
+      expect(await readCard(card.id)).toEqual(current);
+    });
+
+    it("refuses a message alone with a stale ifVersion as version_conflict, writing nothing", async () => {
+      const cardId = await createTranscriptCard();
+      const card = await readCard(cardId);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: cardId,
+            propertiesPatch: { history: appendHistoryEntry(card.properties.history, "A concurrent edit", "user") },
+          },
+          { allowedSystemKeys: ["history"] },
+        ),
+      );
+      const current = await readCard(cardId);
+
+      const error = await revise(cardId, { ifVersion: card.updatedAt, message: "Stale note" }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ code: "version_conflict", details: { current } });
+      expect(await readCard(cardId)).toEqual(current);
+    });
+  });
+
   describe("invalidReason on revise (issue #1482)", () => {
     async function readCard(id: string) {
       return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));

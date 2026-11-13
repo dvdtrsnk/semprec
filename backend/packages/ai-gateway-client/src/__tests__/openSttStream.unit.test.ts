@@ -95,6 +95,27 @@ describe("openSttStream", () => {
     expect(rec.log).toEqual(["partial:ahoj", "final:ahoj svete", "error:budget_exceeded", "close"]);
   });
 
+  it("sends an attribute control message while open and reports false once the stream is closed", async () => {
+    const harness = await startServer();
+    const rec = recorder();
+    const stream = await openSttStream({ port: harness.port, token: "secret" }, {}, rec.events);
+    const server = await harness.connected;
+    const received: Array<{ data: string; binary: boolean }> = [];
+    server.on("message", (data, binary) => received.push({ data: (data as Buffer).toString("utf8"), binary }));
+    const messageId = "8b1e2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+
+    expect(stream.attribute(messageId)).toBe(true);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received).toEqual([
+      { data: JSON.stringify({ type: "attribute", sempMessageId: messageId }), binary: false },
+    ]);
+
+    server.close(1008);
+    await rec.closed;
+    expect(stream.attribute(messageId)).toBe(false);
+    expect(received).toHaveLength(1);
+  });
+
   it("reports a gateway message it cannot parse as provider_error and closes the stream", async () => {
     const harness = await startServer();
     const rec = recorder();

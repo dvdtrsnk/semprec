@@ -53,7 +53,19 @@ import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { mailItemPurgeHook } from "./mail/mailPurgeHook.js";
 import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
-import { EVENTS_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import {
+  AREAS_MODULE_ID,
+  COMPANIES_MODULE_ID,
+  EVENTS_MODULE_ID,
+  FILES_MODULE_ID,
+  JOURNAL_MODULE_ID,
+  PEOPLE_MODULE_ID,
+  PROJECTS_MODULE_ID,
+  TASKS_MODULE_ID,
+} from "./seed/tenDatabaseKeys.js";
+import { registerItemSearchGroup, registerThreadSearchGroup } from "./search/searchGroupRegistry.js";
+import { sempThreadSearchGroup } from "./search/sempThreadSearch.js";
+import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
@@ -86,6 +98,7 @@ import { taskCompletedInEventHook } from "./tasks/taskCompletedInEventHook.js";
 import { eventHostedTasksDeleteHook, eventHostedTasksRestoreHook } from "./tasks/eventHostedTasksHooks.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
+import { transcriptProblemDeleteHook } from "./transcription/transcriptProblemDeleteHook.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
 import {
   transcriptCompanyLinkReleaseEdgeChangedHook,
@@ -352,3 +365,20 @@ registerItemPurgeHook(libraryCoverCandidatesPurgeHook);
 // Event queues a cancellation for the people it has an invitation for. No restore hook: a restore sends nothing.
 registerItemUpdateHook(eventInvitationItemUpdateHook);
 registerItemDeleteHook(eventInvitationItemDeleteHook);
+
+// Issue gh-1945: a trashed transcript's Semp status problem is resolved as `sourceDeleted`. gh-1945 declares gh-1919 as
+// its blocker, and gh-1919 registers no hook, so the entry has no registration order to keep.
+registerItemDeleteHook(transcriptProblemDeleteHook);
+
+// Issue sp-c30c3251-d5c3-4012-92a1-078257f3f83c: the groups of global search (search/searchGroupRegistry.ts). An item
+// group searches the databases of its owner modules; `chat` is the thread group of the Semp conversations of a person.
+// Issue gh-1864: `mail` is the thread group of the mail threads.
+registerItemSearchGroup({ type: "task", ownerModuleIds: [TASKS_MODULE_ID] });
+registerItemSearchGroup({ type: "event", ownerModuleIds: [EVENTS_MODULE_ID] });
+registerItemSearchGroup({ type: "project", ownerModuleIds: [PROJECTS_MODULE_ID] });
+registerItemSearchGroup({ type: "area", ownerModuleIds: [AREAS_MODULE_ID] });
+registerItemSearchGroup({ type: "contact", ownerModuleIds: [PEOPLE_MODULE_ID, COMPANIES_MODULE_ID] });
+registerItemSearchGroup({ type: "journal", ownerModuleIds: [JOURNAL_MODULE_ID] });
+registerItemSearchGroup({ type: "file", ownerModuleIds: [FILES_MODULE_ID] });
+registerThreadSearchGroup(mailGlobalSearchGroup);
+registerThreadSearchGroup(sempThreadSearchGroup);

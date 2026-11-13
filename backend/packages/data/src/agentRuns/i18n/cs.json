@@ -64,6 +64,7 @@
   "agentStep.title.operation.item.count": "Počítání {targetMany}",
   "agentStep.title.operation.page.duplicate": "Duplikace stránky",
   "agentStep.title.operation.page.rename": "Přejmenování stránky",
+  "agentStep.title.operation.page.convertToBlock": "Převod bloku stránky",
   "agentStep.title.operation.database.facets": "Seskupení {targetMany}",
   "agentStep.title.operation.search": "Hledání ve všech záznamech",
   "agentStep.target.areas.one": "oblasti",
@@ -109,5 +110,9 @@
   "agentStep.summary.approvalCount.zero": "bez schválení",
   "agentStep.summary.approvalCount.one": "{count} schválení",
   "agentStep.summary.approvalCount.few": "{count} schválení",
-  "agentStep.summary.approvalCount.other": "{count} schválení"
+  "agentStep.summary.approvalCount.other": "{count} schválení",
+  "agentRun.replyTitle.approval.outcome.executed": "Schválená akce provedena",
+  "agentRun.replyTitle.approval.outcome.rejected": "Akce zamítnuta",
+  "agentRun.replyTitle.approval.outcome.conflict": "Schválenou akci se nepodařilo provést",
+  "agentRun.replyTitle.system": "Automatické pokračování"
 }

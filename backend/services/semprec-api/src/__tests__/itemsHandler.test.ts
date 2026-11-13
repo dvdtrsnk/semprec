@@ -2804,6 +2804,133 @@ describe("item routes (issue #241)", () => {
     });
   });
 
+  describe("free text q (issue #1857)", () => {
+    async function makeFilms() {
+      const db = await makeMoviesDb();
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "stage",
+        name: "Stage",
+        type: "select",
+        config: { options: [{ key: "todo" }, { key: "done" }] },
+      });
+      const make = (title: string, stage: string) =>
+        chokePoint.createItem({ databaseId: db.id, properties: { title, stage } });
+      return {
+        db,
+        arrival: await make("Příchod Novák", "todo"),
+        dune: await make("Duna Novák", "done"),
+        third: await make("Novák třetí", "todo"),
+        other: await make("Jiný film", "todo"),
+      };
+    }
+
+    function post(path: string, headers: Record<string, string>, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("narrows a database query by q together with the filter and keeps totalCount at the filter-only count", async () => {
+      const { db, arrival, third, other } = await makeFilms();
+      const filter = { type: "equals", property: "stage", value: "todo" };
+
+      const res = await post(`/api/databases/${db.id}/query`, await authHeader(), {
+        q: "novak",
+        filter,
+        includeCount: true,
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemQueryBody;
+      expect(body.items.map((item) => item.id).sort()).toEqual([arrival.id, third.id].sort());
+      expect(body.items.map((item) => item.id)).not.toContain(other.id);
+      expect(body.totalCount).toBe(3);
+    });
+
+    it("pages a q match in the requested sort order, one item per page, with the cursor", async () => {
+      const { db } = await makeFilms();
+      const headers = await authHeader();
+      const titles: string[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const res = await post(`/api/databases/${db.id}/query`, headers, {
+          q: "novak",
+          sort: [{ property: "title", direction: "asc" }],
+          limit: 1,
+          ...(cursor === null ? {} : { cursor }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as ItemQueryBody;
+        titles.push(...body.items.map((item) => String(item.properties.title)));
+        cursor = body.nextCursor;
+        if (cursor === null) break;
+      }
+      expect(titles).toEqual(["Duna Novák", "Novák třetí", "Příchod Novák"]);
+    });
+
+    it("answers 400 on the field q for an empty, an over-long and a non-string q, without repeating it", async () => {
+      const { db } = await makeFilms();
+      const headers = await authHeader();
+      const tooLong = "q".repeat(201);
+      for (const q of ["", tooLong, 7]) {
+        const res = await post(`/api/databases/${db.id}/query`, headers, { q });
+        expect(res.status).toBe(400);
+        const text = await res.text();
+        expect(text).toContain('"q"');
+        expect(text).not.toContain(tooLong);
+      }
+    });
+
+    it("rejects a query with q and no session", async () => {
+      const res = await post(`/api/databases/${randomUUID()}/query`, {}, { q: "novak" });
+      expect(res.status).toBe(401);
+    });
+
+    it("counts per entry only the rows q matches, ANDed with the filter, and 400s an invalid q on its entry", async () => {
+      const { db } = await makeFilms();
+      const headers = await authHeader();
+      const filter = { type: "equals", property: "stage", value: "todo" };
+
+      const res = await post("/api/items/count", headers, {
+        items: [
+          { databaseId: db.id },
+          { databaseId: db.id, q: "novak" },
+          { databaseId: db.id, q: "novak", filter },
+          { databaseId: db.id, q: "(novak & | ! : ')", groupBy: "stage" },
+        ],
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        counts: [
+          { databaseId: db.id, count: 4 },
+          { databaseId: db.id, count: 3 },
+          { databaseId: db.id, count: 2 },
+          {
+            databaseId: db.id,
+            count: 3,
+            groups: [
+              { key: "todo", count: 2 },
+              { key: "done", count: 1 },
+            ],
+          },
+        ],
+      });
+
+      const marker = "zzmarkerzz".repeat(30);
+      const refused = await post("/api/items/count", headers, {
+        items: [{ databaseId: db.id }, { databaseId: db.id, q: marker }],
+      });
+      expect(refused.status).toBe(400);
+      const text = await refused.text();
+      expect(text).toContain("items.1.q");
+      expect(text).not.toContain(marker);
+    });
+  });
+
   describe("count items (issue #1709)", () => {
     /** The whole body of a successful count. */
     const countsBody = z
@@ -4213,6 +4340,168 @@ describe("item routes (issue #241)", () => {
           filter: { type: "relation_contains", property: "assignedTo", value: person.id },
         },
       ]);
+    });
+  });
+
+  describe("GET /api/items/:id/delete-impact (issue #1856)", () => {
+    interface DeleteImpactBody {
+      related: Array<{ databaseKey: string | null; count: number }>;
+      subtreeItemCount: number;
+      subtreePageCount: number;
+      linksToOwn: Array<{ itemId: string; propertyKey: string }>;
+    }
+
+    async function getImpact(id: string, headers: Record<string, string>) {
+      return fetch(`${baseUrl}/api/items/${id}/delete-impact`, { headers });
+    }
+
+    async function createSubpage(parentItemId: string, title: string, headers: Record<string, string>) {
+      const res = await fetch(`${baseUrl}/api/items/${parentItemId}/page/subpages`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { pages: Array<{ pageItemId: string }> };
+      const page = body.pages[0];
+      if (!page) throw new Error("Missing created page");
+      return page.pageItemId;
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/delete-impact`);
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects an id that is not a uuid with 400, and answers an unknown id and an item in the Trash with the same 404", async () => {
+      const headers = await authHeader();
+      const db = await chokePoint.createDatabase({ name: "Notes" });
+      const trashed = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      await chokePoint.softDeleteItem(db.id, trashed.id);
+
+      expect((await getImpact("not-a-uuid", headers)).status).toBe(400);
+      const unknownId = randomUUID();
+      const unknown = await getImpact(unknownId, headers);
+      const inTrash = await getImpact(trashed.id, headers);
+
+      expect(unknown.status).toBe(404);
+      expect(inTrash.status).toBe(404);
+      const unknownBody = (await unknown.json()) as ErrorBody;
+      expect(unknownBody.error.code).toBe("not_found");
+      expect(((await inTrash.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers all four parts for an item and changes no data", async () => {
+      const headers = await authHeader();
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const notes = await chokePoint.createDatabase({ name: "Notes" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "note",
+        name: "Note",
+        targetDatabaseId: notes.id,
+      });
+      const note = await chokePoint.createItem({ databaseId: notes.id, properties: {} });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: task.id,
+        targetItemId: note.id,
+      });
+      const inline = await chokePoint.createInlineDatabase({ name: "Rows", parentItemId: note.id });
+      for (let index = 0; index < 3; index += 1) {
+        await chokePoint.createItem({ databaseId: inline.id, properties: {} });
+      }
+      const page = await createSubpage(note.id, "Plan", headers);
+      const first = await createSubpage(page, "A", headers);
+      await createSubpage(page, "B", headers);
+      await createSubpage(first, "Nested", headers);
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: task.id,
+          propertyKey: "title",
+          ruleKey: "test.titleFromNote",
+          sources: [{ kind: "item", sourceItemId: note.id, sourcePropertyKey: "title" }],
+        }),
+      );
+      const itemsBefore = await pool.query("SELECT count(*)::int AS n FROM items");
+
+      const res = await getImpact(note.id, headers);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        related: [{ databaseKey: null, count: 1 }],
+        subtreeItemCount: 3,
+        // The page of the note, its two subpages and the page nested under one of them.
+        subtreePageCount: 4,
+        linksToOwn: [{ itemId: task.id, propertyKey: "title" }],
+      } satisfies DeleteImpactBody);
+      expect((await pool.query("SELECT count(*)::int AS n FROM items")).rows).toEqual(itemsBefore.rows);
+      expect((await chokePoint.getItem(notes.id, note.id))?.deletedAt).toBeNull();
+    });
+
+    it("reads all four parts in one repeatable-read snapshot", async () => {
+      const db = await chokePoint.createDatabase({ name: "Notes" });
+      const note = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      // `begins` records every transaction start the route issues on its own connection.
+      const begins: string[] = [];
+      const recordingPool = new Proxy(pool, {
+        get(target, property) {
+          if (property !== "connect") {
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(clientTarget, clientProperty) {
+                const value: unknown = Reflect.get(clientTarget, clientProperty, clientTarget);
+                if (clientProperty !== "query" || typeof value !== "function") {
+                  return typeof value === "function" ? value.bind(clientTarget) : value;
+                }
+                return (...args: unknown[]) => {
+                  const text = typeof args[0] === "string" ? args[0] : "";
+                  if (text.startsWith("BEGIN")) begins.push(text);
+                  return value.apply(clientTarget, args);
+                };
+              },
+            });
+          };
+        },
+      });
+      const route = createItemRoutes(
+        createGenericApplicationService(pool, testMetadataResolver),
+        recordingPool,
+        testMetadataResolver,
+      ).find((candidate) => candidate.method === "GET" && candidate.path === "/api/items/:id/delete-impact");
+      if (!route) throw new Error("expected the delete-impact route");
+
+      const result = await runInTenant(getTenantZeroId(), () =>
+        route.handler({
+          req: { url: `/api/items/${note.id}/delete-impact` } as IncomingMessage,
+          identity: { user: { id: randomUUID() } } as AuthenticatedIdentity,
+          params: { id: note.id },
+          body: undefined,
+        }),
+      );
+
+      expect(result.status).toBe(200);
+      expect(begins).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ"]);
+    });
+
+    it("answers a page with one subpage 1 and a page with two subpages, one of them nested into, 3", async () => {
+      const headers = await authHeader();
+      const db = await chokePoint.createDatabase({ name: "Hosts" });
+      const host = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      const page = await createSubpage(host.id, "Plan", headers);
+      await createSubpage(page, "A", headers);
+      const one = (await (await getImpact(page, headers)).json()) as DeleteImpactBody;
+      expect(one.subtreePageCount).toBe(1);
+
+      const second = await createSubpage(page, "B", headers);
+      await createSubpage(second, "Nested under B", headers);
+      const three = (await (await getImpact(page, headers)).json()) as DeleteImpactBody;
+      expect(three.subtreePageCount).toBe(3);
     });
   });
 

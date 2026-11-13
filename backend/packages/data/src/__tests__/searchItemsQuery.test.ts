@@ -6,6 +6,7 @@ import {
   type SearchGroup,
   type SearchGroupType,
   type SearchItemGroup,
+  type SearchItemResult,
   type SearchOutput,
 } from "@semprec/shared";
 import "../domainWriteHooks.js";
@@ -318,6 +319,171 @@ describe("global search: what is never returned", () => {
     );
     expect(idsOf(groupOf(asOther, "task"))).toEqual([foreign]);
     expect(JSON.stringify(asOther)).not.toContain(own);
+  });
+});
+
+describe("global search: the Journal period of a journal result (issue #1859)", () => {
+  /** The Journal entry of a period, created the way the first write to it creates it. */
+  async function journalEntry(type: "day" | "week", date: string): Promise<string> {
+    return runInTenant(tenant, async () => {
+      const journalId = await dbId("journal");
+      return withTransaction(
+        pool,
+        async (client) =>
+          (await getOrCreateJournalItem(client, journalId, type, new Date(`${date}T12:00:00Z`), "UTC")).id,
+      );
+    });
+  }
+
+  /** The `journal` of a result, or `undefined` when the result carries none. */
+  function journalOf(item: SearchItemResult): unknown {
+    return "journal" in item ? item.journal : undefined;
+  }
+
+  it("carries type day and the canonical period on a Journal day, and type week on a Journal week", async () => {
+    const day = await journalEntry("day", "2026-10-16");
+    const week = await journalEntry("week", "2026-10-16");
+
+    const group = groupOf(await search("2026"), "journal");
+
+    expect(group.total).toBe(2);
+    const byId = new Map(group.items.map((item) => [item.itemId, journalOf(item)]));
+    expect(byId.get(day)).toStrictEqual({ type: "day", period: "2026-10-16" });
+    expect(byId.get(week)).toStrictEqual({ type: "week", period: "2026-W42" });
+  });
+
+  it("carries the period on a Journal day found through the text of an Inbox entry, and never returns the Inbox entry", async () => {
+    const day = await journalEntry("day", "2026-10-16");
+    const inboxEntry = await runInTenant(tenant, async () => {
+      const inboxDatabaseId = await dbId("inbox");
+      const created = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId,
+          date: "2026-10-16",
+          time: "12:00",
+          text: "Rozpis dodávky klientovi",
+        }),
+      );
+      await recomputeJournalInboxDay(pool, day);
+      return created.id;
+    });
+
+    const answer = await search("rozpis dodávky");
+
+    expect(answer.groups.map((group) => group.type)).toEqual(["journal"]);
+    const group = groupOf(answer, "journal");
+    expect(idsOf(group)).toEqual([day]);
+    expect(journalOf(group.items[0]!)).toStrictEqual({ type: "day", period: "2026-10-16" });
+    expect(JSON.stringify(answer)).not.toContain(inboxEntry);
+  });
+
+  it("leaves out a Journal entry in the trash and keeps its live sibling with its period", async () => {
+    const live = await journalEntry("day", "2026-10-15");
+    const trashed = await journalEntry("day", "2026-10-16");
+    await runInTenant(tenant, async () => cp.softDeleteItem(await dbId("journal"), trashed));
+
+    const group = groupOf(await search("2026"), "journal");
+
+    expect(idsOf(group)).toEqual([live]);
+    expect(group.total).toBe(1);
+    expect(journalOf(group.items[0]!)).toStrictEqual({ type: "day", period: "2026-10-15" });
+    expect(JSON.stringify(group)).not.toContain(trashed);
+  });
+
+  it("gives results of the other groups no journal field", async () => {
+    const task = await create("tasks", { name: "Úkol 2026" });
+    const event = await create("events", { name: "Schůzka 2026", date: "2026-10-16" });
+    const project = await create("projects", { name: "Projekt 2026" });
+    const day = await journalEntry("day", "2026-10-16");
+
+    const answer = await search("2026");
+
+    expect(answer.groups.map((group) => group.type)).toEqual(["task", "event", "project", "journal"]);
+    for (const group of answer.groups) {
+      for (const item of group.items) {
+        expect("journal" in item, group.type).toBe(group.type === "journal");
+      }
+    }
+    expect([task, event, project, day].every((id) => JSON.stringify(answer).includes(id))).toBe(true);
+  });
+
+  it("returns only the stored type and period, with no localised period label anywhere in the answer", async () => {
+    await journalEntry("day", "2026-10-16");
+    await journalEntry("week", "2026-10-16");
+
+    const answer = await search("2026");
+    const group = groupOf(answer, "journal");
+
+    for (const item of group.items) {
+      expect(Object.keys(journalOf(item) as object).sort()).toEqual(["period", "type"]);
+      expect(Object.keys(item).sort()).toEqual([
+        "databaseId",
+        "databaseKey",
+        "itemId",
+        "journal",
+        "snippet",
+        "subtitleParts",
+        "title",
+      ]);
+      expect(item.subtitleParts).toEqual([]);
+    }
+    // The label of 2026-10-16 in either language, composed with the same Intl API a client uses, is nowhere in the answer.
+    const text = JSON.stringify(answer).toLowerCase();
+    const instant = new Date("2026-10-16T12:00:00Z");
+    for (const locale of ["cs", "en"]) {
+      for (const options of [{ weekday: "long" }, { month: "long" }] as const) {
+        const word = new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" }).format(instant).toLowerCase();
+        expect(text, `${locale} ${word}`).not.toContain(word);
+      }
+    }
+  });
+
+  describe("an entry whose type or period is missing or unknown", () => {
+    /** Writes a state the Journal's own writes never produce (type and period are system keys it always sets), directly. */
+    async function corrupt(itemId: string, statement: string): Promise<void> {
+      await admin.query(`UPDATE items SET properties = ${statement} WHERE id = $1`, [itemId]);
+    }
+
+    it.each([
+      ["an unknown type", `jsonb_set(properties, '{type}', '"decade"')`],
+      ["no type", `properties - 'type'`],
+      ["no period", `properties - 'period'`],
+      ["an empty period", `jsonb_set(properties, '{period}', '""')`],
+      ["a period that is not text", `jsonb_set(properties, '{period}', '2026')`],
+    ])("drops an entry with %s from the group, from its total and from the answer", async (_label, statement) => {
+      const valid = await journalEntry("day", "2026-10-15");
+      const broken = await journalEntry("day", "2026-10-16");
+      await corrupt(broken, statement);
+
+      const answer = await search("2026");
+
+      const group = groupOf(answer, "journal");
+      expect(idsOf(group)).toEqual([valid]);
+      expect(group.total).toBe(1);
+      expect(JSON.stringify(answer)).not.toContain(broken);
+    });
+
+    it("answers no journal group when every matching entry is malformed", async () => {
+      await corrupt(await journalEntry("day", "2026-10-16"), `properties - 'type'`);
+      expect(await search("2026")).toEqual({ groups: [] });
+    });
+
+    it("pages over the valid entries only: the total and the cursor never count a dropped entry", async () => {
+      const days = await Promise.all(["2026-10-13", "2026-10-14", "2026-10-15"].map((day) => journalEntry("day", day)));
+      await corrupt(await journalEntry("day", "2026-10-16"), `properties - 'period'`);
+      await corrupt(await journalEntry("day", "2026-10-17"), `jsonb_set(properties, '{type}', '"decade"')`);
+
+      const first = groupOf(await search("2026", { scope: ["journal"], perGroupLimit: 2 }), "journal");
+      expect([first.total, first.items.length]).toEqual([3, 2]);
+      if (first.nextCursor === null) throw new Error("Expected a second page");
+      const second = groupOf(
+        await search("2026", { scope: ["journal"], perGroupLimit: 2, cursor: first.nextCursor }),
+        "journal",
+      );
+
+      expect([second.total, second.items.length, second.nextCursor]).toEqual([3, 1, null]);
+      expect([...idsOf(first), ...idsOf(second)].sort()).toEqual([...days].sort());
+    });
   });
 });
 

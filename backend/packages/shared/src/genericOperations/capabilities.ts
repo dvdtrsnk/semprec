@@ -33,7 +33,7 @@ export function isRiskClass(value: string): value is RiskClass {
 /**
  * Reads and reversible/non-destructive writes never require approval. `database.archive`,
  * `property.delete`, `view.delete`, `item.delete`, and `relation.delete` are the five
- * destructive operations that do; `page.restoreVersion` (issue #1617), `page.replace` (issue #1765) and `page.mergeJournalDuplicates` (issue #2017) are the sixth to eighth. No approval
+ * destructive operations that do; `page.restoreVersion` (issue #1617), `page.replace` (issue #1765), `page.mergeJournalDuplicates` (issue #2017) and `page.convertToBlock` (issue #1876) are the sixth to ninth. No approval
  * enforcement happens in this batch position — the
  * interceptor consuming this metadata is #220.
  */
@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 50 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 51 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -120,6 +120,10 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   // assistant proposes the merge and the user decides (issue #2017). Not `reversible`: restoring the trashed entry does
   // not move its content and links back.
   "page.mergeJournalDuplicates": destructive("core.item.write", false),
+  // Trashes a page and the pages below it and rewrites the block in the parent, so an agent's call is held for approval
+  // every time (issue #1876). `reversible`: the trashed pages come back with their block through `item.restore` for the
+  // retention period, and the converted block stays for the user to remove.
+  "page.convertToBlock": destructive("core.item.write", true),
   "page.get": nonDestructive("core.item.read", "read"),
   "page.changes": nonDestructive("core.item.read", "read"),
   // Additive and reversible through `item.delete`.

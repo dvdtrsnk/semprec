@@ -46,6 +46,7 @@ export {
   createListAgentDatabaseGrantsRouteHandler,
   createPatchAgentDatabaseGrantRouteHandler,
 } from "../agentGrants/agentDatabaseGrantsRouteHandlers.js";
+export { createTrashDatabasesRouteHandler, createTrashItemsRouteHandler } from "../trash/trashRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -270,6 +271,26 @@ export const manifest: ModuleManifest = {
       // The project and database locks, the removal of a default decision and the upsert of any other commit
       // together (issue #1841): a shape the generic item-write endpoint can't express.
       justification: "transactional-semantics",
+    },
+    {
+      name: "listTrashItems",
+      method: "GET",
+      path: "/api/trash/items",
+      handlerExport: "createTrashItemsRouteHandler",
+      // The trashed cascade roots of every database of the caller's tenant with their purge day, shaped for
+      // exactly one consumer, the "Recently deleted" screen (issue gh-1851): the generic query reads one
+      // database at a time and knows neither cascade roots nor the retention.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "listTrashDatabases",
+      method: "GET",
+      path: "/api/trash/databases",
+      handlerExport: "createTrashDatabasesRouteHandler",
+      // The archived user databases of the caller's tenant with their live item count, shaped for exactly one
+      // consumer, the "Databases" tab of the "Recently deleted" screen (issue gh-1873): `GET /api/databases` leaves
+      // archived databases out and no generic read lists them.
+      justification: "single-consumer-read",
     },
   ],
 };

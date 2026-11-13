@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 50-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839), extracted from #37's
+ * Strict Zod input schemas for the 51-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839, #1876), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -334,6 +334,15 @@ const includeField = z
   .optional();
 export type ItemReadInclude = z.infer<typeof includeField>;
 
+/** The longest text `search` and the `q` of a query or a count take. */
+export const SEARCH_MAX_QUERY_LENGTH = 200;
+
+/**
+ * Free text that narrows one database's rows together with the filter (issue #1857): the same text match the global
+ * search uses, restricted to the queried database. It is plain text: query syntax characters carry no meaning.
+ */
+const itemSearchText = z.string().min(1).max(SEARCH_MAX_QUERY_LENGTH);
+
 const queryFields = {
   include: includeField,
   cursor,
@@ -342,6 +351,7 @@ const queryFields = {
   sort: z.array(sortSpecSchema).max(MAX_SORT_SPECS).optional(),
   inTrash: z.boolean().optional(),
   includeCount: z.boolean().optional(),
+  q: itemSearchText.optional(),
 };
 
 export const ViewQueryInputSchema = z.object({ viewId: z.string(), ...queryFields }).strict();
@@ -357,7 +367,8 @@ const ITEM_COUNT_MAX_ENTRIES = 20;
  * Up to 20 counts in one call (issue #1709). Each entry counts the items of one database under `filter`,
  * the filter tree `database.query` takes. `groupBy` names a relation or select property of that database
  * to split the count by, and `collection: true` also applies the collection filter the database's module
- * manifest declares. Whether `groupBy` names a groupable property is decided by the operation.
+ * manifest declares. Whether `groupBy` names a groupable property is decided by the operation. `q` counts only the
+ * items of that database the text matches (issue #1857), ANDed with the filter, and applies to every group.
  */
 export const ItemCountInputSchema = z
   .object({
@@ -369,6 +380,7 @@ export const ItemCountInputSchema = z
             filter: filterNodeSchema.optional(),
             groupBy: z.string().min(1).optional(),
             collection: z.boolean().optional(),
+            q: itemSearchText.optional(),
           })
           .strict(),
       )
@@ -410,8 +422,8 @@ export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
 
 /**
  * The groups of `search` results in their fixed order (issue #1842). `contact` holds People and Companies together;
- * `mail` is an accepted scope value whose group a later issue fills, so it is always empty for now. `chat` holds the
- * Semp threads of a person (issue #1854); an agent actor is never given it.
+ * `mail` holds the mail threads (issue #1864), one entry per thread. `chat` holds the Semp threads of a person
+ * (issue #1854); an agent actor is never given it.
  */
 export const SEARCH_GROUP_TYPES = [
   "task",
@@ -426,10 +438,15 @@ export const SEARCH_GROUP_TYPES = [
 ] as const;
 export type SearchGroupType = (typeof SEARCH_GROUP_TYPES)[number];
 
-/** The groups whose results are items, in the order of `SEARCH_GROUP_TYPES`; the others are threads and carry `threadId` instead of an item and a database. */
+/** The groups whose results are items, in the order of `SEARCH_GROUP_TYPES`; the others are threads and carry a `threadId`. */
 export const SEARCH_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "journal", "file"] as const;
 export type SearchItemGroupType = (typeof SEARCH_ITEM_GROUP_TYPES)[number];
+/** The item groups whose results carry no Journal period. */
+const SEARCH_NON_JOURNAL_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "file"] as const;
 const SEARCH_THREAD_GROUP_TYPES = ["mail", "chat"] as const;
+
+/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
+const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
 
 /** The closed set of `kind`s of a result's `subtitleParts`; `movedFrom` and `missedInEvent` are emitted by later issues. */
 export const SEARCH_SUBTITLE_KINDS = [
@@ -451,7 +468,6 @@ export const SEARCH_SUBTITLE_KINDS = [
 ] as const;
 export type SearchSubtitleKind = (typeof SEARCH_SUBTITLE_KINDS)[number];
 
-const SEARCH_MAX_QUERY_LENGTH = 200;
 const SEARCH_DEFAULT_PER_GROUP_LIMIT = 4;
 const SEARCH_MAX_PER_GROUP_LIMIT = 50;
 /** An opaque keyset token is far shorter; the cap only keeps an absurd value out of the decoder. */
@@ -500,24 +516,59 @@ const searchResultFields = {
   /**
    * An excerpt of at most 160 characters of plain text from the stored text of the item that matched the query (its
    * page and, for a Journal day, its Inbox entries). It is `null` for a result found through anything else, and for the
-   * thread-backed groups, whose excerpts later issues build.
+   * `chat` group. A `mail` result carries the matching fragment of a message, or the preview of the last message.
    */
   snippet: z.string().nullable(),
 };
 
-const SearchItemResultSchema = z
-  .object({ itemId: canonicalUuid, databaseId: canonicalUuid, databaseKey: z.string().min(1), ...searchResultFields })
-  .strict();
+const searchItemResultFields = {
+  itemId: canonicalUuid,
+  databaseId: canonicalUuid,
+  databaseKey: z.string().min(1),
+  ...searchResultFields,
+};
+
+const SearchItemResultSchema = z.object(searchItemResultFields).strict();
 export type SearchItemResult = z.infer<typeof SearchItemResultSchema>;
+
+/**
+ * The Journal period a `journal` group result stands for (issue #1859): the stored `type` and the canonical `period`
+ * string (`2026-10-16`, `2026-W42`, `2026-08`, `2026-Q3`, `2026`). Both are canonical keys; a client composes the
+ * localised label itself.
+ */
+const SearchJournalPeriodSchema = z
+  .object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) })
+  .strict();
+
+const SearchJournalResultSchema = z.object({ ...searchItemResultFields, journal: SearchJournalPeriodSchema }).strict();
+export type SearchJournalResult = z.infer<typeof SearchJournalResultSchema>;
 
 const SearchThreadResultSchema = z.object({ threadId: canonicalUuid, ...searchResultFields }).strict();
 export type SearchThreadResult = z.infer<typeof SearchThreadResultSchema>;
 
-/** A group is item-backed or thread-backed by its `type`; `total` counts every match of the group, not only the listed ones. */
+/**
+ * An entry of the `mail` group (issue #1864): the thread and, beside it, the Emails item of the thread's last message,
+ * which is what a client opens. The `chat` entries have no item and stay `SearchThreadResult`.
+ */
+const SearchMailResultSchema = z
+  .object({
+    threadId: canonicalUuid,
+    itemId: canonicalUuid,
+    databaseId: canonicalUuid,
+    databaseKey: z.string().min(1),
+    ...searchResultFields,
+  })
+  .strict();
+export type SearchMailResult = z.infer<typeof SearchMailResultSchema>;
+
+/**
+ * A group is item-backed or thread-backed by its `type`; `total` counts every match of the group, not only the listed
+ * ones. Only the `journal` group's results carry `journal` (issue #1859).
+ */
 const SearchGroupSchema = z.discriminatedUnion("type", [
   z
     .object({
-      type: z.enum(SEARCH_ITEM_GROUP_TYPES),
+      type: z.enum(SEARCH_NON_JOURNAL_ITEM_GROUP_TYPES),
       total: z.number().int().min(0),
       items: z.array(SearchItemResultSchema),
       nextCursor: z.string().min(1).nullable(),
@@ -525,9 +576,17 @@ const SearchGroupSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("journal"),
+      total: z.number().int().min(0),
+      items: z.array(SearchJournalResultSchema),
+      nextCursor: z.string().min(1).nullable(),
+    })
+    .strict(),
+  z
+    .object({
       type: z.enum(SEARCH_THREAD_GROUP_TYPES),
       total: z.number().int().min(0),
-      items: z.array(SearchThreadResultSchema),
+      items: z.array(z.union([SearchMailResultSchema, SearchThreadResultSchema])),
       nextCursor: z.string().min(1).nullable(),
     })
     .strict(),
@@ -643,9 +702,6 @@ export type RelationRelatedInput = z.infer<typeof RelationRelatedInputSchema>;
 export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 
-/** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
-const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
-
 /**
  * Turns a Journal period (type `type`, named by its canonical `period` key such as `2026-W42` or by any calendar
  * `date` inside it) into its Journal entry and page, created when missing (issue #1861). Exactly one of `date` and
@@ -730,6 +786,26 @@ export type PageDuplicateInput = z.infer<typeof PageDuplicateInputSchema>;
 export const PageRenameInputSchema = z.object({ pageItemId: canonicalUuid, title: z.string() }).strict();
 export type PageRenameInput = z.infer<typeof PageRenameInputSchema>;
 
+/** The block types a `page` block can be restyled into: every block type of the block model except `page` (docs/adr/2026-10-28-block-model-for-page-documents.md). */
+export const PAGE_CONVERT_TARGET_TYPES = ["text", "h1", "h2", "h3", "bullet", "number", "todo", "quote"] as const;
+export type PageConvertTargetType = (typeof PAGE_CONVERT_TARGET_TYPES)[number];
+
+/**
+ * Restyles the `page` block `blockId` of the page document of `parentItemId` into a block of `type`, with the subpage
+ * tree it names going to the Trash (issue #1876). `confirmedPageCount` is the number of pages the person was shown: the
+ * page and every live page below it, at least 1. Whether the block is a `page` block of that document and whether the
+ * count is still the current one is decided by the operation, not by this schema.
+ */
+export const PageConvertToBlockInputSchema = z
+  .object({
+    parentItemId: canonicalUuid,
+    blockId: z.string().min(1),
+    type: z.enum(PAGE_CONVERT_TARGET_TYPES),
+    confirmedPageCount: z.number().int().min(1).max(2147483647),
+  })
+  .strict();
+export type PageConvertToBlockInput = z.infer<typeof PageConvertToBlockInputSchema>;
+
 /** Most blocks one insert may name by id; bounds the array the edge accepts. */
 const PAGE_INSERT_MAX_BLOCK_IDS = 10_000;
 /** Longest Markdown body one insert accepts, in UTF-16 units (the REST adapter's own body cap is tighter in bytes). */
@@ -799,7 +875,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 50 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 51 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -849,6 +925,7 @@ export interface InputByOperation {
   "item.count": ItemCountInput;
   "page.duplicate": PageDuplicateInput;
   "page.rename": PageRenameInput;
+  "page.convertToBlock": PageConvertToBlockInput;
   "database.facets": DatabaseFacetsInput;
   search: SearchInput;
 }

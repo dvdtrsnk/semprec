@@ -38,6 +38,7 @@ import { compileFilterNode, resolveFilterCompileContext, type FilterProperties }
 import { buildFilterProperties } from "../views/filterProperties.js";
 import { parseFilterNode, type FilterNode } from "../views/filterTree.js";
 import { closedDatabaseRefusal } from "../views/closedDatabaseRefusal.js";
+import { andItemSearchMatch } from "../search/itemSearchMatch.js";
 import { selectOptionKeys } from "../views/sortCompiler.js";
 
 /**
@@ -94,6 +95,8 @@ export interface ItemCountEntryInput {
   groupBy?: string;
   /** Also applies the collection filter the resolver declares for the database, when it declares one. */
   collection?: boolean;
+  /** Free text (issue #1857): only the items whose search index row matches it are counted, and grouped, ANDed with the filter. */
+  q?: string;
 }
 
 export interface CountItemsBatchOptions {
@@ -170,7 +173,7 @@ async function countItemsEntry(
     .map((filter) => parseFilterNode(filter));
   const filterNode: FilterNode | undefined =
     filterNodes.length > 1 ? { type: "and", nodes: filterNodes } : filterNodes[0];
-  if (filterNode === undefined && entry.groupBy === undefined) {
+  if (filterNode === undefined && entry.groupBy === undefined && entry.q === undefined) {
     return { databaseId: entry.databaseId, ...(await itemsStore.countItemsGrouped(client, database.id)) };
   }
 
@@ -187,9 +190,11 @@ async function countItemsEntry(
     throw closedDatabaseRefusal(entry.groupBy, grouping.targetDatabaseId);
   }
   const context = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
-  const buildFilterSql = filterNode
+  const compiledFilterSql = filterNode
     ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties, params, context, closedDatabaseIds)
     : undefined;
+  const buildFilterSql =
+    entry.q !== undefined ? andItemSearchMatch(compiledFilterSql, database.id, entry.q) : compiledFilterSql;
   return {
     databaseId: entry.databaseId,
     ...(await itemsStore.countItemsGrouped(client, database.id, { buildFilterSql, grouping })),

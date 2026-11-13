@@ -28,8 +28,9 @@ export { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
 export { createSeriesOccurrence, startTaskSeries } from "./taskSeriesFixtures.js";
-// Test-only: the production writer of a heartbeat's tick thread (gh-1557), for route tests of its detail.
-export { getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
+// Test-only: the production writers of a heartbeat's tick thread (gh-1557) and of the reply message that closes
+// a tick run in it, for route tests of the run detail and its steps.
+export { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 // Test-only: lets a composition-root test outside this package observe the write hook contexts
 // (`writer`) a transport's request reaches the choke point with.
 export {

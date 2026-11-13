@@ -226,10 +226,10 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
         name: "Send the invoice",
         date: "2026-11-20",
         status: "notDone",
-        project: { id: project, name: "Web" },
+        project: { id: project, state: "active", name: "Web" },
         people: [
-          { id: alice, name: "Alice" },
-          { id: bob, name: "Bob" },
+          { id: alice, state: "active", name: "Alice" },
+          { id: bob, state: "active", name: "Bob" },
         ],
         links: { project: threadSource("project"), people: threadSource("people") },
       },
@@ -262,13 +262,12 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     const undatedFirst = await newThreadTask(thread, { name: "open, undated, created first", status: "notDone" });
     const undatedSecond = await newThreadTask(thread, { name: "open, undated, created second", status: "notDone" });
     const wontDo = await newThreadTask(thread, { name: "won't do", status: "wontDo", date: "2026-01-15" });
-    // An explicit null keeps the property's default away, so this task has no status at all.
-    const noStatus = await newThreadTask(thread, { name: "no status", status: null, date: "2026-01-10" });
 
     const tasks = await tasksOf(thread);
 
-    expect(tasks.map((task) => task.id)).toEqual([sooner, later, undatedFirst, undatedSecond, done, noStatus, wontDo]);
-    expect(tasks.find((task) => task.id === noStatus)).toMatchObject({ status: null, date: "2026-01-10" });
+    expect(tasks.map((task) => task.id)).toEqual([sooner, later, undatedFirst, undatedSecond, done, wontDo]);
+    expect(tasks.map((task) => task.status)).toEqual(["notDone", "notDone", "notDone", "notDone", "done", "wontDo"]);
+    for (const task of tasks) expect(typeof task.status).toBe("string");
   });
 
   it("shows inheritedBroken for people once a person changed them by hand", async () => {
@@ -289,24 +288,61 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     expect(changed?.links.project).toBeUndefined();
   });
 
-  it("leaves a trashed project and a trashed person out of a task", async () => {
+  it("lists a trashed project and a trashed person of a task as a trashed marker after the live ones", async () => {
     const thread = await newThread("<invoice@example.test>");
     const project = await newItem("projects", { name: "Web" });
     const alice = await newItem("people", { name: "Alice" });
     const bob = await newItem("people", { name: "Bob" });
+    const carol = await newItem("people", { name: "Carol" });
     const task = await newThreadTask(thread, { name: "Send the invoice" });
     await link(properties.taskProject, task, project);
-    await link(properties.taskPeople, task, alice);
+    // Linked in the opposite order of their names: the response orders people by name.
+    await link(properties.taskPeople, task, carol);
     await link(properties.taskPeople, task, bob);
+    await link(properties.taskPeople, task, alice);
     expect((await tasksOf(thread))[0]).toMatchObject({
-      project: { id: project },
-      people: [{ id: alice }, { id: bob }],
+      project: { id: project, state: "active", name: "Web" },
+      people: [
+        { id: alice, state: "active" },
+        { id: bob, state: "active" },
+        { id: carol, state: "active" },
+      ],
     });
 
     expect(await inTenant(() => cp.softDeleteItem(databaseId("projects"), project))).not.toBeNull();
+    // Alice sorts first by name, so only the order rule puts her marker after Bob and Carol.
     expect(await inTenant(() => cp.softDeleteItem(databaseId("people"), alice))).not.toBeNull();
 
-    expect((await tasksOf(thread))[0]).toMatchObject({ id: task, project: null, people: [{ id: bob, name: "Bob" }] });
+    const [listed] = await tasksOf(thread);
+    expect(listed?.id).toBe(task);
+    expect(listed?.project).toEqual({ id: project, state: "trashed" });
+    expect(listed?.project).not.toHaveProperty("name");
+    expect(listed?.people).toEqual([
+      { id: bob, state: "active", name: "Bob" },
+      { id: carol, state: "active", name: "Carol" },
+      { id: alice, state: "trashed" },
+    ]);
+  });
+
+  it("orders the trashed people of a task by id after the live ones", async () => {
+    const thread = await newThread("<invoice@example.test>");
+    const task = await newThreadTask(thread, { name: "Send the invoice" });
+    const live = await newItem("people", { name: "Zed" });
+    const trashedIds = [
+      await newItem("people", { name: "Yan" }),
+      await newItem("people", { name: "Abe" }),
+      await newItem("people", { name: "Mia" }),
+    ];
+    for (const id of [live, ...trashedIds]) await link(properties.taskPeople, task, id);
+    for (const id of trashedIds)
+      expect(await inTenant(() => cp.softDeleteItem(databaseId("people"), id))).not.toBeNull();
+
+    const [listed] = await tasksOf(thread);
+
+    expect(listed?.people).toEqual([
+      { id: live, state: "active", name: "Zed" },
+      ...[...trashedIds].sort().map((id) => ({ id, state: "trashed" })),
+    ]);
   });
 
   it("answers an empty name for a task, a project and a person that have none", async () => {
@@ -323,8 +359,8 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
         name: "",
         date: null,
         status: "notDone",
-        project: { id: project, name: "" },
-        people: [{ id: person, name: "" }],
+        project: { id: project, state: "active", name: "" },
+        people: [{ id: person, state: "active", name: "" }],
         links: {},
       },
     ]);

@@ -136,7 +136,7 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 // REST-only `property.option.add` and `property.option.update` (#1699), whose schemas no MCP listing advertises.
 // `database.patch` was re-recorded when issue #2002 added the optional boolean `overviewHidden` to its patch (an
 // additive change). `database.facets` (#1759) was recorded when it joined the catalog; its one schema shares local
-// definitions under `properties.filter`. `page.ensureJournalPeriod` (#1861) and `page.mergeJournalDuplicates` (#2017) were recorded when they joined the catalog, and so were `search` (#1842) and `relation.related` (#1839).
+// definitions under `properties.filter`. `page.ensureJournalPeriod` (#1861) and `page.mergeJournalDuplicates` (#2017) were recorded when they joined the catalog, and so were `search` (#1842) and `relation.related` (#1839). `database.query`, `view.query` and `item.count` were re-recorded when issue #1857 added the optional text `q` (an additive change; on `item.count` it sits on each entry). `page.convertToBlock` (#1876) was recorded when it joined the catalog.
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -157,7 +157,7 @@ const defaultHashes: Record<string, string> = {
   "view.create": "b3c015042164623a164a5518c20d6e5994ad15593d408e181bf636cf03fca2db",
   "view.patch": "9ea9bfeb0347d676822308742a8dfc719874fac1934ecc6e25a2cd214873e633",
   "view.delete": "559a12505aff3c7f9f61c27fec8615a10d0416ebccb3801031274c7cacc8c06f",
-  "view.query": "cd7522924503fd71de142aace0077b23310d6eb123b6e75c3b7fbb94ff0b5cee",
+  "view.query": "80a6db64e52616fa1885c4b07b3c6c05c964451c9fa34f3eae425af97154d322",
   "viewItem.add": "7c1a08c7a43834890265f05daa68566b6f3a9ede91f749f1fa9ee1ee0e11869b",
   "viewItem.remove": "735a1c61b7d6a92a7554e2b17bfd21870f0d476552ce489345ebb265ebb605aa",
   "viewItem.reorder": "475435983eaf7460f719e32b3a825a4fa6a51ef95200fb8bee8888b40b15bf2f",
@@ -166,7 +166,7 @@ const defaultHashes: Record<string, string> = {
   "item.patch": "c51920e126609bbf7274539ae78f24378dc2fc69617115a62c1311f95da7a9c4",
   "item.delete": "aca85070b3e100d43691feaae3c16695f3b5d298dd304c172556cf791ae2c6bc",
   "item.restore": "aca85070b3e100d43691feaae3c16695f3b5d298dd304c172556cf791ae2c6bc",
-  "database.query": "7e288eda2fe8008367e39d4374bd9ca2a71e18a3ea210b5f2d763078bf5a5c29",
+  "database.query": "4cf92b811b99e52ebf1aa7ed224c65cb047c2beaea1a3a0c4d7116b9f3042a3b",
   "relation.put": "a5cd0b56db1557899074cc744175bf291a11f3e65bf3c5ec9cfe74bd49a01583",
   "relation.set": "34c432f51073f989eebaf8ed5072e5e77b734f480bc54be9e3996f9ac1e2883f",
   "relation.delete": "5f146bb4d95f59339ba11786dda563a0630e42ec81f66ad3890c183cfb0441ac",
@@ -180,7 +180,7 @@ const defaultHashes: Record<string, string> = {
   "page.insert": "d284651aff522abffd1f21dabefe7ff196fca8e5c028ef37316f3c5d51ea0ac8",
   "page.replace": "f9ebb337c6fffa32c997dbe897847a45c251a851a7ae41d3916c739dd65a9b93",
   "page.changes": "f0ff5e6ad26a100a3ab35d676dcf5541d2a7906700cd94b225623e8f7865a384",
-  "item.count": "2b1b1cac530e8917c376fee63e66098c6d8640341935e58b4b38ab14c2ed823f",
+  "item.count": "0f78f609c95811467884fff707dcc324cacda6ddf4bf768d9a22ea8e921e356d",
   "page.duplicate": "cf496713017be99d4da1acbc5863c5c057e45606f6d644070ca62c6708e990e6",
   "page.rename": "75be99147d9267ad2db8c9a90c6b2b76161ea30b7bbeb18d5a9c45aa41d667cb",
   "database.facets": "235227f7c8f084dacb50f7f510123fec368bc59519700b48202c4cfae366ad56",
@@ -188,6 +188,7 @@ const defaultHashes: Record<string, string> = {
   "page.mergeJournalDuplicates": "a34df63d5931b36d578a6e20e17f36818f9853db2266f9e253b0dc73932ae387",
   search: "9b2840da72eb61fc284c5065a1575b9bbdc64dca4d0df006f2ca317d6009b2b8",
   "relation.related": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
+  "page.convertToBlock": "993877e7efe30e669041ead866cf7ef4db10e7a0bd4f5554c53cd488b890ef2e",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {
@@ -291,8 +292,9 @@ describe("item.count generated input", () => {
     const entry = resolve(items.items);
     expect(entry).toMatchObject({ type: "object", required: ["databaseId"], additionalProperties: false });
     const properties = objectSchema.parse(entry.properties);
-    expect(Object.keys(properties).sort()).toEqual(["collection", "databaseId", "filter", "groupBy"]);
+    expect(Object.keys(properties).sort()).toEqual(["collection", "databaseId", "filter", "groupBy", "q"]);
     expect(resolve(properties.groupBy)).toEqual({ type: "string", minLength: 1 });
+    expect(resolve(properties.q)).toEqual({ type: "string", minLength: 1, maxLength: 200 });
     expect(resolve(properties.collection)).toEqual({ type: "boolean" });
   });
 
